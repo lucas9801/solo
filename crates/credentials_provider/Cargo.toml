@@ -1,0 +1,23 @@
+[package]
+name = "credentials_provider"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/credentials_provider.rs"
+test = false
+doctest = false
+
+[features]
+test-support = ["dep:futures", "dep:parking_lot"]
+
+[dependencies]
+anyhow.workspace = true
+futures = { workspace = true, optional = true }
+gpui.workspace = true
+parking_lot = { workspace = true, optional = true }
