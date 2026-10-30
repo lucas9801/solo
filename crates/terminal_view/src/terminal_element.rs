@@ -59,6 +59,8 @@ struct CommandBlockDecoration {
     /// Draw a separator above `start_row`; only when the block's prompt is visible.
     separator: bool,
     status: CommandBlockStatus,
+    /// Summary drawn at the right end of the prompt row, when it is visible.
+    label: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +69,39 @@ enum CommandBlockStatus {
     Running,
     Succeeded,
     Failed,
+}
+
+fn command_block_label(block: &CommandBlock, status: CommandBlockStatus) -> Option<String> {
+    let duration = match (block.started_at, block.finished_at) {
+        (Some(started_at), Some(finished_at)) => Some(finished_at - started_at),
+        _ => None,
+    };
+    match status {
+        CommandBlockStatus::Idle => None,
+        CommandBlockStatus::Running => Some("running".to_string()),
+        CommandBlockStatus::Succeeded => duration.map(format_command_duration),
+        CommandBlockStatus::Failed => {
+            let exit_code = block.exit_code.unwrap_or(1);
+            Some(match duration {
+                Some(duration) => {
+                    format!("exit {exit_code} · {}", format_command_duration(duration))
+                }
+                None => format!("exit {exit_code}"),
+            })
+        }
+    }
+}
+
+fn format_command_duration(duration: std::time::Duration) -> String {
+    let millis = duration.as_millis();
+    if millis < 1000 {
+        format!("{millis}ms")
+    } else if millis < 60_000 {
+        format!("{:.1}s", duration.as_secs_f32())
+    } else {
+        let secs = duration.as_secs();
+        format!("{}m {}s", secs / 60, secs % 60)
+    }
 }
 
 /// Maps command blocks, whose lines count from the top of the scrollback, to
@@ -99,11 +134,15 @@ fn command_block_decorations(
             (None, None, Some(_)) => CommandBlockStatus::Running,
             (None, None, None) => CommandBlockStatus::Idle,
         };
+        let label = (start >= first_visible)
+            .then(|| command_block_label(block, status))
+            .flatten();
         decorations.push(CommandBlockDecoration {
             start_row: to_row(start.max(first_visible)),
             end_row: to_row(end.min(last_visible)),
             separator: start > 0 && start >= first_visible,
             status,
+            label,
         });
     }
     decorations
@@ -2094,13 +2133,14 @@ fn paint_command_blocks(
     origin: GpuiPoint<Pixels>,
     layout: &LayoutState,
     window: &mut Window,
-    cx: &App,
+    cx: &mut App,
 ) {
     if blocks.is_empty() {
         return;
     }
-    let colors = cx.theme().colors();
-    let status = cx.theme().status();
+    let theme = cx.theme().clone();
+    let colors = theme.colors();
+    let status = theme.status();
     let line_height = layout.dimensions.line_height;
     let stripe_width = px(3.);
     for block in blocks {
@@ -2128,6 +2168,47 @@ fn paint_command_blocks(
                 Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, px(1.))),
                 colors.border_variant,
             ));
+        }
+        if let Some(label) = &block.label {
+            let color = match block.status {
+                CommandBlockStatus::Failed => status.error,
+                _ => colors.text_muted,
+            };
+            let font_size = layout.base_text_style.font_size.to_pixels(window.rem_size()) * 0.85;
+            let shaped = window.text_system().shape_line(
+                label.clone().into(),
+                font_size,
+                &[TextRun {
+                    len: label.len(),
+                    font: layout.base_text_style.font(),
+                    color,
+                    ..Default::default()
+                }],
+                None,
+            );
+            let padding = layout.dimensions.cell_width;
+            let x = bounds.right() - shaped.width - padding;
+            if x <= bounds.origin.x + padding {
+                continue;
+            }
+            // Keep the label legible over any prompt text underneath it.
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(x - padding / 2., top + px(1.)),
+                    size(shaped.width + padding, line_height - px(1.)),
+                ),
+                layout.background_color,
+            ));
+            shaped
+                .paint(
+                    point(x, top),
+                    line_height,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                )
+                .log_err();
         }
     }
 }
@@ -3172,6 +3253,14 @@ mod tests {
     }
 
     #[test]
+    fn test_format_command_duration() {
+        use std::time::Duration;
+        assert_eq!(format_command_duration(Duration::from_millis(320)), "320ms");
+        assert_eq!(format_command_duration(Duration::from_millis(4250)), "4.2s");
+        assert_eq!(format_command_duration(Duration::from_secs(192)), "3m 12s");
+    }
+
+    #[test]
     fn test_command_block_decorations() {
         let blocks = vec![
             command_block(0, Some(0), true),
@@ -3188,18 +3277,21 @@ mod tests {
                     end_row: 2,
                     separator: false,
                     status: CommandBlockStatus::Succeeded,
+                    label: None,
                 },
                 CommandBlockDecoration {
                     start_row: 3,
                     end_row: 9,
                     separator: true,
                     status: CommandBlockStatus::Failed,
+                    label: Some("exit 5".to_string()),
                 },
                 CommandBlockDecoration {
                     start_row: 10,
                     end_row: 12,
                     separator: true,
                     status: CommandBlockStatus::Running,
+                    label: Some("running".to_string()),
                 },
             ]
         );
@@ -3212,6 +3304,7 @@ mod tests {
                 end_row: 4,
                 separator: false,
                 status: CommandBlockStatus::Failed,
+                label: None,
             }]
         );
     }
