@@ -55,6 +55,7 @@ pub struct TerminalSettings {
     pub bell: TerminalBell,
     pub open_changed_files: bool,
     pub input_editor: bool,
+    pub compact_prompt: bool,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -130,6 +131,7 @@ impl settings::Settings for TerminalSettings {
             minimum_contrast: user_content.minimum_contrast.unwrap(),
             open_changed_files: user_content.open_changed_files.unwrap(),
             input_editor: user_content.input_editor.unwrap(),
+            compact_prompt: user_content.compact_prompt.unwrap(),
             path_hyperlink_regexes: project_content
                 .path_hyperlink_regexes
                 .unwrap()

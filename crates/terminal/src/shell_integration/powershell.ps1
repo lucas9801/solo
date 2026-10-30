@@ -51,7 +51,12 @@ function Global:prompt {
     }
 
     $marks += "$esc]133;A$bel"
-    $userPrompt = if ($Global:__SoloOriginalPrompt) { & $Global:__SoloOriginalPrompt } else { "PS $($location.Path)> " }
+    $userPrompt = if ($env:SOLO_COMPACT_PROMPT -eq '1') {
+        # Solo's input editor shows the full path; keep the scrollback terse.
+        $leaf = Split-Path -Leaf $location.Path
+        if (-not $leaf) { $leaf = $location.Path }
+        "$esc[2m$leaf$esc[0m $esc[36m$([char]0x276F)$esc[0m "
+    } elseif ($Global:__SoloOriginalPrompt) { & $Global:__SoloOriginalPrompt } else { "PS $($location.Path)> " }
     # The user's prompt may run native commands; keep the command's exit code.
     $Global:LASTEXITCODE = $lastExitCode
     "$marks$userPrompt$esc]133;B$bel"

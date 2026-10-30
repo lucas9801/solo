@@ -2251,6 +2251,10 @@
     // waits at its prompt, with completions (Tab) and history suggestions.
     // Needs shell integration.
     "input_editor": true,
+    // While the input editor is on, show a compact prompt (directory name and
+    // an arrow) in shells with Solo's integration; the input editor shows the
+    // full path and git branch.
+    "compact_prompt": true,
     // Regexes used to identify paths for hyperlink navigation. Supports optional named capture
     // groups `path`, `line`, `column`, and `link`. If none of these are present, the entire match
     // is the hyperlink target. If `path` is present, it is the hyperlink target, along with `line`

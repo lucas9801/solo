@@ -254,6 +254,12 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub input_editor: Option<bool>,
+    /// Whether shells with Solo's integration show a compact prompt (the
+    /// directory name and an arrow) while the input editor is on, since the
+    /// input editor already shows the full path and git branch.
+    ///
+    /// Default: true
+    pub compact_prompt: Option<bool>,
 }
 
 crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
@@ -264,7 +270,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         keep_selection_on_copy, open_links_in_mouse_mode, button, dock, starts_open, flexible,
         default_width, default_height, max_scroll_history_lines, scroll_multiplier, toolbar,
         scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
-        input_editor,
+        input_editor, compact_prompt,
     },
     defaults: {},
 });

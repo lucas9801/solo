@@ -2,10 +2,11 @@
 
 use std::time::Duration;
 
-use gpui::{ClipboardItem, Context, Window, actions};
+use gpui::{ClipboardItem, Context, Entity, Window, actions};
 use terminal::shell_integration::CommandBlock;
+use workspace::{Toast, Workspace, notifications::NotificationId};
 
-use crate::TerminalView;
+use crate::{TerminalView, terminal_panel::TerminalPanel};
 
 actions!(
     terminal,
@@ -25,6 +26,9 @@ actions!(
         CopyCommandBlock,
         /// Runs the command of the selected command block again.
         RerunCommandBlock,
+        /// Pastes the selected (or last) command block into the terminal
+        /// running an AI agent, such as Claude Code.
+        SendCommandBlockToAgent,
     ]
 );
 
@@ -48,6 +52,32 @@ pub(crate) fn next_block(blocks: &[CommandBlock], selected: Option<usize>) -> Op
         .iter()
         .position(is_selectable)
         .map(|ix| ix + after)
+}
+
+/// Programs recognized as AI agents to send command blocks to.
+const AGENT_COMMANDS: &[&str] = &[
+    "claude",
+    "codex",
+    "gemini",
+    "aider",
+    "opencode",
+    "qwen",
+    "amp",
+    "cursor-agent",
+    "copilot",
+];
+
+/// Whether `command` runs an AI agent (by its program name).
+pub(crate) fn is_agent_command(command: &str) -> bool {
+    let Some(program) = command.split_whitespace().next() else {
+        return false;
+    };
+    let program = program.trim_matches(['"', '\'']);
+    let name = std::path::Path::new(program)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    AGENT_COMMANDS.contains(&name.as_str())
 }
 
 /// Formats a command block for pasting into an AI prompt.
@@ -222,25 +252,151 @@ impl TerminalView {
         });
     }
 
+    pub(crate) fn send_command_block_to_agent(
+        &mut self,
+        _: &SendCommandBlockToAgent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(markdown) = self.target_command_block_markdown(cx) else {
+            return;
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let this = cx.entity();
+        let Some(agent) = find_agent_terminal(&workspace, &this, cx) else {
+            cx.write_to_clipboard(ClipboardItem::new_string(markdown));
+            workspace.update(cx, |workspace, cx| {
+                struct NoAgentToast;
+                workspace.show_toast(
+                    Toast::new(
+                        NotificationId::unique::<NoAgentToast>(),
+                        "No terminal is running an AI agent; copied the block instead",
+                    )
+                    .autohide(),
+                    cx,
+                );
+            });
+            return;
+        };
+        self.select_command_block(None, cx);
+        agent.update(cx, |agent, cx| {
+            agent
+                .terminal
+                .update(cx, |terminal, _| terminal.paste(&markdown));
+        });
+        // Switching tabs deactivates this view, which is being updated right now.
+        window.defer(cx, move |window, cx| {
+            activate_terminal_view(&workspace, &agent, window, cx)
+        });
+    }
+
+    fn target_command_block_markdown(&self, cx: &Context<Self>) -> Option<String> {
+        let ix = self.target_command_block(cx)?;
+        let terminal = self.terminal.read(cx);
+        let block = terminal.shell_integration().blocks().get(ix)?;
+        Some(command_block_markdown(
+            &terminal.command_block_command(ix).unwrap_or_default(),
+            &terminal.command_block_output(ix).unwrap_or_default(),
+            block.exit_code,
+        ))
+    }
+
     pub(crate) fn copy_command_block(
         &mut self,
         _: &CopyCommandBlock,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(ix) = self.target_command_block(cx) else {
+        if let Some(markdown) = self.target_command_block_markdown(cx) {
+            cx.write_to_clipboard(ClipboardItem::new_string(markdown));
+        }
+    }
+}
+
+/// All terminal views in the workspace: the terminal panel's and the center's.
+fn terminal_views(workspace: &Entity<Workspace>, cx: &gpui::App) -> Vec<Entity<TerminalView>> {
+    let workspace = workspace.read(cx);
+    let mut views: Vec<_> = workspace
+        .panel::<TerminalPanel>(cx)
+        .map(|panel| {
+            panel
+                .read(cx)
+                .center
+                .panes()
+                .into_iter()
+                .flat_map(|pane| {
+                    pane.read(cx)
+                        .items_of_type::<TerminalView>()
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    views.extend(workspace.items_of_type::<TerminalView>(cx));
+    views
+}
+
+/// The other terminal running an AI agent, or else the only other terminal
+/// running anything.
+fn find_agent_terminal(
+    workspace: &Entity<Workspace>,
+    this: &Entity<TerminalView>,
+    cx: &gpui::App,
+) -> Option<Entity<TerminalView>> {
+    let running_commands: Vec<(Entity<TerminalView>, String)> = terminal_views(workspace, cx)
+        .into_iter()
+        .filter(|view| view != this)
+        .filter_map(|view| {
+            let block = view
+                .read(cx)
+                .terminal
+                .read(cx)
+                .shell_integration()
+                .blocks()
+                .last()
+                .filter(|block| block.is_running())?
+                .clone();
+            Some((view, block.command.unwrap_or_default()))
+        })
+        .collect();
+    running_commands
+        .iter()
+        .find(|(_, command)| is_agent_command(command))
+        .or_else(|| (running_commands.len() == 1).then(|| &running_commands[0]))
+        .map(|(view, _)| view.clone())
+}
+
+fn activate_terminal_view(
+    workspace: &Entity<Workspace>,
+    view: &Entity<TerminalView>,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    let panes = workspace
+        .read(cx)
+        .panel::<TerminalPanel>(cx)
+        .map(|panel| {
+            panel
+                .read(cx)
+                .center
+                .panes()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .chain(workspace.read(cx).panes().iter().cloned())
+        .collect::<Vec<_>>();
+    for pane in panes {
+        if let Some(index) = pane.read(cx).index_for_item(view) {
+            pane.update(cx, |pane, cx| {
+                pane.activate_item(index, true, true, window, cx)
+            });
             return;
-        };
-        let terminal = self.terminal.read(cx);
-        let Some(block) = terminal.shell_integration().blocks().get(ix) else {
-            return;
-        };
-        let markdown = command_block_markdown(
-            &terminal.command_block_command(ix).unwrap_or_default(),
-            &terminal.command_block_output(ix).unwrap_or_default(),
-            block.exit_code,
-        );
-        cx.write_to_clipboard(ClipboardItem::new_string(markdown));
+        }
     }
 }
 
@@ -272,6 +428,15 @@ mod tests {
         assert_eq!(next_block(&blocks, Some(2)), None);
         assert_eq!(next_block(&blocks, None), None);
         assert_eq!(previous_block(&[], None), None);
+    }
+
+    #[test]
+    fn test_is_agent_command() {
+        assert!(is_agent_command("claude"));
+        assert!(is_agent_command("claude --resume"));
+        assert!(is_agent_command(r"C:\tools\codex.exe exec"));
+        assert!(!is_agent_command("cargo build"));
+        assert!(!is_agent_command(""));
     }
 
     #[test]

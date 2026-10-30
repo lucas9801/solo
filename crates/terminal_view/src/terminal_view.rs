@@ -41,7 +41,9 @@ use terminal::{
     TerminalBounds, ToggleViMode,
     terminal_settings::{CursorShape, TerminalSettings},
 };
-use command_blocks::{CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput};
+use command_blocks::{
+    CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput, SendCommandBlockToAgent,
+};
 use input::TerminalInput;
 use terminal_element::TerminalElement;
 use terminal_panel::TerminalPanel;
@@ -635,6 +637,7 @@ impl TerminalView {
                         .action("Copy Command", Box::new(CopyCommandBlockCommand))
                         .action("Copy Output", Box::new(CopyCommandBlockOutput))
                         .action("Copy Command and Output", Box::new(CopyCommandBlock))
+                        .action("Send to AI Agent", Box::new(SendCommandBlockToAgent))
                 })
                 .when(
                     !self.read_only && !matches!(self.mode, TerminalMode::Embedded { .. }),
@@ -1541,6 +1544,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::copy_command_block_output))
             .on_action(cx.listener(TerminalView::copy_command_block))
             .on_action(cx.listener(TerminalView::rerun_command_block))
+            .on_action(cx.listener(TerminalView::send_command_block_to_agent))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 MouseButton::Right,

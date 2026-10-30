@@ -439,14 +439,20 @@ impl Project {
                                 };
                                 create_remote_shell(spawn_command, env, path, remote_client, cx)?
                             }
-                            None if settings.shell_integration => (
-                                terminal::shell_integration::integrate_shell(
-                                    settings.shell,
-                                    &shell_program,
-                                    path_style.is_windows(),
-                                ),
-                                env,
-                            ),
+                            None if settings.shell_integration => {
+                                let mut env = env;
+                                if settings.input_editor && settings.compact_prompt {
+                                    env.insert("SOLO_COMPACT_PROMPT".to_string(), "1".to_string());
+                                }
+                                (
+                                    terminal::shell_integration::integrate_shell(
+                                        settings.shell,
+                                        &shell_program,
+                                        path_style.is_windows(),
+                                    ),
+                                    env,
+                                )
+                            }
                             None => (settings.shell, env),
                         }
                     };

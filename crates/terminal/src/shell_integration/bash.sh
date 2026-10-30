@@ -63,6 +63,10 @@ __solo_prompt_command() {
         (exit "$status")
         eval "$__solo_original_prompt_command"
     fi
+    # Solo's input editor shows the full path; keep the scrollback terse.
+    if [[ "${SOLO_COMPACT_PROMPT-}" == 1 ]]; then
+        PS1='\[\e[2m\]\W\[\e[0m\] \[\e[36m\]❯\[\e[0m\] '
+    fi
     # The user's prompt command may have replaced PS1; wrap it again.
     if [[ "$PS1" != *'133;A'* ]]; then
         PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'

@@ -13,6 +13,7 @@ mod powershell;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use anyhow::Result;
 use editor::{
@@ -23,7 +24,7 @@ use gpui::{
     App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, Styled, Subscription, Task, TextStyle, Window, actions, div, relative,
 };
-use language::{Buffer, CodeLabel, ToOffset as _};
+use language::{Buffer, CodeLabel, LanguageRegistry, ToOffset as _};
 use project::{
     CompletionDisplayOptions, CompletionResponse, CompletionSource, InlayId,
     lsp_store::CompletionDocumentation,
@@ -37,7 +38,7 @@ use theme_settings::ThemeSettings;
 use ui::{Icon, IconName, IconSize, Label, LabelSize, h_flex, prelude::*, v_flex};
 use zed_actions::editor::{MoveDown, MoveUp};
 
-use completion::{CompletionKind, complete};
+use completion::{CompletionKind, ShellFlavor, complete};
 use history::{CommandHistory, load_shell_history};
 
 actions!(
@@ -79,7 +80,9 @@ pub struct TerminalInput {
     /// doesn't end the history walk.
     replacing_text: bool,
     git_branch: Option<(PathBuf, Option<String>)>,
+    languages: Option<Arc<LanguageRegistry>>,
     _load_history: Task<()>,
+    _load_language: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -90,7 +93,12 @@ pub enum TerminalInputEvent {
 impl EventEmitter<TerminalInputEvent> for TerminalInput {}
 
 impl TerminalInput {
-    pub fn new(terminal: Entity<Terminal>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        terminal: Entity<Terminal>,
+        languages: Option<Arc<LanguageRegistry>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let history = Rc::new(RefCell::new(CommandHistory::default()));
         let searching_history = Rc::new(Cell::new(false));
         let editor = cx.new(|cx| {
@@ -117,7 +125,9 @@ impl TerminalInput {
             suggestion: None,
             replacing_text: false,
             git_branch: None,
+            languages,
             _load_history: Task::ready(()),
+            _load_language: Task::ready(()),
             _subscriptions: subscriptions,
         }
     }
@@ -142,6 +152,7 @@ impl TerminalInput {
             return;
         }
         self.history_shell = shell.clone();
+        self.load_language(shell.as_deref(), cx);
         let history = self.history.clone();
         self._load_history = cx.spawn(async move |_, cx| {
             let entries = cx
@@ -154,6 +165,24 @@ impl TerminalInput {
                 merged.push(entry);
             }
             *history = merged;
+        });
+    }
+
+    /// Highlights commands with the shell's grammar, where Zed has one.
+    fn load_language(&mut self, shell: Option<&str>, cx: &mut Context<Self>) {
+        let Some(languages) = self.languages.clone() else {
+            return;
+        };
+        if ShellFlavor::from_shell(shell) != ShellFlavor::Posix {
+            return;
+        }
+        let Some(buffer) = self.editor.read(cx).buffer().read(cx).as_singleton() else {
+            return;
+        };
+        self._load_language = cx.spawn(async move |_, cx| {
+            if let Ok(language) = languages.language_for_name("Shell Script").await {
+                buffer.update(cx, |buffer, cx| buffer.set_language(Some(language), cx));
+            }
         });
     }
 
@@ -397,6 +426,7 @@ impl TerminalInput {
         EditorStyle {
             background: theme.colors().terminal_background,
             local_player: theme.players().local(),
+            syntax: theme.syntax().clone(),
             text: TextStyle {
                 color: theme.colors().text,
                 font_family: settings.buffer_font.family.clone(),
@@ -579,9 +609,13 @@ impl TerminalView {
         }
 
         let terminal = self.terminal.clone();
+        let languages = self
+            .project
+            .upgrade()
+            .map(|project| project.read(cx).languages().clone());
         let input = self
             .input
-            .get_or_insert_with(|| cx.new(|cx| TerminalInput::new(terminal, window, cx)))
+            .get_or_insert_with(|| cx.new(|cx| TerminalInput::new(terminal, languages, window, cx)))
             .clone();
         // Typing goes to the input while the shell waits for a command.
         if !running && self.selected_command_block.is_none() && self.focus_handle.is_focused(window)
