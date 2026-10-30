@@ -71,6 +71,8 @@ __solo_prompt_command() {
     return "$status"
 }
 
+printf '\e]633;P;Shell=bash\a'
+
 unset PROMPT_COMMAND
 PROMPT_COMMAND=__solo_prompt_command
 # Another DEBUG trap means the user has their own preexec; keep it and go without

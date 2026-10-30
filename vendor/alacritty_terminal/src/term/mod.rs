@@ -1897,6 +1897,13 @@ impl<T: EventListener> Handler for Term<T> {
             [b"633", b"E", command_line, ..] => {
                 ShellMark::CommandLine(unescape_command_line(command_line))
             },
+            [b"633", b"P", property, ..] => {
+                let property = unescape_command_line(property);
+                let Some((key, value)) = property.split_once('=') else {
+                    return;
+                };
+                ShellMark::Property { key: key.to_string(), value: value.to_string() }
+            },
             [b"7", uri @ ..] if !uri.is_empty() => {
                 let uri: Vec<&str> =
                     uri.iter().filter_map(|part| str::from_utf8(part).ok()).collect();

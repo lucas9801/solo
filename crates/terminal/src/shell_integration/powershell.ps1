@@ -11,6 +11,12 @@ $Global:__SoloCommandExecuted = $false
 $Global:__SoloFirstPrompt = $true
 $Global:__SoloOriginalPrompt = $function:prompt
 
+# Tell the terminal which PowerShell this is, so its input editor can ask the
+# same one for completions.
+$__soloShellPath = (Get-Process -Id $PID).Path -replace '\\', '\\' -replace ';', '\x3b'
+[Console]::Write("$([char]27)]633;P;Shell=$__soloShellPath$([char]7)")
+Remove-Variable __soloShellPath
+
 function Global:prompt {
     $succeeded = $Global:?
     $lastExitCode = $Global:LASTEXITCODE

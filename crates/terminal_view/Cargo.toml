@@ -18,6 +18,7 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 async-recursion.workspace = true
+base64.workspace = true
 breadcrumbs.workspace = true
 collections.workspace = true
 db.workspace = true
@@ -56,5 +57,6 @@ remote = { workspace = true, features = ["test-support"] }
 release_channel.workspace = true
 rpc = { workspace = true, features = ["test-support"] }
 semver.workspace = true
+tempfile.workspace = true
 terminal = { workspace = true, features = ["test-support"] }
 workspace = { workspace = true, features = ["test-support"] }

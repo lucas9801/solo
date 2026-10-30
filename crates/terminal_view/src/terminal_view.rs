@@ -1,4 +1,5 @@
 pub mod command_blocks;
+pub mod input;
 mod persistence;
 pub mod terminal_element;
 pub mod terminal_panel;
@@ -41,6 +42,7 @@ use terminal::{
     terminal_settings::{CursorShape, TerminalSettings},
 };
 use command_blocks::{CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput};
+use input::TerminalInput;
 use terminal_element::TerminalElement;
 use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
@@ -165,6 +167,8 @@ pub struct TerminalView {
     selected_command_block: Option<usize>,
     /// SOLO: repaints every second while a command runs, for its timer.
     running_command_ticker: Option<Task<()>>,
+    /// SOLO: the Warp-style input editor, once the shell supports it.
+    input: Option<Entity<TerminalInput>>,
     scroll_top: Pixels,
     scroll_handle: TerminalScrollHandle,
     ime_state: Option<ImeState>,
@@ -315,6 +319,7 @@ impl TerminalView {
             block_below_cursor: None,
             selected_command_block: None,
             running_command_ticker: None,
+            input: None,
             scroll_top: Pixels::ZERO,
             scroll_handle,
             needs_serialize: false,
@@ -1413,6 +1418,14 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Keys typed in the input editor are for it, not the shell.
+        if self
+            .input
+            .as_ref()
+            .is_some_and(|input| input.read(cx).is_focused(window, cx))
+        {
+            return;
+        }
         self.clear_bell(cx);
         self.pause_cursor_blinking(window, cx);
 
@@ -1479,6 +1492,16 @@ impl Render for TerminalView {
             });
         }
 
+        let input = self.update_input(window, cx);
+        // The shell's own cursor idles at its prompt while typing goes to the input.
+        let input_at_prompt = input.is_some()
+            && !self
+                .terminal
+                .read(cx)
+                .shell_integration()
+                .blocks()
+                .last()
+                .is_some_and(|block| block.is_running());
         let terminal_handle = self.terminal.clone();
         let terminal_view_handle = cx.entity();
 
@@ -1559,24 +1582,32 @@ impl Render for TerminalView {
                             .rounded_br(radii.bottom_right)
                     })
                     .child(
-                        div()
+                        v_flex()
                             .size_full()
-                            .pt(self.content_top_padding)
-                            .bg(cx.theme().colors().terminal_background)
-                            .rounded_tl(content_corner_radii.top_left)
-                            .rounded_tr(content_corner_radii.top_right)
-                            .rounded_bl(content_corner_radii.bottom_left)
-                            .rounded_br(content_corner_radii.bottom_right)
-                            .child(TerminalElement::new(
-                                terminal_handle,
-                                terminal_view_handle,
-                                self.workspace.clone(),
-                                self.focus_handle.clone(),
-                                focused,
-                                self.should_show_cursor(focused, cx),
-                                self.block_below_cursor.clone(),
-                                self.mode.clone(),
-                            )),
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .pt(self.content_top_padding)
+                                    .bg(cx.theme().colors().terminal_background)
+                                    .rounded_tl(content_corner_radii.top_left)
+                                    .rounded_tr(content_corner_radii.top_right)
+                                    .rounded_bl(content_corner_radii.bottom_left)
+                                    .rounded_br(content_corner_radii.bottom_right)
+                                    .child(TerminalElement::new(
+                                        terminal_handle,
+                                        terminal_view_handle,
+                                        self.workspace.clone(),
+                                        self.focus_handle.clone(),
+                                        focused,
+                                        self.should_show_cursor(focused, cx)
+                                            && !input_at_prompt,
+                                        self.block_below_cursor.clone(),
+                                        self.mode.clone(),
+                                    )),
+                            )
+                            .children(input),
                     )
                     .when(content_mode.is_scrollable(), |div| {
                         let colors = cx.theme().colors();

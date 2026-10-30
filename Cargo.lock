@@ -17975,6 +17975,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-recursion",
+ "base64 0.22.1",
  "breadcrumbs",
  "collections",
  "db",
@@ -18000,6 +18001,7 @@ dependencies = [
  "shellexpand",
  "shlex 2.0.1",
  "task",
+ "tempfile",
  "terminal",
  "theme",
  "theme_settings",

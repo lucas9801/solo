@@ -248,6 +248,12 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub open_changed_files: Option<bool>,
+    /// Whether to type commands in an editor at the bottom of the terminal
+    /// while the shell waits at its prompt, with completions and history
+    /// suggestions. Needs shell integration.
+    ///
+    /// Default: true
+    pub input_editor: Option<bool>,
 }
 
 crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
@@ -258,6 +264,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         keep_selection_on_copy, open_links_in_mouse_mode, button, dock, starts_open, flexible,
         default_width, default_height, max_scroll_history_lines, scroll_multiplier, toolbar,
         scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
+        input_editor,
     },
     defaults: {},
 });

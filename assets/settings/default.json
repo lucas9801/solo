@@ -2247,6 +2247,10 @@
     // the focused terminal, e.g. files edited by an AI agent. Needs shell
     // integration to know when a command runs.
     "open_changed_files": true,
+    // Type commands in an editor at the bottom of the terminal while the shell
+    // waits at its prompt, with completions (Tab) and history suggestions.
+    // Needs shell integration.
+    "input_editor": true,
     // Regexes used to identify paths for hyperlink navigation. Supports optional named capture
     // groups `path`, `line`, `column`, and `link`. If none of these are present, the entire match
     // is the hyperlink target. If `path` is present, it is the hyperlink target, along with `line`

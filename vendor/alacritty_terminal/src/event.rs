@@ -80,6 +80,8 @@ pub enum ShellMark {
     WorkingDirectory(String),
     /// `OSC 633 ; E ; command_line`: the command line about to run, unescaped.
     CommandLine(String),
+    /// `OSC 633 ; P ; key=value`: a property of the shell, unescaped.
+    Property { key: String, value: String },
 }
 
 impl Debug for Event {

@@ -124,6 +124,9 @@ impl CommandBlock {
 /// Command blocks and working directory reported by the shell.
 #[derive(Default, Debug)]
 pub struct ShellIntegration {
+    /// The shell program, as the integration script reported it (OSC 633 P
+    /// `Shell`): a path for PowerShell, a name otherwise.
+    shell: Option<String>,
     blocks: Vec<CommandBlock>,
     working_directory: Option<PathBuf>,
 }
@@ -136,6 +139,10 @@ impl ShellIntegration {
 
     pub fn blocks(&self) -> &[CommandBlock] {
         &self.blocks
+    }
+
+    pub fn shell(&self) -> Option<&str> {
+        self.shell.as_deref()
     }
 
     pub fn working_directory(&self) -> Option<&PathBuf> {
@@ -190,6 +197,11 @@ impl ShellIntegration {
             AlacShellMark::CommandLine(command) => {
                 if let Some(block) = self.blocks.last_mut() {
                     block.command = Some(command);
+                }
+            }
+            AlacShellMark::Property { key, value } => {
+                if key == "Shell" {
+                    self.shell = Some(value);
                 }
             }
             AlacShellMark::WorkingDirectory(uri) => {
