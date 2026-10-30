@@ -1,5 +1,7 @@
 use std::{cmp, path::PathBuf, process::ExitStatus, sync::Arc, time::Duration};
 
+mod open_changed_files;
+
 use crate::{
     TerminalView, default_working_directory,
     persistence::{
@@ -12,7 +14,7 @@ use db::kvp::KeyValueStore;
 use futures::{channel::oneshot, future::join_all};
 use gpui::{
     Action, Anchor, App, AsyncApp, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, TaskExt, WeakEntity,
+    Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Task, TaskExt, WeakEntity,
     Window, actions,
 };
 use itertools::Itertools;
@@ -87,6 +89,7 @@ pub struct TerminalPanel {
     deferred_tasks: HashMap<TaskId, Task<()>>,
     assistant_enabled: bool,
     active: bool,
+    _project_subscription: Subscription,
 }
 
 impl TerminalPanel {
@@ -107,6 +110,7 @@ impl TerminalPanel {
             deferred_tasks: HashMap::default(),
             assistant_enabled: false,
             active: false,
+            _project_subscription: cx.subscribe_in(project, window, Self::handle_project_event),
         };
         terminal_panel.apply_tab_bar_buttons(&terminal_panel.active_pane, cx);
         terminal_panel
@@ -2917,7 +2921,7 @@ mod tests {
                 terminal_panel.update(cx, |terminal_panel, cx| {
                     assert!(
                         !terminal_panel.starts_open(window, cx),
-                        "terminal panel should not start open by default"
+                        "terminal panel should not start open when disabled"
                     );
                 });
             })
@@ -3360,7 +3364,12 @@ mod tests {
 
     pub fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            let store = SettingsStore::test(cx);
+            let mut store = SettingsStore::test(cx);
+            // Solo opens the terminal at startup; these tests count terminals
+            // from an empty panel.
+            store.update_user_settings(cx, |settings| {
+                settings.terminal.get_or_insert_default().starts_open = Some(false);
+            });
             cx.set_global(store);
             theme_settings::init(theme::LoadThemes::JustBase, cx);
             editor::init(cx);

@@ -29,7 +29,7 @@ pub struct ProjectTerminalSettingsContent {
     /// Default: on
     pub detect_venv: Option<VenvSettings>,
     /// Whether to load Solo's shell integration into supported shells
-    /// (currently PowerShell) that run without custom arguments. It marks each
+    /// (PowerShell and bash) that run without custom arguments. It marks each
     /// command so the terminal can show command blocks.
     ///
     /// Default: true
@@ -242,6 +242,12 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: "system"
     pub bell: Option<TerminalBell>,
+    /// Whether to open files in the editor when they change on disk while a
+    /// command runs in the focused terminal, e.g. files edited by an AI agent.
+    /// Needs shell integration to know when a command runs.
+    ///
+    /// Default: true
+    pub open_changed_files: Option<bool>,
 }
 
 crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
@@ -251,7 +257,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         cursor_shape, blinking, alternate_scroll, option_as_meta, copy_on_select,
         keep_selection_on_copy, open_links_in_mouse_mode, button, dock, starts_open, flexible,
         default_width, default_height, max_scroll_history_lines, scroll_multiplier, toolbar,
-        scrollbar, minimum_contrast, show_count_badge, bell,
+        scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
     },
     defaults: {},
 });

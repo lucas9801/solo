@@ -1,3 +1,4 @@
+pub mod command_blocks;
 mod persistence;
 pub mod terminal_element;
 pub mod terminal_panel;
@@ -39,6 +40,7 @@ use terminal::{
     TerminalBounds, ToggleViMode,
     terminal_settings::{CursorShape, TerminalSettings},
 };
+use command_blocks::{CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput};
 use terminal_element::TerminalElement;
 use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
@@ -159,6 +161,10 @@ pub struct TerminalView {
     workspace_id: Option<WorkspaceId>,
     show_breadcrumbs: bool,
     block_below_cursor: Option<Rc<BlockProperties>>,
+    /// SOLO: index of the selected shell integration command block.
+    selected_command_block: Option<usize>,
+    /// SOLO: repaints every second while a command runs, for its timer.
+    running_command_ticker: Option<Task<()>>,
     scroll_top: Pixels,
     scroll_handle: TerminalScrollHandle,
     ime_state: Option<ImeState>,
@@ -307,6 +313,8 @@ impl TerminalView {
             workspace_id,
             show_breadcrumbs: TerminalSettings::get_global(cx).toolbar.breadcrumbs,
             block_below_cursor: None,
+            selected_command_block: None,
+            running_command_ticker: None,
             scroll_top: Pixels::ZERO,
             scroll_handle,
             needs_serialize: false,
@@ -461,6 +469,7 @@ impl TerminalView {
     /// Commits (sends) the given text to the PTY. Called by InputHandler::replace_text_in_range.
     pub(crate) fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
         if !self.read_only && !text.is_empty() {
+            self.clear_command_block_selection_on_input(cx);
             self.terminal.update(cx, |term, _| {
                 term.input(text.to_string().into_bytes());
             });
@@ -596,6 +605,7 @@ impl TerminalView {
             .upgrade()
             .and_then(|workspace| workspace.read(cx).panel::<TerminalPanel>(cx))
             .is_some_and(|terminal_panel| terminal_panel.read(cx).assistant_enabled());
+        let shell_integration_active = self.terminal.read(cx).shell_integration().is_active();
         let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
             menu.context(self.focus_handle.clone())
                 .when(self.shows_workspace_actions(), |menu| {
@@ -615,6 +625,12 @@ impl TerminalView {
                     },
                 )
                 .action("Select All", Box::new(SelectAll))
+                .when(shell_integration_active, |menu| {
+                    menu.separator()
+                        .action("Copy Command", Box::new(CopyCommandBlockCommand))
+                        .action("Copy Output", Box::new(CopyCommandBlockOutput))
+                        .action("Copy Command and Output", Box::new(CopyCommandBlock))
+                })
                 .when(
                     !self.read_only && !matches!(self.mode, TerminalMode::Embedded { .. }),
                     |menu| menu.action("Clear", Box::new(Clear)),
@@ -1087,6 +1103,9 @@ impl TerminalView {
         if self.terminal.read(cx).vi_mode_enabled() {
             dispatch_context.add("vi_mode");
         }
+        if self.selected_command_block.is_some() {
+            dispatch_context.add("command_block_selected");
+        }
 
         let mode = self.terminal.read(cx).last_content.mode;
         dispatch_context.set(
@@ -1378,6 +1397,7 @@ impl TerminalView {
         if self.read_only && !self.terminal.read(cx).vi_mode_enabled() {
             return false;
         }
+        self.clear_command_block_selection_on_input(cx);
         let (handled, vi_mode_enabled) = self.terminal.update(cx, |term, cx| {
             (
                 term.try_keystroke(keystroke, TerminalSettings::get_global(cx).option_as_meta),
@@ -1446,6 +1466,7 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // TODO: this should be moved out of render
         self.scroll_handle.update(self.terminal.read(cx));
+        self.tick_while_command_runs(cx);
 
         if let Some(new_display_offset) = self.scroll_handle.future_display_offset.take() {
             self.terminal.update(cx, |term, _| {
@@ -1490,6 +1511,12 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::select_all))
             .on_action(cx.listener(TerminalView::rerun_task))
             .on_action(cx.listener(TerminalView::rename_terminal))
+            .on_action(cx.listener(TerminalView::select_previous_command_block))
+            .on_action(cx.listener(TerminalView::select_next_command_block))
+            .on_action(cx.listener(TerminalView::clear_command_block_selection))
+            .on_action(cx.listener(TerminalView::copy_command_block_command))
+            .on_action(cx.listener(TerminalView::copy_command_block_output))
+            .on_action(cx.listener(TerminalView::copy_command_block))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 MouseButton::Right,

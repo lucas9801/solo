@@ -53,6 +53,7 @@ pub struct TerminalSettings {
     pub path_hyperlink_timeout_ms: u64,
     pub show_count_badge: bool,
     pub bell: TerminalBell,
+    pub open_changed_files: bool,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -126,6 +127,7 @@ impl settings::Settings for TerminalSettings {
                 show: user_content.scrollbar.unwrap().show,
             },
             minimum_contrast: user_content.minimum_contrast.unwrap(),
+            open_changed_files: user_content.open_changed_files.unwrap(),
             path_hyperlink_regexes: project_content
                 .path_hyperlink_regexes
                 .unwrap()

@@ -1595,6 +1595,7 @@ pub struct Workspace {
     activity_bar: Entity<PanelButtons>,
     /// Share of the width the terminal takes beside the editor in the terminal-first layout.
     terminal_first_split: f32,
+    _save_terminal_first_split: Task<()>,
     pub(crate) modal_layer: Entity<ModalLayer>,
     toast_layer: Entity<ToastLayer>,
     titlebar_item: Option<AnyView>,
@@ -2103,7 +2104,13 @@ impl Workspace {
             last_active_view_id: None,
             status_bar,
             activity_bar,
-            terminal_first_split: DEFAULT_TERMINAL_FIRST_SPLIT,
+            terminal_first_split: db::kvp::KeyValueStore::global(cx)
+                .read_kvp(TERMINAL_FIRST_SPLIT_KEY)
+                .log_err()
+                .flatten()
+                .and_then(|split| split.parse::<f32>().ok())
+                .map_or(DEFAULT_TERMINAL_FIRST_SPLIT, |split| split.clamp(0.15, 0.85)),
+            _save_terminal_first_split: Task::ready(()),
             modal_layer,
             toast_layer,
             titlebar_item: None,
@@ -9170,8 +9177,7 @@ impl Workspace {
                         MouseButton::Left,
                         cx.listener(|workspace, e: &gpui::MouseUpEvent, _, cx| {
                             if e.click_count == 2 {
-                                workspace.terminal_first_split = DEFAULT_TERMINAL_FIRST_SPLIT;
-                                cx.notify();
+                                workspace.set_terminal_first_split(DEFAULT_TERMINAL_FIRST_SPLIT, cx);
                             }
                         }),
                     )
@@ -9209,8 +9215,7 @@ impl Workspace {
                             let width = e.bounds.size.width;
                             if width > px(0.) {
                                 let split = (e.event.position.x - e.bounds.left()) / width;
-                                workspace.terminal_first_split = split.clamp(0.15, 0.85);
-                                cx.notify();
+                                workspace.set_terminal_first_split(split, cx);
                             }
                         },
                     ))
@@ -9250,6 +9255,23 @@ impl Workspace {
 
     /// In the terminal-first layout the editor area disappears once its last item
     /// closes, so hand focus to the terminal instead of leaving it on a hidden pane.
+    /// Sets the terminal's share of the terminal-first layout and saves it once
+    /// dragging settles.
+    fn set_terminal_first_split(&mut self, split: f32, cx: &mut Context<Self>) {
+        self.terminal_first_split = split.clamp(0.15, 0.85);
+        cx.notify();
+        let kvp = db::kvp::KeyValueStore::global(cx);
+        let split = self.terminal_first_split.to_string();
+        self._save_terminal_first_split = cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(500))
+                .await;
+            kvp.write_kvp(TERMINAL_FIRST_SPLIT_KEY.to_string(), split)
+                .await
+                .log_err();
+        });
+    }
+
     fn focus_terminal_if_editor_hidden(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if WorkspaceSettings::get_global(cx).bottom_dock_layout != BottomDockLayout::TerminalFirst
         {
@@ -9948,6 +9970,7 @@ impl Render for DraggedTerminalSplit {
 }
 
 /// Share of the width the terminal takes while the editor is shown beside it.
+const TERMINAL_FIRST_SPLIT_KEY: &str = "solo_terminal_first_split";
 const DEFAULT_TERMINAL_FIRST_SPLIT: f32 = 0.5;
 
 impl Render for Workspace {

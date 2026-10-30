@@ -1894,6 +1894,9 @@ impl<T: EventListener> Handler for Term<T> {
                 },
                 _ => return,
             },
+            [b"633", b"E", command_line, ..] => {
+                ShellMark::CommandLine(unescape_command_line(command_line))
+            },
             [b"7", uri @ ..] if !uri.is_empty() => {
                 let uri: Vec<&str> =
                     uri.iter().filter_map(|part| str::from_utf8(part).ok()).collect();
@@ -2532,6 +2535,41 @@ pub mod test {
 
         term
     }
+}
+
+/// SOLO: Undo the escaping of `OSC 633 ; E`, where a doubled backslash is a
+/// backslash and backslash-x-AB is a hex encoded byte (used for `;` and control
+/// characters).
+fn unescape_command_line(escaped: &[u8]) -> String {
+    const BACKSLASH: u8 = 0x5c;
+    let mut bytes = Vec::with_capacity(escaped.len());
+    let mut ix = 0;
+    while ix < escaped.len() {
+        match escaped[ix..] {
+            [BACKSLASH, BACKSLASH, ..] => {
+                bytes.push(BACKSLASH);
+                ix += 2;
+            },
+            [BACKSLASH, b'x', hi, lo, ..] => {
+                let hex = [hi, lo];
+                match str::from_utf8(&hex).ok().and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                    Some(byte) => {
+                        bytes.push(byte);
+                        ix += 4;
+                    },
+                    None => {
+                        bytes.push(BACKSLASH);
+                        ix += 1;
+                    },
+                }
+            },
+            _ => {
+                bytes.push(escaped[ix]);
+                ix += 1;
+            },
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 #[cfg(test)]
@@ -3328,5 +3366,12 @@ mod tests {
         assert_eq!(version_number("0.1.2-dev"), 1_02);
         assert_eq!(version_number("1.2.3-dev"), 1_02_03);
         assert_eq!(version_number("999.99.99"), 9_99_99_99);
+    }
+
+    #[test]
+    fn unescape_shell_command_line() {
+        assert_eq!(unescape_command_line(br"git commit -m a\x3bb"), "git commit -m a;b");
+        assert_eq!(unescape_command_line(br"dir C:\\x"), r"dir C:\x");
+        assert_eq!(unescape_command_line(br"echo \xe4\xbd\xa0"), "echo \u{4f60}");
     }
 }

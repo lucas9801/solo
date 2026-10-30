@@ -958,6 +958,20 @@ pub(super) fn content_text(term: &Term<ZedListener>) -> String {
     term.bounds_to_string(start, end)
 }
 
+/// SOLO: text of the given lines, counted from the top of the scrollback.
+pub(super) fn lines_text(term: &Term<ZedListener>, lines: RangeInclusive<usize>) -> String {
+    let history_size = term.grid().history_size() as i32;
+    let to_line = |line: usize| Line(i32::try_from(line).unwrap_or(i32::MAX) - history_size);
+    let start = to_line(*lines.start()).max(term.topmost_line());
+    let end = to_line(*lines.end()).min(term.bottommost_line());
+    if start > end {
+        return String::new();
+    }
+    term.bounds_to_string(AlacPoint::new(start, Column(0)), AlacPoint::new(end, term.last_column()))
+        .trim_end()
+        .to_string()
+}
+
 pub(super) fn total_lines(term: &Term<ZedListener>) -> usize {
     term.total_lines()
 }

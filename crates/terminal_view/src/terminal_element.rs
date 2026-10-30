@@ -52,6 +52,9 @@ pub struct LayoutState {
 /// SOLO: how a shell integration command block is drawn, in viewport rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CommandBlockDecoration {
+    /// Index of the block in the terminal's shell integration.
+    index: usize,
+    selected: bool,
     /// First visible row of the block.
     start_row: i32,
     /// Last visible row of the block, inclusive.
@@ -78,7 +81,17 @@ fn command_block_label(block: &CommandBlock, status: CommandBlockStatus) -> Opti
     };
     match status {
         CommandBlockStatus::Idle => None,
-        CommandBlockStatus::Running => Some("running".to_string()),
+        CommandBlockStatus::Running => Some(match block.started_at {
+            Some(started_at) if started_at.elapsed().as_secs() > 0 => {
+                let secs = started_at.elapsed().as_secs();
+                if secs < 60 {
+                    format!("running · {secs}s")
+                } else {
+                    format!("running · {}m {}s", secs / 60, secs % 60)
+                }
+            }
+            _ => "running".to_string(),
+        }),
         CommandBlockStatus::Succeeded => duration.map(format_command_duration),
         CommandBlockStatus::Failed => {
             let exit_code = block.exit_code.unwrap_or(1);
@@ -112,6 +125,7 @@ fn command_block_decorations(
     display_offset: usize,
     screen_lines: usize,
     cursor_line: usize,
+    selected: Option<usize>,
 ) -> Vec<CommandBlockDecoration> {
     let first_visible = history_size.saturating_sub(display_offset);
     let last_visible = first_visible + screen_lines.saturating_sub(1);
@@ -138,6 +152,8 @@ fn command_block_decorations(
             .then(|| command_block_label(block, status))
             .flatten();
         decorations.push(CommandBlockDecoration {
+            index: ix,
+            selected: selected == Some(ix),
             start_row: to_row(start.max(first_visible)),
             end_row: to_row(end.min(last_visible)),
             separator: start > 0 && start >= first_visible,
@@ -1040,6 +1056,56 @@ impl TerminalElement {
         result
     }
 
+    /// SOLO: clicking the left gutter of a command block selects it.
+    fn register_command_block_click(
+        terminal_view: Entity<TerminalView>,
+        focus: FocusHandle,
+        blocks: &[CommandBlockDecoration],
+        bounds: Bounds<Pixels>,
+        origin: GpuiPoint<Pixels>,
+        layout: &LayoutState,
+        window: &mut Window,
+    ) {
+        if blocks.is_empty() {
+            return;
+        }
+        let line_height = layout.dimensions.line_height;
+        let gutter_width = layout.dimensions.bounds.origin.x - bounds.origin.x;
+        let targets: Vec<(usize, Bounds<Pixels>)> = blocks
+            .iter()
+            .map(|block| {
+                let top = origin.y + block.start_row as f32 * line_height;
+                let height = (block.end_row - block.start_row + 1) as f32 * line_height;
+                (
+                    block.index,
+                    Bounds::new(point(bounds.origin.x, top), size(gutter_width, height)),
+                )
+            })
+            .collect();
+        let hitbox = layout.hitbox.clone();
+        window.on_mouse_event(move |event: &gpui::MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture
+                || event.button != MouseButton::Left
+                || !hitbox.is_hovered(window)
+            {
+                return;
+            }
+            let Some((ix, _)) = targets
+                .iter()
+                .find(|(_, target)| target.contains(&event.position))
+            else {
+                return;
+            };
+            let ix = *ix;
+            window.focus(&focus, cx);
+            terminal_view.update(cx, |view, cx| {
+                let selected = (view.selected_command_block() != Some(ix)).then_some(ix);
+                view.select_command_block(selected, cx);
+            });
+            cx.stop_propagation();
+        });
+    }
+
     fn register_mouse_listeners(
         &mut self,
         hitbox: &Hitbox,
@@ -1493,6 +1559,7 @@ impl Element for TerminalElement {
                 let command_blocks = {
                     let terminal = self.terminal.read(cx);
                     let content = &terminal.last_content;
+                    let selected = self.terminal_view.read(cx).selected_command_block();
                     if content.mode.contains(Modes::ALT_SCREEN) {
                         Vec::new()
                     } else {
@@ -1504,6 +1571,7 @@ impl Element for TerminalElement {
                             content.display_offset,
                             content.screen_lines,
                             (history_size as i32 + content.cursor.point.line).max(0) as usize,
+                            selected,
                         )
                     }
                 };
@@ -1741,6 +1809,8 @@ impl Element for TerminalElement {
             let original_cursor = layout.cursor.take();
             let hyperlink_tooltip = layout.hyperlink_tooltip.take();
             let block_below_cursor_element = layout.block_below_cursor_element.take();
+            let command_block_view = self.terminal_view.clone();
+            let command_block_focus = self.focus.clone();
             self.interactivity.paint(
                 global_id,
                 inspector_id,
@@ -1765,6 +1835,15 @@ impl Element for TerminalElement {
                     });
 
                     paint_command_blocks(&layout.command_blocks, bounds, origin, layout, window, cx);
+                    Self::register_command_block_click(
+                        command_block_view.clone(),
+                        command_block_focus.clone(),
+                        &layout.command_blocks,
+                        bounds,
+                        origin,
+                        layout,
+                        window,
+                    );
 
                     for rect in &layout.rects {
                         rect.paint(origin, &layout.dimensions, window);
@@ -2146,6 +2225,16 @@ fn paint_command_blocks(
     for block in blocks {
         let top = origin.y + block.start_row as f32 * line_height;
         let height = (block.end_row - block.start_row + 1) as f32 * line_height;
+        if block.selected {
+            let block_bounds =
+                Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, height));
+            window.paint_quad(fill(block_bounds, colors.text_accent.opacity(0.08)));
+            window.paint_quad(gpui::outline(
+                block_bounds,
+                colors.text_accent.opacity(0.6),
+                gpui::BorderStyle::Solid,
+            ));
+        }
         let stripe_color = match block.status {
             CommandBlockStatus::Failed => {
                 window.paint_quad(fill(
@@ -2156,6 +2245,11 @@ fn paint_command_blocks(
             }
             CommandBlockStatus::Running => Some(colors.text_accent.opacity(0.7)),
             CommandBlockStatus::Idle | CommandBlockStatus::Succeeded => None,
+        };
+        let stripe_color = if block.selected {
+            Some(colors.text_accent)
+        } else {
+            stripe_color
         };
         if let Some(stripe_color) = stripe_color {
             window.paint_quad(fill(
@@ -3270,9 +3364,11 @@ mod tests {
 
         // Everything fits on screen.
         assert_eq!(
-            command_block_decorations(&blocks, 0, 0, 20, 12),
+            command_block_decorations(&blocks, 0, 0, 20, 12, Some(1)),
             vec![
                 CommandBlockDecoration {
+                    index: 0,
+                    selected: false,
                     start_row: 0,
                     end_row: 2,
                     separator: false,
@@ -3280,6 +3376,8 @@ mod tests {
                     label: None,
                 },
                 CommandBlockDecoration {
+                    index: 1,
+                    selected: true,
                     start_row: 3,
                     end_row: 9,
                     separator: true,
@@ -3287,6 +3385,8 @@ mod tests {
                     label: Some("exit 5".to_string()),
                 },
                 CommandBlockDecoration {
+                    index: 2,
+                    selected: false,
                     start_row: 10,
                     end_row: 12,
                     separator: true,
@@ -3298,8 +3398,10 @@ mod tests {
 
         // 5 lines of history, viewport at the bottom: lines 5..10 are rows 0..5.
         assert_eq!(
-            command_block_decorations(&blocks, 5, 0, 5, 9),
+            command_block_decorations(&blocks, 5, 0, 5, 9, None),
             vec![CommandBlockDecoration {
+                index: 1,
+                selected: false,
                 start_row: 0,
                 end_row: 4,
                 separator: false,

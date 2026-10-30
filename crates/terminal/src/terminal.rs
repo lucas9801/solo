@@ -68,6 +68,7 @@ use crate::alacritty::{
     AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
     append_text_to_term, apply_config, clear_saved_screen, content_text, display_offset,
     display_only_term_config, find_from_terminal_point, full_content_range, last_non_empty_lines,
+    lines_text,
     make_content, new_term, open_pty, pty_options, pty_term_config, resize, screen_lines,
     scroll_display, scroll_to_point, search_matches, selection_text, set_default_cursor_style,
     set_selection as set_term_selection, shrink_to_used, spawn_event_loop,
@@ -1743,6 +1744,59 @@ impl Terminal {
     /// Solo's shell integration.
     pub fn shell_integration(&self) -> &ShellIntegration {
         &self.shell_integration
+    }
+
+    /// The command line of the command block at `ix`, as reported by the shell
+    /// or, failing that, read from its input row (which includes the prompt).
+    pub fn command_block_command(&self, ix: usize) -> Option<String> {
+        let block = self.shell_integration.blocks().get(ix)?;
+        if let Some(command) = &block.command {
+            return Some(command.clone());
+        }
+        let input_line = block.input_line?;
+        let last_input_line = block
+            .output_line
+            .map_or(input_line, |line| line.saturating_sub(1).max(input_line));
+        Some(lines_text(&self.term.lock(), input_line..=last_input_line))
+    }
+
+    /// The output of the command block at `ix`, if the command ran.
+    pub fn command_block_output(&self, ix: usize) -> Option<String> {
+        let blocks = self.shell_integration.blocks();
+        let block = blocks.get(ix)?;
+        let output_line = block.output_line?;
+        let last_line = match blocks.get(ix + 1) {
+            Some(next) => next.prompt_line.checked_sub(1)?,
+            None => {
+                let history_size = self
+                    .last_content
+                    .total_lines
+                    .saturating_sub(self.last_content.screen_lines);
+                block
+                    .end_line
+                    .unwrap_or((history_size as i32 + self.last_content.cursor.point.line).max(0) as usize)
+            }
+        };
+        if last_line < output_line {
+            return Some(String::new());
+        }
+        Some(lines_text(&self.term.lock(), output_line..=last_line))
+    }
+
+    /// Scrolls so that `line`, counted from the top of the scrollback, is on
+    /// screen, putting it at the top if it isn't already visible.
+    pub fn scroll_to_line(&mut self, line: usize) {
+        let content = &self.last_content;
+        let history_size = content.total_lines.saturating_sub(content.screen_lines);
+        let first_visible = history_size.saturating_sub(content.display_offset);
+        let last_visible = first_visible + content.screen_lines.saturating_sub(1);
+        if (first_visible..=last_visible).contains(&line) {
+            return;
+        }
+        let target_offset = history_size.saturating_sub(line);
+        let delta = target_offset as i32 - content.display_offset as i32;
+        self.events
+            .push_back(InternalEvent::Scroll(Scroll::Delta(delta)));
     }
 
     pub fn selection_started(&self) -> bool {

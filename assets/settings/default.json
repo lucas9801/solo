@@ -2164,8 +2164,8 @@
     //           "custom": 2
     //         },
     "line_height": "standard",
-    // Load Solo's shell integration into supported shells (currently
-    // PowerShell) that run without custom arguments. It marks each command so
+    // Load Solo's shell integration into supported shells (PowerShell and
+    // bash) that run without custom arguments. It marks each command so
     // the terminal can show command blocks.
     "shell_integration": true,
     // Activate the python virtual environment, if one is found, in the
@@ -2243,6 +2243,10 @@
     // Most terminal themes have APCA values of 40-70.
     // A value of 45 preserves colorful themes while ensuring legibility.
     "minimum_contrast": 45,
+    // Open files in the editor when they change on disk while a command runs in
+    // the focused terminal, e.g. files edited by an AI agent. Needs shell
+    // integration to know when a command runs.
+    "open_changed_files": true,
     // Regexes used to identify paths for hyperlink navigation. Supports optional named capture
     // groups `path`, `line`, `column`, and `link`. If none of these are present, the entire match
     // is the hyperlink target. If `path` is present, it is the hyperlink target, along with `line`

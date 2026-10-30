@@ -78,6 +78,8 @@ pub enum ShellMark {
     CommandFinished { exit_code: Option<i32> },
     /// `OSC 7 ; file://host/path`: the shell's working directory, as a URI.
     WorkingDirectory(String),
+    /// `OSC 633 ; E ; command_line`: the command line about to run, unescaped.
+    CommandLine(String),
 }
 
 impl Debug for Event {

@@ -5,14 +5,15 @@
 //! The marks are forwarded by the vendored `alacritty_terminal` as
 //! [`AlacShellMark`]s, each with the scrollback row it arrived on.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use alacritty_terminal::event::ShellMark as AlacShellMark;
 use base64::Engine as _;
-use util::shell::{Shell, ShellKind};
+use util::shell::Shell;
 
 const POWERSHELL_SCRIPT: &str = include_str!("shell_integration/powershell.ps1");
+const BASH_SCRIPT: &str = include_str!("shell_integration/bash.sh");
 
 /// Upper bound on remembered blocks; older ones have scrolled out of history anyway.
 const MAX_BLOCKS: usize = 10_000;
@@ -30,19 +31,45 @@ pub fn integrate_shell(shell: Shell, program: &str, is_windows: bool) -> Shell {
         Shell::Program(program) => program.as_str(),
         Shell::WithArguments { .. } => return shell,
     };
-    match ShellKind::new(program, is_windows) {
-        ShellKind::PowerShell | ShellKind::Pwsh => Shell::WithArguments {
-            program: program.to_string(),
-            args: vec![
-                "-NoLogo".to_string(),
-                "-NoExit".to_string(),
-                "-EncodedCommand".to_string(),
-                powershell_encoded_command(POWERSHELL_SCRIPT),
-            ],
-            title_override: None,
-        },
-        _ => shell,
+    let stem = Path::new(program)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_lowercase());
+    let args = match stem.as_deref() {
+        Some("powershell" | "pwsh") => vec![
+            "-NoLogo".to_string(),
+            "-NoExit".to_string(),
+            "-EncodedCommand".to_string(),
+            powershell_encoded_command(POWERSHELL_SCRIPT),
+        ],
+        // The bash.exe in System32 runs WSL, which can't read the script's path.
+        Some("bash") if !(is_windows && program.to_lowercase().contains("system32")) => {
+            match write_bash_script() {
+                Ok(path) => vec!["--rcfile".to_string(), path, "-i".to_string()],
+                Err(error) => {
+                    log::warn!("failed to write the bash shell integration script: {error}");
+                    return shell;
+                }
+            }
+        }
+        _ => return shell,
+    };
+    Shell::WithArguments {
+        program: program.to_string(),
+        args,
+        title_override: None,
     }
+}
+
+/// bash only loads an rc file from disk, so the script goes to the temp dir.
+fn write_bash_script() -> std::io::Result<String> {
+    let dir = std::env::temp_dir().join("solo-shell-integration");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("bash-integration.sh");
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(BASH_SCRIPT) {
+        std::fs::write(&path, BASH_SCRIPT)?;
+    }
+    // Forward slashes work both natively and in Git Bash on Windows.
+    Ok(path.to_string_lossy().replace('\\', "/"))
 }
 
 /// `-EncodedCommand` takes base64 of the script's UTF-16LE bytes.
@@ -66,6 +93,8 @@ pub struct CommandBlock {
     /// Row the cursor was on when the command finished (OSC 133 D).
     pub end_line: Option<usize>,
     pub exit_code: Option<i32>,
+    /// The command line, if the shell reported it (OSC 633 E).
+    pub command: Option<String>,
     /// Working directory the shell reported before this prompt.
     pub working_directory: Option<PathBuf>,
     pub started_at: Option<Instant>,
@@ -80,6 +109,7 @@ impl CommandBlock {
             output_line: None,
             end_line: None,
             exit_code: None,
+            command: None,
             working_directory,
             started_at: None,
             finished_at: None,
@@ -140,6 +170,11 @@ impl ShellIntegration {
                     if block.started_at.is_none() {
                         block.started_at = block.finished_at;
                     }
+                }
+            }
+            AlacShellMark::CommandLine(command) => {
+                if let Some(block) = self.blocks.last_mut() {
+                    block.command = Some(command);
                 }
             }
             AlacShellMark::WorkingDirectory(uri) => {
@@ -211,12 +246,19 @@ mod tests {
     }
 
     #[test]
-    fn integrates_only_powershell_without_user_args() {
+    fn integrates_supported_shells_without_user_args() {
         let shell = integrate_shell(Shell::System, "powershell.exe", true);
         assert!(matches!(shell, Shell::WithArguments { ref args, .. } if args.len() == 4));
 
         let shell = integrate_shell(Shell::Program("bash".into()), "bash", false);
-        assert_eq!(shell, Shell::Program("bash".into()));
+        assert!(
+            matches!(shell, Shell::WithArguments { ref args, .. } if args[0] == "--rcfile")
+        );
+
+        for unsupported in ["zsh", "wsl.exe", r"C:\Windows\System32\bash.exe"] {
+            let shell = Shell::Program(unsupported.into());
+            assert_eq!(integrate_shell(shell.clone(), unsupported, true), shell);
+        }
 
         let user_shell = Shell::WithArguments {
             program: "pwsh".into(),

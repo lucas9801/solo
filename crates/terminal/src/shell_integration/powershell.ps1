@@ -56,7 +56,14 @@ if (Get-Command PSConsoleHostReadLine -ErrorAction SilentlyContinue) {
     function Global:PSConsoleHostReadLine {
         $line = & $Global:__SoloOriginalReadLine
         $Global:__SoloCommandExecuted = $true
-        [Console]::Write("$([char]27)]133;C$([char]7)")
+        # OSC 633 E escaping: backslash doubled, ';' and control characters as \xAB.
+        $escaped = [System.Text.StringBuilder]::new()
+        foreach ($char in "$line".ToCharArray()) {
+            if ($char -eq '\') { [void]$escaped.Append('\\') }
+            elseif ($char -eq ';' -or [int]$char -lt 0x20) { [void]$escaped.Append(('\x{0:x2}' -f [int]$char)) }
+            else { [void]$escaped.Append($char) }
+        }
+        [Console]::Write("$([char]27)]633;E;$escaped$([char]7)$([char]27)]133;C$([char]7)")
         $line
     }
 }

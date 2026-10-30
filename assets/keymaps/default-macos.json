@@ -1431,6 +1431,22 @@
     },
   },
   {
+    // SOLO: shell integration command blocks
+    "context": "Terminal && screen == normal",
+    "bindings": {
+      "cmd-up": "terminal::SelectPreviousCommandBlock",
+      "cmd-down": "terminal::SelectNextCommandBlock",
+    },
+  },
+  {
+    "context": "Terminal && command_block_selected",
+    "bindings": {
+      "escape": "terminal::ClearCommandBlockSelection",
+      "cmd-c": "terminal::CopyCommandBlock",
+      "cmd-alt-c": "terminal::CopyCommandBlockOutput",
+    },
+  },
+  {
     "context": "AgentPanel > Terminal",
     "use_key_equivalents": true,
     "bindings": {
