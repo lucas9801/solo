@@ -1,0 +1,62 @@
+# Solo shell integration for PowerShell.
+#
+# Marks each prompt and command with OSC 133 (A: prompt start, B: command input
+# start, C: command executed, D;<exit code>: command finished) and reports the
+# working directory with OSC 7, so the terminal can split its output into
+# command blocks. Loaded after the user's profile, so it wraps their prompt.
+
+if ($Global:__SoloShellIntegration) { return }
+$Global:__SoloShellIntegration = $true
+$Global:__SoloCommandExecuted = $false
+$Global:__SoloFirstPrompt = $true
+$Global:__SoloOriginalPrompt = $function:prompt
+
+function Global:prompt {
+    $succeeded = $Global:?
+    $lastExitCode = $Global:LASTEXITCODE
+    $esc = [char]27
+    $bel = [char]7
+    $marks = ""
+
+    # Without PSReadLine there is no C mark; a new history entry still means a
+    # command ran.
+    # The first prompt follows startup (profile and this script), not a command.
+    $lastHistory = Get-History -Count 1
+    if ($Global:__SoloFirstPrompt) {
+        $Global:__SoloFirstPrompt = $false
+        $Global:__SoloCommandExecuted = $false
+        $Global:__SoloLastHistoryId = $lastHistory.Id
+    } elseif ($lastHistory -and $lastHistory.Id -ne $Global:__SoloLastHistoryId) {
+        $Global:__SoloCommandExecuted = $true
+        $Global:__SoloLastHistoryId = $lastHistory.Id
+    }
+
+    if ($Global:__SoloCommandExecuted) {
+        $Global:__SoloCommandExecuted = $false
+        $exitCode = if ($succeeded) { 0 } elseif ($lastExitCode -is [int] -and $lastExitCode -ne 0) { $lastExitCode } else { 1 }
+        $marks += "$esc]133;D;$exitCode$bel"
+    }
+
+    $location = $ExecutionContext.SessionState.Path.CurrentLocation
+    if ($location.Provider.Name -eq "FileSystem") {
+        $path = $location.ProviderPath -replace "\\", "/"
+        if (-not $path.StartsWith("/")) { $path = "/$path" }
+        $marks += "$esc]7;file://$env:COMPUTERNAME$([System.Uri]::EscapeUriString($path))$bel"
+    }
+
+    $marks += "$esc]133;A$bel"
+    $userPrompt = if ($Global:__SoloOriginalPrompt) { & $Global:__SoloOriginalPrompt } else { "PS $($location.Path)> " }
+    # The user's prompt may run native commands; keep the command's exit code.
+    $Global:LASTEXITCODE = $lastExitCode
+    "$marks$userPrompt$esc]133;B$bel"
+}
+
+if (Get-Command PSConsoleHostReadLine -ErrorAction SilentlyContinue) {
+    $Global:__SoloOriginalReadLine = $function:PSConsoleHostReadLine
+    function Global:PSConsoleHostReadLine {
+        $line = & $Global:__SoloOriginalReadLine
+        $Global:__SoloCommandExecuted = $true
+        [Console]::Write("$([char]27)]133;C$([char]7)")
+        $line
+    }
+}

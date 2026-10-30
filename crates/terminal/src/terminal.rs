@@ -2,6 +2,7 @@ mod mappings;
 
 mod alacritty;
 mod pty_info;
+pub mod shell_integration;
 pub mod terminal_settings;
 
 #[cfg(not(windows))]
@@ -26,6 +27,7 @@ use async_channel::{Receiver, Sender};
 use collections::{HashMap, VecDeque};
 use futures::StreamExt;
 use pty_info::{ProcessIdGetter, PtyProcessInfo};
+use shell_integration::ShellIntegration;
 use serde::{Deserialize, Serialize};
 use settings::Settings;
 use task::{HideStrategy, Shell, ShellKind, SpawnInTerminal};
@@ -736,6 +738,8 @@ pub(crate) enum TerminalBackendEvent {
     Bell,
     Exit,
     ChildExit(ExitStatus),
+    /// A shell integration mark and the scrollback row it arrived on.
+    ShellMark(alacritty_terminal::event::ShellMark, usize),
 }
 
 impl fmt::Debug for TerminalBackendEvent {
@@ -754,6 +758,7 @@ impl fmt::Debug for TerminalBackendEvent {
             Self::Bell => f.write_str("Bell"),
             Self::Exit => f.write_str("Exit"),
             Self::ChildExit(status) => write!(f, "ChildExit({status})"),
+            Self::ShellMark(mark, line) => write!(f, "ShellMark({mark:?}, {line})"),
         }
     }
 }
@@ -1076,6 +1081,7 @@ impl TerminalBuilder {
             event_loop_task: Task::ready(Ok(())),
             background_executor: background_executor.clone(),
             path_style,
+            shell_integration: ShellIntegration::default(),
             cwd_history: Vec::new(),
             pending_cwd_boundary: None,
             #[cfg(any(test, feature = "test-support"))]
@@ -1364,6 +1370,7 @@ impl TerminalBuilder {
                 init_command_startup_marker: None,
                 init_command_startup_tx: None,
                 event_loop_task: Task::ready(Ok(())),
+                shell_integration: ShellIntegration::default(),
                 background_executor,
                 path_style,
                 cwd_history: if is_remote_terminal {
@@ -1563,6 +1570,7 @@ pub struct Terminal {
     event_loop_task: Task<Result<(), anyhow::Error>>,
     background_executor: BackgroundExecutor,
     path_style: PathStyle,
+    shell_integration: ShellIntegration,
     cwd_history: Vec<CwdHistoryEntry>,
     pending_cwd_boundary: Option<i32>,
     #[cfg(any(test, feature = "test-support"))]
@@ -1723,7 +1731,18 @@ impl Terminal {
             TerminalBackendEvent::ChildExit(exit_status) => {
                 self.register_task_finished(Some(exit_status), cx);
             }
+            TerminalBackendEvent::ShellMark(mark, line) => {
+                log::debug!("shell integration mark {mark:?} at line {line}");
+                self.shell_integration.handle_mark(mark, line);
+                cx.notify();
+            }
         }
+    }
+
+    /// Command blocks and working directory reported by the shell, if it runs
+    /// Solo's shell integration.
+    pub fn shell_integration(&self) -> &ShellIntegration {
+        &self.shell_integration
     }
 
     pub fn selection_started(&self) -> bool {

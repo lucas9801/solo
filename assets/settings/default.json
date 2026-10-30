@@ -2164,6 +2164,10 @@
     //           "custom": 2
     //         },
     "line_height": "standard",
+    // Load Solo's shell integration into supported shells (currently
+    // PowerShell) that run without custom arguments. It marks each command so
+    // the terminal can show command blocks.
+    "shell_integration": true,
     // Activate the python virtual environment, if one is found, in the
     // terminal's working directory (as resolved by the working_directory
     // setting). Set this to "off" to disable this behavior.

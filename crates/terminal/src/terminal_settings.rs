@@ -43,6 +43,7 @@ pub struct TerminalSettings {
     pub default_width: Pixels,
     pub default_height: Pixels,
     pub detect_venv: VenvSettings,
+    pub shell_integration: bool,
     pub max_scroll_history_lines: Option<usize>,
     pub scroll_multiplier: f32,
     pub toolbar: Toolbar,
@@ -115,6 +116,7 @@ impl settings::Settings for TerminalSettings {
             default_height: user_content.default_height.unwrap().into_gpui(),
             flexible: user_content.flexible.unwrap(),
             detect_venv: project_content.detect_venv.unwrap(),
+            shell_integration: project_content.shell_integration.unwrap(),
             scroll_multiplier: user_content.scroll_multiplier.unwrap(),
             max_scroll_history_lines: user_content.max_scroll_history_lines,
             toolbar: Toolbar {

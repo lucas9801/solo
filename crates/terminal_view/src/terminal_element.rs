@@ -16,7 +16,7 @@ use terminal::{
     Cell, Color, Content, CursorShape, IndexedCell, Modes, MouseInputMode, NamedColor, Point,
     Range, Terminal, TerminalBounds,
     is_app_chosen_exact_color as terminal_is_app_chosen_exact_color, is_default_background_color,
-    terminal_settings::TerminalSettings,
+    shell_integration::CommandBlock, terminal_settings::TerminalSettings,
 };
 use theme::{ActiveTheme, Theme};
 use theme_settings::ThemeSettings;
@@ -46,6 +46,67 @@ pub struct LayoutState {
     block_below_cursor_element: Option<AnyElement>,
     base_text_style: TextStyle,
     content_mode: ContentMode,
+    command_blocks: Vec<CommandBlockDecoration>,
+}
+
+/// SOLO: how a shell integration command block is drawn, in viewport rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandBlockDecoration {
+    /// First visible row of the block.
+    start_row: i32,
+    /// Last visible row of the block, inclusive.
+    end_row: i32,
+    /// Draw a separator above `start_row`; only when the block's prompt is visible.
+    separator: bool,
+    status: CommandBlockStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandBlockStatus {
+    Idle,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+/// Maps command blocks, whose lines count from the top of the scrollback, to
+/// the rows currently on screen.
+fn command_block_decorations(
+    blocks: &[CommandBlock],
+    history_size: usize,
+    display_offset: usize,
+    screen_lines: usize,
+    cursor_line: usize,
+) -> Vec<CommandBlockDecoration> {
+    let first_visible = history_size.saturating_sub(display_offset);
+    let last_visible = first_visible + screen_lines.saturating_sub(1);
+    let to_row = |line: usize| (line - first_visible) as i32;
+
+    let mut decorations = Vec::new();
+    for (ix, block) in blocks.iter().enumerate() {
+        let start = block.prompt_line;
+        let end = match blocks.get(ix + 1) {
+            Some(next) => next.prompt_line.saturating_sub(1).max(start),
+            None => block.end_line.unwrap_or(cursor_line).max(start),
+        };
+        if end < first_visible || start > last_visible {
+            continue;
+        }
+        let status = match (block.exit_code, block.end_line, block.output_line) {
+            (Some(0), _, _) => CommandBlockStatus::Succeeded,
+            (Some(_), _, _) => CommandBlockStatus::Failed,
+            (None, Some(_), _) => CommandBlockStatus::Succeeded,
+            (None, None, Some(_)) => CommandBlockStatus::Running,
+            (None, None, None) => CommandBlockStatus::Idle,
+        };
+        decorations.push(CommandBlockDecoration {
+            start_row: to_row(start.max(first_visible)),
+            end_row: to_row(end.min(last_visible)),
+            separator: start > 0 && start >= first_visible,
+            status,
+        });
+    }
+    decorations
 }
 
 /// Helper struct for converting terminal cursor points to displayed cursor points.
@@ -1390,6 +1451,24 @@ impl Element for TerminalElement {
 
                 let content_mode = self.terminal_view.read(cx).content_mode(window, cx);
 
+                let command_blocks = {
+                    let terminal = self.terminal.read(cx);
+                    let content = &terminal.last_content;
+                    if content.mode.contains(Modes::ALT_SCREEN) {
+                        Vec::new()
+                    } else {
+                        let history_size =
+                            content.total_lines.saturating_sub(content.screen_lines);
+                        command_block_decorations(
+                            terminal.shell_integration().blocks(),
+                            history_size,
+                            content.display_offset,
+                            content.screen_lines,
+                            (history_size as i32 + content.cursor.point.line).max(0) as usize,
+                        )
+                    }
+                };
+
                 // Calculate the intersection of the terminal's bounds with the current
                 // content mask (the visible viewport after all parent clipping).
                 // This allows us to only render cells that are actually visible, which is
@@ -1565,6 +1644,7 @@ impl Element for TerminalElement {
                     block_below_cursor_element,
                     base_text_style: text_style,
                     content_mode,
+                    command_blocks,
                 }
             },
         )
@@ -1644,6 +1724,8 @@ impl Element for TerminalElement {
                             });
                         }
                     });
+
+                    paint_command_blocks(&layout.command_blocks, bounds, origin, layout, window, cx);
 
                     for rect in &layout.rects {
                         rect.paint(origin, &layout.dimensions, window);
@@ -2001,6 +2083,52 @@ pub fn convert_color(fg: &Color, theme: &Theme) -> Hsla {
         Color::Spec(rgb) => terminal::rgba_color(rgb.r, rgb.g, rgb.b),
         // 8 bit, indexed colors
         Color::Indexed(i) => terminal::get_color_at_index(*i as usize, theme),
+    }
+}
+
+/// SOLO: paints Warp-style command blocks: a separator above each prompt, a tint
+/// over failed commands, and a status stripe in the left gutter.
+fn paint_command_blocks(
+    blocks: &[CommandBlockDecoration],
+    bounds: Bounds<Pixels>,
+    origin: GpuiPoint<Pixels>,
+    layout: &LayoutState,
+    window: &mut Window,
+    cx: &App,
+) {
+    if blocks.is_empty() {
+        return;
+    }
+    let colors = cx.theme().colors();
+    let status = cx.theme().status();
+    let line_height = layout.dimensions.line_height;
+    let stripe_width = px(3.);
+    for block in blocks {
+        let top = origin.y + block.start_row as f32 * line_height;
+        let height = (block.end_row - block.start_row + 1) as f32 * line_height;
+        let stripe_color = match block.status {
+            CommandBlockStatus::Failed => {
+                window.paint_quad(fill(
+                    Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, height)),
+                    status.error.opacity(0.08),
+                ));
+                Some(status.error)
+            }
+            CommandBlockStatus::Running => Some(colors.text_accent.opacity(0.7)),
+            CommandBlockStatus::Idle | CommandBlockStatus::Succeeded => None,
+        };
+        if let Some(stripe_color) = stripe_color {
+            window.paint_quad(fill(
+                Bounds::new(point(bounds.origin.x, top), size(stripe_width, height)),
+                stripe_color,
+            ));
+        }
+        if block.separator {
+            window.paint_quad(fill(
+                Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, px(1.))),
+                colors.border_variant,
+            ));
+        }
     }
 }
 
@@ -3031,5 +3159,60 @@ mod tests {
         // Negative: lines -7, -6, -5, -4
         assert_eq!(negative_filtered.first().unwrap().point.line, -7);
         assert_eq!(negative_filtered.last().unwrap().point.line, -4);
+    }
+
+    fn command_block(prompt_line: usize, exit_code: Option<i32>, finished: bool) -> CommandBlock {
+        let mut block = CommandBlock::new(prompt_line, None);
+        block.output_line = Some(prompt_line + 1);
+        block.exit_code = exit_code;
+        if finished {
+            block.end_line = Some(prompt_line + 2);
+        }
+        block
+    }
+
+    #[test]
+    fn test_command_block_decorations() {
+        let blocks = vec![
+            command_block(0, Some(0), true),
+            command_block(3, Some(5), true),
+            command_block(10, None, false),
+        ];
+
+        // Everything fits on screen.
+        assert_eq!(
+            command_block_decorations(&blocks, 0, 0, 20, 12),
+            vec![
+                CommandBlockDecoration {
+                    start_row: 0,
+                    end_row: 2,
+                    separator: false,
+                    status: CommandBlockStatus::Succeeded,
+                },
+                CommandBlockDecoration {
+                    start_row: 3,
+                    end_row: 9,
+                    separator: true,
+                    status: CommandBlockStatus::Failed,
+                },
+                CommandBlockDecoration {
+                    start_row: 10,
+                    end_row: 12,
+                    separator: true,
+                    status: CommandBlockStatus::Running,
+                },
+            ]
+        );
+
+        // 5 lines of history, viewport at the bottom: lines 5..10 are rows 0..5.
+        assert_eq!(
+            command_block_decorations(&blocks, 5, 0, 5, 9),
+            vec![CommandBlockDecoration {
+                start_row: 0,
+                end_row: 4,
+                separator: false,
+                status: CommandBlockStatus::Failed,
+            }]
+        );
     }
 }

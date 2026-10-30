@@ -439,6 +439,14 @@ impl Project {
                                 };
                                 create_remote_shell(spawn_command, env, path, remote_client, cx)?
                             }
+                            None if settings.shell_integration => (
+                                terminal::shell_integration::integrate_shell(
+                                    settings.shell,
+                                    &shell_program,
+                                    path_style.is_windows(),
+                                ),
+                                env,
+                            ),
                             None => (settings.shell, env),
                         }
                     };

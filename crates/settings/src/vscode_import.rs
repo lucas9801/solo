@@ -1014,6 +1014,7 @@ impl VsCodeSettings {
             working_directory: None,
             env,
             detect_venv: None,
+            shell_integration: self.read_bool("terminal.integrated.shellIntegration.enabled"),
             path_hyperlink_regexes: None,
             path_hyperlink_timeout_ms: None,
         }

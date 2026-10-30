@@ -28,6 +28,12 @@ pub struct ProjectTerminalSettingsContent {
     ///
     /// Default: on
     pub detect_venv: Option<VenvSettings>,
+    /// Whether to load Solo's shell integration into supported shells
+    /// (currently PowerShell) that run without custom arguments. It marks each
+    /// command so the terminal can show command blocks.
+    ///
+    /// Default: true
+    pub shell_integration: Option<bool>,
     /// Regexes used to identify paths for hyperlink navigation.
     ///
     /// Default:
