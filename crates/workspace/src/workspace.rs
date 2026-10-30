@@ -1596,6 +1596,7 @@ pub struct Workspace {
     /// Share of the width the terminal takes beside the editor in the terminal-first layout.
     terminal_first_split: f32,
     _save_terminal_first_split: Task<()>,
+    _focus_terminal_after_modal: Option<Subscription>,
     pub(crate) modal_layer: Entity<ModalLayer>,
     toast_layer: Entity<ToastLayer>,
     titlebar_item: Option<AnyView>,
@@ -2109,8 +2110,11 @@ impl Workspace {
                 .log_err()
                 .flatten()
                 .and_then(|split| split.parse::<f32>().ok())
-                .map_or(DEFAULT_TERMINAL_FIRST_SPLIT, |split| split.clamp(0.15, 0.85)),
+                .map_or(DEFAULT_TERMINAL_FIRST_SPLIT, |split| {
+                    split.clamp(0.15, 0.85)
+                }),
             _save_terminal_first_split: Task::ready(()),
+            _focus_terminal_after_modal: None,
             modal_layer,
             toast_layer,
             titlebar_item: None,
@@ -6206,6 +6210,15 @@ impl Workspace {
     ) {
         self.flush_deferred_saves(window, cx);
 
+        // SOLO: the terminal-first layout hides an empty editor, so focus meant
+        // for it (e.g. when a project opens) goes to the terminal instead.
+        if pane.read(cx).items_len() == 0
+            && self.center.panes().contains(&&pane)
+            && self.focus_terminal_if_editor_hidden(window, cx)
+        {
+            return;
+        }
+
         // This is explicitly hoisted out of the following check for pane identity as
         // terminal panel panes are not registered as a center panes.
         self.status_bar.update(cx, |status_bar, cx| {
@@ -9177,7 +9190,8 @@ impl Workspace {
                         MouseButton::Left,
                         cx.listener(|workspace, e: &gpui::MouseUpEvent, _, cx| {
                             if e.click_count == 2 {
-                                workspace.set_terminal_first_split(DEFAULT_TERMINAL_FIRST_SPLIT, cx);
+                                workspace
+                                    .set_terminal_first_split(DEFAULT_TERMINAL_FIRST_SPLIT, cx);
                             }
                         }),
                     )
@@ -9272,10 +9286,39 @@ impl Workspace {
         });
     }
 
-    fn focus_terminal_if_editor_hidden(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if WorkspaceSettings::get_global(cx).bottom_dock_layout != BottomDockLayout::TerminalFirst
-        {
+    /// SOLO: focuses the terminal once the first terminal of a newly opened
+    /// project appears, unless the user is already busy in an editor. A modal
+    /// (like the trust prompt for a new project) is waited out.
+    pub fn focus_terminal_if_unfocused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.has_active_modal(window, cx) {
+            self._focus_terminal_after_modal = Some(cx.observe_in(
+                &self.modal_layer,
+                window,
+                |this, modal_layer, window, cx| {
+                    if !modal_layer.read(cx).has_active_modal() {
+                        this._focus_terminal_after_modal = None;
+                        this.focus_terminal_if_unfocused(window, cx);
+                    }
+                },
+            ));
             return;
+        }
+        let editor_focused = self.center.panes().iter().any(|pane| {
+            pane.read(cx).items_len() > 0 && pane.focus_handle(cx).contains_focused(window, cx)
+        });
+        if !editor_focused {
+            self.focus_terminal_if_editor_hidden(window, cx);
+        }
+    }
+
+    /// Returns whether the terminal was focused.
+    fn focus_terminal_if_editor_hidden(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if WorkspaceSettings::get_global(cx).bottom_dock_layout != BottomDockLayout::TerminalFirst {
+            return false;
         }
         let editor_empty = self
             .center
@@ -9289,7 +9332,9 @@ impl Workspace {
         {
             let focus_handle = panel.activation_focus_handle(cx);
             window.focus(&focus_handle, cx);
+            return true;
         }
+        false
     }
 
     pub fn for_window(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
@@ -10377,13 +10422,13 @@ impl Render for Workspace {
                                                     cx,
                                                 ))),
                                         ),
-                                    BottomDockLayout::TerminalFirst => div().size_full().child(
-                                        self.render_terminal_first_layout(
+                                    BottomDockLayout::TerminalFirst => {
+                                        div().size_full().child(self.render_terminal_first_layout(
                                             &pane_render_context,
                                             window,
                                             cx,
-                                        ),
-                                    ),
+                                        ))
+                                    }
                                     BottomDockLayout::Contained => div()
                                         .flex()
                                         .flex_row()

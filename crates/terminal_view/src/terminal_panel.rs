@@ -14,8 +14,8 @@ use db::kvp::KeyValueStore;
 use futures::{channel::oneshot, future::join_all};
 use gpui::{
     Action, Anchor, App, AsyncApp, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Task, TaskExt, WeakEntity,
-    Window, actions,
+    Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Task, TaskExt,
+    WeakEntity, Window, actions,
 };
 use itertools::Itertools;
 use project::{Fs, Project};
@@ -475,7 +475,16 @@ impl TerminalPanel {
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.update(cx, |workspace, cx| {
                         item.added_to_pane(workspace, pane.clone(), window, cx)
-                    })
+                    });
+                    // SOLO: once the dock has opened for the new terminal.
+                    let workspace = workspace.downgrade();
+                    window.defer(cx, move |window, cx| {
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.focus_terminal_if_unfocused(window, cx)
+                            })
+                            .ok();
+                    });
                 }
                 self.serialize(cx);
             }

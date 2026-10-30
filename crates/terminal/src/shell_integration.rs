@@ -142,6 +142,21 @@ impl ShellIntegration {
         self.working_directory.as_ref()
     }
 
+    /// Moves every block's lines with `f`, after the grid's rows moved. Blocks
+    /// whose prompt has no new line are dropped.
+    pub(crate) fn remap_lines(&mut self, f: impl Fn(usize) -> Option<usize>) {
+        self.blocks.retain_mut(|block| {
+            let Some(prompt_line) = f(block.prompt_line) else {
+                return false;
+            };
+            block.prompt_line = prompt_line;
+            block.input_line = block.input_line.and_then(&f);
+            block.output_line = block.output_line.and_then(&f);
+            block.end_line = block.end_line.and_then(&f);
+            true
+        });
+    }
+
     pub(crate) fn handle_mark(&mut self, mark: AlacShellMark, line: usize) {
         match mark {
             AlacShellMark::PromptStart => {
@@ -251,9 +266,7 @@ mod tests {
         assert!(matches!(shell, Shell::WithArguments { ref args, .. } if args.len() == 4));
 
         let shell = integrate_shell(Shell::Program("bash".into()), "bash", false);
-        assert!(
-            matches!(shell, Shell::WithArguments { ref args, .. } if args[0] == "--rcfile")
-        );
+        assert!(matches!(shell, Shell::WithArguments { ref args, .. } if args[0] == "--rcfile"));
 
         for unsupported in ["zsh", "wsl.exe", r"C:\Windows\System32\bash.exe"] {
             let shell = Shell::Program(unsupported.into());

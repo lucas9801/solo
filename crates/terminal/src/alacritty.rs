@@ -958,6 +958,34 @@ pub(super) fn content_text(term: &Term<ZedListener>) -> String {
     term.bounds_to_string(start, end)
 }
 
+/// SOLO: for each row of the scrollback, counted from the top, the index of the
+/// logical line it belongs to. Wrapped rows share their line's index, so the
+/// indices survive reflowing the grid to a new width.
+pub(super) fn logical_lines(term: &Term<ZedListener>) -> Vec<usize> {
+    let grid = term.grid();
+    let last_column = term.last_column();
+    let mut logical_lines = Vec::with_capacity(term.total_lines());
+    let mut logical_line = 0;
+    for line in term.topmost_line().0..=term.bottommost_line().0 {
+        logical_lines.push(logical_line);
+        if !grid[Line(line)][last_column]
+            .flags
+            .contains(Flags::WRAPLINE)
+        {
+            logical_line += 1;
+        }
+    }
+    logical_lines
+}
+
+pub(super) fn grid_columns(term: &Term<ZedListener>) -> usize {
+    term.grid().columns()
+}
+
+pub(super) fn history_size(term: &Term<ZedListener>) -> usize {
+    term.grid().history_size()
+}
+
 /// SOLO: text of the given lines, counted from the top of the scrollback.
 pub(super) fn lines_text(term: &Term<ZedListener>, lines: RangeInclusive<usize>) -> String {
     let history_size = term.grid().history_size() as i32;
@@ -967,9 +995,12 @@ pub(super) fn lines_text(term: &Term<ZedListener>, lines: RangeInclusive<usize>)
     if start > end {
         return String::new();
     }
-    term.bounds_to_string(AlacPoint::new(start, Column(0)), AlacPoint::new(end, term.last_column()))
-        .trim_end()
-        .to_string()
+    term.bounds_to_string(
+        AlacPoint::new(start, Column(0)),
+        AlacPoint::new(end, term.last_column()),
+    )
+    .trim_end()
+    .to_string()
 }
 
 pub(super) fn total_lines(term: &Term<ZedListener>) -> usize {

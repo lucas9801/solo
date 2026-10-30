@@ -1570,8 +1570,7 @@ impl Element for TerminalElement {
                     if content.mode.contains(Modes::ALT_SCREEN) {
                         Vec::new()
                     } else {
-                        let history_size =
-                            content.total_lines.saturating_sub(content.screen_lines);
+                        let history_size = content.total_lines.saturating_sub(content.screen_lines);
                         command_block_decorations(
                             terminal.shell_integration().blocks(),
                             history_size,
@@ -1841,7 +1840,14 @@ impl Element for TerminalElement {
                         }
                     });
 
-                    paint_command_blocks(&layout.command_blocks, bounds, origin, layout, window, cx);
+                    paint_command_blocks(
+                        &layout.command_blocks,
+                        bounds,
+                        origin,
+                        layout,
+                        window,
+                        cx,
+                    );
                     Self::register_command_block_click(
                         command_block_view.clone(),
                         command_block_focus.clone(),
@@ -1885,7 +1891,22 @@ impl Element for TerminalElement {
                     for block_element_rect in &layout.block_element_rects {
                         block_element_rect.paint(origin, &layout.dimensions, window);
                     }
-                    paint_sticky_command_header(&layout.command_blocks, bounds, origin, layout, window, cx);
+                    paint_command_block_overlays(
+                        &layout.command_blocks,
+                        bounds,
+                        origin,
+                        layout,
+                        window,
+                        cx,
+                    );
+                    paint_sticky_command_header(
+                        &layout.command_blocks,
+                        bounds,
+                        origin,
+                        layout,
+                        window,
+                        cx,
+                    );
                     let text_paint_time = text_paint_start.elapsed();
 
                     if let Some(text_to_mark) = &marked_text_cloned
@@ -2233,15 +2254,10 @@ fn paint_command_blocks(
     for block in blocks {
         let top = origin.y + block.start_row as f32 * line_height;
         let height = (block.end_row - block.start_row + 1) as f32 * line_height;
+        let block_bounds =
+            Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, height));
         if block.selected {
-            let block_bounds =
-                Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, height));
             window.paint_quad(fill(block_bounds, colors.text_accent.opacity(0.08)));
-            window.paint_quad(gpui::outline(
-                block_bounds,
-                colors.text_accent.opacity(0.6),
-                gpui::BorderStyle::Solid,
-            ));
         }
         let stripe_color = match block.status {
             CommandBlockStatus::Failed => {
@@ -2271,12 +2287,38 @@ fn paint_command_blocks(
                 colors.border_variant,
             ));
         }
+    }
+}
+
+/// SOLO: paints what goes on top of the terminal text: each block's label at
+/// the end of its prompt row and the selection outline.
+fn paint_command_block_overlays(
+    blocks: &[CommandBlockDecoration],
+    bounds: Bounds<Pixels>,
+    origin: GpuiPoint<Pixels>,
+    layout: &LayoutState,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let theme = cx.theme().clone();
+    let colors = theme.colors();
+    let status = theme.status();
+    let line_height = layout.dimensions.line_height;
+    for block in blocks {
+        let top = origin.y + block.start_row as f32 * line_height;
+        let height = (block.end_row - block.start_row + 1) as f32 * line_height;
+        let block_bounds =
+            Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, height));
         if let Some(label) = block.label.as_ref().filter(|_| block.prompt_visible) {
             let color = match block.status {
                 CommandBlockStatus::Failed => status.error,
                 _ => colors.text_muted,
             };
-            let font_size = layout.base_text_style.font_size.to_pixels(window.rem_size()) * 0.85;
+            let font_size = layout
+                .base_text_style
+                .font_size
+                .to_pixels(window.rem_size())
+                * 0.85;
             let shaped = window.text_system().shape_line(
                 label.clone().into(),
                 font_size,
@@ -2290,27 +2332,42 @@ fn paint_command_blocks(
             );
             let padding = layout.dimensions.cell_width;
             let x = bounds.right() - shaped.width - padding;
-            if x <= bounds.origin.x + padding {
-                continue;
+            if x > bounds.origin.x + padding {
+                // Keep the label legible over any prompt text underneath it.
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(x - padding / 2., top + px(1.)),
+                        size(shaped.width + padding, line_height - px(1.)),
+                    ),
+                    layout.background_color,
+                ));
+                if block.status == CommandBlockStatus::Failed {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(x - padding / 2., top + px(1.)),
+                            size(shaped.width + padding, line_height - px(1.)),
+                        ),
+                        status.error.opacity(0.08),
+                    ));
+                }
+                shaped
+                    .paint(
+                        point(x, top),
+                        line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .log_err();
             }
-            // Keep the label legible over any prompt text underneath it.
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(x - padding / 2., top + px(1.)),
-                    size(shaped.width + padding, line_height - px(1.)),
-                ),
-                layout.background_color,
+        }
+        if block.selected {
+            window.paint_quad(gpui::outline(
+                block_bounds,
+                colors.text_accent.opacity(0.6),
+                gpui::BorderStyle::Solid,
             ));
-            shaped
-                .paint(
-                    point(x, top),
-                    line_height,
-                    gpui::TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                )
-                .log_err();
         }
     }
 }
@@ -2347,7 +2404,10 @@ fn paint_sticky_command_header(
         colors.border_variant,
     ));
 
-    let font_size = layout.base_text_style.font_size.to_pixels(window.rem_size());
+    let font_size = layout
+        .base_text_style
+        .font_size
+        .to_pixels(window.rem_size());
     let text = format!("$ {}", command.lines().next().unwrap_or_default());
     let runs = [TextRun {
         len: text.len(),
@@ -2376,7 +2436,14 @@ fn paint_sticky_command_header(
         .shape_line(text.into(), font_size, &runs, None);
     let x = layout.dimensions.bounds.origin.x;
     shaped_command
-        .paint(point(x, origin.y), line_height, gpui::TextAlign::Left, None, window, cx)
+        .paint(
+            point(x, origin.y),
+            line_height,
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        )
         .log_err();
     let label_x = bounds.right() - shaped_label.width - layout.dimensions.cell_width;
     if label_x > x + shaped_command.width {

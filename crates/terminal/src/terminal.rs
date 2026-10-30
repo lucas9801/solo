@@ -27,9 +27,9 @@ use async_channel::{Receiver, Sender};
 use collections::{HashMap, VecDeque};
 use futures::StreamExt;
 use pty_info::{ProcessIdGetter, PtyProcessInfo};
-use shell_integration::ShellIntegration;
 use serde::{Deserialize, Serialize};
 use settings::Settings;
+use shell_integration::ShellIntegration;
 use task::{HideStrategy, Shell, ShellKind, SpawnInTerminal};
 use terminal_settings::{AlternateScroll, CursorShape as SettingsCursorShape, TerminalSettings};
 use theme::{ActiveTheme, Theme};
@@ -67,14 +67,13 @@ use crate::alacritty::{
     AlacrittyCell, AlacrittyGridIterator, AlacrittyHyperlink, AlacrittySearch, AlacrittyTerm,
     AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
     append_text_to_term, apply_config, clear_saved_screen, content_text, display_offset,
-    display_only_term_config, find_from_terminal_point, full_content_range, last_non_empty_lines,
-    lines_text,
-    make_content, new_term, open_pty, pty_options, pty_term_config, resize, screen_lines,
-    scroll_display, scroll_to_point, search_matches, selection_text, set_default_cursor_style,
-    set_selection as set_term_selection, shrink_to_used, spawn_event_loop,
-    toggle_vi_mode as toggle_term_vi_mode, total_lines, update_selection as update_term_selection,
-    update_selection_to_vi_cursor, update_vi_cursor_for_scroll, used_lines, vi_goto_point,
-    vi_motion,
+    display_only_term_config, find_from_terminal_point, full_content_range, grid_columns,
+    history_size, last_non_empty_lines, lines_text, logical_lines, make_content, new_term,
+    open_pty, pty_options, pty_term_config, resize, screen_lines, scroll_display, scroll_to_point,
+    search_matches, selection_text, set_default_cursor_style, set_selection as set_term_selection,
+    shrink_to_used, spawn_event_loop, toggle_vi_mode as toggle_term_vi_mode, total_lines,
+    update_selection as update_term_selection, update_selection_to_vi_cursor,
+    update_vi_cursor_for_scroll, used_lines, vi_goto_point, vi_motion,
 };
 use crate::mappings::colors::to_vte_rgb;
 use crate::mappings::keys::to_esc_str;
@@ -1772,9 +1771,9 @@ impl Terminal {
                     .last_content
                     .total_lines
                     .saturating_sub(self.last_content.screen_lines);
-                block
-                    .end_line
-                    .unwrap_or((history_size as i32 + self.last_content.cursor.point.line).max(0) as usize)
+                block.end_line.unwrap_or(
+                    (history_size as i32 + self.last_content.cursor.point.line).max(0) as usize,
+                )
             }
         };
         if last_line < output_line {
@@ -1815,8 +1814,9 @@ impl Terminal {
                 let new_bounds = normalize_terminal_bounds(new_bounds);
                 trace!("Resizing: new_bounds={new_bounds:?}");
 
-                let columns_changed =
-                    self.last_content.terminal_bounds.num_columns() != new_bounds.num_columns();
+                // SOLO: `set_size` already stored the new bounds in `last_content`,
+                // so compare against the grid itself.
+                let columns_changed = grid_columns(term) != new_bounds.num_columns();
                 self.last_content.terminal_bounds = new_bounds;
 
                 if let TerminalType::Pty {
@@ -1827,7 +1827,19 @@ impl Terminal {
                     pty_tx.resize(new_bounds);
                 }
 
+                // SOLO: reflowing changes which rows hold the command blocks.
+                let logical_lines_before = (columns_changed && self.shell_integration.is_active())
+                    .then(|| logical_lines(term));
                 resize(term, new_bounds);
+                if let Some(before) = logical_lines_before {
+                    let after = logical_lines(term);
+                    self.shell_integration.remap_lines(|line| {
+                        Some(match before.get(line) {
+                            Some(logical) => after.partition_point(|l| l < logical),
+                            None => line - before.len() + after.len(),
+                        })
+                    });
+                }
                 if columns_changed {
                     self.reset_cwd_history();
                 }
@@ -1840,7 +1852,10 @@ impl Terminal {
             }
             InternalEvent::Clear => {
                 trace!("Clearing");
+                let cleared_lines = history_size(term);
                 clear_saved_screen(term);
+                self.shell_integration
+                    .remap_lines(|line| line.checked_sub(cleared_lines));
                 self.reset_cwd_history();
                 cx.emit(Event::Wakeup);
             }
@@ -3155,10 +3170,14 @@ impl Terminal {
                                 .unwrap_or_default();
 
                             let argv = fpi.argv.as_slice();
+                            // SOLO: hide the arguments that load shell integration.
+                            let integrated_shell = argv.iter().any(|arg| {
+                                arg == "-EncodedCommand" || arg.contains("solo-shell-integration")
+                            });
                             let process_name = format!(
                                 "{}{}",
                                 fpi.name,
-                                if !argv.is_empty() {
+                                if !argv.is_empty() && !integrated_shell {
                                     format!(" {}", (argv[1..]).join(" "))
                                 } else {
                                     "".to_string()
@@ -6533,5 +6552,57 @@ mod tests {
 
         assert!(terminal.cwd_history.is_empty());
         assert_eq!(terminal.pending_cwd_boundary, None);
+    }
+
+    #[gpui::test]
+    async fn test_command_blocks_follow_reflow(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let bounds_with_columns = |columns: f32| TerminalBounds {
+            cell_width: Pixels::from(10.),
+            line_height: Pixels::from(10.),
+            bounds: bounds(
+                GpuiPoint::default(),
+                size(Pixels::from(columns * 10.), Pixels::from(100.)),
+            ),
+        };
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.set_size(bounds_with_columns(20.));
+            terminal.sync(window, cx);
+        });
+
+        // A command with a 30 character output line, then the next prompt.
+        let mut output = Vec::new();
+        output.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07echo\r\n");
+        output.extend_from_slice(b"\x1b]633;E;echo\x07\x1b]133;C\x07");
+        output.extend_from_slice(b"aaaaaaaaaabbbbbbbbbbcccccccccc\r\n");
+        output.extend_from_slice(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(&output, cx));
+        cx.run_until_parked();
+
+        let prompt_text = |terminal: &Terminal, ix: usize| {
+            let line = terminal.shell_integration.blocks()[ix].prompt_line;
+            lines_text(&terminal.term.lock(), line..=line)
+        };
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.sync(window, cx);
+            let blocks = terminal.shell_integration.blocks();
+            assert_eq!(blocks.len(), 2);
+            assert_eq!(blocks[0].command.as_deref(), Some("echo"));
+            assert_eq!(blocks[0].exit_code, Some(0));
+            // The output wraps onto two rows at 20 columns.
+            assert_eq!(blocks[1].prompt_line, 3);
+            assert_eq!(prompt_text(terminal, 1), "$");
+
+            // At 10 columns the output takes three rows; the block follows, and
+            // copying the output joins the wrapped rows again.
+            terminal.set_size(bounds_with_columns(10.));
+            terminal.sync(window, cx);
+            assert_eq!(terminal.shell_integration.blocks()[1].prompt_line, 4);
+            assert_eq!(prompt_text(terminal, 1), "$");
+            assert_eq!(
+                terminal.command_block_output(0).as_deref(),
+                Some("aaaaaaaaaabbbbbbbbbbcccccccccc")
+            );
+        });
     }
 }

@@ -394,7 +394,8 @@ pub struct PanelButtons {
 }
 
 fn terminal_first_layout(cx: &App) -> bool {
-    WorkspaceSettings::get_global(cx).bottom_dock_layout == settings::BottomDockLayout::TerminalFirst
+    WorkspaceSettings::get_global(cx).bottom_dock_layout
+        == settings::BottomDockLayout::TerminalFirst
 }
 
 pub(crate) const PANEL_SIZE_STATE_KEY: &str = "dock_panel_size";

@@ -85,11 +85,12 @@ fn changed_files(
         })
         .filter_map(|(path, entry_id, _)| {
             let entry = worktree.entry_for_id(*entry_id)?;
-            (entry.is_file() && !entry.is_ignored && !entry.is_hidden && !entry.is_private)
-                .then(|| ProjectPath {
+            (entry.is_file() && !entry.is_ignored && !entry.is_hidden && !entry.is_private).then(
+                || ProjectPath {
                     worktree_id,
                     path: path.clone(),
-                })
+                },
+            )
         })
         .take(MAX_OPENED)
         .collect()

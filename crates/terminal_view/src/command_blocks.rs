@@ -51,7 +51,11 @@ pub(crate) fn next_block(blocks: &[CommandBlock], selected: Option<usize>) -> Op
 }
 
 /// Formats a command block for pasting into an AI prompt.
-pub(crate) fn command_block_markdown(command: &str, output: &str, exit_code: Option<i32>) -> String {
+pub(crate) fn command_block_markdown(
+    command: &str,
+    output: &str,
+    exit_code: Option<i32>,
+) -> String {
     let mut markdown = format!("```\n$ {command}\n");
     if !output.is_empty() {
         markdown.push_str(output);
@@ -255,7 +259,12 @@ mod tests {
     #[test]
     fn test_block_navigation() {
         // Startup prompt, two commands, current prompt.
-        let blocks = vec![block(0, false), block(1, true), block(5, true), block(8, false)];
+        let blocks = vec![
+            block(0, false),
+            block(1, true),
+            block(5, true),
+            block(8, false),
+        ];
         assert_eq!(previous_block(&blocks, None), Some(2));
         assert_eq!(previous_block(&blocks, Some(2)), Some(1));
         assert_eq!(previous_block(&blocks, Some(1)), Some(1));
