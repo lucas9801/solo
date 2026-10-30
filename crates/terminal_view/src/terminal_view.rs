@@ -1517,6 +1517,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::copy_command_block_command))
             .on_action(cx.listener(TerminalView::copy_command_block_output))
             .on_action(cx.listener(TerminalView::copy_command_block))
+            .on_action(cx.listener(TerminalView::rerun_command_block))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 MouseButton::Right,

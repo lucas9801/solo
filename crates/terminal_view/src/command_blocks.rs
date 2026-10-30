@@ -23,6 +23,8 @@ actions!(
         /// Copies the command and output of the selected (or last) command
         /// block as Markdown, ready to paste into a prompt.
         CopyCommandBlock,
+        /// Runs the command of the selected command block again.
+        RerunCommandBlock,
     ]
 );
 
@@ -192,6 +194,28 @@ impl TerminalView {
         if let Some(output) = self.terminal.read(cx).command_block_output(ix) {
             cx.write_to_clipboard(ClipboardItem::new_string(output));
         }
+    }
+
+    pub(crate) fn rerun_command_block(
+        &mut self,
+        _: &RerunCommandBlock,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // While a command runs, the input would go to it rather than the shell.
+        if self.read_only || self.command_running(cx) {
+            return;
+        }
+        let Some(ix) = self.selected_command_block else {
+            return;
+        };
+        let Some(command) = self.terminal.read(cx).command_block_command(ix) else {
+            return;
+        };
+        self.select_command_block(None, cx);
+        self.terminal.update(cx, |terminal, _| {
+            terminal.input(format!("{command}\r").into_bytes());
+        });
     }
 
     pub(crate) fn copy_command_block(

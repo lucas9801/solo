@@ -62,8 +62,12 @@ struct CommandBlockDecoration {
     /// Draw a separator above `start_row`; only when the block's prompt is visible.
     separator: bool,
     status: CommandBlockStatus,
-    /// Summary drawn at the right end of the prompt row, when it is visible.
+    /// Summary of the command: duration, exit code.
     label: Option<String>,
+    /// Whether the prompt row is on screen; the label is drawn at its end.
+    prompt_visible: bool,
+    /// The command line, pinned to the top while scrolled into its output.
+    sticky_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,8 +152,9 @@ fn command_block_decorations(
             (None, None, Some(_)) => CommandBlockStatus::Running,
             (None, None, None) => CommandBlockStatus::Idle,
         };
-        let label = (start >= first_visible)
-            .then(|| command_block_label(block, status))
+        let prompt_visible = start >= first_visible;
+        let sticky_command = (!prompt_visible && end > first_visible)
+            .then(|| block.command.clone())
             .flatten();
         decorations.push(CommandBlockDecoration {
             index: ix,
@@ -158,7 +163,9 @@ fn command_block_decorations(
             end_row: to_row(end.min(last_visible)),
             separator: start > 0 && start >= first_visible,
             status,
-            label,
+            label: command_block_label(block, status),
+            prompt_visible,
+            sticky_command,
         });
     }
     decorations
@@ -1878,6 +1885,7 @@ impl Element for TerminalElement {
                     for block_element_rect in &layout.block_element_rects {
                         block_element_rect.paint(origin, &layout.dimensions, window);
                     }
+                    paint_sticky_command_header(&layout.command_blocks, bounds, origin, layout, window, cx);
                     let text_paint_time = text_paint_start.elapsed();
 
                     if let Some(text_to_mark) = &marked_text_cloned
@@ -2263,7 +2271,7 @@ fn paint_command_blocks(
                 colors.border_variant,
             ));
         }
-        if let Some(label) = &block.label {
+        if let Some(label) = block.label.as_ref().filter(|_| block.prompt_visible) {
             let color = match block.status {
                 CommandBlockStatus::Failed => status.error,
                 _ => colors.text_muted,
@@ -2304,6 +2312,84 @@ fn paint_command_blocks(
                 )
                 .log_err();
         }
+    }
+}
+
+/// SOLO: while scrolled into a command's output, pins its command line to the
+/// top of the terminal, like a sticky header.
+fn paint_sticky_command_header(
+    blocks: &[CommandBlockDecoration],
+    bounds: Bounds<Pixels>,
+    origin: GpuiPoint<Pixels>,
+    layout: &LayoutState,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some((block, command)) = blocks.iter().find_map(|block| {
+        let command = block.sticky_command.as_ref()?;
+        (block.start_row == 0).then_some((block, command))
+    }) else {
+        return;
+    };
+    let theme = cx.theme().clone();
+    let colors = theme.colors();
+    let line_height = layout.dimensions.line_height;
+    let header_bounds = Bounds::new(
+        point(bounds.origin.x, origin.y),
+        size(bounds.size.width, line_height),
+    );
+    window.paint_quad(fill(header_bounds, colors.elevated_surface_background));
+    window.paint_quad(fill(
+        Bounds::new(
+            point(bounds.origin.x, origin.y + line_height - px(1.)),
+            size(bounds.size.width, px(1.)),
+        ),
+        colors.border_variant,
+    ));
+
+    let font_size = layout.base_text_style.font_size.to_pixels(window.rem_size());
+    let text = format!("$ {}", command.lines().next().unwrap_or_default());
+    let runs = [TextRun {
+        len: text.len(),
+        font: layout.base_text_style.font(),
+        color: colors.text,
+        ..Default::default()
+    }];
+    let label_color = match block.status {
+        CommandBlockStatus::Failed => theme.status().error,
+        _ => colors.text_muted,
+    };
+    let label = block.label.clone().unwrap_or_default();
+    let shaped_label = window.text_system().shape_line(
+        label.clone().into(),
+        font_size * 0.85,
+        &[TextRun {
+            len: label.len(),
+            font: layout.base_text_style.font(),
+            color: label_color,
+            ..Default::default()
+        }],
+        None,
+    );
+    let shaped_command = window
+        .text_system()
+        .shape_line(text.into(), font_size, &runs, None);
+    let x = layout.dimensions.bounds.origin.x;
+    shaped_command
+        .paint(point(x, origin.y), line_height, gpui::TextAlign::Left, None, window, cx)
+        .log_err();
+    let label_x = bounds.right() - shaped_label.width - layout.dimensions.cell_width;
+    if label_x > x + shaped_command.width {
+        shaped_label
+            .paint(
+                point(label_x, origin.y),
+                line_height,
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            )
+            .log_err();
     }
 }
 
@@ -3356,11 +3442,12 @@ mod tests {
 
     #[test]
     fn test_command_block_decorations() {
-        let blocks = vec![
+        let mut blocks = vec![
             command_block(0, Some(0), true),
             command_block(3, Some(5), true),
             command_block(10, None, false),
         ];
+        blocks[1].command = Some("make".to_string());
 
         // Everything fits on screen.
         assert_eq!(
@@ -3374,6 +3461,8 @@ mod tests {
                     separator: false,
                     status: CommandBlockStatus::Succeeded,
                     label: None,
+                    prompt_visible: true,
+                    sticky_command: None,
                 },
                 CommandBlockDecoration {
                     index: 1,
@@ -3383,6 +3472,8 @@ mod tests {
                     separator: true,
                     status: CommandBlockStatus::Failed,
                     label: Some("exit 5".to_string()),
+                    prompt_visible: true,
+                    sticky_command: None,
                 },
                 CommandBlockDecoration {
                     index: 2,
@@ -3392,6 +3483,8 @@ mod tests {
                     separator: true,
                     status: CommandBlockStatus::Running,
                     label: Some("running".to_string()),
+                    prompt_visible: true,
+                    sticky_command: None,
                 },
             ]
         );
@@ -3406,7 +3499,9 @@ mod tests {
                 end_row: 4,
                 separator: false,
                 status: CommandBlockStatus::Failed,
-                label: None,
+                label: Some("exit 5".to_string()),
+                prompt_visible: false,
+                sticky_command: Some("make".to_string()),
             }]
         );
     }

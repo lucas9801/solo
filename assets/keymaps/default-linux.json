@@ -1375,6 +1375,7 @@
     "context": "Terminal && command_block_selected",
     "bindings": {
       "escape": "terminal::ClearCommandBlockSelection",
+      "enter": "terminal::RerunCommandBlock",
       "ctrl-c": "terminal::CopyCommandBlock",
       "ctrl-alt-c": "terminal::CopyCommandBlockOutput",
     },
