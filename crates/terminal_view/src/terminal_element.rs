@@ -1149,12 +1149,18 @@ impl TerminalElement {
             let terminal = self.terminal.clone();
             let hitbox = hitbox.clone();
             let focus = focus.clone();
+            let terminal_view = terminal_view.clone();
             move |e: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
 
-                if e.pressed_button.is_some() && !cx.has_active_drag() && focus.is_focused(window) {
+                // SOLO: or in the input editor, which takes focus on mouse down.
+                if e.pressed_button.is_some()
+                    && !cx.has_active_drag()
+                    && (focus.contains_focused(window, cx)
+                        || terminal_view.read(cx).input_focused(window, cx))
+                {
                     let hovered = hitbox.is_hovered(window);
 
                     let scroll_top = terminal_view.read(cx).scroll_top;
@@ -1187,8 +1193,11 @@ impl TerminalElement {
             self.interactivity.on_mouse_up(button, {
                 let terminal = terminal.clone();
                 let focus = focus.clone();
+                let terminal_view = terminal_view.clone();
                 move |event, window, cx| {
-                    if !focus.is_focused(window) {
+                    if !focus.contains_focused(window, cx)
+                        && !terminal_view.read(cx).input_focused(window, cx)
+                    {
                         return;
                     }
                     if button != MouseButton::Left
@@ -1507,7 +1516,9 @@ impl Element for TerminalElement {
                     terminal.set_size(dimensions);
                     terminal.sync(window, cx);
 
-                    if window.modifiers().secondary(cx)
+                    let links_active = window.modifiers().secondary(cx)
+                        || TerminalSettings::get_global(cx).open_links_on_click;
+                    if links_active
                         && bounds.contains(&window.mouse_position())
                         && let Some(registered_hover) = self.terminal_view.read(cx).hover.as_ref()
                     {
@@ -1803,7 +1814,9 @@ impl Element for TerminalElement {
                 mouse_input_mode,
                 window,
             );
-            if window.modifiers().secondary(cx)
+            let links_active = window.modifiers().secondary(cx)
+                || TerminalSettings::get_global(cx).open_links_on_click;
+            if links_active
                 && bounds.contains(&window.mouse_position())
                 && self.terminal_view.read(cx).hover.is_some()
             {

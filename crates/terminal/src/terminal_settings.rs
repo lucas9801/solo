@@ -57,6 +57,7 @@ pub struct TerminalSettings {
     pub input_editor: bool,
     pub compact_prompt: bool,
     pub completions_as_you_type: bool,
+    pub open_links_on_click: bool,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -134,6 +135,7 @@ impl settings::Settings for TerminalSettings {
             input_editor: user_content.input_editor.unwrap(),
             compact_prompt: user_content.compact_prompt.unwrap(),
             completions_as_you_type: user_content.completions_as_you_type.unwrap(),
+            open_links_on_click: user_content.open_links_on_click.unwrap(),
             path_hyperlink_regexes: project_content
                 .path_hyperlink_regexes
                 .unwrap()

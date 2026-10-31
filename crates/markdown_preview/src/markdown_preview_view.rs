@@ -4788,6 +4788,17 @@ mod tests {
         cx.update(|cx| {
             cx.set_global(db::AppDatabase::test_new());
             let state = AppState::test(cx);
+            use gpui::BorrowAppContext as _;
+            // SOLO: Solo opens Markdown in the preview by default; these tests
+            // start from upstream's default and opt in where they need it.
+            cx.update_global(|store: &mut settings::SettingsStore, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .markdown_preview
+                        .get_or_insert_default()
+                        .open_markdown_files_in_preview = Some(false);
+                });
+            });
             editor::init(cx);
             crate::init(cx);
             state

@@ -2696,8 +2696,9 @@ impl Terminal {
         position: GpuiPoint<Pixels>,
         cx: &mut Context<Self>,
     ) {
+        // SOLO: with `open_links_on_click`, links are found without ctrl/cmd.
         if self.selection_phase == SelectionPhase::Selecting
-            || !modifiers.secondary(cx)
+            || !(modifiers.secondary(cx) || TerminalSettings::get_global(cx).open_links_on_click)
             || !self.last_content.terminal_bounds.bounds.contains(&position)
         {
             self.clear_hyperlink(cx);
@@ -2965,7 +2966,15 @@ impl Terminal {
                     .and_then(|cell| cell.hyperlink())
                 {
                     cx.open_url(link.uri());
-                } else if e.modifiers.secondary(cx) {
+                } else if e.modifiers.secondary(cx)
+                    || (setting.open_links_on_click
+                        && e.click_count <= 1
+                        && !e.modifiers.shift
+                        && self.mouse_down_position.is_some_and(|down| {
+                            (down.x - e.position.x).abs() + (down.y - e.position.y).abs() < px(4.)
+                        }))
+                {
+                    // SOLO: a plain click (not a drag or double click) opens links too.
                     self.events
                         .push_back(InternalEvent::FindHyperlink(position, true));
                 }
@@ -5926,6 +5935,15 @@ mod tests {
             cx: &mut TestAppContext,
         ) -> (TestEntities, HoveredWord, &mut VisualTestContext) {
             let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+            // SOLO: these tests cover the ctrl/cmd hover behavior.
+            cx.update(|_, cx| {
+                use gpui::BorrowAppContext as _;
+                cx.update_global(|store: &mut settings::SettingsStore, cx| {
+                    store.update_user_settings(cx, |settings| {
+                        settings.terminal.get_or_insert_default().open_links_on_click = Some(false);
+                    });
+                });
+            });
             let test_view = cx.new_window_entity(|window, cx| TestView::new(&terminal, window, cx));
             let test_entities = TestEntities::new(&terminal, &test_view);
             let expected_hovered_word: HoveredWord = (ZED_DEV_STR, (0, 6)..=(0, 21), 0).into();

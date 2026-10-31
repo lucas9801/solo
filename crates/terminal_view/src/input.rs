@@ -664,6 +664,12 @@ impl Render for TerminalInput {
 }
 
 impl TerminalView {
+    pub(crate) fn input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.input
+            .as_ref()
+            .is_some_and(|input| input.read(cx).is_focused(window, cx))
+    }
+
     /// Returns the input editor when it should show: the shell loaded Solo's
     /// integration and isn't running a full screen program. Also moves focus
     /// between the input and the terminal as commands start and finish.

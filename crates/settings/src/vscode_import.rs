@@ -980,6 +980,7 @@ impl VsCodeSettings {
             input_editor: None,
             compact_prompt: None,
             completions_as_you_type: None,
+            open_links_on_click: None,
             option_as_meta: self.read_bool("terminal.integrated.macOptionIsMeta"),
             project: self.project_terminal_settings_content(),
             scrollbar: None,
