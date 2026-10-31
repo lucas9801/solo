@@ -1157,6 +1157,13 @@ codegen-units = 1
 [profile.release.package]
 zed = { codegen-units = 16 }
 
+# SOLO: what Solo ships: optimized like release, but quicker to build and
+# without debug info.
+[profile.solo-dist]
+inherits = "release"
+debug = false
+codegen-units = 16
+
 [profile.release-fast]
 inherits = "release"
 debug = "full"

@@ -326,6 +326,14 @@ pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
         .map(|channel| channel.poll_for_updates())
         .unwrap_or(false)
     {
+        // SOLO: say why nothing happens instead of silently ignoring the check.
+        drop(window.prompt(
+            gpui::PromptLevel::Info,
+            "Solo doesn't update itself",
+            Some("Build or download a newer version of Solo to update."),
+            &["OK"],
+            cx,
+        ));
         return;
     }
 

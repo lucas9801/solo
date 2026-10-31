@@ -44,10 +44,12 @@ pub static RELEASE_CHANNEL: LazyLock<ReleaseChannel> =
 #[cfg(target_os = "windows")]
 pub fn app_identifier() -> &'static str {
     match *RELEASE_CHANNEL {
-        ReleaseChannel::Dev => "Zed-Editor-Dev",
-        ReleaseChannel::Nightly => "Zed-Editor-Nightly",
-        ReleaseChannel::Preview => "Zed-Editor-Preview",
-        ReleaseChannel::Stable => "Zed-Editor-Stable",
+        // SOLO: its own single-instance mutex and pipe, so opening Solo never
+        // hands off to a running Zed or the other way around.
+        ReleaseChannel::Dev => "Solo-Terminal-Dev",
+        ReleaseChannel::Nightly => "Solo-Terminal-Nightly",
+        ReleaseChannel::Preview => "Solo-Terminal-Preview",
+        ReleaseChannel::Stable => "Solo-Terminal-Stable",
     }
 }
 
@@ -199,16 +201,17 @@ impl ReleaseChannel {
 
     /// Returns whether we want to poll for updates for this [`ReleaseChannel`]
     pub fn poll_for_updates(&self) -> bool {
-        !matches!(self, ReleaseChannel::Dev)
+        // SOLO: updates come from Zed's servers and would replace Solo with Zed.
+        false
     }
 
     /// Returns the display name for this [`ReleaseChannel`].
     pub fn display_name(&self) -> &'static str {
         match self {
-            ReleaseChannel::Dev => "Zed Dev",
-            ReleaseChannel::Nightly => "Zed Nightly",
-            ReleaseChannel::Preview => "Zed Preview",
-            ReleaseChannel::Stable => "Zed",
+            ReleaseChannel::Dev => "Solo Dev",
+            ReleaseChannel::Nightly => "Solo Nightly",
+            ReleaseChannel::Preview => "Solo Preview",
+            ReleaseChannel::Stable => "Solo",
         }
     }
 
@@ -227,10 +230,10 @@ impl ReleaseChannel {
     /// This also has to match the bundle identifier for Zed on macOS.
     pub fn app_id(&self) -> &'static str {
         match self {
-            ReleaseChannel::Dev => "dev.zed.Zed-Dev",
-            ReleaseChannel::Nightly => "dev.zed.Zed-Nightly",
-            ReleaseChannel::Preview => "dev.zed.Zed-Preview",
-            ReleaseChannel::Stable => "dev.zed.Zed",
+            ReleaseChannel::Dev => "dev.solo.Solo-Dev",
+            ReleaseChannel::Nightly => "dev.solo.Solo-Nightly",
+            ReleaseChannel::Preview => "dev.solo.Solo-Preview",
+            ReleaseChannel::Stable => "dev.solo.Solo",
         }
     }
 
