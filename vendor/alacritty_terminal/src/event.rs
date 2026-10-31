@@ -57,6 +57,10 @@ pub enum Event {
     /// Child process exited.
     ChildExit(ExitStatus),
 
+    /// SOLO: A program asked for a desktop notification, with `OSC 9 ; body`
+    /// (iTerm2) or `OSC 777 ; notify ; title ; body` (urxvt).
+    Notification { title: Option<String>, body: String },
+
     /// SOLO: The shell reported a shell integration mark.
     ShellMark {
         mark: ShellMark,
@@ -101,6 +105,7 @@ impl Debug for Event {
             Event::Exit => write!(f, "Exit"),
             Event::ChildExit(status) => write!(f, "ChildExit({status:?})"),
             Event::ShellMark { mark, line } => write!(f, "ShellMark({mark:?}, {line})"),
+            Event::Notification { title, body } => write!(f, "Notification({title:?}, {body:?})"),
         }
     }
 }

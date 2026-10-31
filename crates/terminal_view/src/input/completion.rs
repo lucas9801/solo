@@ -280,7 +280,7 @@ fn posix_shell_for_windows() -> Option<PathBuf> {
 
 /// Runs `command` and returns its stdout, or `None` if it fails or takes
 /// longer than `timeout`.
-fn run_with_timeout(mut command: Command, timeout: Duration) -> Option<String> {
+pub(super) fn run_with_timeout(mut command: Command, timeout: Duration) -> Option<String> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -1,4 +1,5 @@
 pub mod command_blocks;
+mod command_notifications;
 pub mod input;
 mod persistence;
 pub mod terminal_element;
@@ -6,6 +7,9 @@ pub mod terminal_panel;
 mod terminal_path_like_target;
 pub mod terminal_scrollbar;
 
+use command_blocks::{
+    CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput, SendCommandBlockToAgent,
+};
 use editor::{
     Editor, EditorSettings, actions::SelectAll, blink_manager::BlinkManager,
     ui_scrollbar_settings_from_raw,
@@ -16,6 +20,7 @@ use gpui::{
     MouseDownEvent, Pixels, Point as GpuiPoint, Rems, Render, ScrollEvent, Styled, Subscription,
     Task, TaskExt, WeakEntity, actions, anchored, deferred, div,
 };
+use input::TerminalInput;
 use menu;
 use persistence::TerminalDb;
 use project::{Project, ProjectEntryId, search::SearchQuery};
@@ -41,10 +46,6 @@ use terminal::{
     TerminalBounds, ToggleViMode,
     terminal_settings::{CursorShape, TerminalSettings},
 };
-use command_blocks::{
-    CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput, SendCommandBlockToAgent,
-};
-use input::TerminalInput;
 use terminal_element::TerminalElement;
 use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
@@ -113,6 +114,7 @@ pub struct RenameTerminal;
 
 pub fn init(cx: &mut App) {
     terminal_panel::init(cx);
+    command_notifications::init(cx);
 
     register_serializable_item::<TerminalView>(cx);
 
@@ -1273,6 +1275,7 @@ fn subscribe_for_terminal_events(
                 }
 
                 Event::Bell => {
+                    terminal_view.notify_agent_bell(window, cx);
                     terminal_view.has_bell = true;
                     if let TerminalBell::System = TerminalSettings::get_global(cx).bell {
                         window.play_system_bell();
@@ -1348,6 +1351,10 @@ fn subscribe_for_terminal_events(
                     }
                 }
 
+                Event::CommandFinished => terminal_view.notify_command_finished(window, cx),
+                Event::Notification { title, body } => {
+                    terminal_view.notify_from_program(title.clone(), body.clone(), window, cx)
+                }
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
                     MaybeNavigationTarget::Url(url) => cx.open_url(url),
                     MaybeNavigationTarget::PathLike(path_like_target) => open_path_like_target(
@@ -1605,8 +1612,7 @@ impl Render for TerminalView {
                                         self.workspace.clone(),
                                         self.focus_handle.clone(),
                                         focused,
-                                        self.should_show_cursor(focused, cx)
-                                            && !input_at_prompt,
+                                        self.should_show_cursor(focused, cx) && !input_at_prompt,
                                         self.block_below_cursor.clone(),
                                         self.mode.clone(),
                                     )),
@@ -3754,5 +3760,54 @@ mod tests {
                 text
             );
         });
+    }
+
+    #[gpui::test]
+    async fn test_program_notification_while_in_background(cx: &mut TestAppContext) {
+        let (project, workspace) = init_test(cx).await;
+        let terminal = cx.new(|cx| {
+            terminal::TerminalBuilder::new_display_only(
+                Default::default(),
+                settings::AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                util::paths::PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        let (_view, cx) = cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal.clone(),
+                workspace.downgrade(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+
+        // Solo sets this at startup; without it no notification is shown.
+        cx.update(|_, cx| cx.set_app_identity("Solo-Terminal-Test", "Solo"));
+
+        // In the foreground, programs' notifications aren't shown.
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| window.is_window_active()));
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"\x1b]9;first\x07", cx)
+        });
+        cx.run_until_parked();
+        assert!(cx.shown_system_notifications().is_empty());
+
+        cx.deactivate_window();
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"\x1b]777;notify;Claude Code;Done\x07", cx)
+        });
+        cx.run_until_parked();
+        let shown = cx.shown_system_notifications();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].title.as_ref(), "Claude Code");
+        assert_eq!(shown[0].body.as_ref(), "Done");
     }
 }

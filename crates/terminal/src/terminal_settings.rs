@@ -58,6 +58,8 @@ pub struct TerminalSettings {
     pub compact_prompt: bool,
     pub completions_as_you_type: bool,
     pub open_links_on_click: bool,
+    pub notify_long_commands_after_seconds: u64,
+    pub program_notifications: bool,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -136,6 +138,10 @@ impl settings::Settings for TerminalSettings {
             compact_prompt: user_content.compact_prompt.unwrap(),
             completions_as_you_type: user_content.completions_as_you_type.unwrap(),
             open_links_on_click: user_content.open_links_on_click.unwrap(),
+            notify_long_commands_after_seconds: user_content
+                .notify_long_commands_after_seconds
+                .unwrap(),
+            program_notifications: user_content.program_notifications.unwrap(),
             path_hyperlink_regexes: project_content
                 .path_hyperlink_regexes
                 .unwrap()

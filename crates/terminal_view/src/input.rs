@@ -6,6 +6,7 @@
 //! Enter sends the command to the shell. While a command runs, keys go
 //! straight to it as usual.
 
+mod ai_command;
 mod completion;
 mod history;
 mod powershell;
@@ -84,6 +85,10 @@ pub struct TerminalInput {
     /// doesn't end the history walk.
     replacing_text: bool,
     git_branch: Option<(PathBuf, Option<String>)>,
+    /// A command being generated from a `#` request.
+    generating: Option<Task<()>>,
+    /// Why generating the last command failed.
+    generate_error: Option<String>,
     languages: Option<Arc<LanguageRegistry>>,
     _load_history: Task<()>,
     _load_language: Task<()>,
@@ -117,7 +122,11 @@ impl TerminalInput {
                 max_entries_visible: 12,
                 placement: Some(ContextMenuPlacement::Above),
             });
-            editor.set_placeholder_text("Type a command, Tab to complete", window, cx);
+            editor.set_placeholder_text(
+                "Type a command, Tab to complete, or # to ask AI for one",
+                window,
+                cx,
+            );
             editor.set_completion_provider(Some(Rc::new(ShellCompletionProvider {
                 terminal: terminal.downgrade(),
                 history: history.clone(),
@@ -140,6 +149,8 @@ impl TerminalInput {
             suggestion: None,
             replacing_text: false,
             git_branch: None,
+            generating: None,
+            generate_error: None,
             languages,
             _load_history: Task::ready(()),
             _load_language: Task::ready(()),
@@ -278,6 +289,13 @@ impl TerminalInput {
 
     fn submit(&mut self, _: &SubmitInput, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
+        // `# what to do` asks AI for a command instead of running the text.
+        if let Some(request) = text.trim_start().strip_prefix('#')
+            && !request.trim().is_empty()
+        {
+            self.generate_command(request.trim().to_string(), window, cx);
+            return;
+        }
         self.history.borrow_mut().push(text.clone());
         self.history.borrow_mut().reset_navigation();
         self.set_text("", window, cx);
@@ -289,6 +307,34 @@ impl TerminalInput {
         self.terminal
             .update(cx, |terminal, _| terminal.input(input.into_bytes()));
         cx.emit(TerminalInputEvent::Submitted);
+    }
+
+    fn generate_command(&mut self, request: String, window: &mut Window, cx: &mut Context<Self>) {
+        let integration = self.terminal.read(cx).shell_integration();
+        let shell = integration.shell().map(str::to_string);
+        let cwd = integration.working_directory().cloned();
+        self.history.borrow_mut().push(format!("# {request}"));
+        self.generate_error = None;
+        let generation = cx.background_spawn(async move {
+            ai_command::generate_command(&request, shell.as_deref(), cwd.as_deref())
+        });
+        self.generating = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = generation.await;
+            this.update_in(cx, |this, window, cx| {
+                this.generating = None;
+                match result {
+                    // Shown for review; Enter runs it.
+                    Ok(command) => {
+                        this.set_text(&command, window, cx);
+                        this.update_suggestion(cx);
+                    }
+                    Err(error) => this.generate_error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     fn history_previous(
@@ -630,6 +676,30 @@ impl Render for TerminalInput {
                             Label::new(format!("exit {code}"))
                                 .size(LabelSize::XSmall)
                                 .color(Color::Error),
+                        )
+                    })
+                    .when(self.generating.is_some(), |this| {
+                        this.child(
+                            h_flex()
+                                .gap_1()
+                                .child(
+                                    Icon::new(IconName::Sparkle)
+                                        .size(IconSize::XSmall)
+                                        .color(Color::Accent),
+                                )
+                                .child(
+                                    Label::new("Generating a command with Claude Code…")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Accent),
+                                ),
+                        )
+                    })
+                    .when_some(self.generate_error.clone(), |this, error| {
+                        this.child(
+                            Label::new(error)
+                                .size(LabelSize::XSmall)
+                                .color(Color::Error)
+                                .truncate(),
                         )
                     }),
             )

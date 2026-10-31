@@ -679,6 +679,13 @@ pub enum Event {
     SelectionsChanged,
     NewNavigationTarget(Option<MaybeNavigationTarget>),
     Open(MaybeNavigationTarget),
+    /// SOLO: a command marked by shell integration finished.
+    CommandFinished,
+    /// SOLO: a program asked for a desktop notification (OSC 9 or OSC 777).
+    Notification {
+        title: Option<String>,
+        body: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -740,6 +747,7 @@ pub(crate) enum TerminalBackendEvent {
     ChildExit(ExitStatus),
     /// A shell integration mark and the scrollback row it arrived on.
     ShellMark(alacritty_terminal::event::ShellMark, usize),
+    Notification(Option<String>, String),
 }
 
 impl fmt::Debug for TerminalBackendEvent {
@@ -759,6 +767,7 @@ impl fmt::Debug for TerminalBackendEvent {
             Self::Exit => f.write_str("Exit"),
             Self::ChildExit(status) => write!(f, "ChildExit({status})"),
             Self::ShellMark(mark, line) => write!(f, "ShellMark({mark:?}, {line})"),
+            Self::Notification(title, body) => write!(f, "Notification({title:?}, {body:?})"),
         }
     }
 }
@@ -1733,8 +1742,18 @@ impl Terminal {
             }
             TerminalBackendEvent::ShellMark(mark, line) => {
                 log::debug!("shell integration mark {mark:?} at line {line}");
+                let finished = matches!(
+                    mark,
+                    alacritty_terminal::event::ShellMark::CommandFinished { .. }
+                );
                 self.shell_integration.handle_mark(mark, line);
+                if finished {
+                    cx.emit(Event::CommandFinished);
+                }
                 cx.notify();
+            }
+            TerminalBackendEvent::Notification(title, body) => {
+                cx.emit(Event::Notification { title, body });
             }
         }
     }
@@ -5940,7 +5959,10 @@ mod tests {
                 use gpui::BorrowAppContext as _;
                 cx.update_global(|store: &mut settings::SettingsStore, cx| {
                     store.update_user_settings(cx, |settings| {
-                        settings.terminal.get_or_insert_default().open_links_on_click = Some(false);
+                        settings
+                            .terminal
+                            .get_or_insert_default()
+                            .open_links_on_click = Some(false);
                     });
                 });
             });
@@ -6622,5 +6644,38 @@ mod tests {
                 Some("aaaaaaaaaabbbbbbbbbbcccccccccc")
             );
         });
+    }
+
+    #[gpui::test]
+    async fn test_program_notifications(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let notifications = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let notifications = notifications.clone();
+            cx.subscribe(&terminal, move |_, event: &Event, _| {
+                if let Event::Notification { title, body } = event {
+                    notifications
+                        .borrow_mut()
+                        .push((title.clone(), body.clone()));
+                }
+            })
+            .detach();
+        });
+        // An iTerm2 notification, a ConEmu progress report (ignored), and a
+        // urxvt notification with a title.
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(
+                b"\x1b]9;Claude is done\x07\x1b]9;4;1;50\x07\x1b]777;notify;Build;Finished\x07",
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            *notifications.borrow(),
+            vec![
+                (None, "Claude is done".to_string()),
+                (Some("Build".to_string()), "Finished".to_string()),
+            ]
+        );
     }
 }

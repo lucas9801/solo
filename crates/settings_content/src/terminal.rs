@@ -270,6 +270,17 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub open_links_on_click: Option<bool>,
+    /// Show a desktop notification when a command that ran at least this many
+    /// seconds finishes while Solo is in the background. 0 turns it off.
+    ///
+    /// Default: 10
+    pub notify_long_commands_after_seconds: Option<u64>,
+    /// Whether programs in the terminal can show desktop notifications (with
+    /// OSC 9 or OSC 777) while Solo is in the background, e.g. Claude Code
+    /// when it finishes a turn.
+    ///
+    /// Default: true
+    pub program_notifications: Option<bool>,
 }
 
 crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
@@ -281,6 +292,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         default_width, default_height, max_scroll_history_lines, scroll_multiplier, toolbar,
         scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
         input_editor, compact_prompt, completions_as_you_type, open_links_on_click,
+        notify_long_commands_after_seconds, program_notifications,
     },
     defaults: {},
 });

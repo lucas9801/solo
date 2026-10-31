@@ -2262,6 +2262,13 @@
     // Underline file paths and URLs on hover and open them with a plain click
     // (files open in the editor), rather than only with ctrl/cmd held.
     "open_links_on_click": true,
+    // Show a desktop notification when a command that ran at least this many
+    // seconds finishes while Solo is in the background. 0 turns it off.
+    "notify_long_commands_after_seconds": 10,
+    // Let programs in the terminal show desktop notifications (OSC 9 or
+    // OSC 777) while Solo is in the background, e.g. Claude Code when it
+    // finishes a turn.
+    "program_notifications": true,
     // Regexes used to identify paths for hyperlink navigation. Supports optional named capture
     // groups `path`, `line`, `column`, and `link`. If none of these are present, the entire match
     // is the hyperlink target. If `path` is present, it is the hyperlink target, along with `line`

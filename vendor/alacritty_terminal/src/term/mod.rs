@@ -1879,6 +1879,28 @@ impl<T: EventListener> Handler for Term<T> {
     /// SOLO: Forward shell integration marks (OSC 133, OSC 7) with the cursor row.
     #[inline]
     fn unhandled_osc(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        // Notifications come from full screen programs too.
+        let text = |parts: &[&[u8]]| {
+            parts.iter().map(|part| String::from_utf8_lossy(part)).collect::<Vec<_>>().join(";")
+        };
+        match params {
+            // `OSC 9 ; 4 ; ...` is ConEmu's progress report, not a notification.
+            [b"9", body @ ..] if !body.is_empty() && body[0] != b"4" => {
+                let body = text(body);
+                if !body.trim().is_empty() {
+                    self.event_proxy.send_event(Event::Notification { title: None, body });
+                }
+                return;
+            },
+            [b"777", b"notify", title, body @ ..] => {
+                self.event_proxy.send_event(Event::Notification {
+                    title: Some(String::from_utf8_lossy(title).into_owned()),
+                    body: text(body),
+                });
+                return;
+            },
+            _ => {},
+        }
         if self.mode.contains(TermMode::ALT_SCREEN) {
             return;
         }

@@ -340,6 +340,7 @@ impl From<AlacTermEvent> for TerminalBackendEvent {
             AlacTermEvent::Exit => Self::Exit,
             AlacTermEvent::ChildExit(status) => Self::ChildExit(status),
             AlacTermEvent::ShellMark { mark, line } => Self::ShellMark(mark, line),
+            AlacTermEvent::Notification { title, body } => Self::Notification(title, body),
         }
     }
 }
