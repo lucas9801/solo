@@ -8111,6 +8111,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
+name = "html-escape"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9356095b4b41197bba32173600e1582792cda618f65d12f68e2e77d273413c5"
+
+[[package]]
 name = "html5ever"
 version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18007,6 +18013,7 @@ dependencies = [
  "theme_settings",
  "ui",
  "util",
+ "warp-command-signatures",
  "workspace",
  "zed_actions",
 ]
@@ -19696,6 +19703,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
 dependencies = [
  "try-lock",
+]
+
+[[package]]
+name = "warp-command-signatures"
+version = "0.0.0"
+dependencies = [
+ "cfg-if",
+ "itertools 0.10.5",
+ "lazy_static",
+ "log",
+ "rayon",
+ "regex",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "warp-completion-metadata",
+]
+
+[[package]]
+name = "warp-completion-metadata"
+version = "0.0.0"
+dependencies = [
+ "html-escape",
+ "itertools 0.10.5",
+ "log",
+ "serde",
+ "serde_json",
+ "serde_with",
 ]
 
 [[package]]

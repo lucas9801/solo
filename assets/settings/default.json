@@ -2255,6 +2255,8 @@
     // an arrow) in shells with Solo's integration; the input editor shows the
     // full path and git branch.
     "compact_prompt": true,
+    // Open completions in the input editor as you type, rather than only on Tab.
+    "completions_as_you_type": false,
     // Regexes used to identify paths for hyperlink navigation. Supports optional named capture
     // groups `path`, `line`, `column`, and `link`. If none of these are present, the entire match
     // is the hyperlink target. If `path` is present, it is the hyperlink target, along with `line`

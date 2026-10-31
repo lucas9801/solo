@@ -75,7 +75,15 @@ __solo_prompt_command() {
     return "$status"
 }
 
-printf '\e]633;P;Shell=bash\a'
+# Tell the terminal which bash this is (a Windows path in Git Bash), so its
+# input editor can run completion generators with the same one.
+__solo_shell_path=$BASH
+if [[ -n "$__solo_has_cygpath" ]]; then
+    __solo_shell_path=$(cygpath -w "$BASH")
+fi
+__solo_shell_path=${__solo_shell_path//\\/\\\\}
+printf '\e]633;P;Shell=%s\a' "${__solo_shell_path//;/\\x3b}"
+unset __solo_shell_path
 
 unset PROMPT_COMMAND
 PROMPT_COMMAND=__solo_prompt_command

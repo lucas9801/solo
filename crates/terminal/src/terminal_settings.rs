@@ -56,6 +56,7 @@ pub struct TerminalSettings {
     pub open_changed_files: bool,
     pub input_editor: bool,
     pub compact_prompt: bool,
+    pub completions_as_you_type: bool,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -132,6 +133,7 @@ impl settings::Settings for TerminalSettings {
             open_changed_files: user_content.open_changed_files.unwrap(),
             input_editor: user_content.input_editor.unwrap(),
             compact_prompt: user_content.compact_prompt.unwrap(),
+            completions_as_you_type: user_content.completions_as_you_type.unwrap(),
             path_hyperlink_regexes: project_content
                 .path_hyperlink_regexes
                 .unwrap()

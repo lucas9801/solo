@@ -260,6 +260,11 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub compact_prompt: Option<bool>,
+    /// Whether the input editor opens completions as you type, rather than
+    /// only on Tab.
+    ///
+    /// Default: false
+    pub completions_as_you_type: Option<bool>,
 }
 
 crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
@@ -270,7 +275,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         keep_selection_on_copy, open_links_in_mouse_mode, button, dock, starts_open, flexible,
         default_width, default_height, max_scroll_history_lines, scroll_multiplier, toolbar,
         scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
-        input_editor, compact_prompt,
+        input_editor, compact_prompt, completions_as_you_type,
     },
     defaults: {},
 });

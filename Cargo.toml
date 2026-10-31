@@ -535,6 +535,7 @@ agent-client-protocol = { version = "=3.6.0", features = ["schemars", "unstable"
 aho-corasick = "1.1"
 # SOLO: vendored and patched for shell integration, see vendor/README.md.
 alacritty_terminal = { path = "vendor/alacritty_terminal" }
+warp-command-signatures = { path = "vendor/warp_command_signatures/command_signatures" }
 any_vec = "0.14"
 anyhow = "1.0.86"
 arc-swap = "1.9.0"

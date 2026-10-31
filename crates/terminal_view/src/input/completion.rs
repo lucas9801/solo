@@ -1,17 +1,24 @@
-//! Completions for the terminal input.
+//! Completions for the terminal input, the way Warp does them.
 //!
-//! PowerShell is asked for its own completions (see [`super::powershell`]).
-//! Every shell also gets Solo's built-in completions: commands on `PATH`,
-//! subcommands of common tools, and file paths.
+//! Commands with a spec (Warp's command signatures, see [`super::spec`]) get
+//! their subcommands, options and argument values, including values generated
+//! by running a command in the shell (git branches, npm scripts, ...). Other
+//! commands fall back to the shell: PowerShell is asked for its own
+//! completions (see [`super::powershell`]), and every shell gets commands on
+//! `PATH` and file paths.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use gpui::{App, Task};
 
-use super::powershell::PowerShellCompleter;
+use super::powershell::{PowerShellCompleter, hide_window};
+use super::spec;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompletionItem {
@@ -28,6 +35,10 @@ pub enum CompletionKind {
     Command,
     Subcommand,
     Parameter,
+    /// An argument value from a spec or a generator.
+    Value,
+    Branch,
+    Container,
     Directory,
     File,
     Other,
@@ -64,7 +75,11 @@ impl ShellFlavor {
     }
 }
 
-/// Completes `input` at byte offset `cursor` in directory `cwd`.
+/// How long a generator command may run.
+const GENERATOR_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Completes `input` at byte offset `cursor` in directory `cwd`. `shell` is
+/// the shell program the integration script reported.
 pub fn complete(
     shell: Option<String>,
     input: String,
@@ -74,12 +89,57 @@ pub fn complete(
 ) -> Task<Result<CompletionSet>> {
     let executor = cx.background_executor().clone();
     let flavor = ShellFlavor::from_shell(shell.as_deref());
-    let powershell = (flavor == ShellFlavor::PowerShell)
-        .then(|| shell.filter(|shell| Path::new(shell).is_absolute()))
-        .flatten()
-        .map(|program| PowerShellCompleter::get(&program));
     executor.spawn(async move {
-        let builtin = builtin_completions(&input, cursor, cwd.as_deref(), flavor);
+        let cursor = cursor.min(input.len());
+        let tokens = command_tokens(&input[..cursor]);
+        let Some(current) = tokens.last() else {
+            return Ok(CompletionSet::default());
+        };
+        // The token continues past the cursor up to the next whitespace.
+        let end = cursor
+            + input[cursor..]
+                .find(char::is_whitespace)
+                .unwrap_or(input.len() - cursor);
+        let texts: Vec<&str> = tokens.iter().map(|token| token.text).collect();
+
+        if tokens.len() > 1
+            && let Some(plan) = spec::plan(&texts, flavor)
+        {
+            let start = current.start + plan.value_prefix_len;
+            let prefix = &current.text[plan.value_prefix_len..];
+            let mut items = plan.items;
+            for run in &plan.generators {
+                match run_generator(&run.command, shell.as_deref(), flavor, cwd.as_deref()).await {
+                    Some(output) => items.extend(run.results(&output)),
+                    None => log::debug!("completion generator failed: {}", run.command),
+                }
+            }
+            if let Some(paths) = &plan.paths {
+                items.extend(
+                    path_completions(prefix, cwd.as_deref(), flavor, paths.folders_only)
+                        .into_iter()
+                        .filter_map(|item| paths.filter(item)),
+                );
+            }
+            if plan.commands {
+                items.extend(command_completions(prefix, shell.as_deref(), flavor));
+            }
+            return Ok(CompletionSet {
+                start,
+                end,
+                items: dedup(items),
+            });
+        }
+
+        let builtin = builtin_completions(&texts, current.start, end, cwd.as_deref(), flavor);
+        let powershell = (flavor == ShellFlavor::PowerShell)
+            .then(|| {
+                shell
+                    .as_deref()
+                    .filter(|shell| Path::new(shell).is_absolute())
+            })
+            .flatten()
+            .map(PowerShellCompleter::get);
         let Some(powershell) = powershell else {
             return Ok(builtin);
         };
@@ -94,27 +154,157 @@ pub fn complete(
     })
 }
 
-/// The shell knows best; Solo's subcommands fill in where it has nothing.
-fn merge(from_shell: CompletionSet, builtin: CompletionSet) -> CompletionSet {
+/// PowerShell knows its cmdlets, functions and aliases; Solo adds descriptions
+/// for specced commands, and its own results where PowerShell has none.
+fn merge(mut from_shell: CompletionSet, builtin: CompletionSet) -> CompletionSet {
     if from_shell.items.is_empty() {
         return builtin;
     }
-    let mut merged = from_shell;
-    if (merged.start, merged.end) == (builtin.start, builtin.end) {
-        let extra: Vec<_> = builtin
-            .items
-            .into_iter()
-            .filter(|item| item.kind == CompletionKind::Subcommand)
-            .filter(|item| {
-                !merged
-                    .items
-                    .iter()
-                    .any(|existing| existing.text == item.text)
-            })
-            .collect();
-        merged.items.splice(0..0, extra);
+    if let Some(descriptions) = spec::command_descriptions() {
+        for item in &mut from_shell.items {
+            if item.kind == CompletionKind::Command && item.detail.is_none() {
+                item.detail = spec::command_name(&item.text)
+                    .and_then(|name| descriptions.get(&name).cloned());
+            }
+        }
     }
-    merged
+    from_shell
+}
+
+fn dedup(items: Vec<CompletionItem>) -> Vec<CompletionItem> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.text.clone()))
+        .collect()
+}
+
+/// Runs a generator's command in the user's shell and returns its output.
+async fn run_generator(
+    command: &str,
+    shell: Option<&str>,
+    flavor: ShellFlavor,
+    cwd: Option<&Path>,
+) -> Option<String> {
+    let posix_shell = match flavor {
+        // Many specs' generators are written for POSIX shells (`[[ ]]`, pipes
+        // into grep and cut); on Windows those run in Git's bash if there is
+        // one.
+        ShellFlavor::PowerShell if looks_posix(command) => posix_shell_for_windows(),
+        ShellFlavor::PowerShell => None,
+        ShellFlavor::Posix => Some(PathBuf::from(shell.unwrap_or("sh"))),
+    };
+    match posix_shell {
+        Some(program) => {
+            let mut process = Command::new(program);
+            process.arg("-c").arg(command);
+            if let Some(cwd) = cwd {
+                process.current_dir(cwd);
+            }
+            run_with_timeout(process, GENERATOR_TIMEOUT)
+        }
+        None => {
+            let program = shell.filter(|shell| Path::new(shell).is_absolute())?;
+            PowerShellCompleter::get_for_generators(program)
+                .exec(command, cwd)
+                .await
+                .ok()
+        }
+    }
+}
+
+/// Whether a generator command uses POSIX shell syntax or tools.
+fn looks_posix(command: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "[[",
+        "]]",
+        "$(",
+        "`",
+        "until ",
+        "; do ",
+        "; then ",
+        "/dev/null",
+        "| grep",
+        "|grep",
+        "| cut",
+        "| awk",
+        "| sed",
+        "| sort",
+        "| uniq",
+        "| head",
+        "| tail",
+        "| tr ",
+        "| xargs",
+        "| wc",
+        "| jq",
+        "export ",
+        "\\\n",
+    ];
+    MARKERS.iter().any(|marker| command.contains(marker))
+}
+
+/// Git for Windows' bash, found next to `git` on `PATH`. The `bash.exe` in
+/// System32 starts WSL, whose Linux tools can't see Windows paths the same
+/// way, so it isn't used.
+fn posix_shell_for_windows() -> Option<PathBuf> {
+    static SHELL: OnceLock<Option<PathBuf>> = OnceLock::new();
+    SHELL
+        .get_or_init(|| {
+            let path = std::env::var_os("PATH")?;
+            let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+            let is_wsl = |path: &Path| {
+                let path = path.to_string_lossy().to_lowercase();
+                path.contains("system32") || path.contains("windowsapps")
+            };
+            if let Some(bash) = dirs
+                .iter()
+                .map(|dir| dir.join("bash.exe"))
+                .find(|bash| bash.is_file() && !is_wsl(bash))
+            {
+                return Some(bash);
+            }
+            // `git.exe` lives in `<git>/cmd`; bash in `<git>/bin`.
+            dirs.iter()
+                .filter(|dir| dir.join("git.exe").is_file())
+                .filter_map(|dir| dir.parent())
+                .flat_map(|git| {
+                    [
+                        git.join("bin").join("bash.exe"),
+                        git.join("usr").join("bin").join("bash.exe"),
+                    ]
+                })
+                .find(|bash| bash.is_file())
+        })
+        .clone()
+}
+
+/// Runs `command` and returns its stdout, or `None` if it fails or takes
+/// longer than `timeout`.
+fn run_with_timeout(mut command: Command, timeout: Duration) -> Option<String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    hide_window(&mut command);
+    let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).ok();
+        output
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                child.kill().ok();
+                return None;
+            }
+        }
+    }
+    Some(String::from_utf8_lossy(&reader.join().ok()?).into_owned())
 }
 
 /// A token of the input, with its byte range. Quotes are kept in `text`.
@@ -164,48 +354,35 @@ fn command_tokens(input: &str) -> Vec<Token<'_>> {
     tokens
 }
 
-pub fn builtin_completions(
-    input: &str,
-    cursor: usize,
+/// Completions without a spec: commands in the command position, else paths.
+fn builtin_completions(
+    tokens: &[&str],
+    start: usize,
+    end: usize,
     cwd: Option<&Path>,
     flavor: ShellFlavor,
 ) -> CompletionSet {
-    let cursor = cursor.min(input.len());
-    let before_cursor = &input[..cursor];
-    let tokens = command_tokens(before_cursor);
-    let Some(current) = tokens.last() else {
-        return CompletionSet::default();
-    };
-    // The token continues past the cursor up to the next whitespace.
-    let end = cursor
-        + input[cursor..]
-            .find(char::is_whitespace)
-            .unwrap_or(input.len() - cursor);
-    let mut items = Vec::new();
-    let prefix = current.text;
+    let prefix = tokens.last().copied().unwrap_or_default();
     let is_path =
         prefix.contains(['/', '\\']) || prefix.starts_with('.') || prefix.starts_with('~');
-
-    if tokens.len() == 1 && !is_path {
-        items.extend(command_completions(prefix));
-    } else if tokens.len() == 2 && !prefix.starts_with('-') {
-        items.extend(subcommand_completions(tokens[0].text, prefix));
-    }
-    if tokens.len() > 1 || is_path {
-        items.extend(path_completions(prefix, cwd, flavor));
-    }
-    CompletionSet {
-        start: current.start,
-        end,
-        items,
-    }
+    let items = if tokens.len() == 1 && !is_path {
+        command_completions(prefix, None, flavor)
+    } else {
+        path_completions(prefix, cwd, flavor, false)
+    };
+    CompletionSet { start, end, items }
 }
 
-fn command_completions(prefix: &str) -> Vec<CompletionItem> {
+fn command_completions(
+    prefix: &str,
+    _shell: Option<&str>,
+    _flavor: ShellFlavor,
+) -> Vec<CompletionItem> {
     if prefix.is_empty() {
         return Vec::new();
     }
     let prefix_lower = prefix.to_lowercase();
+    let descriptions = spec::command_descriptions();
     path_commands()
         .iter()
         .filter(|command| command.to_lowercase().starts_with(&prefix_lower))
@@ -214,7 +391,8 @@ fn command_completions(prefix: &str) -> Vec<CompletionItem> {
             text: command.clone(),
             label: command.clone(),
             kind: CompletionKind::Command,
-            detail: None,
+            detail: descriptions
+                .and_then(|descriptions| descriptions.get(&command.to_lowercase()).cloned()),
         })
         .collect()
 }
@@ -266,170 +444,12 @@ fn path_commands() -> &'static BTreeSet<String> {
     })
 }
 
-/// Subcommands of tools that are commonly driven from a terminal, and of the
-/// agents run in it.
-const SUBCOMMANDS: &[(&str, &[(&str, &str)])] = &[
-    (
-        "git",
-        &[
-            ("add", "Add file contents to the index"),
-            ("branch", "List, create, or delete branches"),
-            ("checkout", "Switch branches or restore working tree files"),
-            (
-                "cherry-pick",
-                "Apply the changes introduced by some existing commits",
-            ),
-            ("clone", "Clone a repository into a new directory"),
-            ("commit", "Record changes to the repository"),
-            (
-                "diff",
-                "Show changes between commits, commit and working tree, etc",
-            ),
-            ("fetch", "Download objects and refs from another repository"),
-            ("init", "Create an empty Git repository"),
-            ("log", "Show commit logs"),
-            ("merge", "Join two or more development histories together"),
-            ("mv", "Move or rename a file, a directory, or a symlink"),
-            (
-                "pull",
-                "Fetch from and integrate with another repository or branch",
-            ),
-            ("push", "Update remote refs along with associated objects"),
-            ("rebase", "Reapply commits on top of another base tip"),
-            ("remote", "Manage set of tracked repositories"),
-            ("reset", "Reset current HEAD to the specified state"),
-            ("restore", "Restore working tree files"),
-            ("revert", "Revert some existing commits"),
-            (
-                "rm",
-                "Remove files from the working tree and from the index",
-            ),
-            ("show", "Show various types of objects"),
-            (
-                "stash",
-                "Stash the changes in a dirty working directory away",
-            ),
-            ("status", "Show the working tree status"),
-            ("switch", "Switch branches"),
-            ("tag", "Create, list, delete or verify a tag object"),
-            ("worktree", "Manage multiple working trees"),
-        ],
-    ),
-    (
-        "cargo",
-        &[
-            ("add", "Add dependencies to a manifest file"),
-            ("bench", "Execute all benchmarks of a local package"),
-            (
-                "build",
-                "Compile a local package and all of its dependencies",
-            ),
-            (
-                "check",
-                "Check a local package and all of its dependencies for errors",
-            ),
-            ("clean", "Remove the target directory"),
-            ("clippy", "Check a package to catch common mistakes"),
-            ("doc", "Build a package's documentation"),
-            ("fmt", "Format all Rust files of the current crate"),
-            (
-                "init",
-                "Create a new cargo package in an existing directory",
-            ),
-            ("install", "Install a Rust binary"),
-            ("new", "Create a new cargo package"),
-            ("publish", "Upload a package to the registry"),
-            ("remove", "Remove dependencies from a manifest file"),
-            ("run", "Run a binary or example of the local package"),
-            ("test", "Execute all unit and integration tests"),
-            ("tree", "Display a tree visualization of a dependency graph"),
-            ("update", "Update dependencies listed in Cargo.lock"),
-        ],
-    ),
-    (
-        "npm",
-        &[
-            ("ci", "Clean install a project"),
-            ("exec", "Run a command from a local or remote npm package"),
-            ("init", "Create a package.json file"),
-            ("install", "Install a package"),
-            ("list", "List installed packages"),
-            ("outdated", "Check for outdated packages"),
-            ("publish", "Publish a package"),
-            ("run", "Run arbitrary package scripts"),
-            ("start", "Start a package"),
-            ("test", "Test a package"),
-            ("uninstall", "Remove a package"),
-            ("update", "Update packages"),
-        ],
-    ),
-    (
-        "pnpm",
-        &[
-            (
-                "add",
-                "Install a package and any packages that it depends on",
-            ),
-            ("dlx", "Run a package without installing it"),
-            ("exec", "Execute a shell command in scope of a project"),
-            ("install", "Install all dependencies for a project"),
-            ("remove", "Remove packages"),
-            ("run", "Run a script defined in the package's manifest"),
-            ("test", "Run the test script"),
-            ("update", "Update packages to their latest version"),
-        ],
-    ),
-    (
-        "docker",
-        &[
-            ("build", "Build an image from a Dockerfile"),
-            ("compose", "Define and run multi-container applications"),
-            ("exec", "Execute a command in a running container"),
-            ("images", "List images"),
-            ("logs", "Fetch the logs of a container"),
-            ("ps", "List containers"),
-            ("pull", "Download an image from a registry"),
-            ("push", "Upload an image to a registry"),
-            ("rm", "Remove one or more containers"),
-            ("run", "Create and run a new container from an image"),
-            ("stop", "Stop one or more running containers"),
-        ],
-    ),
-    (
-        "claude",
-        &[
-            ("config", "Manage configuration"),
-            ("doctor", "Check the health of the installation"),
-            ("mcp", "Configure and manage MCP servers"),
-            ("update", "Check for updates and install if available"),
-        ],
-    ),
-];
-
-fn subcommand_completions(command: &str, prefix: &str) -> Vec<CompletionItem> {
-    let command = Path::new(command)
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    SUBCOMMANDS
-        .iter()
-        .find(|(name, _)| *name == command)
-        .map(|(_, subcommands)| {
-            subcommands
-                .iter()
-                .filter(|(name, _)| name.starts_with(prefix))
-                .map(|(name, description)| CompletionItem {
-                    text: name.to_string(),
-                    label: name.to_string(),
-                    kind: CompletionKind::Subcommand,
-                    detail: Some(description.to_string()),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn path_completions(token: &str, cwd: Option<&Path>, flavor: ShellFlavor) -> Vec<CompletionItem> {
+fn path_completions(
+    token: &str,
+    cwd: Option<&Path>,
+    flavor: ShellFlavor,
+    folders_only: bool,
+) -> Vec<CompletionItem> {
     let unquoted = token.trim_matches(['"', '\'']);
     let split = unquoted.rfind(['/', '\\']).map_or(0, |ix| ix + 1);
     let (dir_part, name_prefix) = unquoted.split_at(split);
@@ -468,6 +488,9 @@ fn path_completions(token: &str, cwd: Option<&Path>, flavor: ShellFlavor) -> Vec
                 return None;
             }
             let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            if folders_only && !is_dir {
+                return None;
+            }
             let mut path = format!("{dir_part}{name}");
             if is_dir {
                 path.push(separator);
@@ -547,6 +570,35 @@ pub fn utf16_to_byte(text: &str, utf16_offset: usize) -> usize {
 mod tests {
     use super::*;
 
+    fn complete_now(input: &str, cwd: Option<&Path>) -> CompletionSet {
+        futures::executor::block_on(complete_inner(input, cwd))
+    }
+
+    async fn complete_inner(input: &str, cwd: Option<&Path>) -> CompletionSet {
+        let tokens = command_tokens(input);
+        let texts: Vec<&str> = tokens.iter().map(|token| token.text).collect();
+        let current = tokens.last().unwrap();
+        if tokens.len() > 1
+            && let Some(plan) = spec::plan(&texts, ShellFlavor::Posix)
+        {
+            let mut items = plan.items;
+            if let Some(paths) = &plan.paths {
+                items.extend(path_completions(
+                    &current.text[plan.value_prefix_len..],
+                    cwd,
+                    ShellFlavor::Posix,
+                    paths.folders_only,
+                ));
+            }
+            return CompletionSet {
+                start: current.start + plan.value_prefix_len,
+                end: input.len(),
+                items,
+            };
+        }
+        builtin_completions(&texts, current.start, input.len(), cwd, ShellFlavor::Posix)
+    }
+
     #[test]
     fn test_command_tokens() {
         let texts = |input| {
@@ -563,12 +615,13 @@ mod tests {
     }
 
     #[test]
-    fn test_subcommands() {
-        let set = builtin_completions("git chec", 8, None, ShellFlavor::Posix);
+    fn test_spec_completions() {
+        let set = complete_now("git chec", None);
         assert_eq!(set.start, 4);
-        assert_eq!(set.end, 8);
-        assert_eq!(set.items[0].text, "checkout");
-        assert_eq!(set.items[0].kind, CompletionKind::Subcommand);
+        assert!(set.items.iter().any(|item| item.text == "checkout"));
+
+        let set = complete_now("cargo build --rel", None);
+        assert!(set.items.iter().any(|item| item.text == "--release"));
     }
 
     #[test]
@@ -579,18 +632,68 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
         std::fs::write(dir.path().join("src").join("main.rs"), "").unwrap();
 
-        let set = builtin_completions("cat s", 5, Some(dir.path()), ShellFlavor::Posix);
+        let texts = |set: CompletionSet| {
+            set.items
+                .into_iter()
+                .map(|item| item.text)
+                .collect::<Vec<_>>()
+        };
+        // `cat` is specced to take files.
+        let set = complete_now("cat s", Some(dir.path()));
         assert_eq!(set.start, 4);
-        let texts: Vec<_> = set.items.iter().map(|item| item.text.as_str()).collect();
-        assert_eq!(texts, vec!["src/"]);
+        assert_eq!(texts(set), vec!["src/"]);
 
-        let set = builtin_completions("cat src/", 8, Some(dir.path()), ShellFlavor::Posix);
-        let texts: Vec<_> = set.items.iter().map(|item| item.text.as_str()).collect();
-        assert_eq!(texts, vec!["src/main.rs"]);
+        let set = complete_now("cat src/", Some(dir.path()));
+        assert_eq!(texts(set), vec!["src/main.rs"]);
 
-        let set = builtin_completions("cd my", 5, Some(dir.path()), ShellFlavor::Posix);
-        let texts: Vec<_> = set.items.iter().map(|item| item.text.as_str()).collect();
-        assert_eq!(texts, vec!["'my dir/'"]);
+        // `cd` takes folders only.
+        let set = complete_now("cd ", Some(dir.path()));
+        assert_eq!(texts(set), vec!["'my dir/'", "src/"]);
+    }
+
+    #[test]
+    fn test_run_with_timeout() {
+        let mut command = Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        if cfg!(windows) {
+            command.args(["/C", "echo hi"]);
+        } else {
+            command.args(["-c", "echo hi"]);
+        }
+        assert_eq!(
+            run_with_timeout(command, Duration::from_secs(5))
+                .map(|output| output.trim().to_string()),
+            Some("hi".to_string())
+        );
+    }
+
+    #[test]
+    fn test_posix_generator_in_powershell_session() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "vite", "build": "vite build"}}"#,
+        )
+        .unwrap();
+        let plan = spec::plan(&["npm", "run", ""], ShellFlavor::PowerShell).unwrap();
+        let run = plan.generators.first().unwrap();
+        assert!(looks_posix(&run.command));
+        if cfg!(windows) && posix_shell_for_windows().is_none() {
+            return;
+        }
+        let output = futures::executor::block_on(run_generator(
+            &run.command,
+            None,
+            ShellFlavor::PowerShell,
+            Some(dir.path()),
+        ))
+        .unwrap();
+        let mut scripts: Vec<_> = run
+            .results(&output)
+            .into_iter()
+            .map(|item| item.text)
+            .collect();
+        scripts.sort();
+        assert_eq!(scripts, vec!["build", "dev"]);
     }
 
     #[test]

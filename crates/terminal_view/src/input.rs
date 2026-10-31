@@ -9,6 +9,7 @@
 mod completion;
 mod history;
 mod powershell;
+mod spec;
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -17,7 +18,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use editor::{
-    CompletionProvider, Editor, EditorElement, EditorEvent, EditorStyle, Inlay,
+    CompletionProvider, ContextMenuOptions, ContextMenuPlacement, Editor, EditorElement,
+    EditorEvent, EditorStyle, Inlay,
     actions::{MoveRight, MoveToEnd, ShowCompletions},
 };
 use gpui::{
@@ -72,6 +74,8 @@ pub struct TerminalInput {
     history: Rc<RefCell<CommandHistory>>,
     /// Makes the next completion request list the history instead.
     searching_history: Rc<Cell<bool>>,
+    /// Completions just computed for Tab, reused when the menu opens.
+    last_completions: Rc<RefCell<Option<CachedCompletions>>>,
     /// Shell whose history file has been loaded.
     history_shell: Option<String>,
     /// Suffix of the history entry shown after the cursor.
@@ -83,6 +87,7 @@ pub struct TerminalInput {
     languages: Option<Arc<LanguageRegistry>>,
     _load_history: Task<()>,
     _load_language: Task<()>,
+    _complete: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -101,14 +106,23 @@ impl TerminalInput {
     ) -> Self {
         let history = Rc::new(RefCell::new(CommandHistory::default()));
         let searching_history = Rc::new(Cell::new(false));
+        let last_completions = Rc::new(RefCell::new(None));
         let editor = cx.new(|cx| {
             let mut editor = Editor::auto_height(1, 12, window, cx);
             editor.set_show_gutter(false, cx);
+            // The input sits at the bottom, so the menu opens upwards, sized
+            // by the window rather than the one-line editor.
+            editor.set_context_menu_options(ContextMenuOptions {
+                min_entries_visible: 12,
+                max_entries_visible: 12,
+                placement: Some(ContextMenuPlacement::Above),
+            });
             editor.set_placeholder_text("Type a command, Tab to complete", window, cx);
             editor.set_completion_provider(Some(Rc::new(ShellCompletionProvider {
                 terminal: terminal.downgrade(),
                 history: history.clone(),
                 searching_history: searching_history.clone(),
+                last_completions: last_completions.clone(),
             })));
             editor
         });
@@ -121,6 +135,7 @@ impl TerminalInput {
             editor,
             history,
             searching_history,
+            last_completions,
             history_shell: None,
             suggestion: None,
             replacing_text: false,
@@ -128,6 +143,7 @@ impl TerminalInput {
             languages,
             _load_history: Task::ready(()),
             _load_language: Task::ready(()),
+            _complete: Task::ready(()),
             _subscriptions: subscriptions,
         }
     }
@@ -384,10 +400,85 @@ impl TerminalInput {
         }
     }
 
+    /// Like Warp: a single match is filled in right away, more open the menu.
     fn complete(&mut self, _: &CompleteInput, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor.update(cx, |editor, cx| {
-            editor.show_completions(&ShowCompletions, window, cx)
+        let integration = self.terminal.read(cx).shell_integration();
+        let shell = integration.shell().map(str::to_string);
+        let cwd = integration.working_directory().cloned();
+        let (text, cursor) = self.editor.update(cx, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            let head = editor
+                .selections
+                .newest::<language::Point>(&snapshot)
+                .head();
+            let buffer = editor.buffer().read(cx).snapshot(cx);
+            let text = buffer.text();
+            let cursor = buffer.point_to_offset(head).0;
+            (text, cursor)
         });
+        let completions = complete(shell, text.clone(), cursor, cwd, cx);
+        self._complete = cx.spawn_in(window, async move |this, cx| {
+            let Ok(set) = completions.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                // Bail if the text changed while completing.
+                if this.text(cx) != text {
+                    return;
+                }
+                match single_match(&set, &text, cursor) {
+                    Some(item) => {
+                        let item = item.clone();
+                        this.insert_completion(&text, &set, &item, window, cx)
+                    }
+                    None => {
+                        *this.last_completions.borrow_mut() = Some(CachedCompletions {
+                            input: text,
+                            cursor,
+                            set,
+                        });
+                        this.editor.update(cx, |editor, cx| {
+                            editor.show_completions(&ShowCompletions, window, cx)
+                        })
+                    }
+                }
+            })
+            .ok();
+        });
+    }
+
+    /// Replaces the completed token with `item`, followed by a space unless
+    /// it is a directory to continue into.
+    fn insert_completion(
+        &mut self,
+        text: &str,
+        set: &completion::CompletionSet,
+        item: &completion::CompletionItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let start = set.start.min(text.len());
+        let end = set.end.clamp(start, text.len());
+        let mut inserted = item.text.clone();
+        if !inserted.ends_with(['/', '\\']) && !text[end..].starts_with(' ') {
+            inserted.push(' ');
+        }
+        let new_text = format!("{}{}{}", &text[..start], inserted, &text[end..]);
+        let cursor = start + inserted.len();
+        let before_cursor = &new_text[..cursor];
+        let row = before_cursor.matches('\n').count() as u32;
+        let column = (cursor - before_cursor.rfind('\n').map_or(0, |ix| ix + 1)) as u32;
+        self.replacing_text = true;
+        self.editor.update(cx, |editor, cx| {
+            editor.set_text(new_text.as_str(), window, cx);
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                let point = language::Point::new(row, column);
+                selections.select_ranges([point..point]);
+            });
+        });
+        self.replacing_text = false;
+        self.history.borrow_mut().reset_navigation();
+        self.update_suggestion(cx);
     }
 
     fn search_history(
@@ -675,6 +766,13 @@ struct ShellCompletionProvider {
     terminal: gpui::WeakEntity<Terminal>,
     history: Rc<RefCell<CommandHistory>>,
     searching_history: Rc<Cell<bool>>,
+    last_completions: Rc<RefCell<Option<CachedCompletions>>>,
+}
+
+struct CachedCompletions {
+    input: String,
+    cursor: usize,
+    set: completion::CompletionSet,
 }
 
 /// Entries offered when searching the history; the menu filters them further.
@@ -736,7 +834,15 @@ impl CompletionProvider for ShellCompletionProvider {
         let snapshot = buffer.read(cx).snapshot();
         let input = snapshot.text();
         let cursor = buffer_position.to_offset(&snapshot);
-        let completions = complete(shell, input, cursor, cwd, cx);
+        let cached = self
+            .last_completions
+            .borrow_mut()
+            .take()
+            .filter(|cached| cached.input == input && cached.cursor == cursor);
+        let completions = match cached {
+            Some(cached) => Task::ready(Ok(cached.set)),
+            None => complete(shell, input, cursor, cwd, cx),
+        };
         cx.spawn(async move |_, _| {
             let set = completions.await?;
             let start = snapshot.anchor_before(set.start.min(snapshot.len()));
@@ -773,12 +879,14 @@ impl CompletionProvider for ShellCompletionProvider {
         &self,
         _buffer: &Entity<Buffer>,
         _position: language::Anchor,
-        _text: &str,
+        text: &str,
         _trigger_in_words: bool,
-        _cx: &mut Context<Editor>,
+        cx: &mut Context<Editor>,
     ) -> bool {
-        // Completions open with Tab, like in a shell.
-        false
+        // Completions open with Tab, like in a shell, unless they should open
+        // as you type.
+        TerminalSettings::get_global(cx).completions_as_you_type
+            && text.chars().any(|ch| !ch.is_whitespace())
     }
 
     fn sort_completions(&self) -> bool {
@@ -787,11 +895,29 @@ impl CompletionProvider for ShellCompletionProvider {
     }
 }
 
+/// The only item that the typed token is a prefix of, if there is exactly one.
+fn single_match<'a>(
+    set: &'a completion::CompletionSet,
+    text: &str,
+    cursor: usize,
+) -> Option<&'a completion::CompletionItem> {
+    let typed = text.get(set.start..cursor.max(set.start))?.to_lowercase();
+    let mut matches = set
+        .items
+        .iter()
+        .filter(|item| item.text.to_lowercase().starts_with(&typed));
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
 fn completion_icon(kind: CompletionKind) -> IconName {
     match kind {
         CompletionKind::Command => IconName::Terminal,
         CompletionKind::Subcommand => IconName::ChevronRight,
         CompletionKind::Parameter => IconName::Dash,
+        CompletionKind::Value => IconName::Circle,
+        CompletionKind::Branch => IconName::GitBranch,
+        CompletionKind::Container => IconName::Box,
         CompletionKind::Directory => IconName::Folder,
         CompletionKind::File => IconName::File,
         CompletionKind::Other => IconName::Sparkle,
