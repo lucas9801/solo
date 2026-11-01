@@ -312,6 +312,42 @@ fn first_unbalanced_open_paren(s: &str) -> Option<usize> {
     first_unmatched.filter(|_| balance > 0)
 }
 
+/// SOLO: how much of `path` to keep when it runs into prose that the regexes
+/// take as part of it, as in `object.h：先看`, `object.h:先看` or `object.h中的`:
+/// it ends before a colon followed by non-ASCII text, and before full-width
+/// punctuation or non-ASCII text that follows an ASCII file name with an
+/// extension. Non-ASCII names (`docs/渲染.md`, `test、2.txt`) are kept whole.
+fn path_end_in_prose(path: &str) -> usize {
+    const PROSE_PUNCTUATION: &[char] = &[
+        '，', '。', '：', '；', '、', '！', '？', '（', '）', '「', '」', '『', '』', '【', '】',
+        '《', '》', '“', '”', '‘', '’',
+    ];
+    let has_extension = |name: &str| {
+        let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        name.rsplit_once('.').is_some_and(|(stem, extension)| {
+            !stem.is_empty()
+                && (1..=10).contains(&extension.len())
+                && extension.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+    };
+    let mut previous = None;
+    let mut chars = path.char_indices().peekable();
+    while let Some((ix, c)) = chars.next() {
+        let next = chars.peek().map(|&(_, c)| c);
+        let after_file_name = || {
+            previous.is_some_and(|previous: char| previous.is_ascii_alphanumeric())
+                && has_extension(&path[..ix])
+        };
+        if (c == ':' && next.is_some_and(|next| !next.is_ascii()))
+            || ((PROSE_PUNCTUATION.contains(&c) || !c.is_ascii()) && after_file_name())
+        {
+            return ix;
+        }
+        previous = Some(c);
+    }
+    path.len()
+}
+
 fn path_match<T>(
     term: &Term<T>,
     line_start: AlacPoint,
@@ -455,6 +491,19 @@ fn path_match<T>(
                 path_range.start += trim;
                 link_range.start = link_range.start.max(path_range.start);
             }
+
+            // SOLO: end a path written into Chinese prose where the prose starts.
+            let path_end = path_range.start + path_end_in_prose(&line[path_range.clone()]);
+            if path_end == path_range.start {
+                continue;
+            }
+            let line_column = if path_end < path_range.end {
+                path_range.end = path_end;
+                link_range.end = link_range.end.min(path_end);
+                None
+            } else {
+                line_column
+            };
 
             if !link_range.contains(&hovered_point_byte_offset) {
                 // No match, just skip.
@@ -776,6 +825,31 @@ mod tests {
             test_path!("    ‹File \"«/awe👉some.py»\", line «42»›");
             test_path!("    ‹File \"«/awesome.py»👉\", line «42»›: Wat?");
             test_path!("    ‹File \"«/awesome.py»\", line «4👉2»›");
+        }
+
+        #[test]
+        fn in_chinese_prose() {
+            // SOLO: paths written into Chinese text end where the text starts.
+            test_path!("‹«core/object/obj👉ect.h»›:先看 GDCLASS 宏");
+            // (Placed so no wide character wraps in the test's narrow grid.)
+            test_path!("1 ‹«core/object/obj👉ect.h»›：先看");
+            test_path!("看 ‹«scene/main/no👉de.cpp»›的 _bind_methods");
+            test_path!("‹«modules/gdscript/gdscr👉ipt.cpp»›、gdscript_vm.cpp");
+            test_path!("‹«src/👉main.rs»:«12»:«3»›");
+        }
+
+        #[test]
+        fn path_end_in_chinese_prose() {
+            fn kept(path: &str) -> &str {
+                &path[..super::super::path_end_in_prose(path)]
+            }
+            assert_eq!(kept("core/object/object.h:先看"), "core/object/object.h");
+            assert_eq!(kept("core/object/object.h：先看"), "core/object/object.h");
+            assert_eq!(kept("scene/main/node.cpp的"), "scene/main/node.cpp");
+            assert_eq!(kept("gdscript.cpp、gdscript_vm.cpp"), "gdscript.cpp");
+            assert_eq!(kept("docs/Godot渲染流水线解析.md"), "docs/Godot渲染流水线解析.md");
+            assert_eq!(kept("test、2.txt"), "test、2.txt");
+            assert_eq!(kept("src/main.rs:12:3"), "src/main.rs:12:3");
         }
 
         #[test]
