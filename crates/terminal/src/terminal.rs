@@ -1072,6 +1072,8 @@ impl TerminalBuilder {
             breadcrumb_text: String::new(),
             scroll_px: px(0.),
             next_link_id: 0,
+            opened_word: None,
+            clickable_link: None,
             selection_phase: SelectionPhase::Ended,
             hyperlink_regex_searches: RegexSearches::default(),
             vi_mode_enabled: false,
@@ -1361,6 +1363,8 @@ impl TerminalBuilder {
                 breadcrumb_text: String::new(),
                 scroll_px: px(0.),
                 next_link_id: 0,
+                opened_word: None,
+                clickable_link: None,
                 selection_phase: SelectionPhase::Ended,
                 hyperlink_regex_searches: RegexSearches::new(
                     &path_hyperlink_regexes,
@@ -1571,6 +1575,10 @@ pub struct Terminal {
     title_override: Option<String>,
     scroll_px: Pixels,
     next_link_id: usize,
+    /// SOLO: the link last opened, since opening one stops hovering it.
+    opened_word: Option<HoveredWord>,
+    /// SOLO: the id of the hovered link if the view found where it leads.
+    clickable_link: Option<usize>,
     selection_phase: SelectionPhase,
     hyperlink_regex_searches: RegexSearches,
     task: Option<TaskState>,
@@ -1780,6 +1788,17 @@ impl Terminal {
                 cx.emit(Event::Notification { title, body });
             }
         }
+    }
+
+    /// SOLO: tells which hovered link (by `HoveredWord::id`) leads somewhere,
+    /// so a click on it opens it even in a program that takes the mouse.
+    pub fn set_clickable_link(&mut self, id: Option<usize>) {
+        self.clickable_link = id;
+    }
+
+    /// SOLO: the word of the link last opened (`Event::Open`).
+    pub fn opened_word(&self) -> Option<&HoveredWord> {
+        self.opened_word.as_ref()
     }
 
     /// SOLO: the Mermaid diagram printed below a `mermaid` line, the one on
@@ -2157,6 +2176,11 @@ impl Terminal {
         };
 
         if open {
+            self.opened_word = Some(HoveredWord {
+                word: maybe_url_or_path,
+                word_match: range,
+                id: self.next_link_id(),
+            });
             cx.emit(Event::Open(target));
         } else {
             self.update_selected_word(prev_hovered_word, range, maybe_url_or_path, target, cx);
@@ -2819,6 +2843,8 @@ impl Terminal {
             // reports, which would be a press-less (malformed) sequence.
             // `mouse_up` resolves it: release on the same link opens it,
             // otherwise the gesture is dropped.
+            // SOLO: links are found here too, while the program gets the motion.
+            self.schedule_find_hyperlink(e.modifiers, e.position, cx);
             if self.mouse_down_hyperlink.is_none() {
                 let (point, side) = grid_point_and_side(
                     position,
@@ -2851,9 +2877,15 @@ impl Terminal {
         position: GpuiPoint<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        // SOLO: with `open_links_on_click`, links are found without ctrl/cmd.
+        // SOLO: with `open_links_on_click`, links are found without ctrl/cmd,
+        // in programs that take the mouse too unless `open_links_in_mouse_mode`
+        // is off.
+        let settings = TerminalSettings::get_global(cx);
+        let program_takes_mouse = self.last_content.mode.intersects(Modes::MOUSE_MODE);
+        let find_links = (modifiers.secondary(cx) || settings.open_links_on_click)
+            && (!program_takes_mouse || settings.open_links_in_mouse_mode);
         if self.selection_phase == SelectionPhase::Selecting
-            || !(modifiers.secondary(cx) || TerminalSettings::get_global(cx).open_links_on_click)
+            || !find_links
             || !self.last_content.terminal_bounds.bounds.contains(&position)
         {
             self.clear_hyperlink(cx);
@@ -2993,6 +3025,26 @@ impl Terminal {
         {
             self.mouse_down_hyperlink = self.find_hyperlink_at_point(point);
 
+            if self.mouse_down_hyperlink.is_some() {
+                return;
+            }
+        }
+
+        // SOLO: in a program that takes the mouse, a plain click on a link the
+        // view found to lead somewhere (an existing file, a URL) opens it
+        // instead of reaching the program. Other clicks are the program's.
+        if e.button == MouseButton::Left
+            && !e.modifiers.shift
+            && self.mouse_mode(e.modifiers.shift, mode)
+            && TerminalSettings::get_global(cx).open_links_on_click
+            && TerminalSettings::get_global(cx).open_links_in_mouse_mode
+            && let Some(hovered) = &self.last_content.last_hovered_word
+            && self.clickable_link == Some(hovered.id)
+        {
+            let word_match = hovered.word_match;
+            self.mouse_down_hyperlink = self
+                .find_hyperlink_at_point(point)
+                .filter(|link| link.range == word_match);
             if self.mouse_down_hyperlink.is_some() {
                 return;
             }
@@ -5687,6 +5739,46 @@ mod tests {
                     pty_writes.len(),
                     2,
                     "expected press and release reports, got {pty_writes:?}"
+                );
+            });
+        }
+
+        #[gpui::test]
+        async fn test_plain_click_on_clickable_link_in_mouse_mode_opens_it(
+            cx: &mut TestAppContext,
+        ) {
+            let terminal = init_terminal_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+            terminal.update(cx, |terminal, cx| {
+                terminal.last_content.mode = Modes::MOUSE_MODE;
+                terminal.take_pty_write_log();
+
+                let click_position = point(px(80.0), px(10.0));
+                let grid_position = click_position - terminal.last_content.terminal_bounds.bounds.origin;
+                let link = terminal
+                    .find_hyperlink_at_point(grid_point(
+                        grid_position,
+                        terminal.last_content.terminal_bounds,
+                        terminal.last_content.display_offset,
+                    ))
+                    .unwrap();
+                // The view found where the hovered link leads.
+                terminal.last_content.last_hovered_word = Some(HoveredWord {
+                    word: link.text.clone(),
+                    word_match: link.range,
+                    id: 7,
+                });
+                terminal.set_clickable_link(Some(7));
+                left_mouse_down_at(terminal, click_position, cx);
+                left_mouse_up_at(terminal, click_position, cx);
+
+                assert!(any_event_matches!(
+                    terminal,
+                    InternalEvent::ProcessHyperlink(_, true)
+                ));
+                assert!(
+                    terminal.take_pty_write_log().is_empty(),
+                    "a click that opens a link must not reach the program"
                 );
             });
         }

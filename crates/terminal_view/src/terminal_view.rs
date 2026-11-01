@@ -1474,16 +1474,12 @@ fn subscribe_for_terminal_events(
                 }
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
                     MaybeNavigationTarget::Url(url) => cx.open_url(url),
-                    // The terminal forgets the hovered word before opening it,
-                    // so go by the hover this view kept.
                     MaybeNavigationTarget::PathLike(_)
-                        if let Some(diagram) = terminal_view
-                            .hover
-                            .as_ref()
-                            .filter(|hover| hover.tooltip == mermaid_preview::MERMAID_TOOLTIP)
-                            .and_then(|hover| {
-                                mermaid_preview::diagram_at_word(terminal, &hover.hovered_word, cx)
-                            }) =>
+                        if let Some(diagram) = terminal
+                            .read(cx)
+                            .opened_word()
+                            .cloned()
+                            .and_then(|word| mermaid_preview::diagram_at_word(terminal, &word, cx)) =>
                     {
                         terminal_view.open_mermaid_diagram(diagram, window, cx)
                     }

@@ -1134,7 +1134,9 @@ impl TerminalElement {
 
                 let view = terminal_view.read(cx);
                 let scroll_top = view.scroll_top;
+                let clickable_link = view.hover.as_ref().map(|hover| hover.hovered_word.id);
                 terminal.update(cx, |terminal, cx| {
+                    terminal.set_clickable_link(clickable_link);
                     let mut adjusted_event = e.clone();
                     if scroll_top > Pixels::ZERO {
                         adjusted_event.position.y += scroll_top;
