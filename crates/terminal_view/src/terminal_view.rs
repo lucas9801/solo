@@ -2,6 +2,7 @@ mod agent_status;
 pub mod command_blocks;
 mod command_notifications;
 pub mod input;
+mod mermaid_preview;
 mod persistence;
 mod session_contents;
 pub mod terminal_element;
@@ -695,6 +696,7 @@ impl TerminalView {
             .and_then(|workspace| workspace.read(cx).panel::<TerminalPanel>(cx))
             .is_some_and(|terminal_panel| terminal_panel.read(cx).assistant_enabled());
         let shell_integration_active = self.terminal.read(cx).shell_integration().is_active();
+        let has_mermaid_diagram = self.terminal.read(cx).mermaid_diagram(None).is_some();
         let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
             menu.context(self.focus_handle.clone())
                 .when(self.shows_workspace_actions(), |menu| {
@@ -724,6 +726,12 @@ impl TerminalView {
                             "Save Command as Workflow",
                             Box::new(SaveCommandBlockAsWorkflow),
                         )
+                })
+                .when(has_mermaid_diagram, |menu| {
+                    menu.action(
+                        "Preview Mermaid Diagram",
+                        Box::new(mermaid_preview::PreviewMermaidDiagram),
+                    )
                 })
                 .when(
                     !self.read_only && !matches!(self.mode, TerminalMode::Embedded { .. }),
@@ -1424,6 +1432,18 @@ fn subscribe_for_terminal_events(
                                     .as_ref()
                                     .map(|hover| &hover.hovered_word)
                             {
+                                // SOLO: a Mermaid diagram's `mermaid` line opens the diagram.
+                                if mermaid_preview::diagram_at_word(terminal, hovered_word, cx)
+                                    .is_some()
+                                {
+                                    terminal_view.hover = Some(HoverTarget {
+                                        tooltip: mermaid_preview::MERMAID_TOOLTIP.to_string(),
+                                        hovered_word: hovered_word.clone(),
+                                    });
+                                    terminal_view.hover_tooltip_update = Task::ready(());
+                                    cx.notify();
+                                    return;
+                                }
                                 terminal_view.hover = None;
                                 terminal_view.hover_tooltip_update = hover_path_like_target(
                                     &workspace,
@@ -1454,6 +1474,19 @@ fn subscribe_for_terminal_events(
                 }
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
                     MaybeNavigationTarget::Url(url) => cx.open_url(url),
+                    // The terminal forgets the hovered word before opening it,
+                    // so go by the hover this view kept.
+                    MaybeNavigationTarget::PathLike(_)
+                        if let Some(diagram) = terminal_view
+                            .hover
+                            .as_ref()
+                            .filter(|hover| hover.tooltip == mermaid_preview::MERMAID_TOOLTIP)
+                            .and_then(|hover| {
+                                mermaid_preview::diagram_at_word(terminal, &hover.hovered_word, cx)
+                            }) =>
+                    {
+                        terminal_view.open_mermaid_diagram(diagram, window, cx)
+                    }
                     MaybeNavigationTarget::PathLike(path_like_target) => open_path_like_target(
                         &workspace,
                         terminal_view,
@@ -1649,6 +1682,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::copy_command_block))
             .on_action(cx.listener(TerminalView::rerun_command_block))
             .on_action(cx.listener(TerminalView::send_command_block_to_agent))
+            .on_action(cx.listener(TerminalView::preview_mermaid_diagram))
             .on_action(cx.listener(TerminalView::save_command_block_as_workflow))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(

@@ -985,6 +985,35 @@ pub(super) fn logical_lines(term: &Term<ZedListener>) -> Vec<usize> {
     logical_lines
 }
 
+/// SOLO: the terminal's text by logical line, rows the terminal wrapped joined
+/// back, each with the grid line it starts on.
+pub(super) fn text_lines(term: &Term<ZedListener>) -> Vec<(i32, String)> {
+    let grid = term.grid();
+    let last_column = term.last_column();
+    let mut lines = Vec::new();
+    let mut current: Option<(i32, String)> = None;
+    for line in term.topmost_line().0..=term.bottommost_line().0 {
+        let row = &grid[Line(line)];
+        let (_, text) = current.get_or_insert_with(|| (line, String::new()));
+        for column in 0..grid.columns() {
+            let cell = &row[Column(column)];
+            if !cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                text.push(cell.c);
+            }
+        }
+        if !row[last_column].flags.contains(Flags::WRAPLINE)
+            && let Some((start, text)) = current.take()
+        {
+            lines.push((start, text.trim_end().to_string()));
+        }
+    }
+    lines.extend(current.map(|(start, text)| (start, text.trim_end().to_string())));
+    lines
+}
+
 pub(super) fn grid_columns(term: &Term<ZedListener>) -> usize {
     term.grid().columns()
 }

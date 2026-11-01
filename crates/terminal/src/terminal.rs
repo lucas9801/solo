@@ -1,6 +1,7 @@
 mod mappings;
 
 mod alacritty;
+mod mermaid;
 mod pty_info;
 pub mod shell_integration;
 pub mod terminal_settings;
@@ -74,7 +75,7 @@ use crate::alacritty::{
     new_term,
     open_pty, pty_options, pty_term_config, resize, screen_lines, scroll_display, scroll_to_point,
     search_matches, selection_text, set_default_cursor_style, set_selection as set_term_selection,
-    styled_rows,
+    styled_rows, text_lines,
     shrink_to_used, spawn_event_loop, toggle_vi_mode as toggle_term_vi_mode, total_lines,
     update_selection as update_term_selection, update_selection_to_vi_cursor,
     update_vi_cursor_for_scroll, used_lines, vi_goto_point, vi_motion,
@@ -1781,6 +1782,23 @@ impl Terminal {
         }
     }
 
+    /// SOLO: the Mermaid diagram printed below a `mermaid` line, the one on
+    /// grid line `header_line` or, if that's `None`, the last one.
+    pub fn mermaid_diagram(&self, header_line: Option<i32>) -> Option<String> {
+        let lines = text_lines(&self.term.lock());
+        let texts: Vec<&str> = lines.iter().map(|(_, text)| text.as_str()).collect();
+        match header_line {
+            Some(header_line) => {
+                let ix = lines.iter().rposition(|(start, _)| *start <= header_line)?;
+                mermaid::diagram_after(&texts, ix)
+            }
+            None => (0..texts.len())
+                .rev()
+                .filter(|ix| mermaid::is_header(texts[*ix]))
+                .find_map(|ix| mermaid::diagram_after(&texts, ix)),
+        }
+    }
+
     /// Command blocks and working directory reported by the shell, if it runs
     /// Solo's shell integration.
     pub fn shell_integration(&self) -> &ShellIntegration {
@@ -1840,7 +1858,11 @@ impl Terminal {
             _ if !blocks_known => cursor_line,
             // The shell is waiting at this block's prompt.
             Some(block) if block.started_at.is_none() => block.prompt_line.min(cursor_line),
-            Some(block) if block.is_running() => cursor_line + 1,
+            // A running program's screen may be half redrawn (an agent's UI,
+            // a prompt), so keep its command line but not what it printed.
+            Some(block) if block.is_running() => {
+                block.output_line.unwrap_or(cursor_line + 1).min(cursor_line + 1)
+            }
             _ => cursor_line,
         };
         let start = end.saturating_sub(MAX_SAVED_ROWS);
@@ -6761,6 +6783,20 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_mermaid_diagram(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let output = "$ claude\r\n\u{25cf} mermaid\r\n  flowchart TB\r\n      A[\"\u{7f16}\u{8bd1}\"] --> B\r\n  done\r\n";
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(output.as_bytes(), cx));
+        cx.run_until_parked();
+        terminal.read_with(cx, |terminal, _| {
+            let expected = Some("flowchart TB\n    A[\"\u{7f16}\u{8bd1}\"] --> B".to_string());
+            assert_eq!(terminal.mermaid_diagram(None), expected);
+            assert_eq!(terminal.mermaid_diagram(Some(1)), expected);
+            assert_eq!(terminal.mermaid_diagram(Some(0)), None);
+        });
+    }
+
+    #[gpui::test]
     async fn test_clearing_scrollback_moves_blocks(cx: &mut TestAppContext) {
         let (terminal, cx) = init_terminal_test_with_window(cx, b"");
         let mut output = Vec::new();
@@ -6840,6 +6876,22 @@ mod tests {
         });
         // A terminal that already has output isn't restored into.
         assert!(!restored.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
+
+        // A program still running keeps its command line, not its screen.
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(
+                b"claude\r\n\x1b]633;E;claude\x07\x1b]133;C\x07Trust this folder?\r\n> No, exit",
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let snapshot = terminal
+            .read_with(cx, |terminal, _| terminal.session_snapshot())
+            .unwrap();
+        assert_eq!(
+            snapshot.rows,
+            ["$ ls", "\x1b[0;31mred\x1b[0m plain", "second", "$ claude"]
+        );
     }
 
     #[gpui::test]
