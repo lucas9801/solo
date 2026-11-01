@@ -60,6 +60,8 @@ pub struct TerminalSettings {
     pub open_links_on_click: bool,
     pub notify_long_commands_after_seconds: u64,
     pub program_notifications: bool,
+    pub restore_contents: bool,
+    pub agent_commands: Vec<String>,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -142,6 +144,8 @@ impl settings::Settings for TerminalSettings {
                 .notify_long_commands_after_seconds
                 .unwrap(),
             program_notifications: user_content.program_notifications.unwrap(),
+            restore_contents: user_content.restore_contents.unwrap(),
+            agent_commands: user_content.agent_commands.unwrap(),
             path_hyperlink_regexes: project_content
                 .path_hyperlink_regexes
                 .unwrap()

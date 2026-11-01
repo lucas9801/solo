@@ -983,6 +983,8 @@ impl VsCodeSettings {
             open_links_on_click: None,
             notify_long_commands_after_seconds: None,
             program_notifications: None,
+            restore_contents: None,
+            agent_commands: None,
             option_as_meta: self.read_bool("terminal.integrated.macOptionIsMeta"),
             project: self.project_terminal_settings_content(),
             scrollbar: None,

@@ -281,6 +281,18 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub program_notifications: Option<bool>,
+    /// Whether terminals show their previous contents and command blocks
+    /// again when Solo restarts. The contents are saved in Solo's data
+    /// directory.
+    ///
+    /// Default: true
+    pub restore_contents: Option<bool>,
+    /// Programs to treat as AI agents, besides the built-in ones (claude,
+    /// codex, gemini, aider, ...): their tab shows whether they're working,
+    /// waiting for you, done or failed.
+    ///
+    /// Default: []
+    pub agent_commands: Option<Vec<String>>,
 }
 
 crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
@@ -292,7 +304,8 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         default_width, default_height, max_scroll_history_lines, scroll_multiplier, toolbar,
         scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
         input_editor, compact_prompt, completions_as_you_type, open_links_on_click,
-        notify_long_commands_after_seconds, program_notifications,
+        notify_long_commands_after_seconds, program_notifications, restore_contents,
+        agent_commands,
     },
     defaults: {},
 });

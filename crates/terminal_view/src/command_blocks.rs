@@ -3,6 +3,8 @@
 use std::time::Duration;
 
 use gpui::{ClipboardItem, Context, Entity, Window, actions};
+use settings::Settings as _;
+use terminal::terminal_settings::TerminalSettings;
 use terminal::shell_integration::CommandBlock;
 use workspace::{Toast, Workspace, notifications::NotificationId};
 
@@ -29,6 +31,9 @@ actions!(
         /// Pastes the selected (or last) command block into the terminal
         /// running an AI agent, such as Claude Code.
         SendCommandBlockToAgent,
+        /// Saves the command of the selected (or last) command block as a
+        /// workflow.
+        SaveCommandBlockAsWorkflow,
     ]
 );
 
@@ -67,8 +72,9 @@ const AGENT_COMMANDS: &[&str] = &[
     "copilot",
 ];
 
-/// Whether `command` runs an AI agent (by its program name).
-pub(crate) fn is_agent_command(command: &str) -> bool {
+/// Whether `command` runs an AI agent (by its program name), one of the
+/// built-in ones or of `extra` (from the `terminal.agent_commands` setting).
+pub(crate) fn is_agent_command(command: &str, extra: &[String]) -> bool {
     let Some(program) = command.split_whitespace().next() else {
         return false;
     };
@@ -78,6 +84,7 @@ pub(crate) fn is_agent_command(command: &str) -> bool {
         .map(|stem| stem.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     AGENT_COMMANDS.contains(&name.as_str())
+        || extra.iter().any(|agent| agent.to_lowercase() == name)
 }
 
 /// Formats a command block for pasting into an AI prompt.
@@ -292,6 +299,33 @@ impl TerminalView {
         });
     }
 
+    pub(crate) fn save_command_block_as_workflow(
+        &mut self,
+        _: &SaveCommandBlockAsWorkflow,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.target_command_block(cx) else {
+            return;
+        };
+        let Some(command) = self.terminal.read(cx).command_block_command(ix) else {
+            return;
+        };
+        let message = match crate::input::workflows::save(command.trim()) {
+            Ok(()) => "Saved as a workflow; ctrl-shift-r in the input lists them".to_string(),
+            Err(error) => format!("Couldn't save the workflow: {error:#}"),
+        };
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                struct WorkflowSavedToast;
+                workspace.show_toast(
+                    Toast::new(NotificationId::unique::<WorkflowSavedToast>(), message).autohide(),
+                    cx,
+                );
+            });
+        }
+    }
+
     fn target_command_block_markdown(&self, cx: &Context<Self>) -> Option<String> {
         let ix = self.target_command_block(cx)?;
         let terminal = self.terminal.read(cx);
@@ -345,6 +379,7 @@ fn find_agent_terminal(
     this: &Entity<TerminalView>,
     cx: &gpui::App,
 ) -> Option<Entity<TerminalView>> {
+    let extra = &TerminalSettings::get_global(cx).agent_commands;
     let running_commands: Vec<(Entity<TerminalView>, String)> = terminal_views(workspace, cx)
         .into_iter()
         .filter(|view| view != this)
@@ -363,7 +398,7 @@ fn find_agent_terminal(
         .collect();
     running_commands
         .iter()
-        .find(|(_, command)| is_agent_command(command))
+        .find(|(_, command)| is_agent_command(command, extra))
         .or_else(|| (running_commands.len() == 1).then(|| &running_commands[0]))
         .map(|(view, _)| view.clone())
 }
@@ -432,11 +467,12 @@ mod tests {
 
     #[test]
     fn test_is_agent_command() {
-        assert!(is_agent_command("claude"));
-        assert!(is_agent_command("claude --resume"));
-        assert!(is_agent_command(r"C:\tools\codex.exe exec"));
-        assert!(!is_agent_command("cargo build"));
-        assert!(!is_agent_command(""));
+        assert!(is_agent_command("claude", &[]));
+        assert!(is_agent_command("claude --resume", &[]));
+        assert!(is_agent_command(r"C:\tools\codex.exe exec", &[]));
+        assert!(!is_agent_command("cargo build", &[]));
+        assert!(!is_agent_command("", &[]));
+        assert!(is_agent_command("my-agent run", &["My-Agent".to_string()]));
     }
 
     #[test]

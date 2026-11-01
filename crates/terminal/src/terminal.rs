@@ -29,7 +29,7 @@ use futures::StreamExt;
 use pty_info::{ProcessIdGetter, PtyProcessInfo};
 use serde::{Deserialize, Serialize};
 use settings::Settings;
-use shell_integration::ShellIntegration;
+use shell_integration::{SessionSnapshot, ShellIntegration};
 use task::{HideStrategy, Shell, ShellKind, SpawnInTerminal};
 use terminal_settings::{AlternateScroll, CursorShape as SettingsCursorShape, TerminalSettings};
 use theme::{ActiveTheme, Theme};
@@ -40,6 +40,7 @@ use util::{ResultExt as _, paths::PathStyle, truncate_and_trailoff};
 use std::os::unix::process::ExitStatusExt;
 use std::{
     borrow::Cow,
+    cell::Cell as StdCell,
     cmp::{self, min},
     fmt::{self, Display, Formatter},
     ops::{BitOr, BitOrAssign, Deref, Range as StdRange},
@@ -66,11 +67,14 @@ use crate::alacritty::current_child_signal_mask;
 use crate::alacritty::{
     AlacrittyCell, AlacrittyGridIterator, AlacrittyHyperlink, AlacrittySearch, AlacrittyTerm,
     AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
-    append_text_to_term, apply_config, clear_saved_screen, content_text, display_offset,
+    append_text_to_term, apply_config, clear_saved_screen, content_text, cursor_line,
+    display_offset,
     display_only_term_config, find_from_terminal_point, full_content_range, grid_columns,
-    history_size, last_non_empty_lines, lines_text, logical_lines, make_content, new_term,
+    history_size, is_blank, last_non_empty_lines, lines_text, logical_lines, make_content,
+    new_term,
     open_pty, pty_options, pty_term_config, resize, screen_lines, scroll_display, scroll_to_point,
     search_matches, selection_text, set_default_cursor_style, set_selection as set_term_selection,
+    styled_rows,
     shrink_to_used, spawn_event_loop, toggle_vi_mode as toggle_term_vi_mode, total_lines,
     update_selection as update_term_selection, update_selection_to_vi_cursor,
     update_vi_cursor_for_scroll, used_lines, vi_goto_point, vi_motion,
@@ -648,6 +652,8 @@ actions!(
     ]
 );
 
+/// SOLO: at most this many rows are saved to restore a terminal after a restart.
+const MAX_SAVED_ROWS: usize = 2_000;
 const DEBUG_TERMINAL_WIDTH: Pixels = px(500.);
 const DEBUG_TERMINAL_HEIGHT: Pixels = px(30.);
 const DEBUG_CELL_WIDTH: Pixels = px(5.);
@@ -679,6 +685,8 @@ pub enum Event {
     SelectionsChanged,
     NewNavigationTarget(Option<MaybeNavigationTarget>),
     Open(MaybeNavigationTarget),
+    /// SOLO: a command marked by shell integration started running.
+    CommandStarted,
     /// SOLO: a command marked by shell integration finished.
     CommandFinished,
     /// SOLO: a program asked for a desktop notification (OSC 9 or OSC 777).
@@ -1085,6 +1093,7 @@ impl TerminalBuilder {
             },
             child_exited: None,
             keyboard_input_sent: false,
+            last_sent_to_pty: StdCell::new(None),
             init_command_startup_marker: None,
             init_command_startup_tx: None,
             event_loop_task: Task::ready(Ok(())),
@@ -1376,6 +1385,7 @@ impl TerminalBuilder {
                 },
                 child_exited: None,
                 keyboard_input_sent: false,
+                last_sent_to_pty: StdCell::new(None),
                 init_command_startup_marker: None,
                 init_command_startup_tx: None,
                 event_loop_task: Task::ready(Ok(())),
@@ -1574,6 +1584,9 @@ pub struct Terminal {
     activation_script: Vec<String>,
     child_exited: Option<ExitStatus>,
     keyboard_input_sent: bool,
+    /// SOLO: when anything (keys, mouse, focus, a resize) last went to the
+    /// program, which usually answers by redrawing.
+    last_sent_to_pty: StdCell<Option<Instant>>,
     init_command_startup_marker: Option<String>,
     init_command_startup_tx: Option<Sender<()>>,
     event_loop_task: Task<Result<(), anyhow::Error>>,
@@ -1746,7 +1759,17 @@ impl Terminal {
                     mark,
                     alacritty_terminal::event::ShellMark::CommandFinished { .. }
                 );
+                let started = matches!(
+                    mark,
+                    alacritty_terminal::event::ShellMark::CommandExecuted
+                );
+                if matches!(mark, alacritty_terminal::event::ShellMark::HistoryCleared) {
+                    self.reset_cwd_history();
+                }
                 self.shell_integration.handle_mark(mark, line);
+                if started {
+                    cx.emit(Event::CommandStarted);
+                }
                 if finished {
                     cx.emit(Event::CommandFinished);
                 }
@@ -1799,6 +1822,88 @@ impl Terminal {
             return Some(String::new());
         }
         Some(lines_text(&self.term.lock(), output_line..=last_line))
+    }
+
+    /// The scrollback and its command blocks, to show them again after a
+    /// restart. The prompt the shell waits at is left out, as the restarted
+    /// shell prints its own.
+    pub fn session_snapshot(&self) -> Option<SessionSnapshot> {
+        if self.last_content.mode.contains(Modes::ALT_SCREEN) {
+            return None;
+        }
+        let term = self.term.lock();
+        let cursor_line = cursor_line(&term);
+        // Once the scrollback is full, evicting rows moves the rest without
+        // changing the blocks' lines, so they no longer say where blocks are.
+        let blocks_known = history_size(&term) < self.term_config.scrolling_history;
+        let end = match self.shell_integration.blocks().last() {
+            _ if !blocks_known => cursor_line,
+            // The shell is waiting at this block's prompt.
+            Some(block) if block.started_at.is_none() => block.prompt_line.min(cursor_line),
+            Some(block) if block.is_running() => cursor_line + 1,
+            _ => cursor_line,
+        };
+        let start = end.saturating_sub(MAX_SAVED_ROWS);
+        let mut rows = styled_rows(&term, start..end);
+        drop(term);
+        while rows.last().is_some_and(|row| row.trim().is_empty()) {
+            rows.pop();
+        }
+        if rows.is_empty() {
+            return None;
+        }
+        let blocks = if blocks_known {
+            self.shell_integration.saved_blocks(start..end)
+        } else {
+            Vec::new()
+        };
+        Some(SessionSnapshot { blocks, rows })
+    }
+
+    /// Writes a saved session into the terminal before the shell prints
+    /// anything, and restores its command blocks. Returns false, leaving the
+    /// terminal as it is, if the shell has printed already.
+    pub fn restore_session(&mut self, snapshot: &SessionSnapshot, cx: &mut Context<Self>) -> bool {
+        if snapshot.rows.is_empty() || self.shell_integration.is_active() {
+            return false;
+        }
+        let mut term = self.term.lock();
+        if !is_blank(&term) {
+            return false;
+        }
+        // Rows beyond what the scrollback keeps would be evicted while being
+        // written, moving the others away from the lines recorded for them.
+        let room = self
+            .term_config
+            .scrolling_history
+            .saturating_sub(screen_lines(&term));
+        let skipped = snapshot.rows.len().saturating_sub(room);
+        let mut processor = Processor::<StdSyncHandler>::new();
+        let mut row_lines = vec![0; skipped];
+        for row in &snapshot.rows[skipped..] {
+            row_lines.push(cursor_line(&term));
+            processor.advance(&mut *term, row.as_bytes());
+            processor.advance(&mut *term, b"\x1b[0m\r\n");
+        }
+        let last_line = cursor_line(&term).saturating_sub(1);
+        // Clearing the screen moves the rows into the scrollback, so the shell
+        // gets an empty screen, as it expects.
+        processor.advance(&mut *term, b"\x1b[2J\x1b[H");
+        drop(term);
+        let blocks: Vec<_> = snapshot
+            .blocks
+            .iter()
+            .filter(|block| block.prompt_line >= skipped)
+            .cloned()
+            .collect();
+        self.shell_integration.restore_blocks(
+            &blocks,
+            |line| row_lines.get(line).copied().unwrap_or(last_line),
+            last_line,
+        );
+        cx.emit(Event::Wakeup);
+        cx.notify();
+        true
     }
 
     /// Scrolls so that `line`, counted from the top of the scrollback, is on
@@ -2292,6 +2397,8 @@ impl Terminal {
         if !requires_resize {
             return;
         }
+        // The program redraws for the new size.
+        self.last_sent_to_pty.set(Some(Instant::now()));
 
         match self.events.back_mut() {
             Some(InternalEvent::Resize(pending_bounds)) => *pending_bounds = new_bounds,
@@ -2303,6 +2410,7 @@ impl Terminal {
     /// (This is a no-op for display-only terminals.)
     fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
         let input = input.into();
+        self.last_sent_to_pty.set(Some(Instant::now()));
         #[cfg(any(test, feature = "test-support"))]
         self.pty_write_log.borrow_mut().push(input.to_vec());
         if let TerminalType::Pty {
@@ -2453,6 +2561,12 @@ impl Terminal {
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_pty_write_log(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(self.pty_write_log.get_mut())
+    }
+
+    /// SOLO: when input, a focus change or a resize last went to the program,
+    /// so output right after it can be told apart from output of its own.
+    pub fn last_sent_to_pty(&self) -> Option<Instant> {
+        self.last_sent_to_pty.get()
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -6644,6 +6758,88 @@ mod tests {
                 Some("aaaaaaaaaabbbbbbbbbbcccccccccc")
             );
         });
+    }
+
+    #[gpui::test]
+    async fn test_clearing_scrollback_moves_blocks(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let mut output = Vec::new();
+        for _ in 0..3 {
+            output.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n");
+            output.extend_from_slice(b"\x1b]133;C\x07out\r\n\x1b]133;D;0\x07");
+        }
+        output.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(&output, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.shell_integration.blocks().len()),
+            4
+        );
+        // What `cls` sends: clear the screen (into the scrollback), then the
+        // scrollback, then the next prompt.
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"\x1b[H\x1b[2J\x1b[3J\x1b]133;A\x07$ \x1b]133;B\x07", cx)
+        });
+        cx.run_until_parked();
+        terminal.read_with(cx, |terminal, _| {
+            let blocks = terminal.shell_integration.blocks();
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].prompt_line, 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_session_snapshot_round_trip(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let mut output = Vec::new();
+        output.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n");
+        output.extend_from_slice(b"\x1b]633;E;ls\x07\x1b]133;C\x07");
+        output.extend_from_slice(b"\x1b[31mred\x1b[0m plain\r\nsecond\r\n");
+        output.extend_from_slice(b"\x1b]133;D;1\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(&output, cx));
+        cx.run_until_parked();
+        let snapshot = terminal
+            .read_with(cx, |terminal, _| terminal.session_snapshot())
+            .unwrap();
+        // The prompt the shell waits at is left out.
+        assert_eq!(
+            snapshot.rows,
+            ["$ ls", "\x1b[0;31mred\x1b[0m plain", "second"]
+        );
+        assert_eq!(snapshot.blocks.len(), 1);
+
+        let builder = cx.update(|window, cx| {
+            TerminalBuilder::new_display_only(
+                SettingsCursorShape::default(),
+                AlternateScroll::On,
+                None,
+                window.window_handle().window_id().as_u64(),
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+        });
+        let restored = cx.new(|cx| builder.subscribe(cx));
+        assert!(restored.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
+        restored.read_with(cx, |terminal, _| {
+            let blocks = terminal.shell_integration.blocks();
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].exit_code, Some(1));
+            assert_eq!(terminal.command_block_command(0).as_deref(), Some("ls"));
+            assert_eq!(
+                terminal.command_block_output(0).as_deref(),
+                Some("red plain\nsecond")
+            );
+            let term = terminal.term.lock();
+            use alacritty_terminal::index::{Column, Line, Point as AlacPoint};
+            assert_eq!(
+                term.grid()[Line(-2)][Column(0)].fg,
+                Color::Named(NamedColor::Red)
+            );
+            // The screen is left empty for the shell.
+            assert!(term.grid().cursor.point == AlacPoint::new(Line(0), Column(0)));
+        });
+        // A terminal that already has output isn't restored into.
+        assert!(!restored.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
     }
 
     #[gpui::test]

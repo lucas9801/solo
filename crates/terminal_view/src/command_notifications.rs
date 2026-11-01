@@ -95,6 +95,7 @@ impl TerminalView {
         if !TerminalSettings::get_global(cx).program_notifications || window.is_window_active() {
             return;
         }
+        let extra = &TerminalSettings::get_global(cx).agent_commands;
         let terminal = self.terminal.read(cx);
         let Some(command) = terminal
             .shell_integration()
@@ -102,12 +103,34 @@ impl TerminalView {
             .last()
             .filter(|block| block.is_running())
             .and_then(|block| block.command.clone())
-            .filter(|command| crate::command_blocks::is_agent_command(command))
+            .filter(|command| crate::command_blocks::is_agent_command(command, extra))
         else {
             return;
         };
         let title = command.lines().next().unwrap_or_default().to_string();
         let body = format!("Waiting for you · {}", terminal.title(true));
+        self.show_notification(title, body, window, cx);
+    }
+
+    /// An agent went quiet after working a while in the background: it's
+    /// probably done with its turn and waiting for the user.
+    pub(crate) fn notify_agent_stopped(
+        &mut self,
+        worked_for: Duration,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !TerminalSettings::get_global(cx).program_notifications
+            || window.is_window_active()
+            || worked_for < crate::agent_status::NOTIFY_AFTER_WORKING
+        {
+            return;
+        }
+        let Some((name, _)) = self.agent_status() else {
+            return;
+        };
+        let title = format!("{name} stopped working");
+        let body = format!("Waiting for you · {}", self.terminal.read(cx).title(true));
         self.show_notification(title, body, window, cx);
     }
 

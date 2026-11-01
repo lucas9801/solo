@@ -1,14 +1,17 @@
+mod agent_status;
 pub mod command_blocks;
 mod command_notifications;
 pub mod input;
 mod persistence;
+mod session_contents;
 pub mod terminal_element;
 pub mod terminal_panel;
 mod terminal_path_like_target;
 pub mod terminal_scrollbar;
 
 use command_blocks::{
-    CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput, SendCommandBlockToAgent,
+    CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput, SaveCommandBlockAsWorkflow,
+    SendCommandBlockToAgent,
 };
 use editor::{
     Editor, EditorSettings, actions::SelectAll, blink_manager::BlinkManager,
@@ -51,13 +54,13 @@ use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
 use ui::{
-    ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
+    CommonAnimationExt, ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
     prelude::*,
     scrollbars::{self, ScrollbarVisibility},
 };
 use util::ResultExt;
 use workspace::{
-    CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal, Pane,
+    CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal, OpenOptions, Pane,
     ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
     item::{
         HighlightedText, Item, ItemEvent, SerializableItem, TabContentParams, TabTooltipContent,
@@ -120,8 +123,23 @@ pub fn init(cx: &mut App) {
 
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         workspace.register_action(TerminalView::deploy);
+        workspace.register_action(open_workflows_file);
     })
     .detach();
+}
+
+fn open_workflows_file(
+    workspace: &mut Workspace,
+    _: &input::OpenWorkflowsFile,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    match input::workflows::ensure_file() {
+        Ok(path) => workspace
+            .open_abs_path(path, OpenOptions::default(), window, cx)
+            .detach_and_log_err(cx),
+        Err(error) => log::error!("failed to create the workflows file: {error:#}"),
+    }
 }
 
 pub struct BlockProperties {
@@ -173,6 +191,13 @@ pub struct TerminalView {
     running_command_ticker: Option<Task<()>>,
     /// SOLO: the Warp-style input editor, once the shell supports it.
     input: Option<Entity<TerminalInput>>,
+    /// SOLO: saves the contents to show them again after a restart.
+    save_contents: Task<()>,
+    save_contents_scheduled: bool,
+    /// SOLO: the item this terminal was restored from, whose saved contents
+    /// are deleted once this one's are saved.
+    restored_from: Option<workspace::ItemId>,
+    agent_activity: agent_status::AgentActivity,
     scroll_top: Pixels,
     scroll_handle: TerminalScrollHandle,
     ime_state: Option<ImeState>,
@@ -299,6 +324,14 @@ impl TerminalView {
             focus_out,
             cx.observe(&blink_manager, |_, _, cx| cx.notify()),
             cx.observe_global::<SettingsStore>(Self::settings_changed),
+            cx.on_app_quit(|terminal_view, cx| {
+                let contents = terminal_view.contents_to_save(cx);
+                cx.background_spawn(async move {
+                    if let Some(contents) = contents {
+                        contents.write().log_err();
+                    }
+                })
+            }),
         ];
 
         Self {
@@ -324,6 +357,10 @@ impl TerminalView {
             selected_command_block: None,
             running_command_ticker: None,
             input: None,
+            save_contents: Task::ready(()),
+            save_contents_scheduled: false,
+            restored_from: None,
+            agent_activity: Default::default(),
             scroll_top: Pixels::ZERO,
             scroll_handle,
             needs_serialize: false,
@@ -511,6 +548,49 @@ impl TerminalView {
         }
     }
 
+    /// SOLO: the contents to save so the terminal shows them again after a
+    /// restart. Without a snapshot (the terminal was cleared, or restoring is
+    /// turned off) the saved contents are deleted.
+    fn contents_to_save(&mut self, cx: &App) -> Option<session_contents::SaveContents> {
+        if !matches!(self.mode, TerminalMode::Standalone) {
+            return None;
+        }
+        let terminal = self.terminal.read(cx);
+        // A full-screen program's screen isn't the scrollback; keep what
+        // was saved before it started.
+        if terminal.task().is_some() || terminal.last_content.mode.contains(Modes::ALT_SCREEN) {
+            return None;
+        }
+        let snapshot = if TerminalSettings::get_global(cx).restore_contents {
+            terminal.session_snapshot()
+        } else {
+            None
+        };
+        Some(session_contents::SaveContents {
+            workspace_id: self.workspace_id?,
+            item_id: self.self_handle.entity_id().as_u64(),
+            snapshot,
+            replaces: self.restored_from.take(),
+        })
+    }
+
+    /// SOLO: saves the contents after `delay`, replacing a save scheduled
+    /// before.
+    fn schedule_save_contents(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        self.save_contents_scheduled = true;
+        self.save_contents = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let Ok(Some(contents)) = this.update(cx, |this, cx| {
+                this.save_contents_scheduled = false;
+                this.contents_to_save(cx)
+            }) else {
+                return;
+            };
+            cx.background_spawn(async move { contents.write().log_err() })
+                .await;
+        });
+    }
+
     pub(crate) fn mark_needs_serialize(&mut self, cx: &mut Context<Self>) {
         self.needs_serialize = true;
         cx.emit(ItemEvent::UpdateTab);
@@ -640,6 +720,10 @@ impl TerminalView {
                         .action("Copy Output", Box::new(CopyCommandBlockOutput))
                         .action("Copy Command and Output", Box::new(CopyCommandBlock))
                         .action("Send to AI Agent", Box::new(SendCommandBlockToAgent))
+                        .action(
+                            "Save Command as Workflow",
+                            Box::new(SaveCommandBlockAsWorkflow),
+                        )
                 })
                 .when(
                     !self.read_only && !matches!(self.mode, TerminalMode::Embedded { .. }),
@@ -1253,6 +1337,12 @@ fn subscribe_for_terminal_events(
 
             match event {
                 Event::Wakeup => {
+                    // SOLO: output since the last save isn't lost if Solo
+                    // doesn't quit cleanly.
+                    if !terminal_view.save_contents_scheduled {
+                        terminal_view.schedule_save_contents(Duration::from_secs(5), cx);
+                    }
+                    terminal_view.agent_output(window, cx);
                     cx.notify();
                     window.invalidate_character_coordinates();
                     cx.emit(Event::Wakeup);
@@ -1275,6 +1365,7 @@ fn subscribe_for_terminal_events(
                 }
 
                 Event::Bell => {
+                    terminal_view.agent_wants_attention(window, cx);
                     terminal_view.notify_agent_bell(window, cx);
                     terminal_view.has_bell = true;
                     if let TerminalBell::System = TerminalSettings::get_global(cx).bell {
@@ -1351,8 +1442,14 @@ fn subscribe_for_terminal_events(
                     }
                 }
 
-                Event::CommandFinished => terminal_view.notify_command_finished(window, cx),
+                Event::CommandStarted => terminal_view.update_agent_status(window, cx),
+                Event::CommandFinished => {
+                    terminal_view.update_agent_status(window, cx);
+                    terminal_view.notify_command_finished(window, cx);
+                    terminal_view.schedule_save_contents(Duration::from_secs(1), cx);
+                }
                 Event::Notification { title, body } => {
+                    terminal_view.agent_wants_attention(window, cx);
                     terminal_view.notify_from_program(title.clone(), body.clone(), window, cx)
                 }
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
@@ -1552,6 +1649,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::copy_command_block))
             .on_action(cx.listener(TerminalView::rerun_command_block))
             .on_action(cx.listener(TerminalView::send_command_block_to_agent))
+            .on_action(cx.listener(TerminalView::save_command_block_as_workflow))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 MouseButton::Right,
@@ -1649,16 +1747,38 @@ impl Render for TerminalView {
 impl Item for TerminalView {
     type Event = ItemEvent;
 
+    /// SOLO: a closed terminal's saved contents go too. A terminal moved to
+    /// another pane saves them again.
+    fn on_removed(&self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.workspace_id else {
+            return;
+        };
+        let contents = session_contents::SaveContents {
+            workspace_id,
+            item_id: cx.entity_id().as_u64(),
+            snapshot: None,
+            replaces: self.restored_from,
+        };
+        cx.background_spawn(async move { contents.write().log_err() })
+            .detach();
+    }
+
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent> {
         Some(TabTooltipContent::Custom(Box::new(Tooltip::element({
             let terminal = self.terminal().read(cx);
             let title = terminal.title(false);
             let pid = terminal.pid_getter()?.fallback_pid();
+            let agent_status = self
+                .agent_status()
+                .map(|(name, status)| format!("{name} · {}", status.label()));
 
             move |_, _| {
                 v_flex()
                     .gap_1()
                     .child(Label::new(title.clone()))
+                    .when_some(agent_status.clone(), |this, agent_status| {
+                        this.child(Label::new(agent_status).size(LabelSize::Small))
+                    })
                     .child(h_flex().flex_grow_1().child(Divider::horizontal()))
                     .child(
                         Label::new(format!("Process ID (PID): {}", pid))
@@ -1701,8 +1821,19 @@ impl Item for TerminalView {
                     }
                 }
             },
-            None => (IconName::Terminal, Color::Muted, None),
+            None => match self.agent_status() {
+                Some((_, status)) => {
+                    let (icon, color) = status.icon();
+                    (icon, color, None)
+                }
+                None => (IconName::Terminal, Color::Muted, None),
+            },
         };
+        let working = terminal.task().is_none()
+            && matches!(
+                self.agent_status(),
+                Some((_, agent_status::AgentStatus::Working))
+            );
 
         let self_handle = self.self_handle.clone();
         h_flex()
@@ -1724,7 +1855,14 @@ impl Item for TerminalView {
                             .when(rerun_button.is_some(), |this| {
                                 this.hover(|style| style.invisible().w_0())
                             })
-                            .child(Icon::new(icon).color(icon_color)),
+                            .map(|this| {
+                                let icon = Icon::new(icon).color(icon_color);
+                                if working {
+                                    this.child(icon.with_rotate_animation(2))
+                                } else {
+                                    this.child(icon)
+                                }
+                            }),
                     )
                     .when_some(rerun_button, |this, rerun_button| {
                         this.child(
@@ -2070,6 +2208,8 @@ impl SerializableItem for TerminalView {
         cx: &mut App,
     ) -> Task<anyhow::Result<()>> {
         let db = TerminalDb::global(cx);
+        cx.background_spawn(async move { session_contents::delete_stale() })
+            .detach();
         delete_unloaded_items(alive_items, workspace_id, "terminals", &db, cx)
     }
 
@@ -2146,9 +2286,20 @@ impl SerializableItem for TerminalView {
                 .ok()
                 .unwrap_or((None, None));
 
+            let contents = if cx.update(|_, cx| TerminalSettings::get_global(cx).restore_contents)? {
+                cx.background_spawn(async move { session_contents::load(workspace_id, item_id) })
+                    .await
+            } else {
+                None
+            };
             let terminal = project
                 .update(cx, |project, cx| project.create_terminal_shell(cwd, cx))
                 .await?;
+            // SOLO: written before the shell prints, which it does below them.
+            let had_contents = contents.is_some();
+            if let Some(contents) = contents {
+                terminal.update(cx, |terminal, cx| terminal.restore_session(&contents, cx));
+            }
             cx.update(|window, cx| {
                 cx.new(|cx| {
                     let mut view = TerminalView::new(
@@ -2161,6 +2312,11 @@ impl SerializableItem for TerminalView {
                     );
                     if custom_title.is_some() {
                         view.custom_title = custom_title;
+                    }
+                    // The workspace saves restored terminals under a new id.
+                    if had_contents {
+                        view.restored_from = Some(item_id);
+                        view.schedule_save_contents(Duration::from_secs(5), cx);
                     }
                     view
                 })
@@ -3589,6 +3745,64 @@ mod tests {
             terminal.last_content().terminal_bounds.bounds
         });
         (bounds, draw_size)
+    }
+
+    #[gpui::test]
+    async fn test_agent_status(cx: &mut TestAppContext) {
+        let (project, workspace) = init_test(cx).await;
+        let terminal = cx.new(|cx| {
+            terminal::TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                terminal::terminal_settings::AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        let (terminal_view, cx) = cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal.clone(),
+                workspace.downgrade(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+        let write = |bytes: &[u8], cx: &mut gpui::VisualTestContext| {
+            terminal.update(cx, |terminal, cx| terminal.write_raw_output(bytes, cx));
+            cx.run_until_parked();
+        };
+        let status = |cx: &mut gpui::VisualTestContext| {
+            terminal_view.read_with(cx, |view, _| {
+                view.agent_status()
+                    .map(|(name, status)| (name.to_string(), status))
+            })
+        };
+
+        write(b"\x1b]133;A\x07$ \x1b]133;B\x07", cx);
+        assert_eq!(status(cx), None);
+        // Output right after input or a resize is the program answering it.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        write(b"claude\r\n\x1b]633;E;claude\x07\x1b]133;C\x07spinner", cx);
+        assert_eq!(
+            status(cx),
+            Some(("claude".to_string(), agent_status::AgentStatus::Working))
+        );
+        write(b"\x07", cx);
+        assert_eq!(
+            status(cx),
+            Some(("claude".to_string(), agent_status::AgentStatus::NeedsInput))
+        );
+        write(b"\r\n\x1b]133;D;1\x07\x1b]133;A\x07$ \x1b]133;B\x07", cx);
+        assert_eq!(
+            status(cx),
+            Some(("claude".to_string(), agent_status::AgentStatus::Failed))
+        );
+        write(b"ls\r\n\x1b]633;E;ls\x07\x1b]133;C\x07", cx);
+        assert_eq!(status(cx), None);
     }
 
     #[gpui::test]
