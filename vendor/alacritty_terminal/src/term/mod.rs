@@ -1803,7 +1803,10 @@ impl<T: EventListener> Handler for Term<T> {
                 self.selection = None;
             },
             ansi::ClearMode::Saved if self.history_size() > 0 => {
+                let removed = self.history_size();
                 self.grid.clear_history();
+                self.event_proxy
+                    .send_event(Event::ShellMark { mark: ShellMark::HistoryCleared, line: removed });
 
                 self.vi_mode_cursor.point.line =
                     self.vi_mode_cursor.point.line.grid_clamp(self, Boundary::Cursor);
@@ -1838,6 +1841,8 @@ impl<T: EventListener> Handler for Term<T> {
         }
         self.active_charset = Default::default();
         self.cursor_style = None;
+        self.event_proxy
+            .send_event(Event::ShellMark { mark: ShellMark::HistoryCleared, line: usize::MAX });
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);

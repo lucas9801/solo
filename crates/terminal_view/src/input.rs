@@ -11,6 +11,8 @@ mod completion;
 mod history;
 mod powershell;
 mod spec;
+mod syntax;
+pub(crate) mod workflows;
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -20,7 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use editor::{
     CompletionProvider, ContextMenuOptions, ContextMenuPlacement, Editor, EditorElement,
-    EditorEvent, EditorStyle, Inlay,
+    EditorEvent, EditorStyle, HighlightKey, Inlay, MultiBufferOffset,
     actions::{MoveRight, MoveToEnd, ShowCompletions},
 };
 use gpui::{
@@ -38,7 +40,9 @@ use terminal::{Modes, Terminal, terminal_settings::TerminalSettings};
 use crate::{TerminalMode, TerminalView};
 use theme::ActiveTheme;
 use theme_settings::ThemeSettings;
-use ui::{Icon, IconName, IconSize, Label, LabelSize, h_flex, prelude::*, v_flex};
+use ui::{
+    Icon, IconButton, IconName, IconSize, Label, LabelSize, Tooltip, h_flex, prelude::*, v_flex,
+};
 use zed_actions::editor::{MoveDown, MoveUp};
 
 use completion::{CompletionKind, ShellFlavor, complete};
@@ -63,6 +67,13 @@ actions!(
         CompleteInput,
         /// Searches the command history, newest first.
         SearchInputHistory,
+        /// Lists the saved workflows to fill the input with one.
+        SearchWorkflows,
+        /// Opens the file with the saved workflows.
+        OpenWorkflowsFile,
+        /// Selects the first `{{argument}}` of the workflow just put in the
+        /// input; Tab then selects the next ones.
+        SelectWorkflowArgument,
     ]
 );
 
@@ -75,6 +86,11 @@ pub struct TerminalInput {
     history: Rc<RefCell<CommandHistory>>,
     /// Makes the next completion request list the history instead.
     searching_history: Rc<Cell<bool>>,
+    /// Makes the next completion request list the workflows instead.
+    searching_workflows: Rc<Cell<bool>>,
+    /// Whether the input holds a workflow whose `{{arguments}}` Tab selects,
+    /// rather than completing.
+    filling_workflow: bool,
     /// Completions just computed for Tab, reused when the menu opens.
     last_completions: Rc<RefCell<Option<CachedCompletions>>>,
     /// Shell whose history file has been loaded.
@@ -111,6 +127,7 @@ impl TerminalInput {
     ) -> Self {
         let history = Rc::new(RefCell::new(CommandHistory::default()));
         let searching_history = Rc::new(Cell::new(false));
+        let searching_workflows = Rc::new(Cell::new(false));
         let last_completions = Rc::new(RefCell::new(None));
         let editor = cx.new(|cx| {
             let mut editor = Editor::auto_height(1, 12, window, cx);
@@ -123,7 +140,7 @@ impl TerminalInput {
                 placement: Some(ContextMenuPlacement::Above),
             });
             editor.set_placeholder_text(
-                "Type a command, Tab to complete, or # to ask AI for one",
+                "Type a command, or # and what you want to do to ask AI",
                 window,
                 cx,
             );
@@ -131,6 +148,7 @@ impl TerminalInput {
                 terminal: terminal.downgrade(),
                 history: history.clone(),
                 searching_history: searching_history.clone(),
+                searching_workflows: searching_workflows.clone(),
                 last_completions: last_completions.clone(),
             })));
             editor
@@ -144,6 +162,8 @@ impl TerminalInput {
             editor,
             history,
             searching_history,
+            searching_workflows,
+            filling_workflow: false,
             last_completions,
             history_shell: None,
             suggestion: None,
@@ -225,7 +245,43 @@ impl TerminalInput {
                 self.history.borrow_mut().reset_navigation();
             }
             self.update_suggestion(cx);
+            self.highlight_syntax(cx);
         }
+    }
+
+    /// Highlights PowerShell commands, which Zed has no grammar for. Other
+    /// shells use the Shell Script language set on the buffer.
+    fn highlight_syntax(&mut self, cx: &mut Context<Self>) {
+        let shell = self.terminal.read(cx).shell_integration().shell();
+        if ShellFlavor::from_shell(shell) != ShellFlavor::PowerShell {
+            return;
+        }
+        let text = self.text(cx);
+        let tokens = syntax::powershell_tokens(&text);
+        let syntax_theme = cx.theme().syntax().clone();
+        self.editor.update(cx, |editor, cx| {
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            for (ix, kind) in syntax::TokenKind::ALL.into_iter().enumerate() {
+                let key = HighlightKey::TerminalInputSyntax(ix);
+                let ranges = tokens
+                    .iter()
+                    .filter(|(_, token_kind)| *token_kind == kind)
+                    .map(|(range, _)| {
+                        snapshot.anchor_after(MultiBufferOffset(range.start))
+                            ..snapshot.anchor_before(MultiBufferOffset(range.end))
+                    })
+                    .collect::<Vec<_>>();
+                let style = syntax_theme
+                    .highlight_id(kind.theme_name())
+                    .and_then(|id| syntax_theme.get(id as usize).copied());
+                match style {
+                    Some(style) if !ranges.is_empty() => {
+                        editor.highlight_text_key(key, ranges, style, false, cx)
+                    }
+                    _ => editor.clear_highlights(key, cx),
+                }
+            }
+        });
     }
 
     fn text(&self, cx: &App) -> String {
@@ -233,6 +289,7 @@ impl TerminalInput {
     }
 
     fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.filling_workflow = false;
         self.replacing_text = true;
         self.editor.update(cx, |editor, cx| {
             editor.set_text(text, window, cx);
@@ -448,6 +505,13 @@ impl TerminalInput {
 
     /// Like Warp: a single match is filled in right away, more open the menu.
     fn complete(&mut self, _: &CompleteInput, window: &mut Window, cx: &mut Context<Self>) {
+        // A workflow's `{{argument}}`s are selected one after another.
+        if self.filling_workflow {
+            if self.select_next_placeholder(window, cx) {
+                return;
+            }
+            self.filling_workflow = false;
+        }
         let integration = self.terminal.read(cx).shell_integration();
         let shell = integration.shell().map(str::to_string);
         let cwd = integration.working_directory().cloned();
@@ -510,21 +574,70 @@ impl TerminalInput {
             inserted.push(' ');
         }
         let new_text = format!("{}{}{}", &text[..start], inserted, &text[end..]);
-        let cursor = start + inserted.len();
-        let before_cursor = &new_text[..cursor];
-        let row = before_cursor.matches('\n').count() as u32;
-        let column = (cursor - before_cursor.rfind('\n').map_or(0, |ix| ix + 1)) as u32;
+        let point = point_at(&new_text, start + inserted.len());
         self.replacing_text = true;
         self.editor.update(cx, |editor, cx| {
             editor.set_text(new_text.as_str(), window, cx);
             editor.change_selections(Default::default(), window, cx, |selections| {
-                let point = language::Point::new(row, column);
                 selections.select_ranges([point..point]);
             });
         });
         self.replacing_text = false;
         self.history.borrow_mut().reset_navigation();
         self.update_suggestion(cx);
+    }
+
+    fn select_workflow_argument(
+        &mut self,
+        _: &SelectWorkflowArgument,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.filling_workflow = self.select_next_placeholder(window, cx);
+    }
+
+    fn select_next_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.editor.update(cx, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            let head = editor
+                .selections
+                .newest::<language::Point>(&snapshot)
+                .head();
+            let buffer = editor.buffer().read(cx).snapshot(cx);
+            let text = buffer.text();
+            let cursor = buffer.point_to_offset(head).0;
+            let Some(range) = workflows::next_placeholder(&text, cursor) else {
+                return false;
+            };
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections
+                    .select_ranges([point_at(&text, range.start)..point_at(&text, range.end)]);
+            });
+            true
+        })
+    }
+
+    fn search_workflows(
+        &mut self,
+        _: &SearchWorkflows,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.searching_workflows.set(true);
+        self.editor.update(cx, |editor, cx| {
+            window.focus(&editor.focus_handle(cx), cx);
+            editor.show_completions(&ShowCompletions, window, cx)
+        });
+    }
+
+    /// Starts a `#` request in the input, keeping what was typed as its text.
+    fn start_ai_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.text(cx);
+        if !text.trim_start().starts_with('#') {
+            self.set_text(&format!("# {}", text.trim_start()), window, cx);
+        }
+        let focus_handle = self.editor.focus_handle(cx);
+        window.focus(&focus_handle, cx);
     }
 
     fn search_history(
@@ -628,6 +741,8 @@ impl Render for TerminalInput {
             .on_action(cx.listener(Self::copy_input_or_terminal))
             .on_action(cx.listener(Self::complete))
             .on_action(cx.listener(Self::search_history))
+            .on_action(cx.listener(Self::search_workflows))
+            .on_action(cx.listener(Self::select_workflow_argument))
             .w_full()
             .px_2()
             .pt_1()
@@ -700,6 +815,33 @@ impl Render for TerminalInput {
                                 .size(LabelSize::XSmall)
                                 .color(Color::Error)
                                 .truncate(),
+                        )
+                    })
+                    .when(!running, |this| {
+                        this.child(div().flex_1()).child(
+                            h_flex()
+                                .gap_0p5()
+                                .child(
+                                    IconButton::new("ask-ai", IconName::Sparkle)
+                                        .icon_size(IconSize::XSmall)
+                                        .icon_color(Color::Muted)
+                                        .tooltip(Tooltip::text("Ask AI for a command (#)"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.start_ai_request(window, cx)
+                                        })),
+                                )
+                                .child(
+                                    IconButton::new("workflows", IconName::BoltOutlined)
+                                        .icon_size(IconSize::XSmall)
+                                        .icon_color(Color::Muted)
+                                        .tooltip(Tooltip::for_action_title(
+                                            "Workflows",
+                                            &SearchWorkflows,
+                                        ))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.search_workflows(&SearchWorkflows, window, cx)
+                                        })),
+                                ),
                         )
                     }),
             )
@@ -842,6 +984,7 @@ struct ShellCompletionProvider {
     terminal: gpui::WeakEntity<Terminal>,
     history: Rc<RefCell<CommandHistory>>,
     searching_history: Rc<Cell<bool>>,
+    searching_workflows: Rc<Cell<bool>>,
     last_completions: Rc<RefCell<Option<CachedCompletions>>>,
 }
 
@@ -889,6 +1032,86 @@ impl ShellCompletionProvider {
     }
 }
 
+impl ShellCompletionProvider {
+    /// Saved workflows, replacing the whole input, then an entry to edit them.
+    fn workflow_completions(&self, buffer: &Entity<Buffer>, cx: &App) -> CompletionResponse {
+        let shell = self.terminal.upgrade().and_then(|terminal| {
+            terminal
+                .read(cx)
+                .shell_integration()
+                .shell()
+                .map(str::to_string)
+        });
+        let snapshot = buffer.read(cx).snapshot();
+        let start = snapshot.anchor_before(0);
+        let end = snapshot.anchor_after(snapshot.len());
+        let completion =
+            |label: String,
+             new_text: String,
+             documentation: Option<String>,
+             icon: IconName,
+             confirm: Option<CompletionConfirm>| project::Completion {
+                replace_range: start..end,
+                new_text,
+                label: CodeLabel::plain(label, None),
+                documentation: documentation
+                    .map(|text| CompletionDocumentation::MultiLinePlainText(text.into())),
+                source: CompletionSource::Custom,
+                icon_path: Some(icon.path().into()),
+                icon_color: None,
+                match_start: Some(start),
+                snippet_deduplication_key: None,
+                insert_text_mode: None,
+                confirm,
+                group: None,
+            };
+        let mut completions: Vec<_> = workflows::load(ShellFlavor::from_shell(shell.as_deref()))
+            .into_iter()
+            .map(|workflow| {
+                let documentation = match &workflow.description {
+                    Some(description) => format!("{}\n\n{description}", workflow.command),
+                    None => workflow.command.clone(),
+                };
+                // Select the first argument once the command is in.
+                let confirm = workflows::next_placeholder(&workflow.command, 0).map(|_| {
+                    Arc::new(|_, window: &mut Window, cx: &mut App| {
+                        window.dispatch_action(Box::new(SelectWorkflowArgument), cx);
+                        false
+                    }) as CompletionConfirm
+                });
+                completion(
+                    workflow.name,
+                    workflow.command,
+                    Some(documentation),
+                    IconName::BoltOutlined,
+                    confirm,
+                )
+            })
+            .collect();
+        completions.push(completion(
+            "Edit workflows…".to_string(),
+            snapshot.text(),
+            Some(format!(
+                "Opens {} to add, change or remove workflows.",
+                workflows::workflows_file().display()
+            )),
+            IconName::Pencil,
+            Some(Arc::new(|_, window: &mut Window, cx: &mut App| {
+                window.dispatch_action(Box::new(OpenWorkflowsFile), cx);
+                false
+            })),
+        ));
+        CompletionResponse {
+            completions,
+            display_options: CompletionDisplayOptions::default(),
+            is_incomplete: false,
+        }
+    }
+}
+
+type CompletionConfirm =
+    Arc<dyn Send + Sync + Fn(project::CompletionIntent, &mut Window, &mut App) -> bool>;
+
 impl CompletionProvider for ShellCompletionProvider {
     fn completions(
         &self,
@@ -900,6 +1123,9 @@ impl CompletionProvider for ShellCompletionProvider {
     ) -> Task<Result<Vec<CompletionResponse>>> {
         if self.searching_history.replace(false) {
             return Task::ready(Ok(vec![self.history_completions(buffer, cx)]));
+        }
+        if self.searching_workflows.replace(false) {
+            return Task::ready(Ok(vec![self.workflow_completions(buffer, cx)]));
         }
         let Some(terminal) = self.terminal.upgrade() else {
             return Task::ready(Ok(Vec::new()));
@@ -998,4 +1224,11 @@ fn completion_icon(kind: CompletionKind) -> IconName {
         CompletionKind::File => IconName::File,
         CompletionKind::Other => IconName::Sparkle,
     }
+}
+
+fn point_at(text: &str, offset: usize) -> language::Point {
+    let before = &text[..offset];
+    let row = before.matches('\n').count() as u32;
+    let column = (offset - before.rfind('\n').map_or(0, |ix| ix + 1)) as u32;
+    language::Point::new(row, column)
 }

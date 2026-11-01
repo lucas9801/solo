@@ -86,6 +86,10 @@ pub enum ShellMark {
     CommandLine(String),
     /// `OSC 633 ; P ; key=value`: a property of the shell, unescaped.
     Property { key: String, value: String },
+    /// Not a mark: the top rows of the scrollback were deleted (by `CSI 3 J`,
+    /// or all of them by a reset), as many as the event's line says. Rows
+    /// counted from the top move up by as much.
+    HistoryCleared,
 }
 
 impl Debug for Event {

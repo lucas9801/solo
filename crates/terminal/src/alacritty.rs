@@ -2,14 +2,20 @@
 use std::num::NonZeroU32;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
-use std::{borrow::Cow, io, ops::RangeInclusive, path::PathBuf, sync::Arc};
+use std::{
+    borrow::Cow,
+    io,
+    ops::{Range as StdRange, RangeInclusive},
+    path::PathBuf,
+    sync::Arc,
+};
 
 mod hyperlinks;
 
 use alacritty_terminal::{
     event::{Event as AlacTermEvent, EventListener, Notify, WindowSize},
     event_loop::{EventLoop, Msg, Notifier},
-    grid::{Dimensions, Grid, GridIterator, Row, Scroll as AlacScroll},
+    grid::{Dimensions, Grid, GridCell as _, GridIterator, Row, Scroll as AlacScroll},
     index::{Boundary, Column, Direction as AlacDirection, Line, Point as AlacPoint},
     selection::{
         Selection as AlacSelection, SelectionRange as AlacSelectionRange,
@@ -1002,6 +1008,107 @@ pub(super) fn lines_text(term: &Term<ZedListener>, lines: RangeInclusive<usize>)
     )
     .trim_end()
     .to_string()
+}
+
+/// SOLO: the row the cursor is on, counted from the top of the scrollback.
+pub(super) fn cursor_line(term: &Term<ZedListener>) -> usize {
+    term.grid().history_size() + term.grid().cursor.point.line.0.max(0) as usize
+}
+
+/// SOLO: whether nothing has been printed yet.
+pub(super) fn is_blank(term: &Term<ZedListener>) -> bool {
+    let grid = term.grid();
+    grid.history_size() == 0
+        && grid.cursor.point == AlacPoint::new(Line(0), Column(0))
+        && (0..grid.screen_lines() as i32).all(|line| {
+            grid[Line(line)][..Column(grid.columns())]
+                .iter()
+                .all(|cell| cell.is_empty())
+        })
+}
+
+/// SOLO: the given rows, counted from the top of the scrollback, as text with
+/// SGR escapes for their colors and styles, to be written into a terminal
+/// again. Blanks at the end of each row are left out.
+pub(super) fn styled_rows(term: &Term<ZedListener>, rows: StdRange<usize>) -> Vec<String> {
+    let grid = term.grid();
+    let history_size = grid.history_size() as i32;
+    rows.map(|row| {
+        let line = Line(i32::try_from(row).unwrap_or(i32::MAX) - history_size);
+        if line < term.topmost_line() || line > term.bottommost_line() {
+            return String::new();
+        }
+        let cells = &grid[line][..Column(grid.columns())];
+        let len = cells
+            .iter()
+            .rposition(|cell| !cell.is_empty() && cell.c != '\t')
+            .map_or(0, |ix| ix + 1);
+        let mut text = String::new();
+        let mut current_style = String::new();
+        for cell in &cells[..len] {
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let style = sgr(cell);
+            if style != current_style {
+                text.push_str(if style.is_empty() { "\x1b[0m" } else { &style });
+                current_style = style;
+            }
+            text.push(if cell.c == '\t' { ' ' } else { cell.c });
+            if let Some(zerowidth) = cell.zerowidth() {
+                text.extend(zerowidth);
+            }
+        }
+        if !current_style.is_empty() {
+            text.push_str("\x1b[0m");
+        }
+        text
+    })
+    .collect()
+}
+
+/// The SGR escape that sets a cell's style, or nothing for the default one.
+fn sgr(cell: &AlacCell) -> String {
+    let mut codes = Vec::new();
+    for (flag, code) in [
+        (Flags::BOLD, "1"),
+        (Flags::DIM, "2"),
+        (Flags::ITALIC, "3"),
+        (Flags::ALL_UNDERLINES, "4"),
+        (Flags::INVERSE, "7"),
+        (Flags::HIDDEN, "8"),
+        (Flags::STRIKEOUT, "9"),
+    ] {
+        if cell.flags.intersects(flag) {
+            codes.push(code.to_string());
+        }
+    }
+    codes.extend(sgr_color(cell.fg, 30));
+    codes.extend(sgr_color(cell.bg, 40));
+    if codes.is_empty() {
+        String::new()
+    } else {
+        format!("\x1b[0;{}m", codes.join(";"))
+    }
+}
+
+/// SGR parameters for a color; `base` is 30 for the foreground, 40 for the
+/// background.
+fn sgr_color(color: Color, base: u16) -> Option<String> {
+    match color {
+        Color::Named(named) => match named as u16 {
+            index @ 0..=7 => Some((base + index).to_string()),
+            index @ 8..=15 => Some((base + 60 + index - 8).to_string()),
+            // The dim variants, which follow Foreground, Background and Cursor.
+            index @ 259..=266 => Some((base + index - 259).to_string()),
+            _ => None,
+        },
+        Color::Indexed(index) => Some(format!("{};5;{index}", base + 8)),
+        Color::Spec(rgb) => Some(format!("{};2;{};{};{}", base + 8, rgb.r, rgb.g, rgb.b)),
+    }
 }
 
 pub(super) fn total_lines(term: &Term<ZedListener>) -> usize {
