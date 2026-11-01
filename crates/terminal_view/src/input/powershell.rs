@@ -248,6 +248,10 @@ impl Process {
     }
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "completion helpers only run on background threads"
+)]
 fn start_process(program: &str) -> Result<Process> {
     let script: Vec<u8> = SCRIPT.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let mut command = Command::new(program);

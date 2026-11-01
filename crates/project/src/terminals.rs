@@ -444,14 +444,13 @@ impl Project {
                                 if settings.input_editor && settings.compact_prompt {
                                     env.insert("SOLO_COMPACT_PROMPT".to_string(), "1".to_string());
                                 }
-                                (
-                                    terminal::shell_integration::integrate_shell(
-                                        settings.shell,
-                                        &shell_program,
-                                        path_style.is_windows(),
-                                    ),
-                                    env,
-                                )
+                                let shell = terminal::shell_integration::integrate_shell(
+                                    settings.shell,
+                                    &shell_program,
+                                    path_style.is_windows(),
+                                    &mut env,
+                                );
+                                (shell, env)
                             }
                             None => (settings.shell, env),
                         }

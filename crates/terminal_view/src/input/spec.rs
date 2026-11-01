@@ -462,7 +462,7 @@ fn suggestion_item(suggestion: Suggestion, default_kind: CompletionKind) -> Comp
 
 /// Stable sort, most important first.
 fn sort_by_priority<T>(items: &mut [T], priority: impl Fn(&T) -> Priority) {
-    items.sort_by(|a, b| priority(b).cmp(&priority(a)));
+    items.sort_by_key(|item| std::cmp::Reverse(priority(item)));
 }
 
 #[cfg(test)]

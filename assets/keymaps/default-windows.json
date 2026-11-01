@@ -1411,6 +1411,7 @@
       "shift-enter": "editor::Newline",
       "tab": "terminal::CompleteInput",
       "ctrl-r": "terminal::SearchInputHistory",
+      "ctrl-shift-r": "terminal::SearchWorkflows",
       "up": "terminal::InputHistoryPrevious",
       "down": "terminal::InputHistoryNext",
       "right": "terminal::AcceptInputSuggestion",
@@ -1442,6 +1443,7 @@
     "bindings": {
       "escape": "terminal::ClearCommandBlockSelection",
       "alt-enter": "terminal::SendCommandBlockToAgent",
+      "ctrl-s": "terminal::SaveCommandBlockAsWorkflow",
       "enter": "terminal::RerunCommandBlock",
       "ctrl-c": "terminal::CopyCommandBlock",
       "ctrl-alt-c": "terminal::CopyCommandBlockOutput",

@@ -1392,7 +1392,7 @@ mod tests {
     impl Global for InstallOverride {}
 
     #[gpui::test]
-    fn test_auto_update_defaults_to_true(cx: &mut TestAppContext) {
+    fn test_auto_update_defaults_to_false(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let mut store = SettingsStore::new(cx, &settings::default_settings());
             store
@@ -1402,11 +1402,13 @@ mod tests {
                 .set_user_settings("{}", cx)
                 .expect("Unable to set user settings");
             cx.set_global(store);
-            assert!(AutoUpdateSetting::get_global(cx).0);
+            // SOLO: updates would come from Zed.
+            assert!(!AutoUpdateSetting::get_global(cx).0);
         });
     }
 
     #[gpui::test]
+    #[ignore = "SOLO: Solo never polls for updates"]
     async fn test_auto_update_downloads(cx: &mut TestAppContext) {
         cx.background_executor.allow_parking();
         zlog::init_test();

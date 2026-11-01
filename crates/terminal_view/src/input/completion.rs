@@ -100,7 +100,21 @@ pub fn complete(
             + input[cursor..]
                 .find(char::is_whitespace)
                 .unwrap_or(input.len() - cursor);
-        let texts: Vec<&str> = tokens.iter().map(|token| token.text).collect();
+        let mut texts: Vec<&str> = tokens.iter().map(|token| token.text).collect();
+        // git aliases complete like the commands they stand for.
+        let is_git = spec::command_name(texts[0]).as_deref() == Some("git");
+        let git_aliases = if is_git && tokens.len() > 1 {
+            git_aliases(cwd.as_deref())
+        } else {
+            Vec::new()
+        };
+        if let Some((_, expansion)) = texts
+            .get(1)
+            .filter(|_| texts.len() > 2)
+            .and_then(|alias| git_aliases.iter().find(|(name, _)| name == alias))
+        {
+            texts.splice(1..2, expansion.split_whitespace());
+        }
 
         if tokens.len() > 1
             && let Some(plan) = spec::plan(&texts, flavor)
@@ -123,6 +137,19 @@ pub fn complete(
             }
             if plan.commands {
                 items.extend(command_completions(prefix, shell.as_deref(), flavor));
+            }
+            if tokens.len() == 2 {
+                items.extend(
+                    git_aliases
+                        .iter()
+                        .filter(|(name, _)| name.starts_with(prefix))
+                        .map(|(name, expansion)| CompletionItem {
+                            text: name.clone(),
+                            label: name.clone(),
+                            kind: CompletionKind::Subcommand,
+                            detail: Some(format!("Alias for {expansion}")),
+                        }),
+                );
             }
             return Ok(CompletionSet {
                 start,
@@ -192,7 +219,14 @@ async fn run_generator(
         // one.
         ShellFlavor::PowerShell if looks_posix(command) => posix_shell_for_windows(),
         ShellFlavor::PowerShell => None,
-        ShellFlavor::Posix => Some(PathBuf::from(shell.unwrap_or("sh"))),
+        // Generators are POSIX shell; fish isn't.
+        ShellFlavor::Posix => Some(PathBuf::from(
+            shell
+                .filter(|shell| {
+                    Path::new(shell).file_stem().and_then(|stem| stem.to_str()) != Some("fish")
+                })
+                .unwrap_or("sh"),
+        )),
     };
     match posix_shell {
         Some(program) => {
@@ -278,8 +312,54 @@ fn posix_shell_for_windows() -> Option<PathBuf> {
         .clone()
 }
 
+/// The user's git aliases, as (name, expansion), except shell ones (`!...`).
+/// They're read again at most every few seconds, not on every keystroke.
+fn git_aliases(cwd: Option<&Path>) -> Vec<(String, String)> {
+    type Cache = Option<(Option<PathBuf>, Instant, Vec<(String, String)>)>;
+    static CACHE: std::sync::Mutex<Cache> = std::sync::Mutex::new(None);
+    const MAX_AGE: Duration = Duration::from_secs(10);
+
+    let cwd = cwd.map(Path::to_path_buf);
+    if let Ok(cache) = CACHE.lock()
+        && let Some((cached_cwd, read_at, aliases)) = cache.as_ref()
+        && *cached_cwd == cwd
+        && read_at.elapsed() < MAX_AGE
+    {
+        return aliases.clone();
+    }
+    let mut command = Command::new("git");
+    command.args(["config", "--get-regexp", r"^alias\."]);
+    if let Some(cwd) = &cwd {
+        command.current_dir(cwd);
+    }
+    let aliases = run_with_timeout(command, Duration::from_secs(2))
+        .map(|output| parse_git_aliases(&output))
+        .unwrap_or_default();
+    if let Ok(mut cache) = CACHE.lock() {
+        *cache = Some((cwd, Instant::now(), aliases.clone()));
+    }
+    aliases
+}
+
+fn parse_git_aliases(output: &str) -> Vec<(String, String)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (key, expansion) = line.split_once(' ')?;
+            let name = key.strip_prefix("alias.")?;
+            let expansion = expansion.trim();
+            (!expansion.starts_with('!') && !expansion.is_empty())
+                .then(|| (name.to_string(), expansion.to_string()))
+        })
+        .collect()
+}
+
 /// Runs `command` and returns its stdout, or `None` if it fails or takes
 /// longer than `timeout`.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "completion helpers only run on background threads"
+)]
 pub(super) fn run_with_timeout(mut command: Command, timeout: Duration) -> Option<String> {
     command
         .stdin(Stdio::null())
@@ -569,6 +649,19 @@ pub fn utf16_to_byte(text: &str, utf16_offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_git_aliases() {
+        assert_eq!(
+            parse_git_aliases(
+                "alias.co checkout\nalias.lg log --oneline --graph\nalias.up !git pull\n"
+            ),
+            vec![
+                ("co".to_string(), "checkout".to_string()),
+                ("lg".to_string(), "log --oneline --graph".to_string()),
+            ]
+        );
+    }
 
     fn complete_now(input: &str, cwd: Option<&Path>) -> CompletionSet {
         futures::executor::block_on(complete_inner(input, cwd))
