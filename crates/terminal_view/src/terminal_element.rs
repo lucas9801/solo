@@ -1352,8 +1352,10 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        #[cfg(test)]
+        let prepaint_start = Instant::now();
         let rem_size = self.rem_size(cx);
-        self.interactivity.prepaint(
+        let layout = self.interactivity.prepaint(
             global_id,
             inspector_id,
             bounds,
@@ -1773,7 +1775,10 @@ impl Element for TerminalElement {
                     command_blocks,
                 }
             },
-        )
+        );
+        #[cfg(test)]
+        test_stats::record_prepaint(self.terminal.entity_id(), prepaint_start.elapsed());
+        layout
     }
 
     fn paint(
@@ -2472,6 +2477,32 @@ fn paint_sticky_command_header(
                 cx,
             )
             .log_err();
+    }
+}
+
+/// SOLO: how often each terminal was laid out, for tests that check what
+/// output makes the window redraw.
+#[cfg(test)]
+pub(crate) mod test_stats {
+    use std::{cell::RefCell, collections::HashMap, time::Duration};
+
+    use gpui::EntityId;
+
+    thread_local! {
+        static PREPAINTS: RefCell<HashMap<EntityId, (usize, Duration)>> = Default::default();
+    }
+
+    pub(crate) fn record_prepaint(terminal: EntityId, took: Duration) {
+        PREPAINTS.with_borrow_mut(|prepaints| {
+            let entry = prepaints.entry(terminal).or_default();
+            entry.0 += 1;
+            entry.1 += took;
+        });
+    }
+
+    /// Layouts of `terminal`'s element since the last call, and their total time.
+    pub(crate) fn take_prepaints(terminal: EntityId) -> (usize, Duration) {
+        PREPAINTS.with_borrow_mut(|prepaints| prepaints.remove(&terminal).unwrap_or_default())
     }
 }
 

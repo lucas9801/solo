@@ -1419,6 +1419,15 @@
     },
   },
   {
+    // SOLO: sending code to the AI agent running in a terminal.
+    "context": "Editor && mode == full",
+    "bindings": {
+      "ctrl-alt-k": "terminal::SendSelectionToAgent",
+      "ctrl-alt-shift-k": ["terminal::SendSelectionToAgent", { "choose_terminal": true }],
+      "ctrl-alt-shift-m": "terminal::SendDiagnosticsToAgent",
+    },
+  },
+  {
     "context": "AgentPanel > Terminal",
     "use_key_equivalents": true,
     "bindings": {

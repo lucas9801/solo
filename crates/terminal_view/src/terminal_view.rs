@@ -1,15 +1,26 @@
+mod agent_context;
+mod agent_resume;
+mod agent_session;
 mod agent_status;
+mod agent_turns;
+pub mod agent_tasks;
 pub mod command_blocks;
 mod command_notifications;
+mod follow_working_directory;
 pub mod input;
 mod mermaid_preview;
+#[cfg(test)]
+mod output_perf_tests;
 mod persistence;
+mod running_program;
 mod session_contents;
+mod tab_title;
 pub mod terminal_element;
 pub mod terminal_panel;
 mod terminal_path_like_target;
 pub mod terminal_scrollbar;
 
+pub use agent_status::AgentTurnEvent;
 use command_blocks::{
     CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput, SaveCommandBlockAsWorkflow,
     SendCommandBlockToAgent,
@@ -55,7 +66,7 @@ use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
 use ui::{
-    CommonAnimationExt, ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
+    ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
     prelude::*,
     scrollbars::{self, ScrollbarVisibility},
 };
@@ -119,6 +130,10 @@ pub struct RenameTerminal;
 pub fn init(cx: &mut App) {
     terminal_panel::init(cx);
     command_notifications::init(cx);
+    follow_working_directory::init(cx);
+    agent_tasks::init(cx);
+    agent_turns::init(cx);
+    agent_context::init(cx);
 
     register_serializable_item::<TerminalView>(cx);
 
@@ -199,6 +214,14 @@ pub struct TerminalView {
     /// are deleted once this one's are saved.
     restored_from: Option<workspace::ItemId>,
     agent_activity: agent_status::AgentActivity,
+    /// SOLO: the agent session saved to offer continuing after a restart.
+    agent_resume: agent_resume::AgentResumeState,
+    /// SOLO: the session of the agent the terminal runs, from the agent's records.
+    agent_session: agent_session::AgentSessionBinding,
+    /// SOLO: what the tab showed when output last updated it.
+    shown_tab: Option<ShownTab>,
+    /// SOLO: what the tab title caches.
+    tab_title: tab_title::TitleState,
     scroll_top: Pixels,
     scroll_handle: TerminalScrollHandle,
     ime_state: Option<ImeState>,
@@ -207,6 +230,15 @@ pub struct TerminalView {
     rename_editor_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
+}
+
+/// SOLO: what a terminal's tab shows, see `update_tab_after_output`.
+#[derive(PartialEq)]
+struct ShownTab {
+    title: String,
+    task_status: Option<TaskStatus>,
+    agent_status: Option<agent_status::AgentStatus>,
+    has_bell: bool,
 }
 
 #[derive(Default, Clone)]
@@ -362,6 +394,10 @@ impl TerminalView {
             save_contents_scheduled: false,
             restored_from: None,
             agent_activity: Default::default(),
+            agent_resume: Default::default(),
+            agent_session: Default::default(),
+            shown_tab: None,
+            tab_title: Default::default(),
             scroll_top: Pixels::ZERO,
             scroll_handle,
             needs_serialize: false,
@@ -619,7 +655,7 @@ impl TerminalView {
             } else {
                 // Only set custom_title if the text differs from the terminal's dynamic title.
                 // This prevents subtle layout changes when clicking away without making changes.
-                let terminal_title = self.terminal.read(cx).title(true);
+                let terminal_title = self.smart_title(0, true, cx);
                 if new_label == terminal_title {
                     None
                 } else {
@@ -642,10 +678,7 @@ impl TerminalView {
             return;
         }
 
-        let current_label = self
-            .custom_title
-            .clone()
-            .unwrap_or_else(|| self.terminal.read(cx).title(true));
+        let current_label = self.smart_title(0, true, cx);
 
         let rename_editor = cx.new(|cx| Editor::single_line(window, cx));
         let rename_editor_subscription = cx.subscribe_in(&rename_editor, window, {
@@ -681,6 +714,23 @@ impl TerminalView {
     pub fn clear_bell(&mut self, cx: &mut Context<TerminalView>) {
         self.has_bell = false;
         cx.emit(Event::Wakeup);
+        cx.emit(ItemEvent::UpdateTab);
+    }
+
+    /// SOLO: updates the tab after output only if what it shows changed.
+    /// Every update redraws the pane, and with it the terminal shown there,
+    /// even when the output went to a terminal in a background tab.
+    fn update_tab_after_output(&mut self, cx: &mut Context<Self>) {
+        let shown = ShownTab {
+            title: self.smart_title(0, true, cx),
+            task_status: self.terminal.read(cx).task().map(|task| task.status),
+            agent_status: self.agent_status().map(|(_, status)| status),
+            has_bell: self.has_bell,
+        };
+        if self.shown_tab.as_ref() != Some(&shown) {
+            self.shown_tab = Some(shown);
+            cx.emit(ItemEvent::UpdateTab);
+        }
     }
 
     pub fn deploy_context_menu(
@@ -697,6 +747,8 @@ impl TerminalView {
             .is_some_and(|terminal_panel| terminal_panel.read(cx).assistant_enabled());
         let shell_integration_active = self.terminal.read(cx).shell_integration().is_active();
         let has_mermaid_diagram = self.terminal.read(cx).mermaid_diagram(None).is_some();
+        let has_agent_turns = agent_turns::has_turns(self, cx);
+        let offers_remote_control = self.offers_remote_control();
         let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
             menu.context(self.focus_handle.clone())
                 .when(self.shows_workspace_actions(), |menu| {
@@ -718,19 +770,31 @@ impl TerminalView {
                 .action("Select All", Box::new(SelectAll))
                 .when(shell_integration_active, |menu| {
                     menu.separator()
-                        .action("Copy Command", Box::new(CopyCommandBlockCommand))
-                        .action("Copy Output", Box::new(CopyCommandBlockOutput))
-                        .action("Copy Command and Output", Box::new(CopyCommandBlock))
-                        .action("Send to AI Agent", Box::new(SendCommandBlockToAgent))
+                        .action(util::i18n::tr("Copy Command", "复制命令"), Box::new(CopyCommandBlockCommand))
+                        .action(util::i18n::tr("Copy Output", "复制输出"), Box::new(CopyCommandBlockOutput))
+                        .action(util::i18n::tr("Copy Command and Output", "复制命令和输出"), Box::new(CopyCommandBlock))
+                        .action(util::i18n::tr("Send to AI Agent", "发送给 AI agent"), Box::new(SendCommandBlockToAgent))
                         .action(
-                            "Save Command as Workflow",
+                            util::i18n::tr("Save Command as Workflow", "把命令存为 Workflow"),
                             Box::new(SaveCommandBlockAsWorkflow),
                         )
                 })
                 .when(has_mermaid_diagram, |menu| {
                     menu.action(
-                        "Preview Mermaid Diagram",
+                        util::i18n::tr("Preview Mermaid Diagram", "预览 Mermaid 图"),
                         Box::new(mermaid_preview::PreviewMermaidDiagram),
+                    )
+                })
+                .when(offers_remote_control, |menu| {
+                    menu.action(
+                        agent_context::remote_control_label(),
+                        Box::new(agent_context::EnableRemoteControl),
+                    )
+                })
+                .when(has_agent_turns, |menu| {
+                    menu.action(
+                        util::i18n::tr("Review Agent Changes", "查看 agent 改动"),
+                        Box::new(agent_turns::ReviewAgentTurn),
                     )
                 })
                 .when(
@@ -1351,10 +1415,11 @@ fn subscribe_for_terminal_events(
                         terminal_view.schedule_save_contents(Duration::from_secs(5), cx);
                     }
                     terminal_view.agent_output(window, cx);
+                    terminal_view.update_title_git_branch(cx);
                     cx.notify();
                     window.invalidate_character_coordinates();
                     cx.emit(Event::Wakeup);
-                    cx.emit(ItemEvent::UpdateTab);
+                    terminal_view.update_tab_after_output(cx);
                     cx.emit(SearchEvent::MatchesInvalidated);
                 }
 
@@ -1376,6 +1441,7 @@ fn subscribe_for_terminal_events(
                     terminal_view.agent_wants_attention(window, cx);
                     terminal_view.notify_agent_bell(window, cx);
                     terminal_view.has_bell = true;
+                    cx.emit(ItemEvent::UpdateTab);
                     if let TerminalBell::System = TerminalSettings::get_global(cx).bell {
                         window.play_system_bell();
                     }
@@ -1437,7 +1503,7 @@ fn subscribe_for_terminal_events(
                                     .is_some()
                                 {
                                     terminal_view.hover = Some(HoverTarget {
-                                        tooltip: mermaid_preview::MERMAID_TOOLTIP.to_string(),
+                                        tooltip: mermaid_preview::mermaid_tooltip().to_string(),
                                         hovered_word: hovered_word.clone(),
                                     });
                                     terminal_view.hover_tooltip_update = Task::ready(());
@@ -1462,9 +1528,15 @@ fn subscribe_for_terminal_events(
                     }
                 }
 
-                Event::CommandStarted => terminal_view.update_agent_status(window, cx),
+                Event::CommandStarted => {
+                    terminal_view.update_agent_status(window, cx);
+                    terminal_view.record_agent_session(cx);
+                }
+                // SOLO: handled by `follow_working_directory`.
+                Event::PromptStarted => {}
                 Event::CommandFinished => {
                     terminal_view.update_agent_status(window, cx);
+                    terminal_view.clear_finished_agent_session(cx);
                     terminal_view.notify_command_finished(window, cx);
                     terminal_view.schedule_save_contents(Duration::from_secs(1), cx);
                 }
@@ -1472,6 +1544,7 @@ fn subscribe_for_terminal_events(
                     terminal_view.agent_wants_attention(window, cx);
                     terminal_view.notify_from_program(title.clone(), body.clone(), window, cx)
                 }
+                Event::AgentHook(hook) => terminal_view.agent_hook(*hook, window, cx),
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
                     MaybeNavigationTarget::Url(url) => cx.open_url(url),
                     MaybeNavigationTarget::PathLike(_)
@@ -1491,7 +1564,12 @@ fn subscribe_for_terminal_events(
                         cx,
                     ),
                 },
-                Event::BreadcrumbsChanged => cx.emit(ItemEvent::UpdateBreadcrumbs),
+                Event::BreadcrumbsChanged => {
+                    // SOLO: an agent's session title shows on its tab.
+                    terminal_view.program_title_changed();
+                    cx.emit(ItemEvent::UpdateBreadcrumbs);
+                    cx.emit(ItemEvent::UpdateTab);
+                }
                 Event::CloseTerminal => cx.emit(ItemEvent::CloseItem),
                 Event::SelectionsChanged => {
                     window.invalidate_character_coordinates();
@@ -1578,6 +1656,7 @@ impl TerminalView {
     }
 
     fn focus_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        agent_context::record_terminal_focus(cx.entity_id(), cx);
         self.terminal.update(cx, |terminal, _| {
             terminal.set_cursor_shape(self.cursor_shape);
             if !self.read_only {
@@ -1679,7 +1758,9 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::rerun_command_block))
             .on_action(cx.listener(TerminalView::send_command_block_to_agent))
             .on_action(cx.listener(TerminalView::preview_mermaid_diagram))
+            .on_action(cx.listener(TerminalView::choose_agent_session))
             .on_action(cx.listener(TerminalView::save_command_block_as_workflow))
+            .on_action(cx.listener(TerminalView::enable_remote_control))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 MouseButton::Right,
@@ -1723,6 +1804,7 @@ impl Render for TerminalView {
                     .child(
                         v_flex()
                             .size_full()
+                            .children(self.render_agent_resume_bar(cx))
                             .child(
                                 div()
                                     .w_full()
@@ -1796,11 +1878,12 @@ impl Item for TerminalView {
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent> {
         Some(TabTooltipContent::Custom(Box::new(Tooltip::element({
             let terminal = self.terminal().read(cx);
-            let title = terminal.title(false);
+            let title = self.smart_title(0, false, cx);
             let pid = terminal.pid_getter()?.fallback_pid();
             let agent_status = self
                 .agent_status()
                 .map(|(name, status)| format!("{name} · {}", status.label()));
+            let details = self.title_details(cx);
 
             move |_, _| {
                 v_flex()
@@ -1809,6 +1892,11 @@ impl Item for TerminalView {
                     .when_some(agent_status.clone(), |this, agent_status| {
                         this.child(Label::new(agent_status).size(LabelSize::Small))
                     })
+                    .children(details.iter().map(|detail| {
+                        Label::new(detail.clone())
+                            .color(Color::Muted)
+                            .size(LabelSize::Small)
+                    }))
                     .child(h_flex().flex_grow_1().child(Divider::horizontal()))
                     .child(
                         Label::new(format!("Process ID (PID): {}", pid))
@@ -1822,12 +1910,7 @@ impl Item for TerminalView {
 
     fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
         let terminal = self.terminal().read(cx);
-        let title = self
-            .custom_title
-            .as_ref()
-            .filter(|title| !title.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| terminal.title(true));
+        let title = self.smart_title(params.detail.unwrap_or(0), true, cx);
 
         let (icon, icon_color, rerun_button) = match terminal.task() {
             Some(terminal_task) => match &terminal_task.status {
@@ -1888,7 +1971,10 @@ impl Item for TerminalView {
                             .map(|this| {
                                 let icon = Icon::new(icon).color(icon_color);
                                 if working {
-                                    this.child(icon.with_rotate_animation(2))
+                                    let turn = gpui::Transformation::rotate(gpui::percentage(
+                                        self.agent_spinner_turn(),
+                                    ));
+                                    this.child(ui::Transformable::transform(icon, turn))
                                 } else {
                                     this.child(icon)
                                 }
@@ -1939,15 +2025,12 @@ impl Item for TerminalView {
                         )
                     }),
             )
+            .children(agent_turns::render_tab_entry(self, cx))
             .into_any()
     }
 
     fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString {
-        if let Some(custom_title) = self.custom_title.as_ref().filter(|l| !l.trim().is_empty()) {
-            return custom_title.clone().into();
-        }
-        let terminal = self.terminal().read(cx);
-        terminal.title(detail == 0).into()
+        self.smart_title(detail, true, cx).into()
     }
 
     fn telemetry_event_text(&self) -> Option<&'static str> {
@@ -2111,11 +2194,17 @@ impl Item for TerminalView {
         cx: &mut Context<Self>,
     ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
         let terminal = self.terminal.read(cx);
+        let mut actions: Vec<(SharedString, Box<dyn gpui::Action>)> = Vec::new();
         if terminal.task().is_none() {
-            vec![("Rename".into(), Box::new(RenameTerminal))]
-        } else {
-            Vec::new()
+            actions.push(("Rename".into(), Box::new(RenameTerminal)));
         }
+        if self.offers_remote_control() {
+            actions.push((
+                agent_context::remote_control_label().into(),
+                Box::new(agent_context::EnableRemoteControl),
+            ));
+        }
+        actions
     }
 
     fn buffer_kind(&self, _: &App) -> workspace::item::ItemBufferKind {
@@ -2163,6 +2252,10 @@ impl Item for TerminalView {
             Some(task) => task.status == TaskStatus::Running,
             None => self.has_bell(),
         }
+    }
+
+    fn running_program(&self, cx: &App) -> Option<workspace::item::RunningProgram> {
+        self.program_ending_on_close(cx)
     }
 
     fn has_conflict(&self, _cx: &App) -> bool {
@@ -2238,7 +2331,8 @@ impl SerializableItem for TerminalView {
         cx: &mut App,
     ) -> Task<anyhow::Result<()>> {
         let db = TerminalDb::global(cx);
-        cx.background_spawn(async move { session_contents::delete_stale() })
+        let restore_contents = TerminalSettings::get_global(cx).restore_contents;
+        cx.background_spawn(async move { session_contents::delete_stale(restore_contents) })
             .detach();
         delete_unloaded_items(alive_items, workspace_id, "terminals", &db, cx)
     }
@@ -2289,7 +2383,7 @@ impl SerializableItem for TerminalView {
         cx: &mut App,
     ) -> Task<anyhow::Result<Entity<Self>>> {
         window.spawn(cx, async move |cx| {
-            let (cwd, custom_title) = cx
+            let (cwd, custom_title, agent_session) = cx
                 .update(|_window, cx| {
                     let db = TerminalDb::global(cx);
                     let from_db = db
@@ -2311,10 +2405,12 @@ impl SerializableItem for TerminalView {
                         .log_err()
                         .flatten()
                         .filter(|title| !title.trim().is_empty());
-                    (cwd, custom_title)
+                    let agent_session =
+                        agent_resume::saved_agent_session(&db, item_id, workspace_id);
+                    (cwd, custom_title, agent_session)
                 })
                 .ok()
-                .unwrap_or((None, None));
+                .unwrap_or((None, None, None));
 
             let contents = if cx.update(|_, cx| TerminalSettings::get_global(cx).restore_contents)? {
                 cx.background_spawn(async move { session_contents::load(workspace_id, item_id) })
@@ -2347,6 +2443,10 @@ impl SerializableItem for TerminalView {
                     if had_contents {
                         view.restored_from = Some(item_id);
                         view.schedule_save_contents(Duration::from_secs(5), cx);
+                    }
+                    // SOLO: its agent was running when Solo quit.
+                    if let Some(agent_session) = agent_session {
+                        view.offer_agent_session(agent_session, cx);
                     }
                     view
                 })

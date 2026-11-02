@@ -450,10 +450,22 @@ impl Domain for TerminalDb {
         sql! (
             ALTER TABLE terminals ADD COLUMN custom_title TEXT;
         ),
+        // SOLO: the agent command running when Solo quit, see `agent_resume`.
+        sql! (
+            ALTER TABLE terminals ADD COLUMN agent_session TEXT;
+        ),
     ];
 }
 
 db::static_connection!(TerminalDb, [WorkspaceDb]);
+
+#[cfg(test)]
+impl TerminalDb {
+    /// A test database with the workspace tables terminals refer to.
+    pub(crate) async fn open_test_db_with_workspaces(name: &'static str) -> Self {
+        Self(db::open_test_db::<(WorkspaceDb, TerminalDb)>(name).await)
+    }
+}
 
 impl TerminalDb {
     query! {
@@ -537,6 +549,35 @@ impl TerminalDb {
     query! {
         pub fn get_custom_title(item_id: ItemId, workspace_id: WorkspaceId) -> Result<Option<String>> {
             SELECT custom_title
+            FROM terminals
+            WHERE item_id = ? AND workspace_id = ?
+        }
+    }
+
+    /// SOLO: saves (or, with `None`, clears) the agent session the terminal runs.
+    pub async fn save_agent_session(
+        &self,
+        item_id: ItemId,
+        workspace_id: WorkspaceId,
+        agent_session: Option<String>,
+    ) -> Result<()> {
+        self.write(move |conn| {
+            let query = "INSERT INTO terminals (item_id, workspace_id, agent_session)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT (workspace_id, item_id) DO UPDATE SET
+                    agent_session = excluded.agent_session";
+            let mut statement = Statement::prepare(conn, query)?;
+            let mut next_index = statement.bind(&item_id, 1)?;
+            next_index = statement.bind(&workspace_id, next_index)?;
+            statement.bind(&agent_session, next_index)?;
+            statement.exec()
+        })
+        .await
+    }
+
+    query! {
+        pub fn get_agent_session(item_id: ItemId, workspace_id: WorkspaceId) -> Result<Option<String>> {
+            SELECT agent_session
             FROM terminals
             WHERE item_id = ? AND workspace_id = ?
         }

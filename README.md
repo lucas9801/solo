@@ -20,8 +20,9 @@ as Claude Code in the terminal while viewing and editing code beside it.
 - Select blocks (ctrl-up/down or a click in the gutter), copy the command,
   the output or both as Markdown, rerun them, or send them to an AI agent
   running in another terminal (alt-enter).
-- Terminals show their previous contents and blocks again when Solo restarts
-  (the shells start afresh). Turn off with `terminal.restore_contents`.
+- Terminals are reopened when Solo restarts, in their directories and with
+  their titles, with a clean shell. To show their previous contents and
+  blocks again too, turn on `terminal.restore_contents`.
 
 **Input editor**
 - Commands are typed in a real editor at the bottom: selections, multiple
@@ -47,9 +48,29 @@ as Claude Code in the terminal while viewing and editing code beside it.
   a rendered preview (Mermaid diagrams, images), images in the image viewer.
 - The tab of a terminal running an agent (claude, codex, gemini, aider, ...)
   shows what it's doing: working, idle, needs your input, done or failed.
-  It's read from the terminal (an agent printing on its own is working, a
-  quiet one is idle, a bell or notification means it needs you), so it can lag
-  a moment behind. More programs can be added with `agent_commands`.
+  Claude Code started in a Solo terminal reports it through hooks Solo adds
+  for that session (`claude_code_hooks`, nothing is written to your Claude
+  settings); other agents' status is read from the terminal, so it can lag a
+  moment behind. More programs can be added with `agent_commands`.
+- Tab titles say what a terminal is doing: the agent and its session title,
+  the running command, or the directory and git branch.
+- The file tree, file finder and project search follow the focused terminal's
+  git repository (`follow_working_directory`).
+- Closing a terminal, a window or Solo while an agent runs asks first
+  (`confirm_close`). After a restart, a terminal that was running one offers
+  to continue its session.
+- Each agent turn's changes can be reviewed (the "N files changed" button on
+  the tab): reject or keep hunks, comment on lines and send the comments to
+  the agent, or roll back to before a turn.
+- Send the selection, the cursor position or the file's diagnostics from the
+  editor to an agent (ctrl-alt-k, ctrl-alt-shift-m).
+- New agent task: a git worktree with its own branch and an agent terminal,
+  to merge or discard when done (the + menu).
+- Click a `mermaid` line in an agent's output to see the diagram, taken from
+  Claude Code's transcript when the screen only shows part of it. The tab's
+  tooltip shows the session's token use and context.
+- Enable Remote Control from a Claude Code terminal's menu, to follow and
+  answer it from the Claude app on a phone.
 - Desktop notifications when a long command finishes in the background, when
   an agent rings the bell or stops after working a while, or when a program
   asks for one (OSC 9 / OSC 777).
@@ -64,7 +85,12 @@ Solo's settings live in `%APPDATA%\Solo` (Windows), apart from Zed's. Its own
 terminal settings, under `"terminal"`: `shell_integration`, `input_editor`,
 `compact_prompt`, `completions_as_you_type`, `open_links_on_click`,
 `open_changed_files`, `notify_long_commands_after_seconds`,
-`program_notifications`, `restore_contents`, `agent_commands`.
+`program_notifications`, `restore_contents`, `agent_commands`,
+`claude_code_hooks`, `follow_working_directory`, `confirm_close`,
+`agent_task_command`.
+
+Solo's own text is shown in Chinese when the system language is Chinese
+(`SOLO_LANGUAGE=en` or `zh` overrides it).
 
 Zed services that need a Zed account or report to Zed (auto-update,
 telemetry, collaboration, Zed's edit predictions) are off or hidden by

@@ -74,22 +74,24 @@ pub(crate) fn load(workspace_id: WorkspaceId, item_id: ItemId) -> Option<Session
         .ok()
 }
 
-/// Deletes the files of terminals that haven't been saved for a long time.
+/// Deletes the files of terminals that haven't been saved for a long time,
+/// or all of them when contents aren't restored (left from when they were).
 /// Closed terminals delete theirs; this catches what was left behind, e.g.
 /// by a crash. (Workspace cleanup can't be used: terminals in the panel and
 /// the center are cleaned up separately, each pass knowing only its own.)
-pub(crate) fn delete_stale() {
+pub(crate) fn delete_stale(restore_contents: bool) {
     let Ok(entries) = std::fs::read_dir(sessions_dir()) else {
         return;
     };
     let now = SystemTime::now();
     for entry in entries.flatten() {
-        let stale = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age > MAX_AGE);
+        let stale = !restore_contents
+            || entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age > MAX_AGE);
         if stale {
             remove(&entry.path());
         }

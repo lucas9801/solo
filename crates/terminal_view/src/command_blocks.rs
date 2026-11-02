@@ -350,7 +350,10 @@ impl TerminalView {
 }
 
 /// All terminal views in the workspace: the terminal panel's and the center's.
-fn terminal_views(workspace: &Entity<Workspace>, cx: &gpui::App) -> Vec<Entity<TerminalView>> {
+pub(crate) fn terminal_views(
+    workspace: &Entity<Workspace>,
+    cx: &gpui::App,
+) -> Vec<Entity<TerminalView>> {
     let workspace = workspace.read(cx);
     let mut views: Vec<_> = workspace
         .panel::<TerminalPanel>(cx)
@@ -372,15 +375,17 @@ fn terminal_views(workspace: &Entity<Workspace>, cx: &gpui::App) -> Vec<Entity<T
     views
 }
 
-/// The other terminal running an AI agent, or else the only other terminal
-/// running anything.
+/// The other terminal running an AI agent (the one focused last if several
+/// are), or else the only other terminal running anything.
 fn find_agent_terminal(
     workspace: &Entity<Workspace>,
     this: &Entity<TerminalView>,
     cx: &gpui::App,
 ) -> Option<Entity<TerminalView>> {
     let extra = &TerminalSettings::get_global(cx).agent_commands;
-    let running_commands: Vec<(Entity<TerminalView>, String)> = terminal_views(workspace, cx)
+    let mut views = terminal_views(workspace, cx);
+    crate::agent_context::most_recently_focused_first(&mut views, cx);
+    let running_commands: Vec<(Entity<TerminalView>, String)> = views
         .into_iter()
         .filter(|view| view != this)
         .filter_map(|view| {
@@ -403,7 +408,7 @@ fn find_agent_terminal(
         .map(|(view, _)| view.clone())
 }
 
-fn activate_terminal_view(
+pub(crate) fn activate_terminal_view(
     workspace: &Entity<Workspace>,
     view: &Entity<TerminalView>,
     window: &mut Window,

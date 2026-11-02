@@ -938,7 +938,7 @@ impl TerminalView {
 
 /// The current git branch of the repository containing `dir`, or a short
 /// commit id for a detached HEAD.
-fn git_branch(dir: &Path) -> Option<String> {
+pub(crate) fn git_branch(dir: &Path) -> Option<String> {
     let mut dir = Some(dir);
     while let Some(current) = dir {
         let dot_git = current.join(".git");

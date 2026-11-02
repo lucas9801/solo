@@ -171,6 +171,15 @@ impl TerminalPanel {
                                             "Spawn Task",
                                             zed_actions::Spawn::modal().boxed_clone(),
                                         )
+                                        // SOLO: an agent in its own git worktree.
+                                        .action(
+                                            util::i18n::tr("New Agent Task", "新建 agent 任务"),
+                                            zed_actions::agent_task::NewAgentTask.boxed_clone(),
+                                        )
+                                        .action(
+                                            util::i18n::tr("Agent Tasks", "agent 任务列表"),
+                                            zed_actions::agent_task::ManageAgentTasks.boxed_clone(),
+                                        )
                                 });
 
                                 Some(menu)
@@ -942,7 +951,7 @@ impl TerminalPanel {
         })
     }
 
-    fn add_terminal_shell(
+    pub(crate) fn add_terminal_shell(
         &mut self,
         force_local: bool,
         cwd: Option<PathBuf>,
@@ -1819,6 +1828,10 @@ impl Panel for TerminalPanel {
 
     fn pane(&self) -> Option<Entity<Pane>> {
         Some(self.active_pane.clone())
+    }
+
+    fn panes(&self) -> Vec<Entity<Pane>> {
+        self.center.panes().into_iter().cloned().collect()
     }
 
     fn activation_priority(&self) -> u32 {

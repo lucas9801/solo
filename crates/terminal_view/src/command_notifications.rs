@@ -108,7 +108,7 @@ impl TerminalView {
             return;
         };
         let title = command.lines().next().unwrap_or_default().to_string();
-        let body = format!("Waiting for you · {}", terminal.title(true));
+        let body = format!("{} · {}", util::i18n::tr("Waiting for you", "等待你的操作"), terminal.title(true));
         self.show_notification(title, body, window, cx);
     }
 
@@ -129,8 +129,16 @@ impl TerminalView {
         let Some((name, _)) = self.agent_status() else {
             return;
         };
-        let title = format!("{name} stopped working");
-        let body = format!("Waiting for you · {}", self.terminal.read(cx).title(true));
+        let title = if util::i18n::is_chinese() {
+            format!("{name} 已停止工作")
+        } else {
+            format!("{name} stopped working")
+        };
+        let body = format!(
+            "{} · {}",
+            util::i18n::tr("Waiting for you", "等待你的操作"),
+            self.terminal.read(cx).title(true)
+        );
         self.show_notification(title, body, window, cx);
     }
 
