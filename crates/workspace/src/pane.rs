@@ -1961,6 +1961,72 @@ impl Pane {
         }
     }
 
+    /// SOLO: asks, in one prompt, whether to close items although that ends
+    /// programs running in them (see [`Item::running_program`]). None if
+    /// nothing is running in them; otherwise resolves to whether to close.
+    pub(crate) fn confirm_ending_programs(
+        items: &[Box<dyn ItemHandle>],
+        close_label: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<impl Future<Output = bool> + use<>> {
+        let running = items
+            .iter()
+            .filter_map(|item| Some((item.tab_content_text(0, cx), item.running_program(cx)?)))
+            .collect::<Vec<_>>();
+        let chinese = util::i18n::is_chinese();
+        let (message, detail) = match running.as_slice() {
+            [] => return None,
+            [(_, program)] => (
+                if chinese {
+                    format!("{} 正在运行，关闭将结束它。", program.name)
+                } else {
+                    format!("{} is running. Closing will end it.", program.name)
+                },
+                program.status.as_ref().map(|status| {
+                    if chinese {
+                        format!("状态：{status}")
+                    } else {
+                        format!("Status: {status}")
+                    }
+                }),
+            ),
+            _ => (
+                if chinese {
+                    format!("关闭将结束 {} 个标签里正在运行的程序。", running.len())
+                } else {
+                    format!(
+                        "Closing will end the programs running in {} tabs.",
+                        running.len()
+                    )
+                },
+                Some(
+                    running
+                        .iter()
+                        .map(|(title, program)| match (&program.status, chinese) {
+                            (Some(status), true) => {
+                                format!("{}（{status}），位于 {title}", program.name)
+                            }
+                            (None, true) => format!("{}，位于 {title}", program.name),
+                            (Some(status), false) => {
+                                format!("{} ({status}) in {title}", program.name)
+                            }
+                            (None, false) => format!("{} in {title}", program.name),
+                        })
+                        .join("\n"),
+                ),
+            ),
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            detail.as_deref(),
+            &[close_label, util::i18n::tr("Cancel", "取消")],
+            cx,
+        );
+        Some(async move { answer.await == Ok(0) })
+    }
+
     pub fn close_items(
         &self,
         window: &mut Window,
@@ -1993,11 +2059,31 @@ impl Pane {
             return Task::ready(Ok(()));
         };
         cx.spawn_in(window, async move |pane, cx| {
+            // SOLO: one prompt for all the programs closing would end.
+            if save_intent == SaveIntent::Close {
+                let confirmation = pane.update_in(cx, |_, window, cx| {
+                    Self::confirm_ending_programs(
+                        &items_to_close,
+                        util::i18n::tr("Close", "关闭"),
+                        window,
+                        cx,
+                    )
+                })?;
+                if let Some(confirmation) = confirmation
+                    && !confirmation.await
+                {
+                    return Ok(());
+                }
+            }
+
             let dirty_items = workspace.update(cx, |workspace, cx| {
                 items_to_close
                     .iter()
                     .filter(|item| {
-                        item.is_dirty(cx) && !Self::skip_save_on_close(item.as_ref(), workspace, cx)
+                        // SOLO: already confirmed above, there's nothing to save.
+                        item.running_program(cx).is_none()
+                            && item.is_dirty(cx)
+                            && !Self::skip_save_on_close(item.as_ref(), workspace, cx)
                     })
                     .map(|item| item.boxed_clone())
                     .collect::<Vec<_>>()
@@ -4380,6 +4466,16 @@ fn default_render_tab_bar_buttons(
                             .action(
                                 "New Center Terminal",
                                 NewCenterTerminal::default().boxed_clone(),
+                            )
+                            // SOLO: an agent in its own git worktree.
+                            .separator()
+                            .action(
+                                util::i18n::tr("New Agent Task", "新建 agent 任务"),
+                                zed_actions::agent_task::NewAgentTask.boxed_clone(),
+                            )
+                            .action(
+                                util::i18n::tr("Agent Tasks", "agent 任务列表"),
+                                zed_actions::agent_task::ManageAgentTasks.boxed_clone(),
                             )
                     }))
                 }),

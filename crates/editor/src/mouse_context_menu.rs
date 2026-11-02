@@ -13,6 +13,9 @@ use std::ops::Range;
 use text::PointUtf16;
 use workspace::OpenInTerminal;
 use zed_actions::agent::AddSelectionToThread;
+use zed_actions::agent_terminal::{
+    SendDiagnosticsToAgent, SendPositionToAgent, SendSelectionToAgent,
+};
 use zed_actions::preview::{
     markdown::OpenPreview as OpenMarkdownPreview, svg::OpenPreview as OpenSvgPreview,
 };
@@ -220,6 +223,9 @@ pub fn deploy_context_menu(
         let evaluate_selection = window.is_action_available(&EvaluateSelectedText, cx);
         let run_to_cursor = window.is_action_available(&RunToCursor, cx);
         let format_selections = window.is_action_available(&FormatSelections, cx);
+        // SOLO: handled by `terminal_view`, which isn't loaded everywhere the editor is.
+        let send_to_agent =
+            has_reveal_target && window.is_action_available(&SendPositionToAgent::default(), cx);
         let disable_ai = DisableAiSettings::is_ai_disabled_for_buffer(
             editor.buffer.read(cx).as_singleton().as_ref(),
             cx,
@@ -293,6 +299,23 @@ pub fn deploy_context_menu(
                 )
                 .when(!disable_ai && has_selections, |this| {
                     this.action("Add to Agent Thread", Box::new(AddSelectionToThread))
+                })
+                .when(send_to_agent, |this| {
+                    this.separator()
+                        .when(has_selections, |this| {
+                            this.action(
+                                util::i18n::tr("Send Selection to Agent", "发送选区给 Agent"),
+                                Box::new(SendSelectionToAgent::default()),
+                            )
+                        })
+                        .action(
+                            util::i18n::tr("Send Position to Agent", "发送当前位置给 Agent"),
+                            Box::new(SendPositionToAgent::default()),
+                        )
+                        .action(
+                            util::i18n::tr("Send Diagnostics to Agent", "发送诊断给 Agent"),
+                            Box::new(SendDiagnosticsToAgent::default()),
+                        )
                 })
                 .separator()
                 .action("Cut", Box::new(Cut))

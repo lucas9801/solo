@@ -2,7 +2,6 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use collections::HashMap;
-use feature_flags::{DiffReviewFeatureFlag, FeatureFlagAppExt as _};
 use gpui::{
     AnyElement, App, AvailableSpace, ClickEvent, Context, DispatchPhase, Element, MouseButton,
     MouseClickEvent, MouseDownEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent,
@@ -113,8 +112,8 @@ impl EditorElement {
         }
 
         // Handle diff review indicator when gutter is hovered in diff mode with AI enabled
-        let show_diff_review = editor.show_diff_review_button()
-            && cx.has_flag::<DiffReviewFeatureFlag>()
+        // SOLO: also where the flag is off but the editor asks for it.
+        let show_diff_review = editor.diff_review_enabled(cx)
             && !DisableAiSettings::is_ai_disabled_for_buffer(
                 editor.buffer.read(cx).as_singleton().as_ref(),
                 cx,

@@ -3792,6 +3792,27 @@ impl Workspace {
                 && remaining_workspaces == 0
                 && closing_last_window_quits;
 
+            // SOLO: closing ends programs running in items, e.g. AI agents in
+            // terminals (in panels too); ask first, once for all of them.
+            let close_label = match close_intent {
+                CloseIntent::Quit => util::i18n::tr("Quit", "退出"),
+                CloseIntent::CloseWindow => util::i18n::tr("Close Window", "关闭窗口"),
+                CloseIntent::ReplaceWindow => util::i18n::tr("Close", "关闭"),
+            };
+            let confirmation = this.update_in(cx, |this, window, cx| {
+                let items = this.items_with_panels(cx);
+                let confirmation = Pane::confirm_ending_programs(&items, close_label, window, cx);
+                if confirmation.is_some() {
+                    cx.emit(Event::Activate);
+                }
+                confirmation
+            })?;
+            if let Some(confirmation) = confirmation
+                && !confirmation.await
+            {
+                return anyhow::Ok(false);
+            }
+
             if let Some(active_call) = active_call
                 && workspace_count == 1
                 && cx
@@ -4414,6 +4435,27 @@ impl Workspace {
 
     pub fn items<'a>(&'a self, cx: &'a App) -> impl 'a + Iterator<Item = &'a Box<dyn ItemHandle>> {
         self.panes.iter().flat_map(|pane| pane.read(cx).items())
+    }
+
+    /// SOLO: the items in the center and in panels with panes, like the
+    /// terminal panel.
+    pub fn items_with_panels(&self, cx: &App) -> Vec<Box<dyn ItemHandle>> {
+        let panel_panes = self
+            .all_docks()
+            .into_iter()
+            .flat_map(|dock| dock.read(cx).panels())
+            .flat_map(|panel| panel.panes(cx));
+        self.panes
+            .iter()
+            .cloned()
+            .chain(panel_panes)
+            .flat_map(|pane| {
+                pane.read(cx)
+                    .items()
+                    .map(|item| item.boxed_clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     pub fn item_of_type<T: Item>(&self, cx: &App) -> Option<Entity<T>> {

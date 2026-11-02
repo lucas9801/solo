@@ -555,7 +555,8 @@ impl ProjectSearch {
             Arc::clone(&self.project_search_turning_into_text_finder);
         let search = self
             .project
-            .update(cx, |project, cx| project.search(query.clone(), cx));
+            // SOLO: only the active terminal's project.
+            .update(cx, |project, cx| project.search_in_scope(query.clone(), cx));
         self.last_search_query_text = Some(query.as_str().to_string());
         self.search_id += 1;
         self.active_query = Some(query);
@@ -2123,13 +2124,14 @@ impl ProjectSearchView {
         // include/exclude patterns against full paths to allow them to be
         // disambiguated. For single worktree projects we use worktree relative
         // paths for convenience.
+        // SOLO: the search covers only the active terminal's project.
         let match_full_paths = self
             .entity
             .read(cx)
             .project
             .read(cx)
-            .visible_worktrees(cx)
-            .count()
+            .scoped_worktrees(cx)
+            .len()
             > 1;
 
         let query = match self.search_options.build_query(

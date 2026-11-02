@@ -241,6 +241,21 @@ pub mod editor {
     );
 }
 
+/// SOLO: agent tasks, each an AI agent working in its own git worktree.
+pub mod agent_task {
+    use gpui::actions;
+    actions!(
+        agent_task,
+        [
+            /// Creates a git worktree on a new branch for a task and starts an
+            /// AI agent in a terminal there.
+            NewAgentTask,
+            /// Lists the agent tasks, to review, merge or delete them.
+            ManageAgentTasks,
+        ]
+    );
+}
+
 pub mod dev {
     use gpui::actions;
 
@@ -997,4 +1012,49 @@ pub mod git_panel {
             ToggleFocus,
         ]
     );
+}
+
+/// SOLO: sending code from the editor to the AI agent (Claude Code, Codex, ...)
+/// running in a terminal. Defined here so the editor's context menu can offer
+/// them; `terminal_view` handles them.
+pub mod agent_terminal {
+    use gpui::Action;
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    /// Pastes the selected code, with its file and lines, into the terminal
+    /// running an AI agent. Without a selection, sends the cursor's position.
+    #[derive(PartialEq, Clone, Default, Debug, Deserialize, JsonSchema, Action)]
+    #[action(namespace = terminal)]
+    #[serde(deny_unknown_fields)]
+    pub struct SendSelectionToAgent {
+        /// Lists the terminals running an agent to choose from, rather than
+        /// sending to the last used one.
+        #[serde(default)]
+        pub choose_terminal: bool,
+    }
+
+    /// Pastes the cursor's position, as `@path:line`, into the terminal
+    /// running an AI agent.
+    #[derive(PartialEq, Clone, Default, Debug, Deserialize, JsonSchema, Action)]
+    #[action(namespace = terminal)]
+    #[serde(deny_unknown_fields)]
+    pub struct SendPositionToAgent {
+        /// Lists the terminals running an agent to choose from, rather than
+        /// sending to the last used one.
+        #[serde(default)]
+        pub choose_terminal: bool,
+    }
+
+    /// Pastes the current file's errors and warnings, with their positions,
+    /// into the terminal running an AI agent.
+    #[derive(PartialEq, Clone, Default, Debug, Deserialize, JsonSchema, Action)]
+    #[action(namespace = terminal)]
+    #[serde(deny_unknown_fields)]
+    pub struct SendDiagnosticsToAgent {
+        /// Lists the terminals running an agent to choose from, rather than
+        /// sending to the last used one.
+        #[serde(default)]
+        pub choose_terminal: bool,
+    }
 }

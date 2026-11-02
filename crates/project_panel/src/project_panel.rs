@@ -795,7 +795,8 @@ impl ProjectPanel {
                     }
                     project::Event::WorktreeUpdatedEntries(_, _)
                     | project::Event::WorktreeAdded(_)
-                    | project::Event::WorktreeOrderChanged => {
+                    | project::Event::WorktreeOrderChanged
+                    | project::Event::FocusedWorktreeChanged => {
                         this.update_visible_entries(None, false, false, window, cx);
                         cx.notify();
                     }
@@ -4622,15 +4623,16 @@ impl ProjectPanel {
         let old_ancestors = self.state.ancestors.clone();
         let temporary_unfolded_pending_state = self.state.temporarily_unfolded_pending_state.take();
         let mut new_state = State::derive(&self.state);
-        new_state.last_worktree_root_id = project
-            .visible_worktrees(cx)
-            .next_back()
+        // SOLO: only the active terminal's project, when it's followed.
+        let scoped_worktrees = project.scoped_worktrees(cx);
+        new_state.last_worktree_root_id = scoped_worktrees
+            .last()
             .and_then(|worktree| worktree.read(cx).root_entry())
             .map(|entry| entry.id);
         let mut max_width_item = None;
 
-        let visible_worktrees: Vec<_> = project
-            .visible_worktrees(cx)
+        let visible_worktrees: Vec<_> = scoped_worktrees
+            .iter()
             .map(|worktree| worktree.read(cx).snapshot())
             .collect();
         let hide_root = settings.hide_root && visible_worktrees.len() == 1;

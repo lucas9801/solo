@@ -40,6 +40,47 @@ pub trait DiffHunkRenderer {
     }
 }
 
+/// SOLO: Registered on an editor that shows the diff review button to offer
+/// review comments whatever the `diff-review` feature flag says.
+pub struct DiffReviewWithoutFlag;
+
+impl Addon for DiffReviewWithoutFlag {
+    fn to_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl Editor {
+    /// SOLO: Whether this editor offers review comments: it shows the button
+    /// and either the feature flag is on or [`DiffReviewWithoutFlag`] is
+    /// registered on it.
+    pub(super) fn diff_review_enabled(&self, cx: &App) -> bool {
+        use feature_flags::FeatureFlagAppExt as _;
+        self.show_diff_review_button()
+            && (cx.has_flag::<feature_flags::DiffReviewFeatureFlag>()
+                || self.addon::<DiffReviewWithoutFlag>().is_some())
+    }
+
+    /// SOLO: Takes the stored review comments, in the order they were written,
+    /// as the commented range of the multibuffer and the comment.
+    pub fn take_review_comments(&mut self, cx: &mut Context<Self>) -> Vec<(Range<Anchor>, String)> {
+        self.dismiss_all_diff_review_overlays(cx);
+        let mut comments: Vec<StoredReviewComment> =
+            std::mem::take(&mut self.stored_review_comments)
+                .into_iter()
+                .flat_map(|(_, comments)| comments)
+                .collect();
+        self.next_review_comment_id = 0;
+        cx.emit(EditorEvent::ReviewCommentsChanged { total_count: 0 });
+        cx.notify();
+        comments.sort_by_key(|comment| comment.id);
+        comments
+            .into_iter()
+            .map(|comment| (comment.range, comment.comment))
+            .collect()
+    }
+}
+
 pub struct DefaultDiffHunkRenderer;
 
 impl DiffHunkRenderer for DefaultDiffHunkRenderer {

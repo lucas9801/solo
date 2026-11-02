@@ -511,6 +511,56 @@ mod tests {
         );
     }
 
+    // SOLO: the project panel and project search follow the active
+    // terminal's project; the agent's grep keeps searching all of them.
+    #[gpui::test]
+    async fn test_grep_ignores_focused_worktree(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.executor().allow_parking();
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/repos"),
+            serde_json::json!({
+                "solo": { "a.rs": "const NEEDLE: u8 = 1;" },
+                "godot": { "b.rs": "const NEEDLE: u8 = 2;" },
+            }),
+        )
+        .await;
+        let project = Project::test(
+            fs.clone(),
+            [
+                path!("/repos/solo").as_ref(),
+                path!("/repos/godot").as_ref(),
+            ],
+            cx,
+        )
+        .await;
+        let godot = project.read_with(cx, |project, cx| {
+            project
+                .worktrees(cx)
+                .find(|worktree| worktree.read(cx).root_name_str() == "godot")
+                .unwrap()
+                .read(cx)
+                .id()
+        });
+        project.update(cx, |project, cx| {
+            project.set_focused_worktree(Some(godot), cx)
+        });
+
+        let input = GrepToolInput {
+            regex: "NEEDLE".to_string(),
+            include_pattern: None,
+            offset: 0,
+            case_sensitive: false,
+            max_ancestor_lines: default_max_ancestor_lines(),
+            context_lines: default_context_lines(),
+        };
+        let result = run_grep_tool(input, project.clone(), cx).await;
+        assert!(result.contains("a.rs"), "should search solo too: {result}");
+        assert!(result.contains("b.rs"), "should search godot: {result}");
+    }
+
     #[gpui::test]
     async fn test_grep_tool_with_case_sensitivity(cx: &mut TestAppContext) {
         init_test(cx);
