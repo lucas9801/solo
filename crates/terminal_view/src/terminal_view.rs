@@ -1,6 +1,8 @@
+pub mod agent_board;
 mod agent_context;
 mod agent_resume;
 mod agent_session;
+mod agent_timeline;
 mod agent_status;
 mod agent_turns;
 pub mod agent_tasks;
@@ -134,6 +136,7 @@ pub fn init(cx: &mut App) {
     agent_tasks::init(cx);
     agent_turns::init(cx);
     agent_context::init(cx);
+    agent_board::init(cx);
 
     register_serializable_item::<TerminalView>(cx);
 
@@ -1759,6 +1762,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::send_command_block_to_agent))
             .on_action(cx.listener(TerminalView::preview_mermaid_diagram))
             .on_action(cx.listener(TerminalView::choose_agent_session))
+            .on_action(cx.listener(TerminalView::show_agent_timeline))
             .on_action(cx.listener(TerminalView::save_command_block_as_workflow))
             .on_action(cx.listener(TerminalView::enable_remote_control))
             .on_key_down(cx.listener(Self::key_down))
@@ -2202,6 +2206,13 @@ impl Item for TerminalView {
             actions.push((
                 agent_context::remote_control_label().into(),
                 Box::new(agent_context::EnableRemoteControl),
+            ));
+        }
+        // SOLO: the timeline of the agent session the terminal runs.
+        if self.has_run_agent(cx) {
+            actions.push((
+                util::i18n::tr("Agent Timeline", "Agent 时间线").into(),
+                Box::new(agent_timeline::ShowAgentTimeline),
             ));
         }
         actions

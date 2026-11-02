@@ -228,6 +228,16 @@ impl TerminalView {
             .or_else(|| terminal.working_directory())
     }
 
+    /// SOLO: the git branch last read for the terminal's directory.
+    pub(crate) fn cached_git_branch(&self, cx: &App) -> Option<&str> {
+        let directory = self.title_working_directory(cx)?;
+        self.tab_title
+            .git_branch
+            .as_ref()
+            .filter(|(cached, _, _)| *cached == directory)
+            .and_then(|(_, _, branch)| branch.as_deref())
+    }
+
     /// A program set the terminal's title.
     pub(crate) fn program_title_changed(&mut self) {
         self.tab_title.program_title_at = Some(Instant::now());

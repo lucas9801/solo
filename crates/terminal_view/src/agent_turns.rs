@@ -153,6 +153,25 @@ impl AgentTurns {
         self.turns(terminal).find(|turn| turn.number == number)
     }
 
+    /// How many files the terminal's last finished turn changed; `None`
+    /// before a turn has finished.
+    pub(crate) fn last_turn_changed_files(&self, terminal: EntityId) -> Option<usize> {
+        let turns = self.terminals.get(&terminal)?;
+        let finished = turns
+            .turns_started
+            .saturating_sub(usize::from(turns.pending.is_some()));
+        if finished == 0 {
+            return None;
+        }
+        Some(
+            turns
+                .turns
+                .back()
+                .filter(|turn| turn.number == finished)
+                .map_or(0, |turn| turn.changed.len()),
+        )
+    }
+
     /// The files the last turn changed, while its tab offers them.
     fn offered_turn(&self, terminal: EntityId) -> Option<&AgentTurn> {
         let turns = self.terminals.get(&terminal)?;

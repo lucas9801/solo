@@ -308,6 +308,14 @@ impl UsageSummary {
     }
 }
 
+/// SOLO: where a turn of the main conversation starts, as indices into
+/// [`SessionState::messages`] and [`SessionState::tool_calls`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TurnStart {
+    pub message_ix: usize,
+    pub tool_call_ix: usize,
+}
+
 /// What a session's transcript recorded so far.
 #[derive(Clone, Debug)]
 pub struct SessionState {
@@ -320,6 +328,9 @@ pub struct SessionState {
     pub title: Option<String>,
     pub usage: UsageSummary,
     pub reported_usage: Option<ReportedUsage>,
+    /// Where each of the main conversation's turns starts: the user's prompt
+    /// in `messages` and the first tool call made after it.
+    pub turn_starts: Vec<TurnStart>,
     tool_call_ixs: HashMap<String, usize>,
     /// Each request's usage and the turn it was in.
     request_usage: HashMap<String, (TokenUsage, usize)>,
@@ -336,6 +347,7 @@ impl SessionState {
             title: None,
             usage: UsageSummary::default(),
             reported_usage: None,
+            turn_starts: Vec::new(),
             tool_call_ixs: HashMap::default(),
             request_usage: HashMap::default(),
             turn: 0,
@@ -369,6 +381,10 @@ impl SessionState {
                 if message.role == Role::User && !message.sidechain {
                     self.turn += 1;
                     self.usage.turn = TokenUsage::default();
+                    self.turn_starts.push(TurnStart {
+                        message_ix: self.messages.len(),
+                        tool_call_ix: self.tool_calls.len(),
+                    });
                 }
                 if let Some(last) = self.messages.last_mut()
                     && message.role == Role::Assistant

@@ -70,6 +70,12 @@ impl TerminalView {
         self.agent_session.session.as_ref()
     }
 
+    /// Whether an AI agent runs or ran in this terminal, so it may have a
+    /// session.
+    pub(crate) fn has_run_agent(&self, cx: &App) -> bool {
+        self.agent_session.session.is_some() || self.agent_run(cx).is_some()
+    }
+
     fn agent_run(&self, cx: &App) -> Option<AgentRun> {
         let terminal = self.terminal.read(cx);
         let block = terminal
