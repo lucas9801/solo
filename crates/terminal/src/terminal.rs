@@ -7121,6 +7121,84 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_restore_session_only_into_fresh_terminals(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        // Nothing to save in an empty terminal, or at a bare prompt.
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.session_snapshot()),
+            None
+        );
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"\x1b]133;A\x07$ \x1b]133;B\x07", cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.session_snapshot()),
+            None
+        );
+
+        let snapshot = SessionSnapshot {
+            rows: vec!["$ ls".to_string(), "a.txt".to_string()],
+            blocks: Vec::new(),
+        };
+        let new_terminal = |cx: &mut VisualTestContext| {
+            let builder = cx.update(|window, cx| {
+                TerminalBuilder::new_display_only(
+                    SettingsCursorShape::default(),
+                    AlternateScroll::On,
+                    None,
+                    window.window_handle().window_id().as_u64(),
+                    cx.background_executor(),
+                    PathStyle::local(),
+                )
+            });
+            cx.new(|cx| builder.subscribe(cx))
+        };
+        let restored_text = |terminal: &Entity<Terminal>, cx: &mut VisualTestContext| {
+            terminal.read_with(cx, |terminal, _| {
+                let term = terminal.term.lock();
+                lines_text(&term, 0..=0)
+            })
+        };
+
+        // An empty snapshot isn't written.
+        let fresh = new_terminal(cx);
+        assert!(!fresh.update(cx, |terminal, cx| {
+            terminal.restore_session(&SessionSnapshot::default(), cx)
+        }));
+
+        // The shell already reported its prompt: the snapshot would end up
+        // below it, so the terminal is left as it is.
+        let started = new_terminal(cx);
+        started.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"\x1b]133;A\x07", cx)
+        });
+        cx.run_until_parked();
+        assert!(!started.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
+        assert_eq!(restored_text(&started, cx), "");
+
+        // Output already there isn't overwritten.
+        let printed = new_terminal(cx);
+        printed.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"Windows PowerShell\r\n", cx)
+        });
+        cx.run_until_parked();
+        assert!(!printed.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
+        assert_eq!(restored_text(&printed, cx), "Windows PowerShell");
+
+        // A full screen program's screen isn't saved.
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"vim\r\n\x1b[?1049hfile contents", cx)
+        });
+        cx.run_until_parked();
+        cx.update_window_entity(&terminal, |terminal, window, cx| terminal.sync(window, cx));
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.session_snapshot()),
+            None
+        );
+    }
+
+    #[gpui::test]
     async fn test_agent_hooks(cx: &mut TestAppContext) {
         use crate::shell_integration::{AgentHook, AgentHookKind};
 

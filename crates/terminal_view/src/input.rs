@@ -97,9 +97,10 @@ pub struct TerminalInput {
     history_shell: Option<String>,
     /// Suffix of the history entry shown after the cursor.
     suggestion: Option<String>,
-    /// Set while the input text is replaced from the history, so the edit
-    /// doesn't end the history walk.
-    replacing_text: bool,
+    /// Text just put in the input from the history. The editor reports the
+    /// edit only after the action is done, so it's recognized by its text,
+    /// rather than ending the history walk like edits by the user.
+    replaced_text: Option<String>,
     git_branch: Option<(PathBuf, Option<String>)>,
     /// A command being generated from a `#` request.
     generating: Option<Task<()>>,
@@ -140,7 +141,10 @@ impl TerminalInput {
                 placement: Some(ContextMenuPlacement::Above),
             });
             editor.set_placeholder_text(
-                "Type a command, or # and what you want to do to ask AI",
+                util::i18n::tr(
+                    "Type a command, or # and what you want to do to ask AI",
+                    "输入命令，或输入 # 加上想做的事来问 AI",
+                ),
                 window,
                 cx,
             );
@@ -167,7 +171,7 @@ impl TerminalInput {
             last_completions,
             history_shell: None,
             suggestion: None,
-            replacing_text: false,
+            replaced_text: None,
             git_branch: None,
             generating: None,
             generate_error: None,
@@ -241,7 +245,9 @@ impl TerminalInput {
         cx: &mut Context<Self>,
     ) {
         if let EditorEvent::BufferEdited = event {
-            if !self.replacing_text {
+            let text = self.text(cx);
+            if self.replaced_text.as_ref() != Some(&text) {
+                self.replaced_text = None;
                 self.history.borrow_mut().reset_navigation();
             }
             self.update_suggestion(cx);
@@ -290,12 +296,11 @@ impl TerminalInput {
 
     fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.filling_workflow = false;
-        self.replacing_text = true;
+        self.replaced_text = Some(text.to_string());
         self.editor.update(cx, |editor, cx| {
             editor.set_text(text, window, cx);
             editor.move_to_end(&MoveToEnd, window, cx);
         });
-        self.replacing_text = false;
     }
 
     /// Shows the rest of the newest matching history entry after the cursor,
@@ -575,14 +580,12 @@ impl TerminalInput {
         }
         let new_text = format!("{}{}{}", &text[..start], inserted, &text[end..]);
         let point = point_at(&new_text, start + inserted.len());
-        self.replacing_text = true;
         self.editor.update(cx, |editor, cx| {
             editor.set_text(new_text.as_str(), window, cx);
             editor.change_selections(Default::default(), window, cx, |selections| {
                 selections.select_ranges([point..point]);
             });
         });
-        self.replacing_text = false;
         self.history.borrow_mut().reset_navigation();
         self.update_suggestion(cx);
     }
@@ -788,9 +791,13 @@ impl Render for TerminalInput {
                     })
                     .when_some(last_exit_code.filter(|code| *code != 0), |this, code| {
                         this.child(
-                            Label::new(format!("exit {code}"))
-                                .size(LabelSize::XSmall)
-                                .color(Color::Error),
+                            Label::new(if util::i18n::is_chinese() {
+                                format!("退出码 {code}")
+                            } else {
+                                format!("exit {code}")
+                            })
+                            .size(LabelSize::XSmall)
+                            .color(Color::Error),
                         )
                     })
                     .when(self.generating.is_some(), |this| {
@@ -803,9 +810,12 @@ impl Render for TerminalInput {
                                         .color(Color::Accent),
                                 )
                                 .child(
-                                    Label::new("Generating a command with Claude Code…")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Accent),
+                                    Label::new(util::i18n::tr(
+                                        "Generating a command with Claude Code…",
+                                        "正在用 Claude Code 生成命令…",
+                                    ))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Accent),
                                 ),
                         )
                     })
@@ -825,7 +835,10 @@ impl Render for TerminalInput {
                                     IconButton::new("ask-ai", IconName::Sparkle)
                                         .icon_size(IconSize::XSmall)
                                         .icon_color(Color::Muted)
-                                        .tooltip(Tooltip::text("Ask AI for a command (#)"))
+                                        .tooltip(Tooltip::text(util::i18n::tr(
+                                            "Ask AI for a command (#)",
+                                            "让 AI 生成命令 (#)",
+                                        )))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.start_ai_request(window, cx)
                                         })),
@@ -860,10 +873,17 @@ impl Render for TerminalInput {
                         if running {
                             this.flex().items_center().child(
                                 Label::new(match running_command {
+                                    Some(command) if util::i18n::is_chinese() => {
+                                        format!("正在运行 `{command}`，按键直接发给程序")
+                                    }
                                     Some(command) => {
                                         format!("Running `{command}`, keys go to the program")
                                     }
-                                    None => "Running, keys go to the program".to_string(),
+                                    None => util::i18n::tr(
+                                        "Running, keys go to the program",
+                                        "正在运行，按键直接发给程序",
+                                    )
+                                    .to_string(),
                                 })
                                 .color(Color::Muted),
                             )
@@ -1089,12 +1109,19 @@ impl ShellCompletionProvider {
             })
             .collect();
         completions.push(completion(
-            "Edit workflows…".to_string(),
+            util::i18n::tr("Edit workflows…", "编辑 Workflows…").to_string(),
             snapshot.text(),
-            Some(format!(
-                "Opens {} to add, change or remove workflows.",
-                workflows::workflows_file().display()
-            )),
+            Some(if util::i18n::is_chinese() {
+                format!(
+                    "打开 {} 来添加、修改或删除 Workflow。",
+                    workflows::workflows_file().display()
+                )
+            } else {
+                format!(
+                    "Opens {} to add, change or remove workflows.",
+                    workflows::workflows_file().display()
+                )
+            }),
             IconName::Pencil,
             Some(Arc::new(|_, window: &mut Window, cx: &mut App| {
                 window.dispatch_action(Box::new(OpenWorkflowsFile), cx);
@@ -1231,4 +1258,274 @@ fn point_at(text: &str, offset: usize) -> language::Point {
     let row = before.matches('\n').count() as u32;
     let column = (offset - before.rfind('\n').map_or(0, |ix| ix + 1)) as u32;
     language::Point::new(row, column)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+    use terminal::TerminalBuilder;
+    use util::paths::PathStyle;
+
+    /// A shell with no history file, so the user's own history stays out.
+    const SHELL_PROMPT: &[u8] =
+        b"\x1b]633;P;Shell=solo-test-shell\x07\x1b]133;A\x07$ \x1b]133;B\x07";
+
+    async fn terminal_with_view(
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<Terminal>,
+        Entity<TerminalView>,
+        &mut VisualTestContext,
+    ) {
+        let (project, workspace) = crate::tests::init_test(cx).await;
+        cx.update(|cx| {
+            cx.bind_keys(
+                settings::KeymapFile::load_asset_allow_partial_failure(
+                    settings::DEFAULT_KEYMAP_PATH,
+                    cx,
+                )
+                .unwrap(),
+            )
+        });
+        let terminal = cx.new(|cx| {
+            TerminalBuilder::new_display_only(
+                Default::default(),
+                settings::AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal.clone(),
+                workspace.downgrade(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+        cx.update(|window, cx| {
+            let focus_handle = view.read(cx).focus_handle.clone();
+            window.focus(&focus_handle, cx);
+        });
+        (terminal, view, cx)
+    }
+
+    fn write(terminal: &Entity<Terminal>, bytes: &[u8], cx: &mut VisualTestContext) {
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(bytes, cx));
+        draw(cx);
+    }
+
+    /// Draws twice: once to update the input, once more after the focus
+    /// change that defers.
+    fn draw(cx: &mut VisualTestContext) {
+        for _ in 0..2 {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+        }
+        cx.run_until_parked();
+    }
+
+    fn input(view: &Entity<TerminalView>, cx: &mut VisualTestContext) -> Entity<TerminalInput> {
+        view.read_with(cx, |view, _| view.input.clone())
+            .expect("the input editor should show")
+    }
+
+    fn input_text(view: &Entity<TerminalView>, cx: &mut VisualTestContext) -> String {
+        let input = input(view, cx);
+        input.read_with(cx, |input, cx| input.text(cx))
+    }
+
+    fn input_focused(view: &Entity<TerminalView>, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| view.read(cx).input_focused(window, cx))
+    }
+
+    fn take_input_log(terminal: &Entity<Terminal>, cx: &mut VisualTestContext) -> Vec<String> {
+        terminal
+            .update(cx, |terminal, _| terminal.take_input_log())
+            .into_iter()
+            .map(|bytes| String::from_utf8(bytes).unwrap())
+            .collect()
+    }
+
+    fn push_history(view: &Entity<TerminalView>, entries: &[&str], cx: &mut VisualTestContext) {
+        let input = input(view, cx);
+        input.read_with(cx, |input, _| {
+            for entry in entries {
+                input.history.borrow_mut().push(entry.to_string());
+            }
+        });
+    }
+
+    #[gpui::test]
+    async fn test_input_shows_while_shell_waits_at_prompt(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+
+        // Without Solo's shell integration there is no input editor.
+        write(&terminal, b"$ ", cx);
+        assert!(view.read_with(cx, |view, _| view.input.is_none()));
+
+        write(&terminal, SHELL_PROMPT, cx);
+        assert!(view.read_with(cx, |view, _| view.input.is_some()));
+        assert!(input_focused(&view, cx));
+
+        // A full screen program takes the whole terminal.
+        write(
+            &terminal,
+            b"vim\r\n\x1b]633;E;vim\x07\x1b]133;C\x07\x1b[?1049h",
+            cx,
+        );
+        assert!(!input_focused(&view, cx));
+        let shows = cx.update(|window, cx| {
+            view.update(cx, |view, cx| view.update_input(window, cx).is_some())
+        });
+        assert!(!shows);
+    }
+
+    #[gpui::test]
+    async fn test_keys_go_to_running_program(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        write(&terminal, SHELL_PROMPT, cx);
+        assert!(input_focused(&view, cx));
+
+        write(
+            &terminal,
+            b"python\r\n\x1b]633;E;python\x07\x1b]133;C\x07>>> ",
+            cx,
+        );
+        assert!(!input_focused(&view, cx));
+        assert!(cx.update(|window, cx| view.read(cx).focus_handle.is_focused(window)));
+        take_input_log(&terminal, cx);
+        cx.simulate_input("x");
+        cx.run_until_parked();
+        assert_eq!(take_input_log(&terminal, cx).concat(), "x");
+        assert_eq!(input_text(&view, cx), "");
+
+        // Back at the prompt, typing goes to the input again.
+        write(
+            &terminal,
+            b"\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07",
+            cx,
+        );
+        assert!(input_focused(&view, cx));
+        cx.simulate_input("ls");
+        cx.run_until_parked();
+        assert_eq!(input_text(&view, cx), "ls");
+        assert!(take_input_log(&terminal, cx).is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_enter_sends_the_command(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        write(&terminal, SHELL_PROMPT, cx);
+        take_input_log(&terminal, cx);
+
+        cx.simulate_input("ls -la");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(take_input_log(&terminal, cx), ["ls -la\r"]);
+        assert_eq!(input_text(&view, cx), "");
+
+        // Each line of a multi-line command is entered on its own.
+        cx.simulate_input("echo a");
+        cx.simulate_keystrokes("shift-enter");
+        cx.simulate_input("echo b");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(take_input_log(&terminal, cx), ["echo a\recho b\r"]);
+
+        // Sent commands go to the history, newest first.
+        let input = input(&view, cx);
+        let history = input.read_with(cx, |input, _| {
+            input
+                .history
+                .borrow()
+                .newest_first()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(history, ["echo a\necho b", "ls -la"]);
+    }
+
+    #[gpui::test]
+    async fn test_up_filters_history_by_typed_prefix(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        write(&terminal, SHELL_PROMPT, cx);
+        push_history(&view, &["git status", "ls", "git log", "cargo test"], cx);
+
+        // The newest entry starting with what was typed, skipping others.
+        cx.simulate_input("git");
+        cx.simulate_keystrokes("up");
+        assert_eq!(input_text(&view, cx), "git log");
+
+        // With nothing typed, up shows the newest entry.
+        cx.simulate_keystrokes("ctrl-a backspace");
+        assert_eq!(input_text(&view, cx), "");
+        cx.simulate_keystrokes("up");
+        assert_eq!(input_text(&view, cx), "cargo test");
+    }
+
+    #[gpui::test]
+    async fn test_up_and_down_walk_history_by_typed_prefix(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        write(&terminal, SHELL_PROMPT, cx);
+        push_history(&view, &["git status", "ls", "git log", "cargo test"], cx);
+
+        cx.simulate_input("git");
+        cx.simulate_keystrokes("up");
+        assert_eq!(input_text(&view, cx), "git log");
+        cx.simulate_keystrokes("up");
+        assert_eq!(input_text(&view, cx), "git status");
+        // Nothing older matches; the text stays.
+        cx.simulate_keystrokes("up");
+        assert_eq!(input_text(&view, cx), "git status");
+
+        cx.simulate_keystrokes("down");
+        assert_eq!(input_text(&view, cx), "git log");
+        // Past the newest match, the typed text comes back.
+        cx.simulate_keystrokes("down");
+        assert_eq!(input_text(&view, cx), "git");
+    }
+
+    #[gpui::test]
+    async fn test_accepting_ghost_suggestion(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        write(&terminal, SHELL_PROMPT, cx);
+        push_history(&view, &["git stash", "git status --short"], cx);
+        let input = input(&view, cx);
+        let suggestion =
+            |cx: &mut VisualTestContext| input.read_with(cx, |input, _| input.suggestion.clone());
+
+        // The newest entry starting with what was typed.
+        cx.simulate_input("git stas");
+        cx.run_until_parked();
+        assert_eq!(suggestion(cx).as_deref(), Some("h"));
+        cx.simulate_keystrokes("backspace");
+        cx.run_until_parked();
+        assert_eq!(suggestion(cx).as_deref(), Some("tus --short"));
+
+        // Right at the end accepts it.
+        cx.simulate_keystrokes("right");
+        cx.run_until_parked();
+        assert_eq!(input_text(&view, cx), "git status --short");
+        assert_eq!(suggestion(cx), None);
+
+        // Elsewhere, right only moves the cursor.
+        cx.simulate_keystrokes("ctrl-a backspace");
+        cx.simulate_input("git sta");
+        cx.simulate_keystrokes("left right");
+        cx.run_until_parked();
+        assert_eq!(input_text(&view, cx), "git sta");
+        assert_eq!(suggestion(cx).as_deref(), Some("tus --short"));
+        cx.simulate_keystrokes("right");
+        cx.run_until_parked();
+        assert_eq!(input_text(&view, cx), "git status --short");
+    }
 }

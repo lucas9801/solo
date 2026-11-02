@@ -91,7 +91,10 @@ fn append_to_file_text(text: &str, workflow: &Workflow) -> Option<String> {
     let entry = serde_json::to_string_pretty(workflow)
         .ok()?
         .replace('\n', "\n  ");
-    Some(format!("{before}{separator}\n  {entry}\n{}", &text[close..]))
+    Some(format!(
+        "{before}{separator}\n  {entry}\n{}",
+        &text[close..]
+    ))
 }
 
 /// Creates the workflows file with an example if there is none, so it can be
@@ -100,10 +103,18 @@ pub fn ensure_file() -> Result<PathBuf> {
     let path = workflows_file();
     if !path.exists() {
         write(&[Workflow {
-            name: "Example: search the code for a word".to_string(),
+            name: util::i18n::tr(
+                "Example: search the code for a word",
+                "示例：在代码中搜索一个词",
+            )
+            .to_string(),
             command: "git grep -n {{word}}".to_string(),
             description: Some(
-                "Workflows fill the terminal input; Tab selects each {{argument}}.".to_string(),
+                util::i18n::tr(
+                    "Workflows fill the terminal input; Tab selects each {{argument}}.",
+                    "Workflow 会填入终端输入框；按 Tab 依次选中每个 {{argument}}。",
+                )
+                .to_string(),
             ),
         }])?;
     }
@@ -150,88 +161,99 @@ fn placeholders(text: &str) -> Vec<Range<usize>> {
 }
 
 fn built_in(flavor: ShellFlavor) -> Vec<Workflow> {
-    let common: &[(&str, &str, &str)] = &[
+    use util::i18n::tr;
+    let mut workflows = vec![
         (
-            "Undo the last git commit, keeping its changes",
+            tr(
+                "Undo the last git commit, keeping its changes",
+                "撤销上一次 git 提交，保留改动",
+            ),
             "git reset --soft HEAD~1",
             "git",
         ),
         (
-            "Create a git branch and switch to it",
+            tr(
+                "Create a git branch and switch to it",
+                "新建 git 分支并切换过去",
+            ),
             "git switch -c {{branch}}",
             "git",
         ),
         (
-            "Show what changed in the last git commit",
+            tr(
+                "Show what changed in the last git commit",
+                "查看上一次 git 提交改了什么",
+            ),
             "git show --stat HEAD",
             "git",
         ),
         (
-            "Delete local git branches already merged",
+            tr(
+                "Delete local git branches already merged",
+                "删除已合并的本地 git 分支",
+            ),
             "git branch --merged | grep -v '^\\*' | xargs -r git branch -d",
             "git",
         ),
         (
-            "Ask Claude Code about this directory",
+            tr(
+                "Ask Claude Code about this directory",
+                "向 Claude Code 询问这个目录",
+            ),
             "claude \"{{question}}\"",
             "AI",
         ),
     ];
-    let shell_specific: &[(&str, &str, &str)] = match flavor {
-        ShellFlavor::PowerShell => &[
+    let find_process = tr(
+        "Find the process listening on a port",
+        "查找监听某端口的进程",
+    );
+    let find_files = tr("Find files by name", "按名称查找文件");
+    let search_contents = tr("Search file contents", "搜索文件内容");
+    let largest_files = tr("Largest files in this directory", "此目录中最大的文件");
+    let set_variable = tr(
+        "Set an environment variable for this session",
+        "为当前会话设置环境变量",
+    );
+    workflows.extend(match flavor {
+        ShellFlavor::PowerShell => [
             (
-                "Find the process listening on a port",
+                find_process,
                 "Get-Process -Id (Get-NetTCPConnection -LocalPort {{port}}).OwningProcess",
                 "PowerShell",
             ),
             (
-                "Find files by name",
+                find_files,
                 "Get-ChildItem -Recurse -Filter '{{pattern}}' | Select-Object FullName",
                 "PowerShell",
             ),
             (
-                "Search file contents",
+                search_contents,
                 "Select-String -Path {{files}} -Pattern '{{text}}'",
                 "PowerShell",
             ),
             (
-                "Largest files in this directory",
+                largest_files,
                 "Get-ChildItem -Recurse -File | Sort-Object Length -Descending | Select-Object -First 10 FullName, Length",
                 "PowerShell",
             ),
-            (
-                "Set an environment variable for this session",
-                "$env:{{name}} = '{{value}}'",
-                "PowerShell",
-            ),
+            (set_variable, "$env:{{name}} = '{{value}}'", "PowerShell"),
         ],
-        ShellFlavor::Posix => &[
-            (
-                "Find the process listening on a port",
-                "lsof -i :{{port}}",
-                "shell",
-            ),
-            ("Find files by name", "find . -name '{{pattern}}'", "shell"),
-            ("Search file contents", "grep -rn '{{text}}' .", "shell"),
-            (
-                "Largest files in this directory",
-                "du -ah . | sort -rh | head -n 10",
-                "shell",
-            ),
-            (
-                "Set an environment variable for this session",
-                "export {{name}}={{value}}",
-                "shell",
-            ),
+        ShellFlavor::Posix => [
+            (find_process, "lsof -i :{{port}}", "shell"),
+            (find_files, "find . -name '{{pattern}}'", "shell"),
+            (search_contents, "grep -rn '{{text}}' .", "shell"),
+            (largest_files, "du -ah . | sort -rh | head -n 10", "shell"),
+            (set_variable, "export {{name}}={{value}}", "shell"),
         ],
-    };
-    common
-        .iter()
-        .chain(shell_specific)
+    });
+    let built_in = tr("Built-in", "内置");
+    workflows
+        .into_iter()
         .map(|(name, command, tag)| Workflow {
             name: name.to_string(),
             command: command.to_string(),
-            description: Some(format!("Built-in · {tag}")),
+            description: Some(format!("{built_in} · {tag}")),
         })
         .collect()
 }
@@ -261,7 +283,9 @@ mod tests {
         };
         let text = "// mine\n[\n  { \"name\": \"a\", \"command\": \"a\" }, // first\n]\n";
         let new_text = append_to_file_text(text, &workflow).unwrap();
-        assert!(new_text.starts_with("// mine\n[\n  { \"name\": \"a\", \"command\": \"a\" }, // first"));
+        assert!(
+            new_text.starts_with("// mine\n[\n  { \"name\": \"a\", \"command\": \"a\" }, // first")
+        );
         let workflows: Vec<Workflow> = serde_json_lenient::from_str(&new_text).unwrap();
         assert_eq!(workflows.len(), 2);
         assert_eq!(workflows[1], workflow);

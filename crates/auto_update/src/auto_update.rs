@@ -329,9 +329,12 @@ pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
         // SOLO: say why nothing happens instead of silently ignoring the check.
         drop(window.prompt(
             gpui::PromptLevel::Info,
-            "Solo doesn't update itself",
-            Some("Build or download a newer version of Solo to update."),
-            &["OK"],
+            util::i18n::tr("Solo doesn't update itself", "Solo 不会自动更新"),
+            Some(util::i18n::tr(
+                "Build or download a newer version of Solo to update.",
+                "如需更新，请自行构建或下载新版 Solo。",
+            )),
+            &[util::i18n::tr("OK", "好")],
             cx,
         ));
         return;

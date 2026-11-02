@@ -65,7 +65,7 @@ impl TerminalView {
         let command = block
             .command
             .clone()
-            .unwrap_or_else(|| "Command".to_string());
+            .unwrap_or_else(|| util::i18n::tr("Command", "命令").to_string());
         let (title, body) =
             finished_notification_text(&command, block.exit_code, duration, &terminal.title(true));
         self.show_notification(title, body, window, cx);
@@ -172,6 +172,9 @@ fn finished_notification_text(
 ) -> (String, String) {
     let command = command.lines().next().unwrap_or_default();
     let title = match exit_code {
+        Some(code) if code != 0 && util::i18n::is_chinese() => {
+            format!("✗ {command}（退出码 {code}）")
+        }
         Some(code) if code != 0 => format!("✗ {command} (exit {code})"),
         _ => format!("✓ {command}"),
     };
@@ -183,7 +186,12 @@ fn finished_notification_text(
     } else {
         format!("{}h {}m", secs / 3600, secs % 3600 / 60)
     };
-    (title, format!("Finished in {duration} · {terminal_title}"))
+    let body = if util::i18n::is_chinese() {
+        format!("用时 {duration} · {terminal_title}")
+    } else {
+        format!("Finished in {duration} · {terminal_title}")
+    };
+    (title, body)
 }
 
 #[cfg(test)]

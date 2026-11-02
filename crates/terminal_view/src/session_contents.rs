@@ -97,3 +97,123 @@ pub(crate) fn delete_stale(restore_contents: bool) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TerminalView;
+    use gpui::{AppContext as _, Entity, TestAppContext, UpdateGlobal, VisualTestContext};
+    use settings::SettingsStore;
+    use terminal::{Terminal, TerminalBuilder};
+    use util::paths::PathStyle;
+
+    fn set_restore_contents(restore_contents: bool, cx: &mut VisualTestContext) {
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.terminal.get_or_insert_default().restore_contents =
+                        Some(restore_contents);
+                });
+            })
+        });
+    }
+
+    fn write(terminal: &Entity<Terminal>, bytes: &[u8], cx: &mut VisualTestContext) {
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(bytes, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| terminal.update(cx, |terminal, cx| terminal.sync(window, cx)));
+    }
+
+    fn contents_to_save(
+        view: &Entity<TerminalView>,
+        cx: &mut VisualTestContext,
+    ) -> Option<SaveContents> {
+        view.update(cx, |view, cx| view.contents_to_save(cx))
+    }
+
+    #[gpui::test]
+    async fn test_contents_to_save(cx: &mut TestAppContext) {
+        let (project, workspace) = crate::tests::init_test(cx).await;
+        let terminal = cx.new(|cx| {
+            TerminalBuilder::new_display_only(
+                Default::default(),
+                settings::AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal.clone(),
+                workspace.downgrade(),
+                Some(WorkspaceId::from_i64(1)),
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+        write(
+            &terminal,
+            b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]633;E;ls\x07\x1b]133;C\x07\
+              a.txt\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07",
+            cx,
+        );
+
+        // Off by default: what was saved before is deleted.
+        let contents = contents_to_save(&view, cx).unwrap();
+        assert_eq!(contents.snapshot, None);
+        assert_eq!(i64::from(contents.workspace_id), 1);
+        assert_eq!(contents.item_id, view.entity_id().as_u64());
+
+        set_restore_contents(true, cx);
+        let snapshot = contents_to_save(&view, cx).unwrap().snapshot.unwrap();
+        assert_eq!(snapshot.rows, ["$ ls", "a.txt"]);
+        assert_eq!(snapshot.blocks.len(), 1);
+        assert_eq!(snapshot.blocks[0].command.as_deref(), Some("ls"));
+
+        // A restored terminal's save replaces the file it was restored from,
+        // once.
+        view.update(cx, |view, _| view.restored_from = Some(7));
+        assert_eq!(contents_to_save(&view, cx).unwrap().replaces, Some(7));
+        assert_eq!(contents_to_save(&view, cx).unwrap().replaces, None);
+
+        // A running agent's half redrawn screen isn't saved, its command is.
+        write(
+            &terminal,
+            b"claude\r\n\x1b]633;E;claude\x07\x1b]133;C\x07> Try \"fix the tests\"",
+            cx,
+        );
+        let snapshot = contents_to_save(&view, cx).unwrap().snapshot.unwrap();
+        assert_eq!(snapshot.rows, ["$ ls", "a.txt", "$ claude"]);
+
+        // While a full screen program runs, what was saved before is kept.
+        write(&terminal, b"\x1b[?1049h", cx);
+        assert!(contents_to_save(&view, cx).is_none());
+
+        // Saving when the test app quits would write to the real data dir.
+        view.update(cx, |view, _| view.workspace_id = None);
+    }
+
+    #[test]
+    fn test_saved_snapshot_reads_back() {
+        let snapshot = SessionSnapshot {
+            rows: vec!["$ ls".to_string(), "\x1b[0;31mred\x1b[0m".to_string()],
+            blocks: vec![terminal::shell_integration::SavedCommandBlock {
+                prompt_line: 0,
+                input_line: Some(0),
+                output_line: Some(1),
+                end_line: Some(2),
+                exit_code: Some(1),
+                command: Some("ls".to_string()),
+                working_directory: Some(PathBuf::from("/tmp")),
+                duration_ms: Some(12),
+            }],
+        };
+        let json = serde_json::to_vec(&snapshot).unwrap();
+        let read: SessionSnapshot = serde_json::from_slice(&json).unwrap();
+        assert_eq!(read, snapshot);
+    }
+}

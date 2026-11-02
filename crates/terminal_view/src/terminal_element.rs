@@ -83,27 +83,29 @@ fn command_block_label(block: &CommandBlock, status: CommandBlockStatus) -> Opti
         (Some(started_at), Some(finished_at)) => Some(finished_at - started_at),
         _ => None,
     };
+    let running = util::i18n::tr("running", "运行中");
+    let exit = util::i18n::tr("exit", "退出码");
     match status {
         CommandBlockStatus::Idle => None,
         CommandBlockStatus::Running => Some(match block.started_at {
             Some(started_at) if started_at.elapsed().as_secs() > 0 => {
                 let secs = started_at.elapsed().as_secs();
                 if secs < 60 {
-                    format!("running · {secs}s")
+                    format!("{running} · {secs}s")
                 } else {
-                    format!("running · {}m {}s", secs / 60, secs % 60)
+                    format!("{running} · {}m {}s", secs / 60, secs % 60)
                 }
             }
-            _ => "running".to_string(),
+            _ => running.to_string(),
         }),
         CommandBlockStatus::Succeeded => duration.map(format_command_duration),
         CommandBlockStatus::Failed => {
             let exit_code = block.exit_code.unwrap_or(1);
             Some(match duration {
                 Some(duration) => {
-                    format!("exit {exit_code} · {}", format_command_duration(duration))
+                    format!("{exit} {exit_code} · {}", format_command_duration(duration))
                 }
-                None => format!("exit {exit_code}"),
+                None => format!("{exit} {exit_code}"),
             })
         }
     }

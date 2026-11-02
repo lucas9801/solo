@@ -95,7 +95,7 @@ impl TerminalView {
         }
         let name = match command {
             Some(command) => util::truncate_and_trailoff(command.trim(), MAX_COMMAND_CHARS),
-            None => "A command".to_string(),
+            None => util::i18n::tr("A command", "一个命令").to_string(),
         };
         Some(RunningProgram {
             name: name.into(),

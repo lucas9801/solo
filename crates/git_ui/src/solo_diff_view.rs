@@ -624,9 +624,15 @@ impl Render for SoloDiffStyleToolbar {
             GitPanelSettings::get_global(cx).status_style != StatusStyle::LabelColor;
 
         let (expand_icon, expand_tooltip) = if showing_full_file {
-            (IconName::ChevronDownUp, "Show Changes Only")
+            (
+                IconName::ChevronDownUp,
+                util::i18n::tr("Show Changes Only", "只显示改动"),
+            )
         } else {
-            (IconName::ChevronUpDown, "Show Full File")
+            (
+                IconName::ChevronUpDown,
+                util::i18n::tr("Show Full File", "显示完整文件"),
+            )
         };
 
         h_flex()
@@ -787,7 +793,7 @@ impl Render for SoloDiffGitToolbar {
                             .icon_size(IconSize::Small)
                             .disabled(!button_states.prev_next)
                             .tooltip(Tooltip::for_action_title_in(
-                                "Go to Previous Hunk",
+                                util::i18n::tr("Go to Previous Hunk", "上一处改动"),
                                 &GoToPreviousHunk,
                                 &focus_handle,
                             ))
@@ -800,7 +806,7 @@ impl Render for SoloDiffGitToolbar {
                             .icon_size(IconSize::Small)
                             .disabled(!button_states.prev_next)
                             .tooltip(Tooltip::for_action_title_in(
-                                "Go to Next Hunk",
+                                util::i18n::tr("Go to Next Hunk", "下一处改动"),
                                 &GoToHunk,
                                 &focus_handle,
                             ))
@@ -814,10 +820,10 @@ impl Render for SoloDiffGitToolbar {
                 h_group_sm()
                     .when(button_states.selection, |el| {
                         el.child(
-                            Button::new("stage", "Toggle Staged")
+                            Button::new("stage", util::i18n::tr("Toggle Staged", "切换暂存"))
                                 .disabled(!button_states.stage && !button_states.unstage)
                                 .tooltip(Tooltip::for_action_title_in(
-                                    "Toggle Staged",
+                                    util::i18n::tr("Toggle Staged", "切换暂存"),
                                     &ToggleStaged,
                                     &focus_handle,
                                 ))
@@ -828,10 +834,10 @@ impl Render for SoloDiffGitToolbar {
                     })
                     .when(!button_states.selection, |el| {
                         el.child(
-                            Button::new("stage", "Stage")
+                            Button::new("stage", util::i18n::tr("Stage", "暂存"))
                                 .disabled(!button_states.stage)
                                 .tooltip(Tooltip::for_action_title_in(
-                                    "Stage and Go to Next Hunk",
+                                    util::i18n::tr("Stage and Go to Next Hunk", "暂存并跳到下一处"),
                                     &StageAndNext,
                                     &focus_handle,
                                 ))
@@ -840,10 +846,13 @@ impl Render for SoloDiffGitToolbar {
                                 })),
                         )
                         .child(
-                            Button::new("unstage", "Unstage")
+                            Button::new("unstage", util::i18n::tr("Unstage", "取消暂存"))
                                 .disabled(!button_states.unstage)
                                 .tooltip(Tooltip::for_action_title_in(
-                                    "Unstage and Go to Next Hunk",
+                                    util::i18n::tr(
+                                        "Unstage and Go to Next Hunk",
+                                        "取消暂存并跳到下一处",
+                                    ),
                                     &UnstageAndNext,
                                     &focus_handle,
                                 ))
@@ -853,9 +862,9 @@ impl Render for SoloDiffGitToolbar {
                         )
                     })
                     .child(
-                        Button::new("restore", "Restore")
+                        Button::new("restore", util::i18n::tr("Restore", "还原"))
                             .tooltip(Tooltip::for_action_title_in(
-                                "Restore selected hunk",
+                                util::i18n::tr("Restore selected hunk", "还原选中的改动"),
                                 &Restore,
                                 &focus_handle,
                             ))
@@ -867,31 +876,34 @@ impl Render for SoloDiffGitToolbar {
             )
             .child(Divider::vertical())
             .child(h_group_sm().child(if button_states.stage_file {
-                Button::new("stage-file", "Stage All")
+                Button::new("stage-file", util::i18n::tr("Stage All", "全部暂存"))
                     .width(rems_from_px(80_f32))
                     .disabled(!button_states.stage_file)
                     .tooltip(Tooltip::for_action_title_in(
-                        "Stage All",
+                        util::i18n::tr("Stage All", "全部暂存"),
                         &StageFile,
                         &focus_handle,
                     ))
                     .on_click(cx.listener(|this, _, window, cx| this.stage_file(window, cx)))
             } else {
-                Button::new("unstage-file", "Unstage All")
-                    .width(rems_from_px(80_f32))
-                    .disabled(!button_states.unstage_file)
-                    .tooltip(Tooltip::for_action_title_in(
-                        "Unstage All",
-                        &UnstageFile,
-                        &focus_handle,
-                    ))
-                    .on_click(cx.listener(|this, _, window, cx| this.unstage_file(window, cx)))
+                Button::new(
+                    "unstage-file",
+                    util::i18n::tr("Unstage All", "全部取消暂存"),
+                )
+                .width(rems_from_px(80_f32))
+                .disabled(!button_states.unstage_file)
+                .tooltip(Tooltip::for_action_title_in(
+                    util::i18n::tr("Unstage All", "全部取消暂存"),
+                    &UnstageFile,
+                    &focus_handle,
+                ))
+                .on_click(cx.listener(|this, _, window, cx| this.unstage_file(window, cx)))
             }))
             .child(Divider::vertical())
             .child(
-                Button::new("commit", "Commit")
+                Button::new("commit", util::i18n::tr("Commit", "提交"))
                     .tooltip(Tooltip::for_action_title_in(
-                        "Commit",
+                        util::i18n::tr("Commit", "提交"),
                         &Commit,
                         &focus_handle,
                     ))

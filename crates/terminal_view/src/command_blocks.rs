@@ -279,7 +279,10 @@ impl TerminalView {
                 workspace.show_toast(
                     Toast::new(
                         NotificationId::unique::<NoAgentToast>(),
-                        "No terminal is running an AI agent; copied the block instead",
+                        util::i18n::tr(
+                            "No terminal is running an AI agent; copied the block instead",
+                            "没有终端在运行 AI agent，已改为复制命令块",
+                        ),
                     )
                     .autohide(),
                     cx,
@@ -312,7 +315,12 @@ impl TerminalView {
             return;
         };
         let message = match crate::input::workflows::save(command.trim()) {
-            Ok(()) => "Saved as a workflow; ctrl-shift-r in the input lists them".to_string(),
+            Ok(()) => util::i18n::tr(
+                "Saved as a workflow; ctrl-shift-r in the input lists them",
+                "已存为 Workflow；在输入框按 ctrl-shift-r 可列出",
+            )
+            .to_string(),
+            Err(error) if util::i18n::is_chinese() => format!("无法保存 Workflow：{error:#}"),
             Err(error) => format!("Couldn't save the workflow: {error:#}"),
         };
         if let Some(workspace) = self.workspace.upgrade() {

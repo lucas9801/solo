@@ -147,7 +147,11 @@ pub fn complete(
                             text: name.clone(),
                             label: name.clone(),
                             kind: CompletionKind::Subcommand,
-                            detail: Some(format!("Alias for {expansion}")),
+                            detail: Some(if util::i18n::is_chinese() {
+                                format!("{expansion} 的别名")
+                            } else {
+                                format!("Alias for {expansion}")
+                            }),
                         }),
                 );
             }
