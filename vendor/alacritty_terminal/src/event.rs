@@ -61,6 +61,10 @@ pub enum Event {
     /// (iTerm2) or `OSC 777 ; notify ; title ; body` (urxvt).
     Notification { title: Option<String>, body: String },
 
+    /// SOLO: An AI agent's hook reported what the agent is doing, with
+    /// `OSC 6973 ; agent ; ...`; the parameters after `agent`.
+    AgentHook(Vec<String>),
+
     /// SOLO: The shell reported a shell integration mark.
     ShellMark {
         mark: ShellMark,
@@ -109,6 +113,7 @@ impl Debug for Event {
             Event::Exit => write!(f, "Exit"),
             Event::ChildExit(status) => write!(f, "ChildExit({status:?})"),
             Event::ShellMark { mark, line } => write!(f, "ShellMark({mark:?}, {line})"),
+            Event::AgentHook(params) => write!(f, "AgentHook({params:?})"),
             Event::Notification { title, body } => write!(f, "Notification({title:?}, {body:?})"),
         }
     }

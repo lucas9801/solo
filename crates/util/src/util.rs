@@ -15,6 +15,8 @@ pub mod shell;
 pub mod shell_builder;
 #[cfg(not(target_family = "wasm"))]
 pub mod shell_env;
+#[cfg(not(target_family = "wasm"))]
+pub mod i18n;
 
 pub mod disambiguate;
 pub mod markdown;

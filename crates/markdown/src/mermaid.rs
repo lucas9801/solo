@@ -242,7 +242,11 @@ impl CachedMermaidDiagram {
                         parsed_svg.set(tree).ok();
                         Ok(image)
                     }
-                    Err(error) => Err(error),
+                    Err(error) => {
+                        // SOLO: say why a diagram shows as source, not drawn.
+                        log::warn!("failed to render Mermaid diagram: {error:#}");
+                        Err(error)
+                    }
                 };
                 render_image.set(value).ok();
                 Self::on_render_complete(this, fallback_image, cx);

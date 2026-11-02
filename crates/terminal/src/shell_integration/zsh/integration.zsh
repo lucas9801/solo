@@ -43,6 +43,36 @@ __solo_precmd_prompt() {
     fi
 }
 
+# Claude Code reports what it's doing through hooks in the settings file Solo
+# passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this terminal.
+# A claude function of the user's own stays.
+if [[ -n ${SOLO_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} )); then
+    [[ -n ${TTY-} ]] && export SOLO_AGENT_TTY=$TTY
+    claude() {
+        local arg
+        # Subcommands, background sessions and the user's own --settings run as typed.
+        case ${1-} in
+            agents|attach|auth|auto-mode|doctor|gateway|import|install|logs|mcp|plugin|plugins|purge|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade)
+                command claude "$@"
+                return
+                ;;
+        esac
+        for arg in "$@"; do
+            case $arg in
+                --settings | --settings=* | --bg | --background)
+                    command claude "$@"
+                    return
+                    ;;
+            esac
+        done
+        if [[ -r $SOLO_CLAUDE_SETTINGS ]]; then
+            command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
+        else
+            command claude "$@"
+        fi
+    }
+fi
+
 printf '\e]633;P;Shell=%s\a' "${commands[zsh]:-zsh}"
 
 precmd_functions=(__solo_precmd_status $precmd_functions __solo_precmd_prompt)

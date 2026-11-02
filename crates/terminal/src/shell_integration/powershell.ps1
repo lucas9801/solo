@@ -20,6 +20,15 @@ Remove-Variable __soloShellPath
 function Global:prompt {
     $succeeded = $Global:?
     $lastExitCode = $Global:LASTEXITCODE
+    # A function (the claude wrapper below) leaves $? set even when the program
+    # it ran failed.
+    if ($null -ne $Global:__SoloWrappedExitCode) {
+        if ($succeeded -and $Global:__SoloWrappedExitCode -ne 0) {
+            $succeeded = $false
+            $lastExitCode = $Global:__SoloWrappedExitCode
+        }
+        $Global:__SoloWrappedExitCode = $null
+    }
     $esc = [char]27
     $bel = [char]7
     $marks = ""
@@ -60,6 +69,34 @@ function Global:prompt {
     # The user's prompt may run native commands; keep the command's exit code.
     $Global:LASTEXITCODE = $lastExitCode
     "$marks$userPrompt$esc]133;B$bel"
+}
+
+# Claude Code reports what it's doing through hooks in the settings file Solo
+# passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this console.
+# A claude function or alias of the user's own stays.
+if ($env:SOLO_CLAUDE_SETTINGS -and -not (Get-Command -Name claude -CommandType Function, Alias -ErrorAction SilentlyContinue)) {
+    $env:SOLO_AGENT_CONSOLE_PID = "$PID"
+    function Global:claude {
+        $program = Get-Command -Name claude -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $program) {
+            Write-Error "claude: command not found"
+            return
+        }
+        # Subcommands, background sessions and the user's own --settings run as typed.
+        $asTyped = ($args.Count -gt 0 -and "$($args[0])" -in @('agents', 'attach', 'auth', 'auto-mode', 'doctor', 'gateway', 'import', 'install', 'logs', 'mcp', 'plugin', 'plugins', 'purge', 'respawn', 'rm', 'setup-token', 'stop', 'kill', 'ultrareview', 'update', 'upgrade')) -or
+            ($args | Where-Object { "$_" -in @('--settings', '--bg', '--background') -or "$_" -like '--settings=*' })
+        $settings = @()
+        if (-not $asTyped -and (Test-Path -LiteralPath $env:SOLO_CLAUDE_SETTINGS)) {
+            $settings = @('--settings', $env:SOLO_CLAUDE_SETTINGS)
+        }
+        $Global:LASTEXITCODE = 0
+        if ($MyInvocation.ExpectingInput) {
+            $input | & $program @settings @args
+        } else {
+            & $program @settings @args
+        }
+        $Global:__SoloWrappedExitCode = $Global:LASTEXITCODE
+    }
 }
 
 if (Get-Command PSConsoleHostReadLine -ErrorAction SilentlyContinue) {

@@ -289,27 +289,68 @@ fn sanitize_url_punctuation<T: EventListener>(
 /// if all parentheses are balanced. Used to strip prefixes like `Update(` from
 /// path matches while preserving balanced parens in filenames like `file(copy).txt`.
 fn first_unbalanced_open_paren(s: &str) -> Option<usize> {
+    first_unbalanced_open(s, '(', ')')
+}
+
+fn first_unbalanced_open(s: &str, open: char, close: char) -> Option<usize> {
     let mut balance: i32 = 0;
     let mut first_unmatched = None;
     for (i, c) in s.char_indices() {
-        match c {
-            '(' => {
-                if balance == 0 {
-                    first_unmatched = Some(i + c.len_utf8());
-                }
-                balance += 1;
+        if c == open {
+            if balance == 0 {
+                first_unmatched = Some(i + c.len_utf8());
             }
-            ')' => {
-                balance -= 1;
-                if balance <= 0 {
-                    balance = 0;
-                    first_unmatched = None;
-                }
+            balance += 1;
+        } else if c == close {
+            balance -= 1;
+            if balance <= 0 {
+                balance = 0;
+                first_unmatched = None;
             }
-            _ => {}
         }
     }
     first_unmatched.filter(|_| balance > 0)
+}
+
+const PROSE_PUNCTUATION: &[char] = &[
+    '，', '。', '：', '；', '、', '！', '？', '（', '）', '「', '」', '『', '』', '【', '】', '《',
+    '》', '“', '”', '‘', '’',
+];
+
+/// SOLO: where a path written right after Chinese prose starts, as in
+/// `方法（core/object/class_db.cpp`, `free（object.cpp` or `看scene/main/node.cpp`:
+/// after a leading run of non-ASCII text that ends in full-width punctuation or
+/// runs into an ASCII path with a directory, and after an unbalanced `（`.
+/// Non-ASCII names (`docs/渲染.md`, `例wesome.py`, `test、2.txt`) are kept whole.
+///
+/// `after_prose` is set for the text left in a match after [`path_end_in_prose`]
+/// ended an earlier path in it (`、gdscript_vm.cpp`, `中的方法`). That text
+/// must have an ASCII path after its leading prose, or there is no path in it
+/// and this returns `None`.
+fn path_start_in_prose(path: &str, after_prose: bool) -> Option<usize> {
+    let prose_end = path
+        .char_indices()
+        .find(|(_, c)| c.is_ascii())
+        .map_or(path.len(), |(ix, _)| ix);
+    let prose = &path[..prose_end];
+    let rest = &path[prose_end..];
+    let starts_name = rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+    let starts_path = starts_name || rest.starts_with(['/', '\\', '.', '~']);
+    let mut start = if !prose.is_empty()
+        && starts_path
+        && (prose.ends_with(PROSE_PUNCTUATION)
+            || (starts_name && (rest.contains(['/', '\\']) || (after_prose && rest.contains('.')))))
+    {
+        prose_end
+    } else if after_prose {
+        return None;
+    } else {
+        0
+    };
+    if let Some(paren_end) = first_unbalanced_open(&path[start..], '（', '）') {
+        start += paren_end;
+    }
+    (start < path.len()).then_some(start)
 }
 
 /// SOLO: how much of `path` to keep when it runs into prose that the regexes
@@ -318,10 +359,6 @@ fn first_unbalanced_open_paren(s: &str) -> Option<usize> {
 /// punctuation or non-ASCII text that follows an ASCII file name with an
 /// extension. Non-ASCII names (`docs/渲染.md`, `test、2.txt`) are kept whole.
 fn path_end_in_prose(path: &str) -> usize {
-    const PROSE_PUNCTUATION: &[char] = &[
-        '，', '。', '：', '；', '、', '！', '？', '（', '）', '「', '」', '『', '』', '【', '】',
-        '《', '》', '“', '”', '‘', '’',
-    ];
     let has_extension = |name: &str| {
         let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
         name.rsplit_once('.').is_some_and(|(stem, extension)| {
@@ -492,27 +529,53 @@ fn path_match<T>(
                 link_range.start = link_range.start.max(path_range.start);
             }
 
-            // SOLO: end a path written into Chinese prose where the prose starts.
-            let path_end = path_range.start + path_end_in_prose(&line[path_range.clone()]);
-            if path_end == path_range.start {
-                continue;
-            }
-            let line_column = if path_end < path_range.end {
-                path_range.end = path_end;
-                link_range.end = link_range.end.min(path_end);
-                None
-            } else {
-                line_column
-            };
-
-            if !link_range.contains(&hovered_point_byte_offset) {
-                // No match, just skip.
-                continue;
-            }
-            let found = found_from_range(path_range, link_range, line_column);
-
-            if found.1.contains(&hovered) {
-                return Some(found);
+            // SOLO: a match written into Chinese prose can hold several paths, as in
+            // `extension_api.json（main.cpp:4291`: cut out each one where the prose
+            // around it starts and ends.
+            let mut start = path_range.start;
+            let mut after_prose = false;
+            while start < path_range.end {
+                let end = start + path_end_in_prose(&line[start..path_range.end]);
+                if end == start {
+                    // The prose starts here, as with `:先看`.
+                    let Some(c) = line[start..].chars().next() else {
+                        break;
+                    };
+                    start += c.len_utf8();
+                    after_prose = true;
+                    continue;
+                }
+                let Some(path_start) = path_start_in_prose(&line[start..end], after_prose) else {
+                    break;
+                };
+                let path_start = start + path_start;
+                let segment_path_range = path_start..end;
+                let segment_link_range = if path_start == path_range.start {
+                    link_range.start
+                } else {
+                    path_start
+                }..if end == path_range.end {
+                    link_range.end
+                } else {
+                    end
+                };
+                if segment_link_range.contains(&hovered_point_byte_offset) {
+                    let segment_line_column = if end == path_range.end {
+                        line_column
+                    } else {
+                        None
+                    };
+                    let found = found_from_range(
+                        segment_path_range,
+                        segment_link_range,
+                        segment_line_column,
+                    );
+                    if found.1.contains(&hovered) {
+                        return Some(found);
+                    }
+                }
+                start = end;
+                after_prose = true;
             }
         }
 
@@ -836,6 +899,25 @@ mod tests {
             test_path!("看 ‹«scene/main/no👉de.cpp»›的 _bind_methods");
             test_path!("‹«modules/gdscript/gdscr👉ipt.cpp»›、gdscript_vm.cpp");
             test_path!("‹«src/👉main.rs»:«12»:«3»›");
+
+            // Paths right after Chinese text or full-width punctuation start there.
+            test_path!("方法（‹«core/object/class_👉db.cpp»:«1423»›）");
+            test_path!("方👉法（core/object/class_db.cpp:1423）");
+            test_path!("会先特判 free（‹«obj👉ect.cpp»:«771»›）。");
+            test_path!("会先特判 fr👉ee（object.cpp:771）。");
+            test_path!("看‹«scene/main/no👉de.cpp»:«12»›");
+            // Each path in a list written into prose is found on its own.
+            test_path!(
+                "生成 ‹«extension_api👉.json»›（main.cpp:4291、extension_api_dump.cpp:104）。"
+            );
+            test_path!(
+                "生成 extension_api.json（‹«ma👉in.cpp»:«4291»›、extension_api_dump.cpp:104）。"
+            );
+            test_path!(
+                "生成 extension_api.json（main.cpp:4291、‹«extension_api_d👉ump.cpp»:«104»›）。"
+            );
+            test_path!("gdscript.cpp、‹«gdscript_v👉m.cpp»›");
+            test_path!("core/object/object.h:先👉看");
         }
 
         #[test]
@@ -847,7 +929,10 @@ mod tests {
             assert_eq!(kept("core/object/object.h：先看"), "core/object/object.h");
             assert_eq!(kept("scene/main/node.cpp的"), "scene/main/node.cpp");
             assert_eq!(kept("gdscript.cpp、gdscript_vm.cpp"), "gdscript.cpp");
-            assert_eq!(kept("docs/Godot渲染流水线解析.md"), "docs/Godot渲染流水线解析.md");
+            assert_eq!(
+                kept("docs/Godot渲染流水线解析.md"),
+                "docs/Godot渲染流水线解析.md"
+            );
             assert_eq!(kept("test、2.txt"), "test、2.txt");
             assert_eq!(kept("src/main.rs:12:3"), "src/main.rs:12:3");
         }
@@ -1839,6 +1924,8 @@ mod tests {
             match c {
                 // Fullwidth unicode characters used in tests
                 '例' | '🏃' | '🦀' | '🔥' => 2,
+                // SOLO: CJK text and full-width punctuation
+                '\u{2E80}'..='\u{A4CF}' | '\u{AC00}'..='\u{D7A3}' | '\u{FF00}'..='\u{FF60}' => 2,
                 '\t' => 8, // it's really 0-8, use the max always
                 _ => 1,
             }

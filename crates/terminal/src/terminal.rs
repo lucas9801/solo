@@ -2,6 +2,7 @@ mod mappings;
 
 mod alacritty;
 mod mermaid;
+pub use mermaid::is_complete as mermaid_diagram_is_complete;
 mod pty_info;
 pub mod shell_integration;
 pub mod terminal_settings;
@@ -69,16 +70,14 @@ use crate::alacritty::{
     AlacrittyCell, AlacrittyGridIterator, AlacrittyHyperlink, AlacrittySearch, AlacrittyTerm,
     AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
     append_text_to_term, apply_config, clear_saved_screen, content_text, cursor_line,
-    display_offset,
-    display_only_term_config, find_from_terminal_point, full_content_range, grid_columns,
-    history_size, is_blank, last_non_empty_lines, lines_text, logical_lines, make_content,
-    new_term,
-    open_pty, pty_options, pty_term_config, resize, screen_lines, scroll_display, scroll_to_point,
-    search_matches, selection_text, set_default_cursor_style, set_selection as set_term_selection,
-    styled_rows, text_lines,
-    shrink_to_used, spawn_event_loop, toggle_vi_mode as toggle_term_vi_mode, total_lines,
-    update_selection as update_term_selection, update_selection_to_vi_cursor,
-    update_vi_cursor_for_scroll, used_lines, vi_goto_point, vi_motion,
+    display_offset, display_only_term_config, find_from_terminal_point, full_content_range,
+    grid_columns, history_size, is_blank, last_non_empty_lines, lines_text, logical_lines,
+    make_content, new_term, open_pty, pty_options, pty_term_config, resize, screen_lines,
+    scroll_display, scroll_to_point, search_matches, selection_text, set_default_cursor_style,
+    set_selection as set_term_selection, shrink_to_used, spawn_event_loop, styled_rows, text_lines,
+    toggle_vi_mode as toggle_term_vi_mode, total_lines, update_selection as update_term_selection,
+    update_selection_to_vi_cursor, update_vi_cursor_for_scroll, used_lines, vi_goto_point,
+    vi_motion,
 };
 use crate::mappings::colors::to_vte_rgb;
 use crate::mappings::keys::to_esc_str;
@@ -690,11 +689,18 @@ pub enum Event {
     CommandStarted,
     /// SOLO: a command marked by shell integration finished.
     CommandFinished,
+    /// SOLO: the shell showed its prompt (OSC 133 A). The working directory
+    /// it reported before the prompt (OSC 7) is already in
+    /// [`Terminal::shell_integration`].
+    PromptStarted,
     /// SOLO: a program asked for a desktop notification (OSC 9 or OSC 777).
     Notification {
         title: Option<String>,
         body: String,
     },
+    /// SOLO: an AI agent's hook reported what the agent is doing (see
+    /// [`shell_integration::integrate_claude_code`]).
+    AgentHook(shell_integration::AgentHook),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -757,6 +763,8 @@ pub(crate) enum TerminalBackendEvent {
     /// A shell integration mark and the scrollback row it arrived on.
     ShellMark(alacritty_terminal::event::ShellMark, usize),
     Notification(Option<String>, String),
+    /// The parameters of an agent hook report.
+    AgentHook(Vec<String>),
 }
 
 impl fmt::Debug for TerminalBackendEvent {
@@ -777,6 +785,7 @@ impl fmt::Debug for TerminalBackendEvent {
             Self::ChildExit(status) => write!(f, "ChildExit({status})"),
             Self::ShellMark(mark, line) => write!(f, "ShellMark({mark:?}, {line})"),
             Self::Notification(title, body) => write!(f, "Notification({title:?}, {body:?})"),
+            Self::AgentHook(params) => write!(f, "AgentHook({params:?})"),
         }
     }
 }
@@ -1768,10 +1777,9 @@ impl Terminal {
                     mark,
                     alacritty_terminal::event::ShellMark::CommandFinished { .. }
                 );
-                let started = matches!(
-                    mark,
-                    alacritty_terminal::event::ShellMark::CommandExecuted
-                );
+                let started = matches!(mark, alacritty_terminal::event::ShellMark::CommandExecuted);
+                let prompt_started =
+                    matches!(mark, alacritty_terminal::event::ShellMark::PromptStart);
                 if matches!(mark, alacritty_terminal::event::ShellMark::HistoryCleared) {
                     self.reset_cwd_history();
                 }
@@ -1782,10 +1790,22 @@ impl Terminal {
                 if finished {
                     cx.emit(Event::CommandFinished);
                 }
+                if prompt_started {
+                    cx.emit(Event::PromptStarted);
+                }
                 cx.notify();
             }
             TerminalBackendEvent::Notification(title, body) => {
                 cx.emit(Event::Notification { title, body });
+            }
+            TerminalBackendEvent::AgentHook(params) => {
+                match shell_integration::AgentHook::parse(&params) {
+                    Some(hook) => {
+                        log::debug!("agent hook {hook:?}");
+                        cx.emit(Event::AgentHook(hook));
+                    }
+                    None => log::debug!("unknown agent hook {params:?}"),
+                }
             }
         }
     }
@@ -1804,17 +1824,20 @@ impl Terminal {
     /// SOLO: the Mermaid diagram printed below a `mermaid` line, the one on
     /// grid line `header_line` or, if that's `None`, the last one.
     pub fn mermaid_diagram(&self, header_line: Option<i32>) -> Option<String> {
-        let lines = text_lines(&self.term.lock());
+        let (lines, columns) = {
+            let term = self.term.lock();
+            (text_lines(&term), grid_columns(&term))
+        };
         let texts: Vec<&str> = lines.iter().map(|(_, text)| text.as_str()).collect();
         match header_line {
             Some(header_line) => {
                 let ix = lines.iter().rposition(|(start, _)| *start <= header_line)?;
-                mermaid::diagram_after(&texts, ix)
+                mermaid::diagram_after(&texts, ix, columns)
             }
             None => (0..texts.len())
                 .rev()
                 .filter(|ix| mermaid::is_header(texts[*ix]))
-                .find_map(|ix| mermaid::diagram_after(&texts, ix)),
+                .find_map(|ix| mermaid::diagram_after(&texts, ix, columns)),
         }
     }
 
@@ -1879,14 +1902,30 @@ impl Terminal {
             Some(block) if block.started_at.is_none() => block.prompt_line.min(cursor_line),
             // A running program's screen may be half redrawn (an agent's UI,
             // a prompt), so keep its command line but not what it printed.
-            Some(block) if block.is_running() => {
-                block.output_line.unwrap_or(cursor_line + 1).min(cursor_line + 1)
-            }
+            Some(block) if block.is_running() => block
+                .output_line
+                .unwrap_or(cursor_line + 1)
+                .min(cursor_line + 1),
             _ => cursor_line,
         };
         let start = end.saturating_sub(MAX_SAVED_ROWS);
-        let mut rows = styled_rows(&term, start..end);
+        let styled = styled_rows(&term, start..end);
         drop(term);
+        // Rows the terminal wrapped are saved as the one line they are, so the
+        // restored terminal wraps them at its own width. `saved_row` maps each
+        // grid row to the saved row it's part of.
+        let mut rows: Vec<String> = Vec::with_capacity(styled.len());
+        let mut saved_row = Vec::with_capacity(styled.len());
+        let mut continues_line = false;
+        for (text, wrapped) in styled {
+            match rows.last_mut() {
+                Some(line) if continues_line => line.push_str(&text),
+                _ => rows.push(text),
+            }
+            saved_row.push(rows.len() - 1);
+            continues_line = wrapped;
+        }
+        let row_count = rows.len();
         while rows.last().is_some_and(|row| row.trim().is_empty()) {
             rows.pop();
         }
@@ -1894,7 +1933,15 @@ impl Terminal {
             return None;
         }
         let blocks = if blocks_known {
-            self.shell_integration.saved_blocks(start..end)
+            let saved_line = |line: usize| saved_row.get(line).copied().unwrap_or(row_count);
+            let mut blocks = self.shell_integration.saved_blocks(start..end);
+            for block in &mut blocks {
+                block.prompt_line = saved_line(block.prompt_line);
+                block.input_line = block.input_line.map(saved_line);
+                block.output_line = block.output_line.map(saved_line);
+                block.end_line = block.end_line.map(saved_line);
+            }
+            blocks
         } else {
             Vec::new()
         };
@@ -2752,8 +2799,19 @@ impl Terminal {
     }
 
     ///Paste text into the terminal
+    /// SOLO: whether the program asked for pasted text to be bracketed, as of
+    /// now: `last_content` only catches up when the terminal is drawn, and a
+    /// terminal in a background tab may not have been since its program
+    /// started.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.term
+            .lock_unfair()
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+    }
+
     pub fn paste(&mut self, text: &str) {
-        let paste_text = if self.last_content.mode.contains(Modes::BRACKETED_PASTE) {
+        let paste_text = if self.bracketed_paste_enabled() {
             format!("{}{}{}", "\x1b[200~", text.replace('\x1b', ""), "\x1b[201~")
         } else {
             text.replace("\r\n", "\r").replace('\n', "\r")
@@ -5274,6 +5332,20 @@ mod tests {
         })
     }
 
+    // SOLO: a program turning on bracketed paste counts before the terminal is drawn.
+    #[gpui::test]
+    async fn test_bracketed_paste_mode_without_sync(cx: &mut TestAppContext) {
+        let terminal = display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            assert!(!terminal.bracketed_paste_enabled());
+            terminal.write_raw_output(b"\x1b[?2004h", cx);
+            assert!(!terminal.last_content.mode.contains(Modes::BRACKETED_PASTE));
+            assert!(terminal.bracketed_paste_enabled());
+            terminal.write_raw_output(b"\x1b[?2004l", cx);
+            assert!(!terminal.bracketed_paste_enabled());
+        });
+    }
+
     fn raw_content(chunks: &[&[u8]], cx: &mut TestAppContext) -> Content {
         let terminal = display_only_terminal(cx);
         for chunk in chunks {
@@ -5754,7 +5826,8 @@ mod tests {
                 terminal.take_pty_write_log();
 
                 let click_position = point(px(80.0), px(10.0));
-                let grid_position = click_position - terminal.last_content.terminal_bounds.bounds.origin;
+                let grid_position =
+                    click_position - terminal.last_content.terminal_bounds.bounds.origin;
                 let link = terminal
                     .find_hyperlink_at_point(grid_point(
                         grid_position,
@@ -6878,7 +6951,9 @@ mod tests {
     async fn test_mermaid_diagram(cx: &mut TestAppContext) {
         let (terminal, cx) = init_terminal_test_with_window(cx, b"");
         let output = "$ claude\r\n\u{25cf} mermaid\r\n  flowchart TB\r\n      A[\"\u{7f16}\u{8bd1}\"] --> B\r\n  done\r\n";
-        terminal.update(cx, |terminal, cx| terminal.write_raw_output(output.as_bytes(), cx));
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(output.as_bytes(), cx)
+        });
         cx.run_until_parked();
         terminal.read_with(cx, |terminal, _| {
             let expected = Some("flowchart TB\n    A[\"\u{7f16}\u{8bd1}\"] --> B".to_string());
@@ -6983,6 +7058,111 @@ mod tests {
         assert_eq!(
             snapshot.rows,
             ["$ ls", "\x1b[0;31mred\x1b[0m plain", "second", "$ claude"]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_session_snapshot_joins_wrapped_rows(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.set_size(TerminalBounds {
+                cell_width: Pixels::from(10.),
+                line_height: Pixels::from(10.),
+                bounds: bounds(
+                    GpuiPoint::default(),
+                    size(Pixels::from(200.), Pixels::from(100.)),
+                ),
+            });
+            terminal.sync(window, cx);
+        });
+        // At 20 columns both output lines wrap, the second right after a space.
+        let mut output = Vec::new();
+        output.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07echo\r\n");
+        output.extend_from_slice(b"\x1b]633;E;echo\x07\x1b]133;C\x07");
+        output.extend_from_slice(b"aaaaaaaaaabbbbbbbbbb\x1b[31mcccccccccc\x1b[0m\r\n");
+        output.extend_from_slice(b"0123456789012345678 x\r\n");
+        output.extend_from_slice(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(&output, cx));
+        cx.run_until_parked();
+        let snapshot = terminal
+            .read_with(cx, |terminal, _| terminal.session_snapshot())
+            .unwrap();
+        assert_eq!(
+            snapshot.rows,
+            [
+                "$ echo",
+                "aaaaaaaaaabbbbbbbbbb\x1b[0;31mcccccccccc\x1b[0m",
+                "0123456789012345678 x"
+            ]
+        );
+        assert_eq!(snapshot.blocks.len(), 1);
+        assert_eq!(snapshot.blocks[0].prompt_line, 0);
+        assert_eq!(snapshot.blocks[0].output_line, Some(1));
+        assert_eq!(snapshot.blocks[0].end_line, Some(3));
+
+        let builder = cx.update(|window, cx| {
+            TerminalBuilder::new_display_only(
+                SettingsCursorShape::default(),
+                AlternateScroll::On,
+                None,
+                window.window_handle().window_id().as_u64(),
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+        });
+        let restored = cx.new(|cx| builder.subscribe(cx));
+        assert!(restored.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
+        restored.read_with(cx, |terminal, _| {
+            assert_eq!(
+                terminal.command_block_output(0).as_deref(),
+                Some("aaaaaaaaaabbbbbbbbbbcccccccccc\n0123456789012345678 x")
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_agent_hooks(cx: &mut TestAppContext) {
+        use crate::shell_integration::{AgentHook, AgentHookKind};
+
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let hooks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let hooks = hooks.clone();
+            cx.subscribe(&terminal, move |_, event: &Event, _| {
+                if let Event::AgentHook(hook) = event {
+                    hooks.borrow_mut().push(*hook);
+                }
+            })
+            .detach();
+        });
+        // As the hooks write them, also while the agent is on the alternate
+        // screen; unknown kinds are dropped.
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(
+                b"\x1b]6973;agent;prompt;1793624689993\x07\x1b[?1049h\x1b]6973;agent;input;1793624690000\x07\x1b]6973;agent;dance\x07\x1b]6973;agent;stop;\x1b\\",
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            *hooks.borrow(),
+            vec![
+                AgentHook {
+                    kind: AgentHookKind::PromptSubmitted,
+                    sent_at_ms: Some(1793624689993),
+                    session_id: None,
+                },
+                AgentHook {
+                    kind: AgentHookKind::NeedsInput,
+                    sent_at_ms: Some(1793624690000),
+                    session_id: None,
+                },
+                AgentHook {
+                    kind: AgentHookKind::Stopped,
+                    sent_at_ms: None,
+                    session_id: None,
+                },
+            ]
         );
     }
 

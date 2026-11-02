@@ -19,6 +19,8 @@ const POWERSHELL_SCRIPT: &str = include_str!("shell_integration/powershell.ps1")
 const BASH_SCRIPT: &str = include_str!("shell_integration/bash.sh");
 const FISH_SCRIPT: &str = include_str!("shell_integration/fish.fish");
 const ZSH_SCRIPT: &str = include_str!("shell_integration/zsh/integration.zsh");
+const CLAUDE_HOOK_POWERSHELL: &str = include_str!("shell_integration/claude_hook.ps1");
+const CLAUDE_HOOK_SH: &str = include_str!("shell_integration/claude_hook.sh");
 /// Startup files for the `ZDOTDIR` zsh is started with, each sourcing the
 /// user's own.
 const ZSH_STARTUP_FILES: [(&str, &str); 3] = [
@@ -138,6 +140,208 @@ fn write_script(name: &str, script: &str) -> std::io::Result<String> {
 fn powershell_encoded_command(script: &str) -> String {
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// SOLO: Lets Claude Code started from the integrated shell report what it's
+/// doing through hooks, which is more reliable than reading it from the output.
+///
+/// The hooks go in a settings file whose path the shell scripts get in
+/// `SOLO_CLAUDE_SETTINGS`; they wrap `claude` to pass it with `--settings`,
+/// which adds to the user's own settings and hooks without changing them.
+/// Each hook writes an [`AgentHook`] to the terminal.
+pub fn integrate_claude_code(is_windows: bool, env: &mut HashMap<String, String>) {
+    match write_claude_code_settings(is_windows) {
+        Ok(path) => {
+            env.insert("SOLO_CLAUDE_SETTINGS".to_string(), path);
+        }
+        Err(error) => log::warn!("failed to write the Claude Code hook settings: {error}"),
+    }
+}
+
+fn write_claude_code_settings(is_windows: bool) -> std::io::Result<String> {
+    let hook = match agent_hook_executable() {
+        Some(executable) => ClaudeHook::Executable(executable.to_string_lossy().into_owned()),
+        None if is_windows => {
+            ClaudeHook::PowerShell(write_script("claude-hook.ps1", CLAUDE_HOOK_POWERSHELL)?)
+        }
+        None => ClaudeHook::Sh(write_script("claude-hook.sh", CLAUDE_HOOK_SH)?),
+    };
+    let settings = claude_code_settings(&hook);
+    let settings = serde_json::to_string_pretty(&settings).map_err(std::io::Error::other)?;
+    write_script("claude-settings.json", &settings)
+}
+
+/// Solo's hook program (the `solo_agent_hook` crate), shipped next to Solo.
+fn agent_hook_executable() -> Option<PathBuf> {
+    let name = format!("solo-agent-hook{}", std::env::consts::EXE_SUFFIX);
+    let executable = std::env::current_exe().ok()?.parent()?.join(name);
+    executable.is_file().then_some(executable)
+}
+
+/// What Claude Code runs for a hook.
+#[derive(Clone, Debug, PartialEq)]
+enum ClaudeHook {
+    /// Solo's hook program, which starts in a few milliseconds.
+    Executable(String),
+    /// The scripts, when the program is missing. PowerShell takes most of a
+    /// second to start.
+    PowerShell(String),
+    Sh(String),
+}
+
+/// Claude Code settings with a hook for each event that changes what it's doing.
+fn claude_code_settings(hook: &ClaudeHook) -> serde_json::Value {
+    let command = |kind: AgentHookKind| {
+        // Exec form, so there's no shell in between. In the background, so
+        // Claude Code doesn't wait for them.
+        let (program, args) = match hook {
+            // It reads the event from its input; the kind is a fallback.
+            ClaudeHook::Executable(path) => (path.as_str(), vec![kind.as_str()]),
+            ClaudeHook::PowerShell(script) => (
+                "powershell.exe",
+                vec![
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    script.as_str(),
+                    kind.as_str(),
+                ],
+            ),
+            ClaudeHook::Sh(script) => ("sh", vec![script.as_str(), kind.as_str()]),
+        };
+        serde_json::json!({
+            "type": "command",
+            "command": program,
+            "args": args,
+            "async": true,
+        })
+    };
+    let group = |matcher: Option<&str>, kind: AgentHookKind| {
+        let mut group = serde_json::json!({ "hooks": [command(kind)] });
+        if let Some(matcher) = matcher {
+            group["matcher"] = matcher.into();
+        }
+        group
+    };
+    serde_json::json!({
+        "hooks": {
+            "SessionStart": [group(None, AgentHookKind::SessionStarted)],
+            "UserPromptSubmit": [group(None, AgentHookKind::PromptSubmitted)],
+            // Right when Claude asks; its `permission_prompt` notification
+            // comes only after a while.
+            "PermissionRequest": [group(None, AgentHookKind::NeedsInput)],
+            // Questions for the user and plan approval.
+            "PreToolUse": [group(Some("AskUserQuestion|ExitPlanMode"), AgentHookKind::NeedsInput)],
+            "Notification": [
+                group(
+                    Some("permission_prompt|elicitation_dialog|agent_needs_input"),
+                    AgentHookKind::NeedsInput,
+                ),
+                group(Some("idle_prompt"), AgentHookKind::Idle),
+            ],
+            "Stop": [group(None, AgentHookKind::Stopped)],
+            "StopFailure": [group(None, AgentHookKind::Stopped)],
+        }
+    })
+}
+
+/// SOLO: What an AI agent's hook reported it's doing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentHookKind {
+    /// A session started or resumed; the agent waits for a prompt.
+    SessionStarted,
+    /// The user submitted a prompt: a turn starts.
+    PromptSubmitted,
+    /// The agent asks for permission or an answer.
+    NeedsInput,
+    /// The agent finished its turn.
+    Stopped,
+    /// The agent finished a while ago and is still waiting for a prompt.
+    Idle,
+}
+
+impl AgentHookKind {
+    const ALL: [AgentHookKind; 5] = [
+        AgentHookKind::SessionStarted,
+        AgentHookKind::PromptSubmitted,
+        AgentHookKind::NeedsInput,
+        AgentHookKind::Stopped,
+        AgentHookKind::Idle,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentHookKind::SessionStarted => "start",
+            AgentHookKind::PromptSubmitted => "prompt",
+            AgentHookKind::NeedsInput => "input",
+            AgentHookKind::Stopped => "stop",
+            AgentHookKind::Idle => "idle",
+        }
+    }
+}
+
+/// SOLO: A report from an AI agent's hook, sent as
+/// `OSC 6973 ; agent ; <kind> [; <ms since the epoch> [; <session id>]]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AgentHook {
+    pub kind: AgentHookKind,
+    /// When the hook started. Hooks run in the background and can arrive out
+    /// of order.
+    pub sent_at_ms: Option<u64>,
+    /// The agent's session (Claude Code's `session_id`), which tells which
+    /// transcript is this terminal's.
+    pub session_id: Option<AgentSessionId>,
+}
+
+impl AgentHook {
+    /// Parses the parameters after `agent`.
+    pub fn parse(params: &[String]) -> Option<Self> {
+        let (kind, rest) = params.split_first()?;
+        let kind = AgentHookKind::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == kind.trim())?;
+        let sent_at_ms = rest.first().and_then(|sent_at| sent_at.trim().parse().ok());
+        let session_id = rest.get(1).and_then(|id| AgentSessionId::parse(id));
+        Some(Self {
+            kind,
+            sent_at_ms,
+            session_id,
+        })
+    }
+}
+
+/// SOLO: An agent session id, a UUID such as
+/// `0f6ed4b2-755b-4e18-8bd1-f60252548036`. Kept as a number so hooks stay `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AgentSessionId(pub u128);
+
+impl AgentSessionId {
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        let groups: Vec<&str> = text.split('-').collect();
+        let lengths: Vec<usize> = groups.iter().map(|group| group.len()).collect();
+        if lengths != [8, 4, 4, 4, 12] {
+            return None;
+        }
+        u128::from_str_radix(&groups.concat(), 16).ok().map(Self)
+    }
+}
+
+impl std::fmt::Display for AgentSessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hex = format!("{:032x}", self.0);
+        write!(
+            f,
+            "{}-{}-{}-{}-{}",
+            &hex[0..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+            &hex[20..32]
+        )
+    }
 }
 
 /// One prompt and the command run from it.
@@ -265,9 +469,7 @@ impl ShellIntegration {
                 duration_ms: block
                     .started_at
                     .zip(block.finished_at)
-                    .map(|(started_at, finished_at)| {
-                        (finished_at - started_at).as_millis() as u64
-                    }),
+                    .map(|(started_at, finished_at)| (finished_at - started_at).as_millis() as u64),
             })
             .collect()
     }
@@ -415,8 +617,7 @@ mod tests {
             integration.handle_mark(AlacShellMark::PromptStart, prompt);
             integration.handle_mark(AlacShellMark::CommandLine("ls".into()), prompt);
             integration.handle_mark(AlacShellMark::CommandExecuted, output);
-            integration
-                .handle_mark(AlacShellMark::CommandFinished { exit_code: Some(0) }, end);
+            integration.handle_mark(AlacShellMark::CommandFinished { exit_code: Some(0) }, end);
         }
         integration.handle_mark(AlacShellMark::PromptStart, 7);
 
@@ -479,6 +680,134 @@ mod tests {
             integrate_shell(user_shell.clone(), "pwsh", true, env),
             user_shell
         );
+    }
+
+    #[test]
+    fn parses_agent_hooks() {
+        let params = |params: &[&str]| -> Vec<String> {
+            params.iter().map(|param| param.to_string()).collect()
+        };
+        assert_eq!(
+            AgentHook::parse(&params(&["prompt", "1793624689993"])),
+            Some(AgentHook {
+                kind: AgentHookKind::PromptSubmitted,
+                sent_at_ms: Some(1793624689993),
+                session_id: None,
+            })
+        );
+        // `date` without %N leaves the time out.
+        assert_eq!(
+            AgentHook::parse(&params(&["stop", ""])),
+            Some(AgentHook {
+                kind: AgentHookKind::Stopped,
+                sent_at_ms: None,
+                session_id: None,
+            })
+        );
+        // The session id, added at the end.
+        let session_id = "0f6ed4b2-755b-4e18-8bd1-f60252548036";
+        let hook = AgentHook::parse(&params(&["start", "1793624689993", session_id])).unwrap();
+        assert_eq!(hook.session_id.unwrap().to_string(), session_id);
+        assert_eq!(
+            AgentHook::parse(&params(&["start", "1", "not-a-uuid"]))
+                .and_then(|hook| hook.session_id),
+            None
+        );
+        assert_eq!(
+            AgentSessionId::parse("00000000-0000-0000-0000-00000000000a")
+                .unwrap()
+                .to_string(),
+            "00000000-0000-0000-0000-00000000000a"
+        );
+        assert_eq!(
+            AgentHook::parse(&params(&["input"])).map(|hook| hook.kind),
+            Some(AgentHookKind::NeedsInput)
+        );
+        assert_eq!(AgentHook::parse(&params(&["dance", "1"])), None);
+        assert_eq!(AgentHook::parse(&[]), None);
+        for kind in AgentHookKind::ALL {
+            assert_eq!(
+                AgentHook::parse(&params(&[kind.as_str()])).map(|hook| hook.kind),
+                Some(kind)
+            );
+        }
+    }
+
+    #[test]
+    fn claude_code_settings_run_the_hook_for_each_event() {
+        let settings =
+            claude_code_settings(&ClaudeHook::PowerShell("C:/temp/claude-hook.ps1".into()));
+        let hooks = &settings["hooks"];
+        let kinds = |event: &str| -> Vec<(Option<String>, String)> {
+            hooks[event]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|group| {
+                    let hook = &group["hooks"][0];
+                    assert_eq!(hook["command"], "powershell.exe");
+                    assert_eq!(hook["async"], true);
+                    let args: Vec<&str> = hook["args"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|arg| arg.as_str())
+                        .collect();
+                    assert_eq!(args[args.len() - 2], "C:/temp/claude-hook.ps1");
+                    (
+                        group["matcher"].as_str().map(str::to_string),
+                        args[args.len() - 1].to_string(),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(kinds("SessionStart"), vec![(None, "start".to_string())]);
+        assert_eq!(
+            kinds("UserPromptSubmit"),
+            vec![(None, "prompt".to_string())]
+        );
+        assert_eq!(
+            kinds("PermissionRequest"),
+            vec![(None, "input".to_string())]
+        );
+        assert_eq!(kinds("Stop"), vec![(None, "stop".to_string())]);
+        assert_eq!(
+            kinds("Notification"),
+            vec![
+                (
+                    Some("permission_prompt|elicitation_dialog|agent_needs_input".to_string()),
+                    "input".to_string()
+                ),
+                (Some("idle_prompt".to_string()), "idle".to_string()),
+            ]
+        );
+
+        let settings = claude_code_settings(&ClaudeHook::Executable(
+            r"C:\Solo\solo-agent-hook.exe".into(),
+        ));
+        let hook = &settings["hooks"]["Stop"][0]["hooks"][0];
+        assert_eq!(hook["command"], r"C:\Solo\solo-agent-hook.exe");
+        assert_eq!(hook["args"], serde_json::json!(["stop"]));
+
+        let settings = claude_code_settings(&ClaudeHook::Sh("/tmp/claude-hook.sh".into()));
+        let hook = &settings["hooks"]["Stop"][0]["hooks"][0];
+        assert_eq!(hook["command"], "sh");
+        assert_eq!(
+            hook["args"],
+            serde_json::json!(["/tmp/claude-hook.sh", "stop"])
+        );
+
+        let mut env = HashMap::default();
+        integrate_claude_code(cfg!(windows), &mut env);
+        let written = std::fs::read_to_string(&env["SOLO_CLAUDE_SETTINGS"]).unwrap();
+        let written: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let args = written["hooks"]["Stop"][0]["hooks"][0]["args"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        // The test binary has no hook program next to it: a script runs.
+        let hook_path = args[args.len() - 2].as_str().unwrap_or_default();
+        assert!(Path::new(hook_path).is_file());
     }
 
     #[test]

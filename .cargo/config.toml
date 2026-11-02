@@ -22,3 +22,5 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 [env]
 MACOSX_DEPLOYMENT_TARGET = "12.0"
+# SOLO: tests assert Solo's English UI text, whatever the system language.
+SOLO_LANGUAGE = { value = "en", force = false }

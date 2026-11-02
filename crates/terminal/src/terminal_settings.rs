@@ -3,7 +3,7 @@ use gpui::{FontFallbacks, FontFeatures, FontWeight, Pixels};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use settings::AlternateScroll;
+pub use settings::{AlternateScroll, TerminalConfirmClose};
 
 use settings::{
     IntoGpui, PathHyperlinkRegex, RegisterSetting, ShowScrollbar, TerminalBell, TerminalBlink,
@@ -62,6 +62,10 @@ pub struct TerminalSettings {
     pub program_notifications: bool,
     pub restore_contents: bool,
     pub agent_commands: Vec<String>,
+    pub claude_code_hooks: bool,
+    pub follow_working_directory: bool,
+    pub confirm_close: TerminalConfirmClose,
+    pub agent_task_command: String,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -146,6 +150,10 @@ impl settings::Settings for TerminalSettings {
             program_notifications: user_content.program_notifications.unwrap(),
             restore_contents: user_content.restore_contents.unwrap(),
             agent_commands: user_content.agent_commands.unwrap(),
+            claude_code_hooks: user_content.claude_code_hooks.unwrap(),
+            follow_working_directory: user_content.follow_working_directory.unwrap(),
+            confirm_close: user_content.confirm_close.unwrap(),
+            agent_task_command: user_content.agent_task_command.unwrap(),
             path_hyperlink_regexes: project_content
                 .path_hyperlink_regexes
                 .unwrap()

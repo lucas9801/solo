@@ -283,9 +283,9 @@ pub struct TerminalSettingsContent {
     pub program_notifications: Option<bool>,
     /// Whether terminals show their previous contents and command blocks
     /// again when Solo restarts. The contents are saved in Solo's data
-    /// directory.
+    /// directory. Terminals are reopened either way.
     ///
-    /// Default: true
+    /// Default: false
     pub restore_contents: Option<bool>,
     /// Programs to treat as AI agents, besides the built-in ones (claude,
     /// codex, gemini, aider, ...): their tab shows whether they're working,
@@ -293,6 +293,32 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: []
     pub agent_commands: Option<Vec<String>>,
+    /// Whether Claude Code started in a terminal with shell integration
+    /// reports what it's doing (working, waiting for you, idle) through hooks
+    /// Solo adds for that session with `claude --settings`, instead of Solo
+    /// guessing from its output. Your own settings and hooks still apply.
+    /// Takes effect in new terminals.
+    ///
+    /// Default: true
+    pub claude_code_hooks: Option<bool>,
+    /// When to ask before closing a terminal (its tab, its window or Solo)
+    /// would end the program running in it.
+    ///
+    /// Default: "agents"
+    pub confirm_close: Option<TerminalConfirmClose>,
+    /// Whether the project panel, file finder and project search follow the
+    /// active terminal's working directory: they narrow to the git repository
+    /// it's in (or the directory itself outside a repository), switching when
+    /// another terminal becomes active or the shell shows its prompt in a new
+    /// directory.
+    ///
+    /// Default: true
+    pub follow_working_directory: Option<bool>,
+    /// The command "New Agent Task" runs in the new task's terminal, in the
+    /// task's git worktree.
+    ///
+    /// Default: "claude"
+    pub agent_task_command: Option<String>,
 }
 
 crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
@@ -305,7 +331,8 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
         input_editor, compact_prompt, completions_as_you_type, open_links_on_click,
         notify_long_commands_after_seconds, program_notifications, restore_contents,
-        agent_commands,
+        agent_commands, claude_code_hooks, follow_working_directory, confirm_close,
+        agent_task_command,
     },
     defaults: {},
 });
@@ -544,6 +571,32 @@ pub enum TerminalBell {
     System,
     /// Do not play any sound.
     Off,
+}
+
+/// SOLO: when to ask before closing a terminal ends the program running in it.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalConfirmClose {
+    /// Only when an AI agent is running (see `agent_commands`).
+    #[default]
+    Agents,
+    /// When any command is running, an AI agent or not.
+    Commands,
+    /// Never ask.
+    Never,
 }
 
 #[derive(

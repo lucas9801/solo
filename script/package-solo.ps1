@@ -3,8 +3,9 @@
 #
 #   script\package-solo.ps1 [-TargetDir <cargo target dir>] [-OutDir dist]
 #
-# The zip holds Solo\solo.exe with the ConPTY runtime next to it, the licenses,
-# and install.ps1, which copies Solo to %LOCALAPPDATA%\Programs\Solo and adds
+# The zip holds Solo\solo.exe with the ConPTY runtime and solo-agent-hook.exe
+# (which Claude Code runs to report its status) next to it, the licenses, and
+# install.ps1, which copies Solo to %LOCALAPPDATA%\Programs\Solo and adds
 # Start menu and desktop shortcuts.
 
 param(
@@ -19,7 +20,7 @@ if ($TargetDir) { $env:CARGO_TARGET_DIR = $TargetDir } else { $TargetDir = Join-
 $env:RELEASE_CHANNEL = "stable"
 $env:CARGO_INCREMENTAL = "0"
 
-cargo build --profile solo-dist -p zed --bin solo
+cargo build --profile solo-dist -p zed -p solo_agent_hook --bin solo --bin solo-agent-hook
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 $built = Join-Path $TargetDir "solo-dist"
@@ -29,6 +30,7 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage | Out-Null
 
 Copy-Item (Join-Path $built "solo.exe") $stage
+Copy-Item (Join-Path $built "solo-agent-hook.exe") $stage
 foreach ($runtime in "conpty.dll", "OpenConsole.exe") {
     $path = Join-Path $built $runtime
     if (Test-Path $path) { Copy-Item $path $stage } else { Write-Warning "$runtime not found; terminals fall back to the system ConPTY" }

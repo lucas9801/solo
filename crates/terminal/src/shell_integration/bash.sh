@@ -85,6 +85,42 @@ __solo_shell_path=${__solo_shell_path//\\/\\\\}
 printf '\e]633;P;Shell=%s\a' "${__solo_shell_path//;/\\x3b}"
 unset __solo_shell_path
 
+# Claude Code reports what it's doing through hooks in the settings file Solo
+# passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this terminal.
+# A claude function of the user's own stays.
+if [[ -n "${SOLO_CLAUDE_SETTINGS-}" ]] && ! declare -F claude >/dev/null; then
+    if [[ -r /proc/$$/winpid ]]; then
+        # Git Bash: the hooks attach to this shell's Windows console.
+        export SOLO_AGENT_CONSOLE_PID=$(</proc/$$/winpid)
+    elif __solo_tty=$(tty 2>/dev/null); then
+        export SOLO_AGENT_TTY=$__solo_tty
+    fi
+    unset __solo_tty
+    claude() {
+        local arg
+        # Subcommands, background sessions and the user's own --settings run as typed.
+        case "${1-}" in
+            agents|attach|auth|auto-mode|doctor|gateway|import|install|logs|mcp|plugin|plugins|purge|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade)
+                command claude "$@"
+                return
+                ;;
+        esac
+        for arg in "$@"; do
+            case $arg in
+                --settings | --settings=* | --bg | --background)
+                    command claude "$@"
+                    return
+                    ;;
+            esac
+        done
+        if [[ -r "$SOLO_CLAUDE_SETTINGS" ]]; then
+            command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
+        else
+            command claude "$@"
+        fi
+    }
+fi
+
 unset PROMPT_COMMAND
 PROMPT_COMMAND=__solo_prompt_command
 # Another DEBUG trap means the user has their own preexec; keep it and go without

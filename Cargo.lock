@@ -411,6 +411,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent_sessions"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collections",
+ "gpui",
+ "log",
+ "serde",
+ "serde_json",
+ "sysinfo 0.39.6",
+ "tempfile",
+ "util",
+]
+
+[[package]]
 name = "agent_settings"
 version = "0.1.0"
 dependencies = [
@@ -16881,6 +16896,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "solo_agent_hook"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "spdx"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17951,12 +17973,14 @@ dependencies = [
  "release_channel",
  "schemars 1.0.4",
  "serde",
+ "serde_json",
  "settings",
  "sysinfo 0.39.6",
  "task",
  "theme",
  "theme_settings",
  "thiserror 2.0.17",
+ "unicode-width 0.2.2",
  "url",
  "urlencoding",
  "util",
@@ -17979,10 +18003,12 @@ dependencies = [
 name = "terminal_view"
 version = "0.1.0"
 dependencies = [
+ "agent_sessions",
  "anyhow",
  "async-recursion",
  "base64 0.22.1",
  "breadcrumbs",
+ "buffer_diff",
  "collections",
  "db",
  "dirs",
@@ -17994,6 +18020,7 @@ dependencies = [
  "log",
  "menu",
  "paths",
+ "picker",
  "pretty_assertions",
  "project",
  "regex",
@@ -18013,6 +18040,8 @@ dependencies = [
  "terminal",
  "theme",
  "theme_settings",
+ "time",
+ "time_format",
  "ui",
  "util",
  "warp-command-signatures",
@@ -19452,6 +19481,7 @@ dependencies = [
  "serde_json_lenient",
  "shlex 2.0.1",
  "smol",
+ "sys-locale",
  "tempfile",
  "unicase",
  "url",

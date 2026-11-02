@@ -450,6 +450,12 @@ impl Project {
                                     path_style.is_windows(),
                                     &mut env,
                                 );
+                                if settings.claude_code_hooks {
+                                    terminal::shell_integration::integrate_claude_code(
+                                        path_style.is_windows(),
+                                        &mut env,
+                                    );
+                                }
                                 (shell, env)
                             }
                             None => (settings.shell, env),

@@ -985,6 +985,15 @@ impl VsCodeSettings {
             program_notifications: None,
             restore_contents: None,
             agent_commands: None,
+            claude_code_hooks: None,
+            follow_working_directory: None,
+            agent_task_command: None,
+            confirm_close: self.read_enum("terminal.integrated.confirmOnKill", |confirm| {
+                Some(match confirm {
+                    "never" => TerminalConfirmClose::Never,
+                    _ => TerminalConfirmClose::Commands,
+                })
+            }),
             option_as_meta: self.read_bool("terminal.integrated.macOptionIsMeta"),
             project: self.project_terminal_settings_content(),
             scrollbar: None,

@@ -1897,6 +1897,13 @@ impl<T: EventListener> Handler for Term<T> {
                 }
                 return;
             },
+            // Agents report from hooks while they draw, often on the alternate screen.
+            [b"6973", b"agent", params @ ..] => {
+                let params =
+                    params.iter().map(|part| String::from_utf8_lossy(part).into_owned()).collect();
+                self.event_proxy.send_event(Event::AgentHook(params));
+                return;
+            },
             [b"777", b"notify", title, body @ ..] => {
                 self.event_proxy.send_event(Event::Notification {
                     title: Some(String::from_utf8_lossy(title).into_owned()),

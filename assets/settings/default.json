@@ -2273,12 +2273,36 @@
     // finishes a turn.
     "program_notifications": true,
     // Show terminals' previous contents and command blocks again when Solo
-    // restarts. The contents are saved in Solo's data directory.
-    "restore_contents": true,
+    // restarts. The contents are saved in Solo's data directory. Off by
+    // default: terminals are still reopened in their directories with their
+    // titles, but start with a clean shell.
+    "restore_contents": false,
     // Programs to treat as AI agents, besides the built-in ones (claude,
     // codex, gemini, aider, ...). Their tab shows whether they're working,
     // waiting for you, done or failed, e.g. ["my-agent"].
     "agent_commands": [],
+    // Let Claude Code started in a terminal with shell integration report
+    // what it's doing (working, waiting for you, idle) through hooks Solo adds
+    // for that session with `claude --settings`, instead of Solo guessing from
+    // its output. Your own settings and hooks still apply. Takes effect in new
+    // terminals.
+    "claude_code_hooks": true,
+    // Narrow the project panel, file finder and project search to the git
+    // repository the active terminal is in (or its directory, outside a
+    // repository). They switch when another terminal becomes active or the
+    // shell shows its prompt in a new directory, not on a `cd` inside a
+    // running command.
+    "follow_working_directory": true,
+    // When to ask before closing a terminal (its tab, its window or Solo)
+    // ends the program running in it:
+    // "agents": only when an AI agent is running (see `agent_commands`),
+    // "commands": when any command is running (needs shell integration to
+    //   tell a command from the shell, except for agents),
+    // "never": never ask.
+    "confirm_close": "agents",
+    // The command "New Agent Task" runs in the new task's terminal, in the
+    // git worktree made for the task (see `git.worktree_directory`).
+    "agent_task_command": "claude",
     // Regexes used to identify paths for hyperlink navigation. Supports optional named capture
     // groups `path`, `line`, `column`, and `link`. If none of these are present, the entire match
     // is the hyperlink target. If `path` is present, it is the hyperlink target, along with `line`

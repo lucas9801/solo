@@ -347,6 +347,7 @@ impl From<AlacTermEvent> for TerminalBackendEvent {
             AlacTermEvent::ChildExit(status) => Self::ChildExit(status),
             AlacTermEvent::ShellMark { mark, line } => Self::ShellMark(mark, line),
             AlacTermEvent::Notification { title, body } => Self::Notification(title, body),
+            AlacTermEvent::AgentHook(params) => Self::AgentHook(params),
         }
     }
 }
@@ -1058,20 +1059,28 @@ pub(super) fn is_blank(term: &Term<ZedListener>) -> bool {
 
 /// SOLO: the given rows, counted from the top of the scrollback, as text with
 /// SGR escapes for their colors and styles, to be written into a terminal
-/// again. Blanks at the end of each row are left out.
-pub(super) fn styled_rows(term: &Term<ZedListener>, rows: StdRange<usize>) -> Vec<String> {
+/// again, each with whether the terminal wrapped it onto the next row. Blanks
+/// at the end of a row are left out, unless it wraps: they're part of the
+/// line then.
+pub(super) fn styled_rows(term: &Term<ZedListener>, rows: StdRange<usize>) -> Vec<(String, bool)> {
     let grid = term.grid();
     let history_size = grid.history_size() as i32;
+    let last_column = term.last_column();
     rows.map(|row| {
         let line = Line(i32::try_from(row).unwrap_or(i32::MAX) - history_size);
         if line < term.topmost_line() || line > term.bottommost_line() {
-            return String::new();
+            return (String::new(), false);
         }
+        let wrapped = grid[line][last_column].flags.contains(Flags::WRAPLINE);
         let cells = &grid[line][..Column(grid.columns())];
-        let len = cells
-            .iter()
-            .rposition(|cell| !cell.is_empty() && cell.c != '\t')
-            .map_or(0, |ix| ix + 1);
+        let len = if wrapped {
+            cells.len()
+        } else {
+            cells
+                .iter()
+                .rposition(|cell| !cell.is_empty() && cell.c != '\t')
+                .map_or(0, |ix| ix + 1)
+        };
         let mut text = String::new();
         let mut current_style = String::new();
         for cell in &cells[..len] {
@@ -1094,7 +1103,7 @@ pub(super) fn styled_rows(term: &Term<ZedListener>, rows: StdRange<usize>) -> Ve
         if !current_style.is_empty() {
             text.push_str("\x1b[0m");
         }
-        text
+        (text, wrapped)
     })
     .collect()
 }
