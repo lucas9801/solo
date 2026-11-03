@@ -490,6 +490,13 @@ fn main() {
         zed_actions::init();
 
         release_channel::init(app_version, cx);
+        // SOLO: system notifications (finished commands, agents) need an app
+        // identity on Windows, where Solo isn't a packaged app.
+        #[cfg(target_os = "windows")]
+        cx.set_app_identity(
+            release_channel::app_identifier(),
+            release_channel::ReleaseChannel::global(cx).display_name(),
+        );
         gpui_tokio::init(cx);
         if let Some(app_commit_sha) = app_commit_sha {
             AppCommitSha::set_global(app_commit_sha, cx);

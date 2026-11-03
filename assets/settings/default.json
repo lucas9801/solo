@@ -7,9 +7,9 @@
   // - "light": Use the theme indicated by the "light" field
   // - "dark": Use the theme indicated by the "dark" field
   "theme": {
-    "mode": "system",
+    "mode": "dark",
     "light": "One Light",
-    "dark": "One Dark",
+    "dark": "Solo Dark",
   },
   "icon_theme": "Zed (Default)",
   // The name of a base set of key bindings to use.
@@ -92,9 +92,13 @@
     // Values are clamped to the [0.0, 1.0] range.
     "inactive_opacity": 1.0,
   },
-  // Layout mode of the bottom dock. Defaults to "contained"
-  //   choices: contained, full, left_aligned, right_aligned
-  "bottom_dock_layout": "contained",
+  // Layout mode of the bottom dock. Defaults to "terminal_first"
+  //   choices: contained, full, left_aligned, right_aligned, terminal_first
+  //
+  // "terminal_first" renders the bottom dock (terminal) as the main column, with
+  // the left dock's panels in a vertical activity bar, and only shows the editor
+  // area beside it while files are open.
+  "bottom_dock_layout": "terminal_first",
   // The direction that you want to split panes horizontally. Defaults to "down"
   "pane_split_direction_horizontal": "down",
   // The direction that you want to split panes vertically. Defaults to "right"
@@ -124,7 +128,7 @@
     // The font weight for headings in the markdown preview, in CSS units from 100 to 900.
     "heading_font_weight": 600,
     // Whether to automatically open Markdown files in the preview.
-    "open_markdown_files_in_preview": false,
+    "open_markdown_files_in_preview": true,
     // Whether to limit the width of the rendered markdown content. When
     // enabled, content is constrained to `max_width` and centered
     // horizontally within the preview pane.
@@ -627,13 +631,13 @@
     // Whether to show the project host and name in the titlebar.
     "show_project_items": true,
     // Whether to show onboarding banners in the titlebar.
-    "show_onboarding_banner": true,
+    "show_onboarding_banner": false,
     // Whether to show user picture in the titlebar.
-    "show_user_picture": true,
+    "show_user_picture": false,
     // Whether to show the user menu in the titlebar.
     "show_user_menu": true,
     // Whether to show the sign in button in the titlebar.
-    "show_sign_in": true,
+    "show_sign_in": false,
     // Whether to show the menus in the titlebar.
     "show_menus": false,
     // Whether to open the menus in the titlebar on hover.
@@ -887,7 +891,7 @@
     // Default width of the project panel.
     "default_width": 240,
     // Where to dock the project panel. Can be 'left' or 'right'.
-    "dock": "right",
+    "dock": "left",
     // Spacing between worktree entries in the project panel. Can be 'comfortable' or 'standard'.
     "entry_spacing": "comfortable",
     // Whether to show file icons in the project panel.
@@ -1015,7 +1019,7 @@
     // Default width of the outline panel.
     "default_width": 300,
     // Where to dock the outline panel. Can be 'left' or 'right'.
-    "dock": "right",
+    "dock": "left",
     // Whether to show file icons in the outline panel.
     "file_icons": true,
     // What to show for directories in the outline panel.
@@ -1077,9 +1081,9 @@
   },
   "collaboration_panel": {
     // Whether to show the collaboration panel button in the status bar.
-    "button": true,
+    "button": false,
     // Where to dock the collaboration panel. Can be 'left' or 'right'.
-    "dock": "right",
+    "dock": "left",
     // Default width of the collaboration panel.
     "default_width": 240,
   },
@@ -1087,7 +1091,7 @@
     // Whether to show the git panel button in the status bar.
     "button": true,
     // Where to dock the git panel. Can be 'left' or 'right'.
-    "dock": "right",
+    "dock": "left",
     // Default width of the git panel.
     "default_width": 360,
     // Style of the git status indicator in the panel.
@@ -1174,9 +1178,11 @@
     // Whether the agent is enabled.
     "enabled": true,
     // Whether to show the agent panel button in the status bar.
-    "button": true,
+    // SOLO: AI agents run in the terminal; the panel stays available from the
+    // command palette.
+    "button": false,
     // Where to dock the agent panel. Can be 'left', 'right' or 'bottom'.
-    "dock": "left",
+    "dock": "right",
     // Whether the agent panel should use flexible (proportional) sizing when docked
     // to the left or right. When enabled, `default_width` does not control the panel
     // width, and resetting the panel restores the default proportion.
@@ -1422,7 +1428,7 @@
     "show_merge_conflict_indicator": true,
   },
   // Whether the screen sharing icon is shown in the os status bar.
-  "show_call_status_icon": true,
+  "show_call_status_icon": false,
   // Whether to use language servers to provide code intelligence.
   "enable_language_server": true,
   // Whether to perform linked edits of associated ranges, if the language server supports it.
@@ -1716,10 +1722,11 @@
   "word_diff_enabled": true,
   // Control what info is collected by Zed.
   "telemetry": {
-    // Send debug info like crash reports.
-    "diagnostics": true,
+    // Send debug info like crash reports. Off in Solo: they would go to Zed.
+    "diagnostics": false,
     // Send anonymized usage data like what languages you're using Zed with.
-    "metrics": true,
+    // Off in Solo: it would go to Zed.
+    "metrics": false,
     // Allow sending requests to Anthropic models that cannot be offered with
     // Zero Data Retention
     "anthropic_retention": false,
@@ -1728,8 +1735,9 @@
   //
   // Default: false
   "disable_ai": false,
-  // Automatically update Zed. This setting may be ignored on Linux if
-  // installed through a package manager.
+  // Automatically check for Solo updates. Solo checks its GitHub Releases
+  // (github.com/lucas9801/solo) shortly after startup and then every 6 hours,
+  // and asks before installing anything. Stable builds only.
   "auto_update": true,
   // How to render LSP `textDocument/documentColor` colors in the editor.
   //
@@ -1925,7 +1933,8 @@
   "load_direnv": "direct",
   "edit_predictions": {
     // Which edit prediction provider to use.
-    "provider": "zed",
+    // SOLO: Zed's provider needs a Zed account.
+    "provider": "none",
     // Disable edit predictions for files matching these glob patterns.
     //
     // Use `"..."` to add patterns without repeating Zed's defaults. In project
@@ -2059,8 +2068,8 @@
     "dock": "bottom",
     // Whether the terminal panel should open on startup.
     //
-    // Default: false
-    "starts_open": false,
+    // Default: true
+    "starts_open": true,
     // Whether the terminal panel should use flexible (proportional) sizing.
     //
     // Default: true
@@ -2160,6 +2169,10 @@
     //           "custom": 2
     //         },
     "line_height": "standard",
+    // Load Solo's shell integration into supported shells (PowerShell, bash,
+    // zsh and fish) that run without custom arguments. It marks each command so
+    // the terminal can show command blocks.
+    "shell_integration": true,
     // Activate the python virtual environment, if one is found, in the
     // terminal's working directory (as resolved by the working_directory
     // setting). Set this to "off" to disable this behavior.
@@ -2235,6 +2248,61 @@
     // Most terminal themes have APCA values of 40-70.
     // A value of 45 preserves colorful themes while ensuring legibility.
     "minimum_contrast": 45,
+    // Open files in the editor when they change on disk while a command runs in
+    // the focused terminal, e.g. files edited by an AI agent. Needs shell
+    // integration to know when a command runs.
+    "open_changed_files": true,
+    // Type commands in an editor at the bottom of the terminal while the shell
+    // waits at its prompt, with completions (Tab) and history suggestions.
+    // Needs shell integration.
+    "input_editor": true,
+    // While the input editor is on, show a compact prompt (directory name and
+    // an arrow) in shells with Solo's integration; the input editor shows the
+    // full path and git branch.
+    "compact_prompt": true,
+    // Open completions in the input editor as you type, rather than only on Tab.
+    "completions_as_you_type": false,
+    // Underline file paths and URLs on hover and open them with a plain click
+    // (files open in the editor), rather than only with ctrl/cmd held.
+    "open_links_on_click": true,
+    // Show a desktop notification when a command that ran at least this many
+    // seconds finishes while Solo is in the background. 0 turns it off.
+    "notify_long_commands_after_seconds": 10,
+    // Let programs in the terminal show desktop notifications (OSC 9 or
+    // OSC 777) while Solo is in the background, e.g. Claude Code when it
+    // finishes a turn.
+    "program_notifications": true,
+    // Show terminals' previous contents and command blocks again when Solo
+    // restarts. The contents are saved in Solo's data directory. Off by
+    // default: terminals are still reopened in their directories with their
+    // titles, but start with a clean shell.
+    "restore_contents": false,
+    // Programs to treat as AI agents, besides the built-in ones (claude,
+    // codex, gemini, aider, ...). Their tab shows whether they're working,
+    // waiting for you, done or failed, e.g. ["my-agent"].
+    "agent_commands": [],
+    // Let Claude Code started in a terminal with shell integration report
+    // what it's doing (working, waiting for you, idle) through hooks Solo adds
+    // for that session with `claude --settings`, instead of Solo guessing from
+    // its output. Your own settings and hooks still apply. Takes effect in new
+    // terminals.
+    "claude_code_hooks": true,
+    // Narrow the project panel, file finder and project search to the git
+    // repository the active terminal is in (or its directory, outside a
+    // repository). They switch when another terminal becomes active or the
+    // shell shows its prompt in a new directory, not on a `cd` inside a
+    // running command.
+    "follow_working_directory": true,
+    // When to ask before closing a terminal (its tab, its window or Solo)
+    // ends the program running in it:
+    // "agents": only when an AI agent is running (see `agent_commands`),
+    // "commands": when any command is running (needs shell integration to
+    //   tell a command from the shell, except for agents),
+    // "never": never ask.
+    "confirm_close": "agents",
+    // The command "New Agent Task" runs in the new task's terminal, in the
+    // git worktree made for the task (see `git.worktree_directory`).
+    "agent_task_command": "claude",
     // Regexes used to identify paths for hyperlink navigation. Supports optional named capture
     // groups `path`, `line`, `column`, and `link`. If none of these are present, the entire match
     // is the hyperlink target. If `path` is present, it is the hyperlink target, along with `line`
@@ -2996,7 +3064,7 @@
     "dock": "bottom",
     "log_dap_communications": true,
     "format_dap_log_messages": true,
-    "button": true,
+    "button": false,
   },
   // Configures any number of settings profiles that are temporarily applied
   // when selected from `settings profile selector: toggle`.

@@ -8,6 +8,7 @@ members = [
     "crates/agent",
     "crates/agent_servers",
     "crates/agent_settings",
+    "crates/agent_sessions",
     "crates/agent_skills",
     "crates/agent_ui",
     "crates/agent_ui_benchmarks",
@@ -201,6 +202,7 @@ members = [
     "crates/snippet",
     "crates/snippet_provider",
     "crates/snippets_ui",
+    "crates/solo_agent_hook",
     "crates/sqlez",
     "crates/sqlez_macros",
     "crates/streaming_diff",
@@ -271,6 +273,7 @@ members = [
     "tooling/xtask",
 ]
 default-members = ["crates/zed"]
+exclude = ["vendor"]
 
 [workspace.package]
 publish = false
@@ -289,6 +292,7 @@ activity_indicator = { path = "crates/activity_indicator" }
 agent = { path = "crates/agent" }
 agent_servers = { path = "crates/agent_servers" }
 agent_settings = { path = "crates/agent_settings" }
+agent_sessions = { path = "crates/agent_sessions" }
 agent_skills = { path = "crates/agent_skills" }
 agent_ui = { path = "crates/agent_ui" }
 ai_onboarding = { path = "crates/ai_onboarding" }
@@ -532,7 +536,9 @@ accesskit_unix = "0.22"
 accesskit_windows = "0.34"
 agent-client-protocol = { version = "=3.6.0", features = ["schemars", "unstable", "unstable_protocol_v2"] }
 aho-corasick = "1.1"
-alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f" }
+# SOLO: vendored and patched for shell integration, see vendor/README.md.
+alacritty_terminal = { path = "vendor/alacritty_terminal" }
+warp-command-signatures = { path = "vendor/warp_command_signatures/command_signatures" }
 any_vec = "0.14"
 anyhow = "1.0.86"
 arc-swap = "1.9.0"
@@ -1031,7 +1037,9 @@ features = [
 ]
 
 [patch.crates-io]
-cpal = { git = "https://github.com/RustAudio/cpal", rev = "e1612d5d98152f8dc2a62e1b51ef7cbf4f7f26b7" }
+# SOLO: vendored and patched for shell integration, see vendor/README.md.
+vte = { path = "vendor/vte" }
+cpal ={ git = "https://github.com/RustAudio/cpal", rev = "e1612d5d98152f8dc2a62e1b51ef7cbf4f7f26b7" }
 # Unify `tree_sitter_language::LanguageFn` between crates.io grammar crates and
 # the git tree-sitter above; two instances of the crate would make grammar
 # constants type-incompatible with `tree_sitter::Language`.
@@ -1151,6 +1159,13 @@ codegen-units = 1
 
 [profile.release.package]
 zed = { codegen-units = 16 }
+
+# SOLO: what Solo ships: optimized like release, but quicker to build and
+# without debug info.
+[profile.solo-dist]
+inherits = "release"
+debug = false
+codegen-units = 16
 
 [profile.release-fast]
 inherits = "release"

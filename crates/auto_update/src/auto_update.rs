@@ -32,6 +32,8 @@ use std::{
 use util::command::new_command;
 use workspace::Workspace;
 
+pub mod solo_update;
+
 const SHOULD_SHOW_UPDATE_NOTIFICATION_KEY: &str = "auto-updater-should-show-updated-notification";
 
 #[derive(Debug)]
@@ -305,6 +307,9 @@ pub fn init(client: Arc<Client>, cx: &mut App) {
         updater
     });
     cx.set_global(GlobalAutoUpdate(Some(auto_updater)));
+
+    // SOLO: Solo's own updater, fed by GitHub Releases.
+    solo_update::init(cx);
 }
 
 pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
@@ -326,6 +331,8 @@ pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
         .map(|channel| channel.poll_for_updates())
         .unwrap_or(false)
     {
+        // SOLO: Zed's updater is off; check Solo's GitHub Releases instead.
+        solo_update::check_manually(window, cx);
         return;
     }
 
@@ -1394,11 +1401,14 @@ mod tests {
                 .set_user_settings("{}", cx)
                 .expect("Unable to set user settings");
             cx.set_global(store);
+            // SOLO: on by default; it drives Solo's GitHub Releases checks
+            // (Zed's own updater never polls, see `poll_for_updates`).
             assert!(AutoUpdateSetting::get_global(cx).0);
         });
     }
 
     #[gpui::test]
+    #[ignore = "SOLO: Zed's updater never polls; Solo updates via solo_update"]
     async fn test_auto_update_downloads(cx: &mut TestAppContext) {
         cx.background_executor.allow_parking();
         zlog::init_test();

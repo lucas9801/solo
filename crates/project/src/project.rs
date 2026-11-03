@@ -380,6 +380,9 @@ pub enum Event {
     ActivateProjectPanel,
     WorktreeAdded(WorktreeId),
     WorktreeOrderChanged,
+    /// SOLO: [`Project::set_focused_worktree`] narrowed the project panel,
+    /// file finder and project search to another worktree.
+    FocusedWorktreeChanged,
     WorktreeRemoved(WorktreeId),
     WorktreeUpdatedEntries(WorktreeId, UpdatedEntriesSet),
     WorktreeUpdatedRootRepoCommonDir(WorktreeId),
@@ -4953,7 +4956,12 @@ impl Project {
         })
     }
 
-    fn search_impl(&mut self, query: SearchQuery, cx: &mut Context<Self>) -> SearchResultsHandle {
+    fn search_impl(
+        &mut self,
+        query: SearchQuery,
+        in_scope: bool,
+        cx: &mut Context<Self>,
+    ) -> SearchResultsHandle {
         let client: Option<(AnyProtoClient, _)> = if let Some(ssh_client) = &self.remote_client {
             Some((ssh_client.read(cx).proto_client(), 0))
         } else if let Some(remote_id) = self.remote_id() {
@@ -4986,15 +4994,32 @@ impl Project {
                 ),
             }
         };
+        let searcher = if in_scope {
+            searcher.in_scope(cx)
+        } else {
+            searcher
+        };
         searcher.into_handle(query, cx)
     }
 
+    /// Searches every visible worktree.
     pub fn search(
         &mut self,
         query: SearchQuery,
         cx: &mut Context<Self>,
     ) -> SearchResults<SearchResult> {
-        self.search_impl(query, cx).results(cx)
+        self.search_impl(query, false, cx).results(cx)
+    }
+
+    /// SOLO: [`Self::search`] narrowed to the active terminal's project (see
+    /// [`Self::set_focused_worktree`]), for the project search panel and the
+    /// text finder. Agents' tools use [`Self::search`].
+    pub fn search_in_scope(
+        &mut self,
+        query: SearchQuery,
+        cx: &mut Context<Self>,
+    ) -> SearchResults<SearchResult> {
+        self.search_impl(query, true, cx).results(cx)
     }
 
     pub fn request_lsp<R: LspCommand>(
@@ -5068,6 +5093,38 @@ impl Project {
                 Either::Right(path) => Ok(path),
             }
         }
+    }
+
+    /// SOLO: narrows the project panel, file finder and project search to
+    /// one worktree (which may be invisible), or widens them back to every
+    /// visible worktree with `None`.
+    pub fn set_focused_worktree(
+        &mut self,
+        worktree_id: Option<WorktreeId>,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.worktree_store.update(cx, |worktree_store, _| {
+            worktree_store.set_focused_worktree(worktree_id)
+        });
+        if changed {
+            cx.emit(Event::FocusedWorktreeChanged);
+        }
+    }
+
+    pub fn focused_worktree(&self, cx: &App) -> Option<WorktreeId> {
+        self.worktree_store.read(cx).focused_worktree()
+    }
+
+    /// SOLO: see [`WorktreeStore::scoped_worktrees`].
+    pub fn scoped_worktrees(&self, cx: &App) -> Vec<Entity<Worktree>> {
+        self.worktree_store.read(cx).scoped_worktrees(cx)
+    }
+
+    /// SOLO: see [`WorktreeStore::is_worktree_in_scope`].
+    pub fn is_worktree_in_scope(&self, worktree_id: WorktreeId, cx: &App) -> bool {
+        self.worktree_store
+            .read(cx)
+            .is_worktree_in_scope(worktree_id, cx)
     }
 
     pub fn find_or_create_worktree(
@@ -6198,7 +6255,7 @@ impl Project {
         let client = this.read_with(&cx, |this, _| this.client());
         let task = cx.spawn(async move |cx| {
             let results = this.update(cx, |this, cx| {
-                this.search_impl(query, cx).matching_buffers(cx)
+                this.search_impl(query, false, cx).matching_buffers(cx)
             });
             let (batcher, batches) = project_search::AdaptiveBatcher::new(cx.background_executor());
             let mut new_matches = Box::pin(results.rx);

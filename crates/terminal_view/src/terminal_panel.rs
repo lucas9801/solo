@@ -1,5 +1,7 @@
 use std::{cmp, path::PathBuf, process::ExitStatus, sync::Arc, time::Duration};
 
+mod open_changed_files;
+
 use crate::{
     TerminalView, default_working_directory,
     persistence::{
@@ -12,8 +14,8 @@ use db::kvp::KeyValueStore;
 use futures::{channel::oneshot, future::join_all};
 use gpui::{
     Action, Anchor, App, AsyncApp, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, TaskExt, WeakEntity,
-    Window, actions,
+    Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Subscription, Task, TaskExt,
+    WeakEntity, Window, actions,
 };
 use itertools::Itertools;
 use project::{Fs, Project};
@@ -87,6 +89,7 @@ pub struct TerminalPanel {
     deferred_tasks: HashMap<TaskId, Task<()>>,
     assistant_enabled: bool,
     active: bool,
+    _project_subscription: Subscription,
 }
 
 impl TerminalPanel {
@@ -107,6 +110,7 @@ impl TerminalPanel {
             deferred_tasks: HashMap::default(),
             assistant_enabled: false,
             active: false,
+            _project_subscription: cx.subscribe_in(project, window, Self::handle_project_event),
         };
         terminal_panel.apply_tab_bar_buttons(&terminal_panel.active_pane, cx);
         terminal_panel
@@ -166,6 +170,15 @@ impl TerminalPanel {
                                         .action(
                                             "Spawn Task",
                                             zed_actions::Spawn::modal().boxed_clone(),
+                                        )
+                                        // SOLO: an agent in its own git worktree.
+                                        .action(
+                                            util::i18n::tr("New Agent Task", "新建 agent 任务"),
+                                            zed_actions::agent_task::NewAgentTask.boxed_clone(),
+                                        )
+                                        .action(
+                                            util::i18n::tr("Agent Tasks", "agent 任务列表"),
+                                            zed_actions::agent_task::ManageAgentTasks.boxed_clone(),
                                         )
                                 });
 
@@ -471,7 +484,16 @@ impl TerminalPanel {
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.update(cx, |workspace, cx| {
                         item.added_to_pane(workspace, pane.clone(), window, cx)
-                    })
+                    });
+                    // SOLO: once the dock has opened for the new terminal.
+                    let workspace = workspace.downgrade();
+                    window.defer(cx, move |window, cx| {
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.focus_terminal_if_unfocused(window, cx)
+                            })
+                            .ok();
+                    });
                 }
                 self.serialize(cx);
             }
@@ -929,7 +951,7 @@ impl TerminalPanel {
         })
     }
 
-    fn add_terminal_shell(
+    pub(crate) fn add_terminal_shell(
         &mut self,
         force_local: bool,
         cwd: Option<PathBuf>,
@@ -1806,6 +1828,10 @@ impl Panel for TerminalPanel {
 
     fn pane(&self) -> Option<Entity<Pane>> {
         Some(self.active_pane.clone())
+    }
+
+    fn panes(&self) -> Vec<Entity<Pane>> {
+        self.center.panes().into_iter().cloned().collect()
     }
 
     fn activation_priority(&self) -> u32 {
@@ -2917,7 +2943,7 @@ mod tests {
                 terminal_panel.update(cx, |terminal_panel, cx| {
                     assert!(
                         !terminal_panel.starts_open(window, cx),
-                        "terminal panel should not start open by default"
+                        "terminal panel should not start open when disabled"
                     );
                 });
             })
@@ -3360,7 +3386,12 @@ mod tests {
 
     pub fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            let store = SettingsStore::test(cx);
+            let mut store = SettingsStore::test(cx);
+            // Solo opens the terminal at startup; these tests count terminals
+            // from an empty panel.
+            store.update_user_settings(cx, |settings| {
+                settings.terminal.get_or_insert_default().starts_open = Some(false);
+            });
             cx.set_global(store);
             theme_settings::init(theme::LoadThemes::JustBase, cx);
             editor::init(cx);

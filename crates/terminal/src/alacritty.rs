@@ -2,14 +2,20 @@
 use std::num::NonZeroU32;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
-use std::{borrow::Cow, io, ops::RangeInclusive, path::PathBuf, sync::Arc};
+use std::{
+    borrow::Cow,
+    io,
+    ops::{Range as StdRange, RangeInclusive},
+    path::PathBuf,
+    sync::Arc,
+};
 
 mod hyperlinks;
 
 use alacritty_terminal::{
     event::{Event as AlacTermEvent, EventListener, Notify, WindowSize},
     event_loop::{EventLoop, Msg, Notifier},
-    grid::{Dimensions, Grid, GridIterator, Row, Scroll as AlacScroll},
+    grid::{Dimensions, Grid, GridCell as _, GridIterator, Row, Scroll as AlacScroll},
     index::{Boundary, Column, Direction as AlacDirection, Line, Point as AlacPoint},
     selection::{
         Selection as AlacSelection, SelectionRange as AlacSelectionRange,
@@ -339,6 +345,9 @@ impl From<AlacTermEvent> for TerminalBackendEvent {
             AlacTermEvent::Bell => Self::Bell,
             AlacTermEvent::Exit => Self::Exit,
             AlacTermEvent::ChildExit(status) => Self::ChildExit(status),
+            AlacTermEvent::ShellMark { mark, line } => Self::ShellMark(mark, line),
+            AlacTermEvent::Notification { title, body } => Self::Notification(title, body),
+            AlacTermEvent::AgentHook(params) => Self::AgentHook(params),
         }
     }
 }
@@ -955,6 +964,189 @@ pub(super) fn content_text(term: &Term<ZedListener>) -> String {
     let start = AlacPoint::new(term.topmost_line(), Column(0));
     let end = AlacPoint::new(term.bottommost_line(), term.last_column());
     term.bounds_to_string(start, end)
+}
+
+/// SOLO: for each row of the scrollback, counted from the top, the index of the
+/// logical line it belongs to. Wrapped rows share their line's index, so the
+/// indices survive reflowing the grid to a new width.
+pub(super) fn logical_lines(term: &Term<ZedListener>) -> Vec<usize> {
+    let grid = term.grid();
+    let last_column = term.last_column();
+    let mut logical_lines = Vec::with_capacity(term.total_lines());
+    let mut logical_line = 0;
+    for line in term.topmost_line().0..=term.bottommost_line().0 {
+        logical_lines.push(logical_line);
+        if !grid[Line(line)][last_column]
+            .flags
+            .contains(Flags::WRAPLINE)
+        {
+            logical_line += 1;
+        }
+    }
+    logical_lines
+}
+
+/// SOLO: the terminal's text by logical line, rows the terminal wrapped joined
+/// back, each with the grid line it starts on.
+pub(super) fn text_lines(term: &Term<ZedListener>) -> Vec<(i32, String)> {
+    let grid = term.grid();
+    let last_column = term.last_column();
+    let mut lines = Vec::new();
+    let mut current: Option<(i32, String)> = None;
+    for line in term.topmost_line().0..=term.bottommost_line().0 {
+        let row = &grid[Line(line)];
+        let (_, text) = current.get_or_insert_with(|| (line, String::new()));
+        for column in 0..grid.columns() {
+            let cell = &row[Column(column)];
+            if !cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                text.push(cell.c);
+            }
+        }
+        if !row[last_column].flags.contains(Flags::WRAPLINE)
+            && let Some((start, text)) = current.take()
+        {
+            lines.push((start, text.trim_end().to_string()));
+        }
+    }
+    lines.extend(current.map(|(start, text)| (start, text.trim_end().to_string())));
+    lines
+}
+
+pub(super) fn grid_columns(term: &Term<ZedListener>) -> usize {
+    term.grid().columns()
+}
+
+pub(super) fn history_size(term: &Term<ZedListener>) -> usize {
+    term.grid().history_size()
+}
+
+/// SOLO: text of the given lines, counted from the top of the scrollback.
+pub(super) fn lines_text(term: &Term<ZedListener>, lines: RangeInclusive<usize>) -> String {
+    let history_size = term.grid().history_size() as i32;
+    let to_line = |line: usize| Line(i32::try_from(line).unwrap_or(i32::MAX) - history_size);
+    let start = to_line(*lines.start()).max(term.topmost_line());
+    let end = to_line(*lines.end()).min(term.bottommost_line());
+    if start > end {
+        return String::new();
+    }
+    term.bounds_to_string(
+        AlacPoint::new(start, Column(0)),
+        AlacPoint::new(end, term.last_column()),
+    )
+    .trim_end()
+    .to_string()
+}
+
+/// SOLO: the row the cursor is on, counted from the top of the scrollback.
+pub(super) fn cursor_line(term: &Term<ZedListener>) -> usize {
+    term.grid().history_size() + term.grid().cursor.point.line.0.max(0) as usize
+}
+
+/// SOLO: whether nothing has been printed yet.
+pub(super) fn is_blank(term: &Term<ZedListener>) -> bool {
+    let grid = term.grid();
+    grid.history_size() == 0
+        && grid.cursor.point == AlacPoint::new(Line(0), Column(0))
+        && (0..grid.screen_lines() as i32).all(|line| {
+            grid[Line(line)][..Column(grid.columns())]
+                .iter()
+                .all(|cell| cell.is_empty())
+        })
+}
+
+/// SOLO: the given rows, counted from the top of the scrollback, as text with
+/// SGR escapes for their colors and styles, to be written into a terminal
+/// again, each with whether the terminal wrapped it onto the next row. Blanks
+/// at the end of a row are left out, unless it wraps: they're part of the
+/// line then.
+pub(super) fn styled_rows(term: &Term<ZedListener>, rows: StdRange<usize>) -> Vec<(String, bool)> {
+    let grid = term.grid();
+    let history_size = grid.history_size() as i32;
+    let last_column = term.last_column();
+    rows.map(|row| {
+        let line = Line(i32::try_from(row).unwrap_or(i32::MAX) - history_size);
+        if line < term.topmost_line() || line > term.bottommost_line() {
+            return (String::new(), false);
+        }
+        let wrapped = grid[line][last_column].flags.contains(Flags::WRAPLINE);
+        let cells = &grid[line][..Column(grid.columns())];
+        let len = if wrapped {
+            cells.len()
+        } else {
+            cells
+                .iter()
+                .rposition(|cell| !cell.is_empty() && cell.c != '\t')
+                .map_or(0, |ix| ix + 1)
+        };
+        let mut text = String::new();
+        let mut current_style = String::new();
+        for cell in &cells[..len] {
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let style = sgr(cell);
+            if style != current_style {
+                text.push_str(if style.is_empty() { "\x1b[0m" } else { &style });
+                current_style = style;
+            }
+            text.push(if cell.c == '\t' { ' ' } else { cell.c });
+            if let Some(zerowidth) = cell.zerowidth() {
+                text.extend(zerowidth);
+            }
+        }
+        if !current_style.is_empty() {
+            text.push_str("\x1b[0m");
+        }
+        (text, wrapped)
+    })
+    .collect()
+}
+
+/// The SGR escape that sets a cell's style, or nothing for the default one.
+fn sgr(cell: &AlacCell) -> String {
+    let mut codes = Vec::new();
+    for (flag, code) in [
+        (Flags::BOLD, "1"),
+        (Flags::DIM, "2"),
+        (Flags::ITALIC, "3"),
+        (Flags::ALL_UNDERLINES, "4"),
+        (Flags::INVERSE, "7"),
+        (Flags::HIDDEN, "8"),
+        (Flags::STRIKEOUT, "9"),
+    ] {
+        if cell.flags.intersects(flag) {
+            codes.push(code.to_string());
+        }
+    }
+    codes.extend(sgr_color(cell.fg, 30));
+    codes.extend(sgr_color(cell.bg, 40));
+    if codes.is_empty() {
+        String::new()
+    } else {
+        format!("\x1b[0;{}m", codes.join(";"))
+    }
+}
+
+/// SGR parameters for a color; `base` is 30 for the foreground, 40 for the
+/// background.
+fn sgr_color(color: Color, base: u16) -> Option<String> {
+    match color {
+        Color::Named(named) => match named as u16 {
+            index @ 0..=7 => Some((base + index).to_string()),
+            index @ 8..=15 => Some((base + 60 + index - 8).to_string()),
+            // The dim variants, which follow Foreground, Background and Cursor.
+            index @ 259..=266 => Some((base + index - 259).to_string()),
+            _ => None,
+        },
+        Color::Indexed(index) => Some(format!("{};5;{index}", base + 8)),
+        Color::Spec(rgb) => Some(format!("{};2;{};{};{}", base + 8, rgb.r, rgb.g, rgb.b)),
+    }
 }
 
 pub(super) fn total_lines(term: &Term<ZedListener>) -> usize {

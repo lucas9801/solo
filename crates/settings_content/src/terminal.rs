@@ -28,6 +28,12 @@ pub struct ProjectTerminalSettingsContent {
     ///
     /// Default: on
     pub detect_venv: Option<VenvSettings>,
+    /// Whether to load Solo's shell integration into supported shells
+    /// (PowerShell and bash) that run without custom arguments. It marks each
+    /// command so the terminal can show command blocks.
+    ///
+    /// Default: true
+    pub shell_integration: Option<bool>,
     /// Regexes used to identify paths for hyperlink navigation.
     ///
     /// Default:
@@ -236,6 +242,83 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: "system"
     pub bell: Option<TerminalBell>,
+    /// Whether to open files in the editor when they change on disk while a
+    /// command runs in the focused terminal, e.g. files edited by an AI agent.
+    /// Needs shell integration to know when a command runs.
+    ///
+    /// Default: true
+    pub open_changed_files: Option<bool>,
+    /// Whether to type commands in an editor at the bottom of the terminal
+    /// while the shell waits at its prompt, with completions and history
+    /// suggestions. Needs shell integration.
+    ///
+    /// Default: true
+    pub input_editor: Option<bool>,
+    /// Whether shells with Solo's integration show a compact prompt (the
+    /// directory name and an arrow) while the input editor is on, since the
+    /// input editor already shows the full path and git branch.
+    ///
+    /// Default: true
+    pub compact_prompt: Option<bool>,
+    /// Whether the input editor opens completions as you type, rather than
+    /// only on Tab.
+    ///
+    /// Default: false
+    pub completions_as_you_type: Option<bool>,
+    /// Whether file paths and URLs in the terminal are underlined on hover
+    /// and open with a plain click, rather than only with ctrl/cmd held.
+    ///
+    /// Default: true
+    pub open_links_on_click: Option<bool>,
+    /// Show a desktop notification when a command that ran at least this many
+    /// seconds finishes while Solo is in the background. 0 turns it off.
+    ///
+    /// Default: 10
+    pub notify_long_commands_after_seconds: Option<u64>,
+    /// Whether programs in the terminal can show desktop notifications (with
+    /// OSC 9 or OSC 777) while Solo is in the background, e.g. Claude Code
+    /// when it finishes a turn.
+    ///
+    /// Default: true
+    pub program_notifications: Option<bool>,
+    /// Whether terminals show their previous contents and command blocks
+    /// again when Solo restarts. The contents are saved in Solo's data
+    /// directory. Terminals are reopened either way.
+    ///
+    /// Default: false
+    pub restore_contents: Option<bool>,
+    /// Programs to treat as AI agents, besides the built-in ones (claude,
+    /// codex, gemini, aider, ...): their tab shows whether they're working,
+    /// waiting for you, done or failed.
+    ///
+    /// Default: []
+    pub agent_commands: Option<Vec<String>>,
+    /// Whether Claude Code started in a terminal with shell integration
+    /// reports what it's doing (working, waiting for you, idle) through hooks
+    /// Solo adds for that session with `claude --settings`, instead of Solo
+    /// guessing from its output. Your own settings and hooks still apply.
+    /// Takes effect in new terminals.
+    ///
+    /// Default: true
+    pub claude_code_hooks: Option<bool>,
+    /// When to ask before closing a terminal (its tab, its window or Solo)
+    /// would end the program running in it.
+    ///
+    /// Default: "agents"
+    pub confirm_close: Option<TerminalConfirmClose>,
+    /// Whether the project panel, file finder and project search follow the
+    /// active terminal's working directory: they narrow to the git repository
+    /// it's in (or the directory itself outside a repository), switching when
+    /// another terminal becomes active or the shell shows its prompt in a new
+    /// directory.
+    ///
+    /// Default: true
+    pub follow_working_directory: Option<bool>,
+    /// The command "New Agent Task" runs in the new task's terminal, in the
+    /// task's git worktree.
+    ///
+    /// Default: "claude"
+    pub agent_task_command: Option<String>,
 }
 
 crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
@@ -245,7 +328,11 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         cursor_shape, blinking, alternate_scroll, option_as_meta, copy_on_select,
         keep_selection_on_copy, open_links_in_mouse_mode, button, dock, starts_open, flexible,
         default_width, default_height, max_scroll_history_lines, scroll_multiplier, toolbar,
-        scrollbar, minimum_contrast, show_count_badge, bell,
+        scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
+        input_editor, compact_prompt, completions_as_you_type, open_links_on_click,
+        notify_long_commands_after_seconds, program_notifications, restore_contents,
+        agent_commands, claude_code_hooks, follow_working_directory, confirm_close,
+        agent_task_command,
     },
     defaults: {},
 });
@@ -484,6 +571,32 @@ pub enum TerminalBell {
     System,
     /// Do not play any sound.
     Off,
+}
+
+/// SOLO: when to ask before closing a terminal ends the program running in it.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalConfirmClose {
+    /// Only when an AI agent is running (see `agent_commands`).
+    #[default]
+    Agents,
+    /// When any command is running, an AI agent or not.
+    Commands,
+    /// Never ask.
+    Never,
 }
 
 #[derive(

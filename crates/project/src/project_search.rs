@@ -133,6 +133,19 @@ impl Search {
         }
     }
 
+    /// SOLO: narrows a local search to the worktree the active terminal's
+    /// project is in (see [`WorktreeStore::scoped_worktrees`]), for searches
+    /// the user starts from the UI. Other searches, like agents', keep
+    /// covering every visible worktree.
+    pub(crate) fn in_scope(mut self, cx: &App) -> Self {
+        if let SearchKind::Local { worktrees, .. } = &mut self.kind {
+            let mut scoped = self.worktree_store.read(cx).scoped_worktrees(cx);
+            scoped.sort_by_key(|worktree| worktree.read(cx).id());
+            *worktrees = scoped;
+        }
+        self
+    }
+
     pub(crate) fn remote(
         buffer_store: Entity<BufferStore>,
         worktree_store: Entity<WorktreeStore>,

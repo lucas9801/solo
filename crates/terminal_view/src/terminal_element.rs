@@ -16,7 +16,7 @@ use terminal::{
     Cell, Color, Content, CursorShape, IndexedCell, Modes, MouseInputMode, NamedColor, Point,
     Range, Terminal, TerminalBounds,
     is_app_chosen_exact_color as terminal_is_app_chosen_exact_color, is_default_background_color,
-    terminal_settings::TerminalSettings,
+    shell_integration::CommandBlock, terminal_settings::TerminalSettings,
 };
 use theme::{ActiveTheme, Theme};
 use theme_settings::ThemeSettings;
@@ -46,6 +46,131 @@ pub struct LayoutState {
     block_below_cursor_element: Option<AnyElement>,
     base_text_style: TextStyle,
     content_mode: ContentMode,
+    command_blocks: Vec<CommandBlockDecoration>,
+}
+
+/// SOLO: how a shell integration command block is drawn, in viewport rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandBlockDecoration {
+    /// Index of the block in the terminal's shell integration.
+    index: usize,
+    selected: bool,
+    /// First visible row of the block.
+    start_row: i32,
+    /// Last visible row of the block, inclusive.
+    end_row: i32,
+    /// Draw a separator above `start_row`; only when the block's prompt is visible.
+    separator: bool,
+    status: CommandBlockStatus,
+    /// Summary of the command: duration, exit code.
+    label: Option<String>,
+    /// Whether the prompt row is on screen; the label is drawn at its end.
+    prompt_visible: bool,
+    /// The command line, pinned to the top while scrolled into its output.
+    sticky_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandBlockStatus {
+    Idle,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+fn command_block_label(block: &CommandBlock, status: CommandBlockStatus) -> Option<String> {
+    let duration = match (block.started_at, block.finished_at) {
+        (Some(started_at), Some(finished_at)) => Some(finished_at - started_at),
+        _ => None,
+    };
+    let running = util::i18n::tr("running", "运行中");
+    let exit = util::i18n::tr("exit", "退出码");
+    match status {
+        CommandBlockStatus::Idle => None,
+        CommandBlockStatus::Running => Some(match block.started_at {
+            Some(started_at) if started_at.elapsed().as_secs() > 0 => {
+                let secs = started_at.elapsed().as_secs();
+                if secs < 60 {
+                    format!("{running} · {secs}s")
+                } else {
+                    format!("{running} · {}m {}s", secs / 60, secs % 60)
+                }
+            }
+            _ => running.to_string(),
+        }),
+        CommandBlockStatus::Succeeded => duration.map(format_command_duration),
+        CommandBlockStatus::Failed => {
+            let exit_code = block.exit_code.unwrap_or(1);
+            Some(match duration {
+                Some(duration) => {
+                    format!("{exit} {exit_code} · {}", format_command_duration(duration))
+                }
+                None => format!("{exit} {exit_code}"),
+            })
+        }
+    }
+}
+
+fn format_command_duration(duration: std::time::Duration) -> String {
+    let millis = duration.as_millis();
+    if millis < 1000 {
+        format!("{millis}ms")
+    } else if millis < 60_000 {
+        format!("{:.1}s", duration.as_secs_f32())
+    } else {
+        let secs = duration.as_secs();
+        format!("{}m {}s", secs / 60, secs % 60)
+    }
+}
+
+/// Maps command blocks, whose lines count from the top of the scrollback, to
+/// the rows currently on screen.
+fn command_block_decorations(
+    blocks: &[CommandBlock],
+    history_size: usize,
+    display_offset: usize,
+    screen_lines: usize,
+    cursor_line: usize,
+    selected: Option<usize>,
+) -> Vec<CommandBlockDecoration> {
+    let first_visible = history_size.saturating_sub(display_offset);
+    let last_visible = first_visible + screen_lines.saturating_sub(1);
+    let to_row = |line: usize| (line - first_visible) as i32;
+
+    let mut decorations = Vec::new();
+    for (ix, block) in blocks.iter().enumerate() {
+        let start = block.prompt_line;
+        let end = match blocks.get(ix + 1) {
+            Some(next) => next.prompt_line.saturating_sub(1).max(start),
+            None => block.end_line.unwrap_or(cursor_line).max(start),
+        };
+        if end < first_visible || start > last_visible {
+            continue;
+        }
+        let status = match (block.exit_code, block.end_line, block.output_line) {
+            (Some(0), _, _) => CommandBlockStatus::Succeeded,
+            (Some(_), _, _) => CommandBlockStatus::Failed,
+            (None, Some(_), _) => CommandBlockStatus::Succeeded,
+            (None, None, Some(_)) => CommandBlockStatus::Running,
+            (None, None, None) => CommandBlockStatus::Idle,
+        };
+        let prompt_visible = start >= first_visible;
+        let sticky_command = (!prompt_visible && end > first_visible)
+            .then(|| block.command.clone())
+            .flatten();
+        decorations.push(CommandBlockDecoration {
+            index: ix,
+            selected: selected == Some(ix),
+            start_row: to_row(start.max(first_visible)),
+            end_row: to_row(end.min(last_visible)),
+            separator: start > 0 && start >= first_visible,
+            status,
+            label: command_block_label(block, status),
+            prompt_visible,
+            sticky_command,
+        });
+    }
+    decorations
 }
 
 /// Helper struct for converting terminal cursor points to displayed cursor points.
@@ -876,7 +1001,12 @@ impl TerminalElement {
         minimum_contrast: f32,
     ) -> TextRun {
         let skip_contrast = Self::is_app_chosen_exact_color(&fg);
-        let mut fg = convert_color(&fg, colors);
+        // SOLO: links (OSC 8) the program didn't color stand out from the text.
+        let mut fg = if cell.hyperlink().is_some() && fg == Color::Named(NamedColor::Foreground) {
+            colors.colors().text_accent
+        } else {
+            convert_color(&fg, colors)
+        };
         let bg = convert_color(&bg, colors);
 
         if !skip_contrast && !Self::is_decorative_character(cell.character()) {
@@ -940,6 +1070,56 @@ impl TerminalElement {
         result
     }
 
+    /// SOLO: clicking the left gutter of a command block selects it.
+    fn register_command_block_click(
+        terminal_view: Entity<TerminalView>,
+        focus: FocusHandle,
+        blocks: &[CommandBlockDecoration],
+        bounds: Bounds<Pixels>,
+        origin: GpuiPoint<Pixels>,
+        layout: &LayoutState,
+        window: &mut Window,
+    ) {
+        if blocks.is_empty() {
+            return;
+        }
+        let line_height = layout.dimensions.line_height;
+        let gutter_width = layout.dimensions.bounds.origin.x - bounds.origin.x;
+        let targets: Vec<(usize, Bounds<Pixels>)> = blocks
+            .iter()
+            .map(|block| {
+                let top = origin.y + block.start_row as f32 * line_height;
+                let height = (block.end_row - block.start_row + 1) as f32 * line_height;
+                (
+                    block.index,
+                    Bounds::new(point(bounds.origin.x, top), size(gutter_width, height)),
+                )
+            })
+            .collect();
+        let hitbox = layout.hitbox.clone();
+        window.on_mouse_event(move |event: &gpui::MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture
+                || event.button != MouseButton::Left
+                || !hitbox.is_hovered(window)
+            {
+                return;
+            }
+            let Some((ix, _)) = targets
+                .iter()
+                .find(|(_, target)| target.contains(&event.position))
+            else {
+                return;
+            };
+            let ix = *ix;
+            window.focus(&focus, cx);
+            terminal_view.update(cx, |view, cx| {
+                let selected = (view.selected_command_block() != Some(ix)).then_some(ix);
+                view.select_command_block(selected, cx);
+            });
+            cx.stop_propagation();
+        });
+    }
+
     fn register_mouse_listeners(
         &mut self,
         hitbox: &Hitbox,
@@ -961,7 +1141,9 @@ impl TerminalElement {
 
                 let view = terminal_view.read(cx);
                 let scroll_top = view.scroll_top;
+                let clickable_link = view.hover.as_ref().map(|hover| hover.hovered_word.id);
                 terminal.update(cx, |terminal, cx| {
+                    terminal.set_clickable_link(clickable_link);
                     let mut adjusted_event = e.clone();
                     if scroll_top > Pixels::ZERO {
                         adjusted_event.position.y += scroll_top;
@@ -976,12 +1158,18 @@ impl TerminalElement {
             let terminal = self.terminal.clone();
             let hitbox = hitbox.clone();
             let focus = focus.clone();
+            let terminal_view = terminal_view.clone();
             move |e: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
 
-                if e.pressed_button.is_some() && !cx.has_active_drag() && focus.is_focused(window) {
+                // SOLO: or in the input editor, which takes focus on mouse down.
+                if e.pressed_button.is_some()
+                    && !cx.has_active_drag()
+                    && (focus.contains_focused(window, cx)
+                        || terminal_view.read(cx).input_focused(window, cx))
+                {
                     let hovered = hitbox.is_hovered(window);
 
                     let scroll_top = terminal_view.read(cx).scroll_top;
@@ -1014,8 +1202,11 @@ impl TerminalElement {
             self.interactivity.on_mouse_up(button, {
                 let terminal = terminal.clone();
                 let focus = focus.clone();
+                let terminal_view = terminal_view.clone();
                 move |event, window, cx| {
-                    if !focus.is_focused(window) {
+                    if !focus.contains_focused(window, cx)
+                        && !terminal_view.read(cx).input_focused(window, cx)
+                    {
                         return;
                     }
                     if button != MouseButton::Left
@@ -1168,8 +1359,10 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        #[cfg(test)]
+        let prepaint_start = Instant::now();
         let rem_size = self.rem_size(cx);
-        self.interactivity.prepaint(
+        let layout = self.interactivity.prepaint(
             global_id,
             inspector_id,
             bounds,
@@ -1334,7 +1527,9 @@ impl Element for TerminalElement {
                     terminal.set_size(dimensions);
                     terminal.sync(window, cx);
 
-                    if window.modifiers().secondary(cx)
+                    let links_active = window.modifiers().secondary(cx)
+                        || TerminalSettings::get_global(cx).open_links_on_click;
+                    if links_active
                         && bounds.contains(&window.mouse_position())
                         && let Some(registered_hover) = self.terminal_view.read(cx).hover.as_ref()
                     {
@@ -1389,6 +1584,25 @@ impl Element for TerminalElement {
                 // then have that representation be converted to the appropriate highlight data structure
 
                 let content_mode = self.terminal_view.read(cx).content_mode(window, cx);
+
+                let command_blocks = {
+                    let terminal = self.terminal.read(cx);
+                    let content = &terminal.last_content;
+                    let selected = self.terminal_view.read(cx).selected_command_block();
+                    if content.mode.contains(Modes::ALT_SCREEN) {
+                        Vec::new()
+                    } else {
+                        let history_size = content.total_lines.saturating_sub(content.screen_lines);
+                        command_block_decorations(
+                            terminal.shell_integration().blocks(),
+                            history_size,
+                            content.display_offset,
+                            content.screen_lines,
+                            (history_size as i32 + content.cursor.point.line).max(0) as usize,
+                            selected,
+                        )
+                    }
+                };
 
                 // Calculate the intersection of the terminal's bounds with the current
                 // content mask (the visible viewport after all parent clipping).
@@ -1565,9 +1779,13 @@ impl Element for TerminalElement {
                     block_below_cursor_element,
                     base_text_style: text_style,
                     content_mode,
+                    command_blocks,
                 }
             },
-        )
+        );
+        #[cfg(test)]
+        test_stats::record_prepaint(self.terminal.entity_id(), prepaint_start.elapsed());
+        layout
     }
 
     fn paint(
@@ -1610,7 +1828,9 @@ impl Element for TerminalElement {
                 mouse_input_mode,
                 window,
             );
-            if window.modifiers().secondary(cx)
+            let links_active = window.modifiers().secondary(cx)
+                || TerminalSettings::get_global(cx).open_links_on_click;
+            if links_active
                 && bounds.contains(&window.mouse_position())
                 && self.terminal_view.read(cx).hover.is_some()
             {
@@ -1622,6 +1842,8 @@ impl Element for TerminalElement {
             let original_cursor = layout.cursor.take();
             let hyperlink_tooltip = layout.hyperlink_tooltip.take();
             let block_below_cursor_element = layout.block_below_cursor_element.take();
+            let command_block_view = self.terminal_view.clone();
+            let command_block_focus = self.focus.clone();
             self.interactivity.paint(
                 global_id,
                 inspector_id,
@@ -1644,6 +1866,24 @@ impl Element for TerminalElement {
                             });
                         }
                     });
+
+                    paint_command_blocks(
+                        &layout.command_blocks,
+                        bounds,
+                        origin,
+                        layout,
+                        window,
+                        cx,
+                    );
+                    Self::register_command_block_click(
+                        command_block_view.clone(),
+                        command_block_focus.clone(),
+                        &layout.command_blocks,
+                        bounds,
+                        origin,
+                        layout,
+                        window,
+                    );
 
                     for rect in &layout.rects {
                         rect.paint(origin, &layout.dimensions, window);
@@ -1678,6 +1918,22 @@ impl Element for TerminalElement {
                     for block_element_rect in &layout.block_element_rects {
                         block_element_rect.paint(origin, &layout.dimensions, window);
                     }
+                    paint_command_block_overlays(
+                        &layout.command_blocks,
+                        bounds,
+                        origin,
+                        layout,
+                        window,
+                        cx,
+                    );
+                    paint_sticky_command_header(
+                        &layout.command_blocks,
+                        bounds,
+                        origin,
+                        layout,
+                        window,
+                        cx,
+                    );
                     let text_paint_time = text_paint_start.elapsed();
 
                     if let Some(text_to_mark) = &marked_text_cloned
@@ -2001,6 +2257,259 @@ pub fn convert_color(fg: &Color, theme: &Theme) -> Hsla {
         Color::Spec(rgb) => terminal::rgba_color(rgb.r, rgb.g, rgb.b),
         // 8 bit, indexed colors
         Color::Indexed(i) => terminal::get_color_at_index(*i as usize, theme),
+    }
+}
+
+/// SOLO: paints Warp-style command blocks: a separator above each prompt, a tint
+/// over failed commands, and a status stripe in the left gutter.
+fn paint_command_blocks(
+    blocks: &[CommandBlockDecoration],
+    bounds: Bounds<Pixels>,
+    origin: GpuiPoint<Pixels>,
+    layout: &LayoutState,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if blocks.is_empty() {
+        return;
+    }
+    let theme = cx.theme().clone();
+    let colors = theme.colors();
+    let status = theme.status();
+    let line_height = layout.dimensions.line_height;
+    let stripe_width = px(3.);
+    for block in blocks {
+        let top = origin.y + block.start_row as f32 * line_height;
+        let height = (block.end_row - block.start_row + 1) as f32 * line_height;
+        let block_bounds =
+            Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, height));
+        if block.selected {
+            window.paint_quad(fill(block_bounds, colors.text_accent.opacity(0.08)));
+        }
+        let stripe_color = match block.status {
+            CommandBlockStatus::Failed => {
+                window.paint_quad(fill(
+                    Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, height)),
+                    status.error.opacity(0.08),
+                ));
+                Some(status.error)
+            }
+            CommandBlockStatus::Running => Some(colors.text_accent.opacity(0.7)),
+            CommandBlockStatus::Idle | CommandBlockStatus::Succeeded => None,
+        };
+        let stripe_color = if block.selected {
+            Some(colors.text_accent)
+        } else {
+            stripe_color
+        };
+        if let Some(stripe_color) = stripe_color {
+            window.paint_quad(fill(
+                Bounds::new(point(bounds.origin.x, top), size(stripe_width, height)),
+                stripe_color,
+            ));
+        }
+        if block.separator {
+            window.paint_quad(fill(
+                Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, px(1.))),
+                colors.border_variant,
+            ));
+        }
+    }
+}
+
+/// SOLO: paints what goes on top of the terminal text: each block's label at
+/// the end of its prompt row and the selection outline.
+fn paint_command_block_overlays(
+    blocks: &[CommandBlockDecoration],
+    bounds: Bounds<Pixels>,
+    origin: GpuiPoint<Pixels>,
+    layout: &LayoutState,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let theme = cx.theme().clone();
+    let colors = theme.colors();
+    let status = theme.status();
+    let line_height = layout.dimensions.line_height;
+    for block in blocks {
+        let top = origin.y + block.start_row as f32 * line_height;
+        let height = (block.end_row - block.start_row + 1) as f32 * line_height;
+        let block_bounds =
+            Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, height));
+        if let Some(label) = block.label.as_ref().filter(|_| block.prompt_visible) {
+            let color = match block.status {
+                CommandBlockStatus::Failed => status.error,
+                _ => colors.text_muted,
+            };
+            let font_size = layout
+                .base_text_style
+                .font_size
+                .to_pixels(window.rem_size())
+                * 0.85;
+            let shaped = window.text_system().shape_line(
+                label.clone().into(),
+                font_size,
+                &[TextRun {
+                    len: label.len(),
+                    font: layout.base_text_style.font(),
+                    color,
+                    ..Default::default()
+                }],
+                None,
+            );
+            let padding = layout.dimensions.cell_width;
+            let x = bounds.right() - shaped.width - padding;
+            if x > bounds.origin.x + padding {
+                // Keep the label legible over any prompt text underneath it.
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(x - padding / 2., top + px(1.)),
+                        size(shaped.width + padding, line_height - px(1.)),
+                    ),
+                    layout.background_color,
+                ));
+                if block.status == CommandBlockStatus::Failed {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(x - padding / 2., top + px(1.)),
+                            size(shaped.width + padding, line_height - px(1.)),
+                        ),
+                        status.error.opacity(0.08),
+                    ));
+                }
+                shaped
+                    .paint(
+                        point(x, top),
+                        line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .log_err();
+            }
+        }
+        if block.selected {
+            window.paint_quad(gpui::outline(
+                block_bounds,
+                colors.text_accent.opacity(0.6),
+                gpui::BorderStyle::Solid,
+            ));
+        }
+    }
+}
+
+/// SOLO: while scrolled into a command's output, pins its command line to the
+/// top of the terminal, like a sticky header.
+fn paint_sticky_command_header(
+    blocks: &[CommandBlockDecoration],
+    bounds: Bounds<Pixels>,
+    origin: GpuiPoint<Pixels>,
+    layout: &LayoutState,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some((block, command)) = blocks.iter().find_map(|block| {
+        let command = block.sticky_command.as_ref()?;
+        (block.start_row == 0).then_some((block, command))
+    }) else {
+        return;
+    };
+    let theme = cx.theme().clone();
+    let colors = theme.colors();
+    let line_height = layout.dimensions.line_height;
+    let header_bounds = Bounds::new(
+        point(bounds.origin.x, origin.y),
+        size(bounds.size.width, line_height),
+    );
+    window.paint_quad(fill(header_bounds, colors.elevated_surface_background));
+    window.paint_quad(fill(
+        Bounds::new(
+            point(bounds.origin.x, origin.y + line_height - px(1.)),
+            size(bounds.size.width, px(1.)),
+        ),
+        colors.border_variant,
+    ));
+
+    let font_size = layout
+        .base_text_style
+        .font_size
+        .to_pixels(window.rem_size());
+    let text = format!("$ {}", command.lines().next().unwrap_or_default());
+    let runs = [TextRun {
+        len: text.len(),
+        font: layout.base_text_style.font(),
+        color: colors.text,
+        ..Default::default()
+    }];
+    let label_color = match block.status {
+        CommandBlockStatus::Failed => theme.status().error,
+        _ => colors.text_muted,
+    };
+    let label = block.label.clone().unwrap_or_default();
+    let shaped_label = window.text_system().shape_line(
+        label.clone().into(),
+        font_size * 0.85,
+        &[TextRun {
+            len: label.len(),
+            font: layout.base_text_style.font(),
+            color: label_color,
+            ..Default::default()
+        }],
+        None,
+    );
+    let shaped_command = window
+        .text_system()
+        .shape_line(text.into(), font_size, &runs, None);
+    let x = layout.dimensions.bounds.origin.x;
+    shaped_command
+        .paint(
+            point(x, origin.y),
+            line_height,
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        )
+        .log_err();
+    let label_x = bounds.right() - shaped_label.width - layout.dimensions.cell_width;
+    if label_x > x + shaped_command.width {
+        shaped_label
+            .paint(
+                point(label_x, origin.y),
+                line_height,
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            )
+            .log_err();
+    }
+}
+
+/// SOLO: how often each terminal was laid out, for tests that check what
+/// output makes the window redraw.
+#[cfg(test)]
+pub(crate) mod test_stats {
+    use std::{cell::RefCell, collections::HashMap, time::Duration};
+
+    use gpui::EntityId;
+
+    thread_local! {
+        static PREPAINTS: RefCell<HashMap<EntityId, (usize, Duration)>> = Default::default();
+    }
+
+    pub(crate) fn record_prepaint(terminal: EntityId, took: Duration) {
+        PREPAINTS.with_borrow_mut(|prepaints| {
+            let entry = prepaints.entry(terminal).or_default();
+            entry.0 += 1;
+            entry.1 += took;
+        });
+    }
+
+    /// Layouts of `terminal`'s element since the last call, and their total time.
+    pub(crate) fn take_prepaints(terminal: EntityId) -> (usize, Duration) {
+        PREPAINTS.with_borrow_mut(|prepaints| prepaints.remove(&terminal).unwrap_or_default())
     }
 }
 
@@ -3031,5 +3540,89 @@ mod tests {
         // Negative: lines -7, -6, -5, -4
         assert_eq!(negative_filtered.first().unwrap().point.line, -7);
         assert_eq!(negative_filtered.last().unwrap().point.line, -4);
+    }
+
+    fn command_block(prompt_line: usize, exit_code: Option<i32>, finished: bool) -> CommandBlock {
+        let mut block = CommandBlock::new(prompt_line, None);
+        block.output_line = Some(prompt_line + 1);
+        block.exit_code = exit_code;
+        if finished {
+            block.end_line = Some(prompt_line + 2);
+        }
+        block
+    }
+
+    #[test]
+    fn test_format_command_duration() {
+        use std::time::Duration;
+        assert_eq!(format_command_duration(Duration::from_millis(320)), "320ms");
+        assert_eq!(format_command_duration(Duration::from_millis(4250)), "4.2s");
+        assert_eq!(format_command_duration(Duration::from_secs(192)), "3m 12s");
+    }
+
+    #[test]
+    fn test_command_block_decorations() {
+        let mut blocks = vec![
+            command_block(0, Some(0), true),
+            command_block(3, Some(5), true),
+            command_block(10, None, false),
+        ];
+        blocks[1].command = Some("make".to_string());
+
+        // Everything fits on screen.
+        assert_eq!(
+            command_block_decorations(&blocks, 0, 0, 20, 12, Some(1)),
+            vec![
+                CommandBlockDecoration {
+                    index: 0,
+                    selected: false,
+                    start_row: 0,
+                    end_row: 2,
+                    separator: false,
+                    status: CommandBlockStatus::Succeeded,
+                    label: None,
+                    prompt_visible: true,
+                    sticky_command: None,
+                },
+                CommandBlockDecoration {
+                    index: 1,
+                    selected: true,
+                    start_row: 3,
+                    end_row: 9,
+                    separator: true,
+                    status: CommandBlockStatus::Failed,
+                    label: Some("exit 5".to_string()),
+                    prompt_visible: true,
+                    sticky_command: None,
+                },
+                CommandBlockDecoration {
+                    index: 2,
+                    selected: false,
+                    start_row: 10,
+                    end_row: 12,
+                    separator: true,
+                    status: CommandBlockStatus::Running,
+                    label: Some("running".to_string()),
+                    prompt_visible: true,
+                    sticky_command: None,
+                },
+            ]
+        );
+
+        // 5 lines of history, viewport at the bottom: lines 5..10 are rows 0..5.
+        assert_eq!(
+            command_block_decorations(&blocks, 5, 0, 5, 9, None),
+            vec![CommandBlockDecoration {
+                index: 1,
+                selected: false,
+                start_row: 0,
+                end_row: 4,
+                separator: false,
+                status: CommandBlockStatus::Failed,
+                label: Some("exit 5".to_string()),
+                prompt_visible: false,
+                sticky_command: Some("make".to_string()),
+            }]
+        );
     }
 }

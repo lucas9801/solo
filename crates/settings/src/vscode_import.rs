@@ -976,6 +976,24 @@ impl VsCodeSettings {
                     }
                 }),
             minimum_contrast: None,
+            open_changed_files: None,
+            input_editor: None,
+            compact_prompt: None,
+            completions_as_you_type: None,
+            open_links_on_click: None,
+            notify_long_commands_after_seconds: None,
+            program_notifications: None,
+            restore_contents: None,
+            agent_commands: None,
+            claude_code_hooks: None,
+            follow_working_directory: None,
+            agent_task_command: None,
+            confirm_close: self.read_enum("terminal.integrated.confirmOnKill", |confirm| {
+                Some(match confirm {
+                    "never" => TerminalConfirmClose::Never,
+                    _ => TerminalConfirmClose::Commands,
+                })
+            }),
             option_as_meta: self.read_bool("terminal.integrated.macOptionIsMeta"),
             project: self.project_terminal_settings_content(),
             scrollbar: None,
@@ -1014,6 +1032,7 @@ impl VsCodeSettings {
             working_directory: None,
             env,
             detect_venv: None,
+            shell_integration: self.read_bool("terminal.integrated.shellIntegration.enabled"),
             path_hyperlink_regexes: None,
             path_hyperlink_timeout_ms: None,
         }

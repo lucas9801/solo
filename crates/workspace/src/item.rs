@@ -155,6 +155,15 @@ impl TabContentParams {
     }
 }
 
+/// SOLO: see [`Item::running_program`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningProgram {
+    /// What's running, e.g. "claude".
+    pub name: SharedString,
+    /// What it's doing, e.g. "Working", if that's known.
+    pub status: Option<SharedString>,
+}
+
 pub enum TabTooltipContent {
     Text(SharedString),
     Custom(Box<dyn Fn(&mut Window, &mut App) -> AnyView>),
@@ -278,6 +287,12 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     }
     fn is_dirty(&self, _: &App) -> bool {
         false
+    }
+    /// SOLO: a program running in the item that closing it would end, e.g.
+    /// an AI agent in a terminal. Closing the item, its window or the app
+    /// asks first.
+    fn running_program(&self, _: &App) -> Option<RunningProgram> {
+        None
     }
     fn capability(&self, _: &App) -> Capability {
         Capability::ReadWrite
@@ -526,6 +541,7 @@ pub trait ItemHandle: 'static + Send {
     fn item_id(&self) -> EntityId;
     fn to_any_view(&self) -> AnyView;
     fn is_dirty(&self, cx: &App) -> bool;
+    fn running_program(&self, cx: &App) -> Option<RunningProgram>;
     fn capability(&self, cx: &App) -> Capability;
     fn toggle_read_only(&self, window: &mut Window, cx: &mut App);
     fn has_deleted_file(&self, cx: &App) -> bool;
@@ -1037,6 +1053,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn is_dirty(&self, cx: &App) -> bool {
         self.read(cx).is_dirty(cx)
+    }
+
+    fn running_program(&self, cx: &App) -> Option<RunningProgram> {
+        self.read(cx).running_program(cx)
     }
 
     fn capability(&self, cx: &App) -> Capability {

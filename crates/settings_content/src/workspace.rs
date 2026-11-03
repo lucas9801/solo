@@ -372,6 +372,9 @@ pub enum BottomDockLayout {
     LeftAligned,
     /// Extends under the right dock while snapping to the left dock
     RightAligned,
+    /// The bottom dock (terminal) becomes the main column next to the left dock,
+    /// and the editor area only appears beside it while files are open
+    TerminalFirst,
 }
 
 #[derive(

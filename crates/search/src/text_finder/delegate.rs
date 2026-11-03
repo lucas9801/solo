@@ -1446,7 +1446,8 @@ impl Delegate {
         // include/exclude patterns against full paths to allow them to be
         // disambiguated. For single worktree projects we use worktree relative
         // paths for convenience.
-        let match_full_paths = self.project(cx).read(cx).visible_worktrees(cx).count() > 1;
+        // SOLO: the search covers only the active terminal's project.
+        let match_full_paths = self.project(cx).read(cx).scoped_worktrees(cx).len() > 1;
         let open_buffers = None;
 
         self.search_options

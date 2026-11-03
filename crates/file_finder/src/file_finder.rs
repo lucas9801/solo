@@ -129,6 +129,8 @@ impl FileFinder {
         let history_items = workspace
             .recent_navigation_history(Some(MAX_RECENT_SELECTIONS), cx)
             .into_iter()
+            // SOLO: recent files of other projects than the active terminal's.
+            .filter(|(project_path, _)| project.is_worktree_in_scope(project_path.worktree_id, cx))
             .filter_map(|(project_path, abs_path)| {
                 let path = FoundPath::new(project_path, abs_path?);
                 let is_file = path.is_file(project, cx);
@@ -817,7 +819,8 @@ fn matching_history_items<'a>(
 fn should_hide_root_in_entry_path(worktree_store: &Entity<WorktreeStore>, cx: &App) -> bool {
     let multiple_worktrees = worktree_store
         .read(cx)
-        .visible_worktrees(cx)
+        .scoped_worktrees(cx)
+        .iter()
         .filter(|worktree| !worktree.read(cx).is_single_file())
         .nth(1)
         .is_some();
@@ -1204,10 +1207,10 @@ impl FileFinderDelegate {
             .as_ref()
             .map(|found_path| Arc::clone(&found_path.project.path));
         let worktree_store = self.project.read(cx).worktree_store();
+        // SOLO: narrowed to the active terminal's project.
         let worktrees = worktree_store
             .read(cx)
-            .visible_worktrees_and_single_files(cx)
-            .collect::<Vec<_>>();
+            .scoped_worktrees_and_single_files(cx);
         let include_root_name = !should_hide_root_in_entry_path(&worktree_store, cx);
         let candidate_sets = worktrees
             .into_iter()
@@ -1363,7 +1366,8 @@ impl FileFinderDelegate {
                 let available_worktree = self
                     .project
                     .read(cx)
-                    .visible_worktrees(cx)
+                    .scoped_worktrees(cx)
+                    .into_iter()
                     .filter(|worktree| !worktree.read(cx).is_single_file())
                     .collect::<Vec<_>>();
                 let worktree_count = available_worktree.len();

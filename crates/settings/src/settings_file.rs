@@ -162,6 +162,21 @@ pub fn test_settings() -> &'static str {
             }),
             &mut value,
         );
+        // SOLO: Zed's tests assume Zed's layout, with the terminal closed at
+        // startup; Solo's own tests opt into its layout.
+        util::merge_non_null_json_value_into(
+            serde_json::json!({
+                "bottom_dock_layout": "contained",
+                "terminal": { "starts_open": false },
+                "project_panel": { "dock": "right" },
+                "outline_panel": { "dock": "right" },
+                "collaboration_panel": { "dock": "right" },
+                "git_panel": { "dock": "right" },
+                "agent": { "dock": "left" },
+                "markdown_preview": { "open_markdown_files_in_preview": false },
+            }),
+            &mut value,
+        );
         value.as_object_mut().unwrap().remove("languages");
         serde_json::to_string(&value).unwrap()
     });

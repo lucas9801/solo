@@ -439,6 +439,25 @@ impl Project {
                                 };
                                 create_remote_shell(spawn_command, env, path, remote_client, cx)?
                             }
+                            None if settings.shell_integration => {
+                                let mut env = env;
+                                if settings.input_editor && settings.compact_prompt {
+                                    env.insert("SOLO_COMPACT_PROMPT".to_string(), "1".to_string());
+                                }
+                                let shell = terminal::shell_integration::integrate_shell(
+                                    settings.shell,
+                                    &shell_program,
+                                    path_style.is_windows(),
+                                    &mut env,
+                                );
+                                if settings.claude_code_hooks {
+                                    terminal::shell_integration::integrate_claude_code(
+                                        path_style.is_windows(),
+                                        &mut env,
+                                    );
+                                }
+                                (shell, env)
+                            }
                             None => (settings.shell, env),
                         }
                     };

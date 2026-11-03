@@ -1,7 +1,10 @@
 mod mappings;
 
 mod alacritty;
+mod mermaid;
+pub use mermaid::is_complete as mermaid_diagram_is_complete;
 mod pty_info;
+pub mod shell_integration;
 pub mod terminal_settings;
 
 #[cfg(not(windows))]
@@ -28,6 +31,7 @@ use futures::StreamExt;
 use pty_info::{ProcessIdGetter, PtyProcessInfo};
 use serde::{Deserialize, Serialize};
 use settings::Settings;
+use shell_integration::{SessionSnapshot, ShellIntegration};
 use task::{HideStrategy, Shell, ShellKind, SpawnInTerminal};
 use terminal_settings::{AlternateScroll, CursorShape as SettingsCursorShape, TerminalSettings};
 use theme::{ActiveTheme, Theme};
@@ -38,6 +42,7 @@ use util::{ResultExt as _, paths::PathStyle, truncate_and_trailoff};
 use std::os::unix::process::ExitStatusExt;
 use std::{
     borrow::Cow,
+    cell::Cell as StdCell,
     cmp::{self, min},
     fmt::{self, Display, Formatter},
     ops::{BitOr, BitOrAssign, Deref, Range as StdRange},
@@ -64,11 +69,12 @@ use crate::alacritty::current_child_signal_mask;
 use crate::alacritty::{
     AlacrittyCell, AlacrittyGridIterator, AlacrittyHyperlink, AlacrittySearch, AlacrittyTerm,
     AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
-    append_text_to_term, apply_config, clear_saved_screen, content_text, display_offset,
-    display_only_term_config, find_from_terminal_point, full_content_range, last_non_empty_lines,
+    append_text_to_term, apply_config, clear_saved_screen, content_text, cursor_line,
+    display_offset, display_only_term_config, find_from_terminal_point, full_content_range,
+    grid_columns, history_size, is_blank, last_non_empty_lines, lines_text, logical_lines,
     make_content, new_term, open_pty, pty_options, pty_term_config, resize, screen_lines,
     scroll_display, scroll_to_point, search_matches, selection_text, set_default_cursor_style,
-    set_selection as set_term_selection, shrink_to_used, spawn_event_loop,
+    set_selection as set_term_selection, shrink_to_used, spawn_event_loop, styled_rows, text_lines,
     toggle_vi_mode as toggle_term_vi_mode, total_lines, update_selection as update_term_selection,
     update_selection_to_vi_cursor, update_vi_cursor_for_scroll, used_lines, vi_goto_point,
     vi_motion,
@@ -646,6 +652,8 @@ actions!(
     ]
 );
 
+/// SOLO: at most this many rows are saved to restore a terminal after a restart.
+const MAX_SAVED_ROWS: usize = 2_000;
 const DEBUG_TERMINAL_WIDTH: Pixels = px(500.);
 const DEBUG_TERMINAL_HEIGHT: Pixels = px(30.);
 const DEBUG_CELL_WIDTH: Pixels = px(5.);
@@ -662,6 +670,10 @@ pub fn insert_zed_terminal_env(
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("COLORTERM".to_string(), "truecolor".to_string());
     env.insert("TERM_PROGRAM_VERSION".to_string(), version.to_string());
+    // SOLO: programs that only write links (OSC 8) for terminals they know,
+    // such as Claude Code, write them here too; Solo underlines and opens them.
+    env.entry("FORCE_HYPERLINK".to_string())
+        .or_insert_with(|| "1".to_string());
 }
 
 ///Upward flowing events, for changing the title and such
@@ -677,6 +689,22 @@ pub enum Event {
     SelectionsChanged,
     NewNavigationTarget(Option<MaybeNavigationTarget>),
     Open(MaybeNavigationTarget),
+    /// SOLO: a command marked by shell integration started running.
+    CommandStarted,
+    /// SOLO: a command marked by shell integration finished.
+    CommandFinished,
+    /// SOLO: the shell showed its prompt (OSC 133 A). The working directory
+    /// it reported before the prompt (OSC 7) is already in
+    /// [`Terminal::shell_integration`].
+    PromptStarted,
+    /// SOLO: a program asked for a desktop notification (OSC 9 or OSC 777).
+    Notification {
+        title: Option<String>,
+        body: String,
+    },
+    /// SOLO: an AI agent's hook reported what the agent is doing (see
+    /// [`shell_integration::integrate_claude_code`]).
+    AgentHook(shell_integration::AgentHook),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -736,6 +764,11 @@ pub(crate) enum TerminalBackendEvent {
     Bell,
     Exit,
     ChildExit(ExitStatus),
+    /// A shell integration mark and the scrollback row it arrived on.
+    ShellMark(alacritty_terminal::event::ShellMark, usize),
+    Notification(Option<String>, String),
+    /// The parameters of an agent hook report.
+    AgentHook(Vec<String>),
 }
 
 impl fmt::Debug for TerminalBackendEvent {
@@ -754,6 +787,9 @@ impl fmt::Debug for TerminalBackendEvent {
             Self::Bell => f.write_str("Bell"),
             Self::Exit => f.write_str("Exit"),
             Self::ChildExit(status) => write!(f, "ChildExit({status})"),
+            Self::ShellMark(mark, line) => write!(f, "ShellMark({mark:?}, {line})"),
+            Self::Notification(title, body) => write!(f, "Notification({title:?}, {body:?})"),
+            Self::AgentHook(params) => write!(f, "AgentHook({params:?})"),
         }
     }
 }
@@ -1049,6 +1085,8 @@ impl TerminalBuilder {
             breadcrumb_text: String::new(),
             scroll_px: px(0.),
             next_link_id: 0,
+            opened_word: None,
+            clickable_link: None,
             selection_phase: SelectionPhase::Ended,
             hyperlink_regex_searches: RegexSearches::default(),
             vi_mode_enabled: false,
@@ -1071,11 +1109,13 @@ impl TerminalBuilder {
             },
             child_exited: None,
             keyboard_input_sent: false,
+            last_sent_to_pty: StdCell::new(None),
             init_command_startup_marker: None,
             init_command_startup_tx: None,
             event_loop_task: Task::ready(Ok(())),
             background_executor: background_executor.clone(),
             path_style,
+            shell_integration: ShellIntegration::default(),
             cwd_history: Vec::new(),
             pending_cwd_boundary: None,
             #[cfg(any(test, feature = "test-support"))]
@@ -1336,6 +1376,8 @@ impl TerminalBuilder {
                 breadcrumb_text: String::new(),
                 scroll_px: px(0.),
                 next_link_id: 0,
+                opened_word: None,
+                clickable_link: None,
                 selection_phase: SelectionPhase::Ended,
                 hyperlink_regex_searches: RegexSearches::new(
                     &path_hyperlink_regexes,
@@ -1361,9 +1403,11 @@ impl TerminalBuilder {
                 },
                 child_exited: None,
                 keyboard_input_sent: false,
+                last_sent_to_pty: StdCell::new(None),
                 init_command_startup_marker: None,
                 init_command_startup_tx: None,
                 event_loop_task: Task::ready(Ok(())),
+                shell_integration: ShellIntegration::default(),
                 background_executor,
                 path_style,
                 cwd_history: if is_remote_terminal {
@@ -1544,6 +1588,10 @@ pub struct Terminal {
     title_override: Option<String>,
     scroll_px: Pixels,
     next_link_id: usize,
+    /// SOLO: the link last opened, since opening one stops hovering it.
+    opened_word: Option<HoveredWord>,
+    /// SOLO: the id of the hovered link if the view found where it leads.
+    clickable_link: Option<usize>,
     selection_phase: SelectionPhase,
     hyperlink_regex_searches: RegexSearches,
     task: Option<TaskState>,
@@ -1558,11 +1606,15 @@ pub struct Terminal {
     activation_script: Vec<String>,
     child_exited: Option<ExitStatus>,
     keyboard_input_sent: bool,
+    /// SOLO: when anything (keys, mouse, focus, a resize) last went to the
+    /// program, which usually answers by redrawing.
+    last_sent_to_pty: StdCell<Option<Instant>>,
     init_command_startup_marker: Option<String>,
     init_command_startup_tx: Option<Sender<()>>,
     event_loop_task: Task<Result<(), anyhow::Error>>,
     background_executor: BackgroundExecutor,
     path_style: PathStyle,
+    shell_integration: ShellIntegration,
     cwd_history: Vec<CwdHistoryEntry>,
     pending_cwd_boundary: Option<i32>,
     #[cfg(any(test, feature = "test-support"))]
@@ -1723,7 +1775,243 @@ impl Terminal {
             TerminalBackendEvent::ChildExit(exit_status) => {
                 self.register_task_finished(Some(exit_status), cx);
             }
+            TerminalBackendEvent::ShellMark(mark, line) => {
+                log::debug!("shell integration mark {mark:?} at line {line}");
+                let finished = matches!(
+                    mark,
+                    alacritty_terminal::event::ShellMark::CommandFinished { .. }
+                );
+                let started = matches!(mark, alacritty_terminal::event::ShellMark::CommandExecuted);
+                let prompt_started =
+                    matches!(mark, alacritty_terminal::event::ShellMark::PromptStart);
+                if matches!(mark, alacritty_terminal::event::ShellMark::HistoryCleared) {
+                    self.reset_cwd_history();
+                }
+                self.shell_integration.handle_mark(mark, line);
+                if started {
+                    cx.emit(Event::CommandStarted);
+                }
+                if finished {
+                    cx.emit(Event::CommandFinished);
+                }
+                if prompt_started {
+                    cx.emit(Event::PromptStarted);
+                }
+                cx.notify();
+            }
+            TerminalBackendEvent::Notification(title, body) => {
+                cx.emit(Event::Notification { title, body });
+            }
+            TerminalBackendEvent::AgentHook(params) => {
+                match shell_integration::AgentHook::parse(&params) {
+                    Some(hook) => {
+                        log::debug!("agent hook {hook:?}");
+                        cx.emit(Event::AgentHook(hook));
+                    }
+                    None => log::debug!("unknown agent hook {params:?}"),
+                }
+            }
         }
+    }
+
+    /// SOLO: tells which hovered link (by `HoveredWord::id`) leads somewhere,
+    /// so a click on it opens it even in a program that takes the mouse.
+    pub fn set_clickable_link(&mut self, id: Option<usize>) {
+        self.clickable_link = id;
+    }
+
+    /// SOLO: the word of the link last opened (`Event::Open`).
+    pub fn opened_word(&self) -> Option<&HoveredWord> {
+        self.opened_word.as_ref()
+    }
+
+    /// SOLO: the Mermaid diagram printed below a `mermaid` line, the one on
+    /// grid line `header_line` or, if that's `None`, the last one.
+    pub fn mermaid_diagram(&self, header_line: Option<i32>) -> Option<String> {
+        let (lines, columns) = {
+            let term = self.term.lock();
+            (text_lines(&term), grid_columns(&term))
+        };
+        let texts: Vec<&str> = lines.iter().map(|(_, text)| text.as_str()).collect();
+        match header_line {
+            Some(header_line) => {
+                let ix = lines.iter().rposition(|(start, _)| *start <= header_line)?;
+                mermaid::diagram_after(&texts, ix, columns)
+            }
+            None => (0..texts.len())
+                .rev()
+                .filter(|ix| mermaid::is_header(texts[*ix]))
+                .find_map(|ix| mermaid::diagram_after(&texts, ix, columns)),
+        }
+    }
+
+    /// Command blocks and working directory reported by the shell, if it runs
+    /// Solo's shell integration.
+    pub fn shell_integration(&self) -> &ShellIntegration {
+        &self.shell_integration
+    }
+
+    /// The command line of the command block at `ix`, as reported by the shell
+    /// or, failing that, read from its input row (which includes the prompt).
+    pub fn command_block_command(&self, ix: usize) -> Option<String> {
+        let block = self.shell_integration.blocks().get(ix)?;
+        if let Some(command) = &block.command {
+            return Some(command.clone());
+        }
+        let input_line = block.input_line?;
+        let last_input_line = block
+            .output_line
+            .map_or(input_line, |line| line.saturating_sub(1).max(input_line));
+        Some(lines_text(&self.term.lock(), input_line..=last_input_line))
+    }
+
+    /// The output of the command block at `ix`, if the command ran.
+    pub fn command_block_output(&self, ix: usize) -> Option<String> {
+        let blocks = self.shell_integration.blocks();
+        let block = blocks.get(ix)?;
+        let output_line = block.output_line?;
+        let last_line = match blocks.get(ix + 1) {
+            Some(next) => next.prompt_line.checked_sub(1)?,
+            None => {
+                let history_size = self
+                    .last_content
+                    .total_lines
+                    .saturating_sub(self.last_content.screen_lines);
+                block.end_line.unwrap_or(
+                    (history_size as i32 + self.last_content.cursor.point.line).max(0) as usize,
+                )
+            }
+        };
+        if last_line < output_line {
+            return Some(String::new());
+        }
+        Some(lines_text(&self.term.lock(), output_line..=last_line))
+    }
+
+    /// The scrollback and its command blocks, to show them again after a
+    /// restart. The prompt the shell waits at is left out, as the restarted
+    /// shell prints its own.
+    pub fn session_snapshot(&self) -> Option<SessionSnapshot> {
+        if self.last_content.mode.contains(Modes::ALT_SCREEN) {
+            return None;
+        }
+        let term = self.term.lock();
+        let cursor_line = cursor_line(&term);
+        // Once the scrollback is full, evicting rows moves the rest without
+        // changing the blocks' lines, so they no longer say where blocks are.
+        let blocks_known = history_size(&term) < self.term_config.scrolling_history;
+        let end = match self.shell_integration.blocks().last() {
+            _ if !blocks_known => cursor_line,
+            // The shell is waiting at this block's prompt.
+            Some(block) if block.started_at.is_none() => block.prompt_line.min(cursor_line),
+            // A running program's screen may be half redrawn (an agent's UI,
+            // a prompt), so keep its command line but not what it printed.
+            Some(block) if block.is_running() => block
+                .output_line
+                .unwrap_or(cursor_line + 1)
+                .min(cursor_line + 1),
+            _ => cursor_line,
+        };
+        let start = end.saturating_sub(MAX_SAVED_ROWS);
+        let styled = styled_rows(&term, start..end);
+        drop(term);
+        // Rows the terminal wrapped are saved as the one line they are, so the
+        // restored terminal wraps them at its own width. `saved_row` maps each
+        // grid row to the saved row it's part of.
+        let mut rows: Vec<String> = Vec::with_capacity(styled.len());
+        let mut saved_row = Vec::with_capacity(styled.len());
+        let mut continues_line = false;
+        for (text, wrapped) in styled {
+            match rows.last_mut() {
+                Some(line) if continues_line => line.push_str(&text),
+                _ => rows.push(text),
+            }
+            saved_row.push(rows.len() - 1);
+            continues_line = wrapped;
+        }
+        let row_count = rows.len();
+        while rows.last().is_some_and(|row| row.trim().is_empty()) {
+            rows.pop();
+        }
+        if rows.is_empty() {
+            return None;
+        }
+        let blocks = if blocks_known {
+            let saved_line = |line: usize| saved_row.get(line).copied().unwrap_or(row_count);
+            let mut blocks = self.shell_integration.saved_blocks(start..end);
+            for block in &mut blocks {
+                block.prompt_line = saved_line(block.prompt_line);
+                block.input_line = block.input_line.map(saved_line);
+                block.output_line = block.output_line.map(saved_line);
+                block.end_line = block.end_line.map(saved_line);
+            }
+            blocks
+        } else {
+            Vec::new()
+        };
+        Some(SessionSnapshot { blocks, rows })
+    }
+
+    /// Writes a saved session into the terminal before the shell prints
+    /// anything, and restores its command blocks. Returns false, leaving the
+    /// terminal as it is, if the shell has printed already.
+    pub fn restore_session(&mut self, snapshot: &SessionSnapshot, cx: &mut Context<Self>) -> bool {
+        if snapshot.rows.is_empty() || self.shell_integration.is_active() {
+            return false;
+        }
+        let mut term = self.term.lock();
+        if !is_blank(&term) {
+            return false;
+        }
+        // Rows beyond what the scrollback keeps would be evicted while being
+        // written, moving the others away from the lines recorded for them.
+        let room = self
+            .term_config
+            .scrolling_history
+            .saturating_sub(screen_lines(&term));
+        let skipped = snapshot.rows.len().saturating_sub(room);
+        let mut processor = Processor::<StdSyncHandler>::new();
+        let mut row_lines = vec![0; skipped];
+        for row in &snapshot.rows[skipped..] {
+            row_lines.push(cursor_line(&term));
+            processor.advance(&mut *term, row.as_bytes());
+            processor.advance(&mut *term, b"\x1b[0m\r\n");
+        }
+        let last_line = cursor_line(&term).saturating_sub(1);
+        // Clearing the screen moves the rows into the scrollback, so the shell
+        // gets an empty screen, as it expects.
+        processor.advance(&mut *term, b"\x1b[2J\x1b[H");
+        drop(term);
+        let blocks: Vec<_> = snapshot
+            .blocks
+            .iter()
+            .filter(|block| block.prompt_line >= skipped)
+            .cloned()
+            .collect();
+        self.shell_integration.restore_blocks(
+            &blocks,
+            |line| row_lines.get(line).copied().unwrap_or(last_line),
+            last_line,
+        );
+        cx.emit(Event::Wakeup);
+        cx.notify();
+        true
+    }
+
+    /// Scrolls so that `line`, counted from the top of the scrollback, is on
+    /// screen, putting it at the top if it isn't already visible.
+    pub fn scroll_to_line(&mut self, line: usize) {
+        let content = &self.last_content;
+        let history_size = content.total_lines.saturating_sub(content.screen_lines);
+        let first_visible = history_size.saturating_sub(content.display_offset);
+        let last_visible = first_visible + content.screen_lines.saturating_sub(1);
+        if (first_visible..=last_visible).contains(&line) {
+            return;
+        }
+        let target_offset = history_size.saturating_sub(line);
+        let delta = target_offset as i32 - content.display_offset as i32;
+        self.events
+            .push_back(InternalEvent::Scroll(Scroll::Delta(delta)));
     }
 
     pub fn selection_started(&self) -> bool {
@@ -1742,8 +2030,9 @@ impl Terminal {
                 let new_bounds = normalize_terminal_bounds(new_bounds);
                 trace!("Resizing: new_bounds={new_bounds:?}");
 
-                let columns_changed =
-                    self.last_content.terminal_bounds.num_columns() != new_bounds.num_columns();
+                // SOLO: `set_size` already stored the new bounds in `last_content`,
+                // so compare against the grid itself.
+                let columns_changed = grid_columns(term) != new_bounds.num_columns();
                 self.last_content.terminal_bounds = new_bounds;
 
                 if let TerminalType::Pty {
@@ -1754,7 +2043,19 @@ impl Terminal {
                     pty_tx.resize(new_bounds);
                 }
 
+                // SOLO: reflowing changes which rows hold the command blocks.
+                let logical_lines_before = (columns_changed && self.shell_integration.is_active())
+                    .then(|| logical_lines(term));
                 resize(term, new_bounds);
+                if let Some(before) = logical_lines_before {
+                    let after = logical_lines(term);
+                    self.shell_integration.remap_lines(|line| {
+                        Some(match before.get(line) {
+                            Some(logical) => after.partition_point(|l| l < logical),
+                            None => line - before.len() + after.len(),
+                        })
+                    });
+                }
                 if columns_changed {
                     self.reset_cwd_history();
                 }
@@ -1767,7 +2068,10 @@ impl Terminal {
             }
             InternalEvent::Clear => {
                 trace!("Clearing");
+                let cleared_lines = history_size(term);
                 clear_saved_screen(term);
+                self.shell_integration
+                    .remap_lines(|line| line.checked_sub(cleared_lines));
                 self.reset_cwd_history();
                 cx.emit(Event::Wakeup);
             }
@@ -1923,6 +2227,11 @@ impl Terminal {
         };
 
         if open {
+            self.opened_word = Some(HoveredWord {
+                word: maybe_url_or_path,
+                word_match: range,
+                id: self.next_link_id(),
+            });
             cx.emit(Event::Open(target));
         } else {
             self.update_selected_word(prev_hovered_word, range, maybe_url_or_path, target, cx);
@@ -2185,6 +2494,8 @@ impl Terminal {
         if !requires_resize {
             return;
         }
+        // The program redraws for the new size.
+        self.last_sent_to_pty.set(Some(Instant::now()));
 
         match self.events.back_mut() {
             Some(InternalEvent::Resize(pending_bounds)) => *pending_bounds = new_bounds,
@@ -2196,6 +2507,7 @@ impl Terminal {
     /// (This is a no-op for display-only terminals.)
     fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
         let input = input.into();
+        self.last_sent_to_pty.set(Some(Instant::now()));
         #[cfg(any(test, feature = "test-support"))]
         self.pty_write_log.borrow_mut().push(input.to_vec());
         if let TerminalType::Pty {
@@ -2348,6 +2660,12 @@ impl Terminal {
         std::mem::take(self.pty_write_log.get_mut())
     }
 
+    /// SOLO: when input, a focus change or a resize last went to the program,
+    /// so output right after it can be told apart from output of its own.
+    pub fn last_sent_to_pty(&self) -> Option<Instant> {
+        self.last_sent_to_pty.get()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn keyboard_input_sent(&self) -> bool {
         self.keyboard_input_sent
@@ -2485,8 +2803,19 @@ impl Terminal {
     }
 
     ///Paste text into the terminal
+    /// SOLO: whether the program asked for pasted text to be bracketed, as of
+    /// now: `last_content` only catches up when the terminal is drawn, and a
+    /// terminal in a background tab may not have been since its program
+    /// started.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.term
+            .lock_unfair()
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+    }
+
     pub fn paste(&mut self, text: &str) {
-        let paste_text = if self.last_content.mode.contains(Modes::BRACKETED_PASTE) {
+        let paste_text = if self.bracketed_paste_enabled() {
             format!("{}{}{}", "\x1b[200~", text.replace('\x1b', ""), "\x1b[201~")
         } else {
             text.replace("\r\n", "\r").replace('\n', "\r")
@@ -2576,6 +2905,8 @@ impl Terminal {
             // reports, which would be a press-less (malformed) sequence.
             // `mouse_up` resolves it: release on the same link opens it,
             // otherwise the gesture is dropped.
+            // SOLO: links are found here too, while the program gets the motion.
+            self.schedule_find_hyperlink(e.modifiers, e.position, cx);
             if self.mouse_down_hyperlink.is_none() {
                 let (point, side) = grid_point_and_side(
                     position,
@@ -2608,8 +2939,15 @@ impl Terminal {
         position: GpuiPoint<Pixels>,
         cx: &mut Context<Self>,
     ) {
+        // SOLO: with `open_links_on_click`, links are found without ctrl/cmd,
+        // in programs that take the mouse too unless `open_links_in_mouse_mode`
+        // is off.
+        let settings = TerminalSettings::get_global(cx);
+        let program_takes_mouse = self.last_content.mode.intersects(Modes::MOUSE_MODE);
+        let find_links = (modifiers.secondary(cx) || settings.open_links_on_click)
+            && (!program_takes_mouse || settings.open_links_in_mouse_mode);
         if self.selection_phase == SelectionPhase::Selecting
-            || !modifiers.secondary(cx)
+            || !find_links
             || !self.last_content.terminal_bounds.bounds.contains(&position)
         {
             self.clear_hyperlink(cx);
@@ -2754,6 +3092,26 @@ impl Terminal {
             }
         }
 
+        // SOLO: in a program that takes the mouse, a plain click on a link the
+        // view found to lead somewhere (an existing file, a URL) opens it
+        // instead of reaching the program. Other clicks are the program's.
+        if e.button == MouseButton::Left
+            && !e.modifiers.shift
+            && self.mouse_mode(e.modifiers.shift, mode)
+            && TerminalSettings::get_global(cx).open_links_on_click
+            && TerminalSettings::get_global(cx).open_links_in_mouse_mode
+            && let Some(hovered) = &self.last_content.last_hovered_word
+            && self.clickable_link == Some(hovered.id)
+        {
+            let word_match = hovered.word_match;
+            self.mouse_down_hyperlink = self
+                .find_hyperlink_at_point(point)
+                .filter(|link| link.range == word_match);
+            if self.mouse_down_hyperlink.is_some() {
+                return;
+            }
+        }
+
         if self.mouse_mode(e.modifiers.shift, mode) {
             let bytes =
                 mouse_button_report(point, e.button, e.modifiers, true, self.last_content.mode);
@@ -2877,7 +3235,15 @@ impl Terminal {
                     .and_then(|cell| cell.hyperlink())
                 {
                     cx.open_url(link.uri());
-                } else if e.modifiers.secondary(cx) {
+                } else if e.modifiers.secondary(cx)
+                    || (setting.open_links_on_click
+                        && e.click_count <= 1
+                        && !e.modifiers.shift
+                        && self.mouse_down_position.is_some_and(|down| {
+                            (down.x - e.position.x).abs() + (down.y - e.position.y).abs() < px(4.)
+                        }))
+                {
+                    // SOLO: a plain click (not a drag or double click) opens links too.
                     self.events
                         .push_back(InternalEvent::FindHyperlink(position, true));
                 }
@@ -3082,10 +3448,14 @@ impl Terminal {
                                 .unwrap_or_default();
 
                             let argv = fpi.argv.as_slice();
+                            // SOLO: hide the arguments that load shell integration.
+                            let integrated_shell = argv.iter().any(|arg| {
+                                arg == "-EncodedCommand" || arg.contains("solo-shell-integration")
+                            });
                             let process_name = format!(
                                 "{}{}",
                                 fpi.name,
-                                if !argv.is_empty() {
+                                if !argv.is_empty() && !integrated_shell {
                                     format!(" {}", (argv[1..]).join(" "))
                                 } else {
                                     "".to_string()
@@ -4966,6 +5336,20 @@ mod tests {
         })
     }
 
+    // SOLO: a program turning on bracketed paste counts before the terminal is drawn.
+    #[gpui::test]
+    async fn test_bracketed_paste_mode_without_sync(cx: &mut TestAppContext) {
+        let terminal = display_only_terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            assert!(!terminal.bracketed_paste_enabled());
+            terminal.write_raw_output(b"\x1b[?2004h", cx);
+            assert!(!terminal.last_content.mode.contains(Modes::BRACKETED_PASTE));
+            assert!(terminal.bracketed_paste_enabled());
+            terminal.write_raw_output(b"\x1b[?2004l", cx);
+            assert!(!terminal.bracketed_paste_enabled());
+        });
+    }
+
     fn raw_content(chunks: &[&[u8]], cx: &mut TestAppContext) -> Content {
         let terminal = display_only_terminal(cx);
         for chunk in chunks {
@@ -5436,6 +5820,47 @@ mod tests {
         }
 
         #[gpui::test]
+        async fn test_plain_click_on_clickable_link_in_mouse_mode_opens_it(
+            cx: &mut TestAppContext,
+        ) {
+            let terminal = init_terminal_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+            terminal.update(cx, |terminal, cx| {
+                terminal.last_content.mode = Modes::MOUSE_MODE;
+                terminal.take_pty_write_log();
+
+                let click_position = point(px(80.0), px(10.0));
+                let grid_position =
+                    click_position - terminal.last_content.terminal_bounds.bounds.origin;
+                let link = terminal
+                    .find_hyperlink_at_point(grid_point(
+                        grid_position,
+                        terminal.last_content.terminal_bounds,
+                        terminal.last_content.display_offset,
+                    ))
+                    .unwrap();
+                // The view found where the hovered link leads.
+                terminal.last_content.last_hovered_word = Some(HoveredWord {
+                    word: link.text.clone(),
+                    word_match: link.range,
+                    id: 7,
+                });
+                terminal.set_clickable_link(Some(7));
+                left_mouse_down_at(terminal, click_position, cx);
+                left_mouse_up_at(terminal, click_position, cx);
+
+                assert!(any_event_matches!(
+                    terminal,
+                    InternalEvent::ProcessHyperlink(_, true)
+                ));
+                assert!(
+                    terminal.take_pty_write_log().is_empty(),
+                    "a click that opens a link must not reach the program"
+                );
+            });
+        }
+
+        #[gpui::test]
         async fn test_ctrl_click_on_non_hyperlink_in_mouse_mode_is_reported(
             cx: &mut TestAppContext,
         ) {
@@ -5834,6 +6259,18 @@ mod tests {
             cx: &mut TestAppContext,
         ) -> (TestEntities, HoveredWord, &mut VisualTestContext) {
             let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+            // SOLO: these tests cover the ctrl/cmd hover behavior.
+            cx.update(|_, cx| {
+                use gpui::BorrowAppContext as _;
+                cx.update_global(|store: &mut settings::SettingsStore, cx| {
+                    store.update_user_settings(cx, |settings| {
+                        settings
+                            .terminal
+                            .get_or_insert_default()
+                            .open_links_on_click = Some(false);
+                    });
+                });
+            });
             let test_view = cx.new_window_entity(|window, cx| TestView::new(&terminal, window, cx));
             let test_entities = TestEntities::new(&terminal, &test_view);
             let expected_hovered_word: HoveredWord = (ZED_DEV_STR, (0, 6)..=(0, 21), 0).into();
@@ -6460,5 +6897,387 @@ mod tests {
 
         assert!(terminal.cwd_history.is_empty());
         assert_eq!(terminal.pending_cwd_boundary, None);
+    }
+
+    #[gpui::test]
+    async fn test_command_blocks_follow_reflow(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let bounds_with_columns = |columns: f32| TerminalBounds {
+            cell_width: Pixels::from(10.),
+            line_height: Pixels::from(10.),
+            bounds: bounds(
+                GpuiPoint::default(),
+                size(Pixels::from(columns * 10.), Pixels::from(100.)),
+            ),
+        };
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.set_size(bounds_with_columns(20.));
+            terminal.sync(window, cx);
+        });
+
+        // A command with a 30 character output line, then the next prompt.
+        let mut output = Vec::new();
+        output.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07echo\r\n");
+        output.extend_from_slice(b"\x1b]633;E;echo\x07\x1b]133;C\x07");
+        output.extend_from_slice(b"aaaaaaaaaabbbbbbbbbbcccccccccc\r\n");
+        output.extend_from_slice(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(&output, cx));
+        cx.run_until_parked();
+
+        let prompt_text = |terminal: &Terminal, ix: usize| {
+            let line = terminal.shell_integration.blocks()[ix].prompt_line;
+            lines_text(&terminal.term.lock(), line..=line)
+        };
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.sync(window, cx);
+            let blocks = terminal.shell_integration.blocks();
+            assert_eq!(blocks.len(), 2);
+            assert_eq!(blocks[0].command.as_deref(), Some("echo"));
+            assert_eq!(blocks[0].exit_code, Some(0));
+            // The output wraps onto two rows at 20 columns.
+            assert_eq!(blocks[1].prompt_line, 3);
+            assert_eq!(prompt_text(terminal, 1), "$");
+
+            // At 10 columns the output takes three rows; the block follows, and
+            // copying the output joins the wrapped rows again.
+            terminal.set_size(bounds_with_columns(10.));
+            terminal.sync(window, cx);
+            assert_eq!(terminal.shell_integration.blocks()[1].prompt_line, 4);
+            assert_eq!(prompt_text(terminal, 1), "$");
+            assert_eq!(
+                terminal.command_block_output(0).as_deref(),
+                Some("aaaaaaaaaabbbbbbbbbbcccccccccc")
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_mermaid_diagram(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let output = "$ claude\r\n\u{25cf} mermaid\r\n  flowchart TB\r\n      A[\"\u{7f16}\u{8bd1}\"] --> B\r\n  done\r\n";
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(output.as_bytes(), cx)
+        });
+        cx.run_until_parked();
+        terminal.read_with(cx, |terminal, _| {
+            let expected = Some("flowchart TB\n    A[\"\u{7f16}\u{8bd1}\"] --> B".to_string());
+            assert_eq!(terminal.mermaid_diagram(None), expected);
+            assert_eq!(terminal.mermaid_diagram(Some(1)), expected);
+            assert_eq!(terminal.mermaid_diagram(Some(0)), None);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_clearing_scrollback_moves_blocks(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let mut output = Vec::new();
+        for _ in 0..3 {
+            output.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n");
+            output.extend_from_slice(b"\x1b]133;C\x07out\r\n\x1b]133;D;0\x07");
+        }
+        output.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(&output, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.shell_integration.blocks().len()),
+            4
+        );
+        // What `cls` sends: clear the screen (into the scrollback), then the
+        // scrollback, then the next prompt.
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"\x1b[H\x1b[2J\x1b[3J\x1b]133;A\x07$ \x1b]133;B\x07", cx)
+        });
+        cx.run_until_parked();
+        terminal.read_with(cx, |terminal, _| {
+            let blocks = terminal.shell_integration.blocks();
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].prompt_line, 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_session_snapshot_round_trip(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let mut output = Vec::new();
+        output.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n");
+        output.extend_from_slice(b"\x1b]633;E;ls\x07\x1b]133;C\x07");
+        output.extend_from_slice(b"\x1b[31mred\x1b[0m plain\r\nsecond\r\n");
+        output.extend_from_slice(b"\x1b]133;D;1\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(&output, cx));
+        cx.run_until_parked();
+        let snapshot = terminal
+            .read_with(cx, |terminal, _| terminal.session_snapshot())
+            .unwrap();
+        // The prompt the shell waits at is left out.
+        assert_eq!(
+            snapshot.rows,
+            ["$ ls", "\x1b[0;31mred\x1b[0m plain", "second"]
+        );
+        assert_eq!(snapshot.blocks.len(), 1);
+
+        let builder = cx.update(|window, cx| {
+            TerminalBuilder::new_display_only(
+                SettingsCursorShape::default(),
+                AlternateScroll::On,
+                None,
+                window.window_handle().window_id().as_u64(),
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+        });
+        let restored = cx.new(|cx| builder.subscribe(cx));
+        assert!(restored.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
+        restored.read_with(cx, |terminal, _| {
+            let blocks = terminal.shell_integration.blocks();
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].exit_code, Some(1));
+            assert_eq!(terminal.command_block_command(0).as_deref(), Some("ls"));
+            assert_eq!(
+                terminal.command_block_output(0).as_deref(),
+                Some("red plain\nsecond")
+            );
+            let term = terminal.term.lock();
+            use alacritty_terminal::index::{Column, Line, Point as AlacPoint};
+            assert_eq!(
+                term.grid()[Line(-2)][Column(0)].fg,
+                Color::Named(NamedColor::Red)
+            );
+            // The screen is left empty for the shell.
+            assert!(term.grid().cursor.point == AlacPoint::new(Line(0), Column(0)));
+        });
+        // A terminal that already has output isn't restored into.
+        assert!(!restored.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
+
+        // A program still running keeps its command line, not its screen.
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(
+                b"claude\r\n\x1b]633;E;claude\x07\x1b]133;C\x07Trust this folder?\r\n> No, exit",
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let snapshot = terminal
+            .read_with(cx, |terminal, _| terminal.session_snapshot())
+            .unwrap();
+        assert_eq!(
+            snapshot.rows,
+            ["$ ls", "\x1b[0;31mred\x1b[0m plain", "second", "$ claude"]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_session_snapshot_joins_wrapped_rows(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.set_size(TerminalBounds {
+                cell_width: Pixels::from(10.),
+                line_height: Pixels::from(10.),
+                bounds: bounds(
+                    GpuiPoint::default(),
+                    size(Pixels::from(200.), Pixels::from(100.)),
+                ),
+            });
+            terminal.sync(window, cx);
+        });
+        // At 20 columns both output lines wrap, the second right after a space.
+        let mut output = Vec::new();
+        output.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07echo\r\n");
+        output.extend_from_slice(b"\x1b]633;E;echo\x07\x1b]133;C\x07");
+        output.extend_from_slice(b"aaaaaaaaaabbbbbbbbbb\x1b[31mcccccccccc\x1b[0m\r\n");
+        output.extend_from_slice(b"0123456789012345678 x\r\n");
+        output.extend_from_slice(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+        terminal.update(cx, |terminal, cx| terminal.write_raw_output(&output, cx));
+        cx.run_until_parked();
+        let snapshot = terminal
+            .read_with(cx, |terminal, _| terminal.session_snapshot())
+            .unwrap();
+        assert_eq!(
+            snapshot.rows,
+            [
+                "$ echo",
+                "aaaaaaaaaabbbbbbbbbb\x1b[0;31mcccccccccc\x1b[0m",
+                "0123456789012345678 x"
+            ]
+        );
+        assert_eq!(snapshot.blocks.len(), 1);
+        assert_eq!(snapshot.blocks[0].prompt_line, 0);
+        assert_eq!(snapshot.blocks[0].output_line, Some(1));
+        assert_eq!(snapshot.blocks[0].end_line, Some(3));
+
+        let builder = cx.update(|window, cx| {
+            TerminalBuilder::new_display_only(
+                SettingsCursorShape::default(),
+                AlternateScroll::On,
+                None,
+                window.window_handle().window_id().as_u64(),
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+        });
+        let restored = cx.new(|cx| builder.subscribe(cx));
+        assert!(restored.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
+        restored.read_with(cx, |terminal, _| {
+            assert_eq!(
+                terminal.command_block_output(0).as_deref(),
+                Some("aaaaaaaaaabbbbbbbbbbcccccccccc\n0123456789012345678 x")
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_restore_session_only_into_fresh_terminals(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        // Nothing to save in an empty terminal, or at a bare prompt.
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.session_snapshot()),
+            None
+        );
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"\x1b]133;A\x07$ \x1b]133;B\x07", cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.session_snapshot()),
+            None
+        );
+
+        let snapshot = SessionSnapshot {
+            rows: vec!["$ ls".to_string(), "a.txt".to_string()],
+            blocks: Vec::new(),
+        };
+        let new_terminal = |cx: &mut VisualTestContext| {
+            let builder = cx.update(|window, cx| {
+                TerminalBuilder::new_display_only(
+                    SettingsCursorShape::default(),
+                    AlternateScroll::On,
+                    None,
+                    window.window_handle().window_id().as_u64(),
+                    cx.background_executor(),
+                    PathStyle::local(),
+                )
+            });
+            cx.new(|cx| builder.subscribe(cx))
+        };
+        let restored_text = |terminal: &Entity<Terminal>, cx: &mut VisualTestContext| {
+            terminal.read_with(cx, |terminal, _| {
+                let term = terminal.term.lock();
+                lines_text(&term, 0..=0)
+            })
+        };
+
+        // An empty snapshot isn't written.
+        let fresh = new_terminal(cx);
+        assert!(!fresh.update(cx, |terminal, cx| {
+            terminal.restore_session(&SessionSnapshot::default(), cx)
+        }));
+
+        // The shell already reported its prompt: the snapshot would end up
+        // below it, so the terminal is left as it is.
+        let started = new_terminal(cx);
+        started.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"\x1b]133;A\x07", cx)
+        });
+        cx.run_until_parked();
+        assert!(!started.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
+        assert_eq!(restored_text(&started, cx), "");
+
+        // Output already there isn't overwritten.
+        let printed = new_terminal(cx);
+        printed.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"Windows PowerShell\r\n", cx)
+        });
+        cx.run_until_parked();
+        assert!(!printed.update(cx, |terminal, cx| terminal.restore_session(&snapshot, cx)));
+        assert_eq!(restored_text(&printed, cx), "Windows PowerShell");
+
+        // A full screen program's screen isn't saved.
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"vim\r\n\x1b[?1049hfile contents", cx)
+        });
+        cx.run_until_parked();
+        cx.update_window_entity(&terminal, |terminal, window, cx| terminal.sync(window, cx));
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.session_snapshot()),
+            None
+        );
+    }
+
+    #[gpui::test]
+    async fn test_agent_hooks(cx: &mut TestAppContext) {
+        use crate::shell_integration::{AgentHook, AgentHookKind};
+
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let hooks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let hooks = hooks.clone();
+            cx.subscribe(&terminal, move |_, event: &Event, _| {
+                if let Event::AgentHook(hook) = event {
+                    hooks.borrow_mut().push(*hook);
+                }
+            })
+            .detach();
+        });
+        // As the hooks write them, also while the agent is on the alternate
+        // screen; unknown kinds are dropped.
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(
+                b"\x1b]6973;agent;prompt;1793624689993\x07\x1b[?1049h\x1b]6973;agent;input;1793624690000\x07\x1b]6973;agent;dance\x07\x1b]6973;agent;stop;\x1b\\",
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            *hooks.borrow(),
+            vec![
+                AgentHook {
+                    kind: AgentHookKind::PromptSubmitted,
+                    sent_at_ms: Some(1793624689993),
+                    session_id: None,
+                },
+                AgentHook {
+                    kind: AgentHookKind::NeedsInput,
+                    sent_at_ms: Some(1793624690000),
+                    session_id: None,
+                },
+                AgentHook {
+                    kind: AgentHookKind::Stopped,
+                    sent_at_ms: None,
+                    session_id: None,
+                },
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_program_notifications(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        let notifications = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let notifications = notifications.clone();
+            cx.subscribe(&terminal, move |_, event: &Event, _| {
+                if let Event::Notification { title, body } = event {
+                    notifications
+                        .borrow_mut()
+                        .push((title.clone(), body.clone()));
+                }
+            })
+            .detach();
+        });
+        // An iTerm2 notification, a ConEmu progress report (ignored), and a
+        // urxvt notification with a title.
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(
+                b"\x1b]9;Claude is done\x07\x1b]9;4;1;50\x07\x1b]777;notify;Build;Finished\x07",
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            *notifications.borrow(),
+            vec![
+                (None, "Claude is done".to_string()),
+                (Some("Build".to_string()), "Finished".to_string()),
+            ]
+        );
     }
 }

@@ -85,6 +85,10 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn pane(&self) -> Option<Entity<Pane>> {
         None
     }
+    /// SOLO: all the panel's panes, for panels split into several.
+    fn panes(&self) -> Vec<Entity<Pane>> {
+        self.pane().into_iter().collect()
+    }
     fn remote_id() -> Option<proto::PanelId> {
         None
     }
@@ -115,6 +119,7 @@ pub trait PanelHandle: Send + Sync {
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App);
     fn remote_id(&self) -> Option<proto::PanelId>;
     fn pane(&self, cx: &App) -> Option<Entity<Pane>>;
+    fn panes(&self, cx: &App) -> Vec<Entity<Pane>>;
     fn default_size(&self, window: &Window, cx: &App) -> Pixels;
     fn min_size(&self, window: &Window, cx: &App) -> Option<Pixels>;
     fn initial_size_state(&self, window: &Window, cx: &App) -> PanelSizeState;
@@ -193,6 +198,10 @@ where
 
     fn pane(&self, cx: &App) -> Option<Entity<Pane>> {
         self.read(cx).pane()
+    }
+
+    fn panes(&self, cx: &App) -> Vec<Entity<Pane>> {
+        self.read(cx).panes()
     }
 
     fn remote_id(&self) -> Option<PanelId> {
@@ -388,7 +397,14 @@ struct PanelEntry {
 
 pub struct PanelButtons {
     dock: Entity<Dock>,
+    /// Rendered as a vertical activity bar instead of a status bar item.
+    vertical: bool,
     _settings_subscription: Subscription,
+}
+
+fn terminal_first_layout(cx: &App) -> bool {
+    WorkspaceSettings::get_global(cx).bottom_dock_layout
+        == settings::BottomDockLayout::TerminalFirst
 }
 
 pub(crate) const PANEL_SIZE_STATE_KEY: &str = "dock_panel_size";
@@ -514,6 +530,11 @@ impl Dock {
 
     fn resizable(&self, cx: &App) -> bool {
         !(self.zoom_layer_open || self.modal_layer.read(cx).has_active_modal())
+    }
+
+    /// SOLO: the dock's panels.
+    pub fn panels(&self) -> impl Iterator<Item = &Arc<dyn PanelHandle>> {
+        self.panel_entries.iter().map(|entry| &entry.panel)
     }
 
     pub fn panel<T: Panel>(&self) -> Option<Entity<T>> {
@@ -1337,6 +1358,10 @@ impl Render for Dock {
                 }
             };
 
+            // In the terminal-first layout the bottom dock is the main column; the
+            // workspace sizes it with flex, so it has no edge border or resize handle.
+            let is_main_column = position == DockPosition::Bottom && terminal_first_layout(cx);
+
             div()
                 .id("dock-panel")
                 .key_context(dispatch_context)
@@ -1355,6 +1380,7 @@ impl Render for Dock {
                 .map(|this| match self.position() {
                     DockPosition::Left => this.border_r_1(),
                     DockPosition::Right => this.border_l_1(),
+                    DockPosition::Bottom if is_main_column => this,
                     DockPosition::Bottom => this.border_t_1(),
                 })
                 .child(
@@ -1370,7 +1396,7 @@ impl Render for Dock {
                                 .cached(StyleRefinement::default().v_flex().size_full()),
                         ),
                 )
-                .when(self.resizable(cx), |this| {
+                .when(self.resizable(cx) && !is_main_column, |this| {
                     this.child(create_resize_handle())
                 })
         } else {
@@ -1388,7 +1414,15 @@ impl PanelButtons {
         let settings_subscription = cx.observe_global::<SettingsStore>(|_, cx| cx.notify());
         Self {
             dock,
+            vertical: false,
             _settings_subscription: settings_subscription,
+        }
+    }
+
+    pub fn new_vertical(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
+        Self {
+            vertical: true,
+            ..Self::new(dock, cx)
         }
     }
 }
@@ -1400,7 +1434,14 @@ impl Render for PanelButtons {
         let is_open = dock.is_open;
         let dock_position = dock.position;
 
+        // In the terminal-first layout the left dock's buttons live in the
+        // activity bar, so the status bar copy is hidden.
+        if !self.vertical && dock_position == DockPosition::Left && terminal_first_layout(cx) {
+            return div().into_any_element();
+        }
+
         let (menu_anchor, menu_attach) = match dock.position {
+            _ if self.vertical => (Anchor::TopLeft, Anchor::TopRight),
             DockPosition::Left => (Anchor::BottomLeft, Anchor::TopLeft),
             DockPosition::Bottom | DockPosition::Right => (Anchor::BottomRight, Anchor::TopRight),
         };
@@ -1575,6 +1616,10 @@ impl Render for PanelButtons {
 
         let has_buttons = !buttons.is_empty();
 
+        if self.vertical {
+            return v_flex().gap_1().children(buttons).into_any_element();
+        }
+
         h_flex()
             .gap_1()
             .when(
@@ -1587,6 +1632,7 @@ impl Render for PanelButtons {
             .when(has_buttons && dock.position == DockPosition::Left, |this| {
                 this.child(Divider::vertical().color(DividerColor::Border))
             })
+            .into_any_element()
     }
 }
 

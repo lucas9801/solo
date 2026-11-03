@@ -1591,6 +1591,12 @@ pub struct Workspace {
     last_active_center_pane: Option<WeakEntity<Pane>>,
     last_active_view_id: Option<proto::ViewId>,
     status_bar: Entity<StatusBar>,
+    /// Vertical buttons for the left dock's panels, shown in the terminal-first layout.
+    activity_bar: Entity<PanelButtons>,
+    /// Share of the width the terminal takes beside the editor in the terminal-first layout.
+    terminal_first_split: f32,
+    _save_terminal_first_split: Task<()>,
+    _focus_terminal_after_modal: Option<Subscription>,
     pub(crate) modal_layer: Entity<ModalLayer>,
     toast_layer: Entity<ToastLayer>,
     titlebar_item: Option<AnyView>,
@@ -1972,6 +1978,7 @@ impl Workspace {
         let left_dock_buttons = cx.new(|cx| PanelButtons::new(left_dock.clone(), cx));
         let bottom_dock_buttons = cx.new(|cx| PanelButtons::new(bottom_dock.clone(), cx));
         let right_dock_buttons = cx.new(|cx| PanelButtons::new(right_dock.clone(), cx));
+        let activity_bar = cx.new(|cx| PanelButtons::new_vertical(left_dock.clone(), cx));
         let multi_workspace = window
             .root::<MultiWorkspace>()
             .flatten()
@@ -2097,6 +2104,17 @@ impl Workspace {
             last_active_center_pane: Some(center_pane.downgrade()),
             last_active_view_id: None,
             status_bar,
+            activity_bar,
+            terminal_first_split: db::kvp::KeyValueStore::global(cx)
+                .read_kvp(TERMINAL_FIRST_SPLIT_KEY)
+                .log_err()
+                .flatten()
+                .and_then(|split| split.parse::<f32>().ok())
+                .map_or(DEFAULT_TERMINAL_FIRST_SPLIT, |split| {
+                    split.clamp(0.15, 0.85)
+                }),
+            _save_terminal_first_split: Task::ready(()),
+            _focus_terminal_after_modal: None,
             modal_layer,
             toast_layer,
             titlebar_item: None,
@@ -3774,6 +3792,27 @@ impl Workspace {
                 && remaining_workspaces == 0
                 && closing_last_window_quits;
 
+            // SOLO: closing ends programs running in items, e.g. AI agents in
+            // terminals (in panels too); ask first, once for all of them.
+            let close_label = match close_intent {
+                CloseIntent::Quit => util::i18n::tr("Quit", "退出"),
+                CloseIntent::CloseWindow => util::i18n::tr("Close Window", "关闭窗口"),
+                CloseIntent::ReplaceWindow => util::i18n::tr("Close", "关闭"),
+            };
+            let confirmation = this.update_in(cx, |this, window, cx| {
+                let items = this.items_with_panels(cx);
+                let confirmation = Pane::confirm_ending_programs(&items, close_label, window, cx);
+                if confirmation.is_some() {
+                    cx.emit(Event::Activate);
+                }
+                confirmation
+            })?;
+            if let Some(confirmation) = confirmation
+                && !confirmation.await
+            {
+                return anyhow::Ok(false);
+            }
+
             if let Some(active_call) = active_call
                 && workspace_count == 1
                 && cx
@@ -4396,6 +4435,27 @@ impl Workspace {
 
     pub fn items<'a>(&'a self, cx: &'a App) -> impl 'a + Iterator<Item = &'a Box<dyn ItemHandle>> {
         self.panes.iter().flat_map(|pane| pane.read(cx).items())
+    }
+
+    /// SOLO: the items in the center and in panels with panes, like the
+    /// terminal panel.
+    pub fn items_with_panels(&self, cx: &App) -> Vec<Box<dyn ItemHandle>> {
+        let panel_panes = self
+            .all_docks()
+            .into_iter()
+            .flat_map(|dock| dock.read(cx).panels())
+            .flat_map(|panel| panel.panes(cx));
+        self.panes
+            .iter()
+            .cloned()
+            .chain(panel_panes)
+            .flat_map(|pane| {
+                pane.read(cx)
+                    .items()
+                    .map(|item| item.boxed_clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     pub fn item_of_type<T: Item>(&self, cx: &App) -> Option<Entity<T>> {
@@ -6192,6 +6252,15 @@ impl Workspace {
     ) {
         self.flush_deferred_saves(window, cx);
 
+        // SOLO: the terminal-first layout hides an empty editor, so focus meant
+        // for it (e.g. when a project opens) goes to the terminal instead.
+        if pane.read(cx).items_len() == 0
+            && self.center.panes().contains(&&pane)
+            && self.focus_terminal_if_editor_hidden(window, cx)
+        {
+            return;
+        }
+
         // This is explicitly hoisted out of the following check for pane identity as
         // terminal panel panes are not registered as a center panes.
         self.status_bar.update(cx, |status_bar, cx| {
@@ -6368,6 +6437,7 @@ impl Workspace {
                 cx.emit(Event::ItemRemoved {
                     item_id: item.item_id(),
                 });
+                self.focus_terminal_if_editor_hidden(window, cx);
             }
             pane::Event::Focus => {
                 window.invalidate_character_coordinates();
@@ -9106,6 +9176,209 @@ impl Workspace {
             ))
     }
 
+    /// Lays out the workspace for [`BottomDockLayout::TerminalFirst`]: an activity
+    /// bar with the left dock's panels, the left dock, the bottom dock (terminal)
+    /// as the main column, and the center pane group beside it only while it has
+    /// open items.
+    fn render_terminal_first_layout(
+        &self,
+        render_cx: &PaneRenderContext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        fn flex_share<E: Styled>(mut element: E, grow: f32) -> E {
+            let style = element.style();
+            style.flex_grow = Some(grow);
+            style.flex_shrink = Some(1.0);
+            style.flex_basis = Some(relative(0.).into());
+            element
+        }
+
+        let colors = cx.theme().colors();
+        let border_color = colors.border;
+        let activity_bar_background = colors.status_bar_background;
+        let bottom_zoomed = self.zoomed_position == Some(DockPosition::Bottom);
+        let terminal_open = self.bottom_dock.read(cx).is_open() && !bottom_zoomed;
+        let has_open_items = self
+            .center
+            .panes()
+            .iter()
+            .any(|pane| pane.read(cx).items_len() > 0);
+        let show_center = has_open_items || !terminal_open;
+        let side_by_side = terminal_open && show_center;
+        let split = self.terminal_first_split;
+
+        let split_handle = div()
+            .relative()
+            .flex_none()
+            .w(px(1.))
+            .h_full()
+            .bg(border_color)
+            .child(gpui::deferred(
+                div()
+                    .id("terminal-split-handle")
+                    .absolute()
+                    .left(-RESIZE_HANDLE_SIZE / 2.)
+                    .top(px(0.))
+                    .h_full()
+                    .w(RESIZE_HANDLE_SIZE)
+                    .cursor_col_resize()
+                    .on_drag(DraggedTerminalSplit, |split, _, _, cx| {
+                        cx.stop_propagation();
+                        cx.new(|_| split.clone())
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|workspace, e: &gpui::MouseUpEvent, _, cx| {
+                            if e.click_count == 2 {
+                                workspace
+                                    .set_terminal_first_split(DEFAULT_TERMINAL_FIRST_SPLIT, cx);
+                            }
+                        }),
+                    )
+                    .occlude(),
+            ));
+
+        // Not `h_flex`: its `items_center` would stop the docks from stretching
+        // to the full height.
+        div()
+            .flex()
+            .flex_row()
+            .size_full()
+            .child(
+                v_flex()
+                    .id("activity-bar")
+                    .h_full()
+                    .flex_none()
+                    .p_1()
+                    .bg(activity_bar_background)
+                    .border_r_1()
+                    .border_color(border_color)
+                    .child(self.activity_bar.clone()),
+            )
+            .children(self.render_dock(DockPosition::Left, &self.left_dock, window, cx))
+            .child(
+                div()
+                    .id("terminal-first-main")
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .h_full()
+                    .overflow_hidden()
+                    .on_drag_move(cx.listener(
+                        |workspace, e: &DragMoveEvent<DraggedTerminalSplit>, _, cx| {
+                            let width = e.bounds.size.width;
+                            if width > px(0.) {
+                                let split = (e.event.position.x - e.bounds.left()) / width;
+                                workspace.set_terminal_first_split(split, cx);
+                            }
+                        },
+                    ))
+                    // The dock stays in the tree while closed so its focus handle
+                    // remains mounted; while zoomed it is rendered by the zoom
+                    // overlay instead.
+                    .when(!bottom_zoomed, |this| {
+                        let terminal = div()
+                            .flex()
+                            .h_full()
+                            .overflow_hidden()
+                            .child(self.bottom_dock.clone());
+                        this.child(if side_by_side {
+                            flex_share(terminal, split)
+                        } else if terminal_open {
+                            terminal.flex_1()
+                        } else {
+                            terminal
+                        })
+                    })
+                    .when(side_by_side, |this| this.child(split_handle))
+                    .when(show_center, |this| {
+                        let center = div()
+                            .flex()
+                            .h_full()
+                            .overflow_hidden()
+                            .child(self.render_center(render_cx, window, cx));
+                        this.child(if side_by_side {
+                            flex_share(center, 1. - split)
+                        } else {
+                            center.flex_1()
+                        })
+                    }),
+            )
+            .children(self.render_dock(DockPosition::Right, &self.right_dock, window, cx))
+    }
+
+    /// In the terminal-first layout the editor area disappears once its last item
+    /// closes, so hand focus to the terminal instead of leaving it on a hidden pane.
+    /// Sets the terminal's share of the terminal-first layout and saves it once
+    /// dragging settles.
+    fn set_terminal_first_split(&mut self, split: f32, cx: &mut Context<Self>) {
+        self.terminal_first_split = split.clamp(0.15, 0.85);
+        cx.notify();
+        let kvp = db::kvp::KeyValueStore::global(cx);
+        let split = self.terminal_first_split.to_string();
+        self._save_terminal_first_split = cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(500))
+                .await;
+            kvp.write_kvp(TERMINAL_FIRST_SPLIT_KEY.to_string(), split)
+                .await
+                .log_err();
+        });
+    }
+
+    /// SOLO: focuses the terminal once the first terminal of a newly opened
+    /// project appears, unless the user is already busy in an editor. A modal
+    /// (like the trust prompt for a new project) is waited out.
+    pub fn focus_terminal_if_unfocused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.has_active_modal(window, cx) {
+            self._focus_terminal_after_modal = Some(cx.observe_in(
+                &self.modal_layer,
+                window,
+                |this, modal_layer, window, cx| {
+                    if !modal_layer.read(cx).has_active_modal() {
+                        this._focus_terminal_after_modal = None;
+                        this.focus_terminal_if_unfocused(window, cx);
+                    }
+                },
+            ));
+            return;
+        }
+        let editor_focused = self.center.panes().iter().any(|pane| {
+            pane.read(cx).items_len() > 0 && pane.focus_handle(cx).contains_focused(window, cx)
+        });
+        if !editor_focused {
+            self.focus_terminal_if_editor_hidden(window, cx);
+        }
+    }
+
+    /// Returns whether the terminal was focused.
+    fn focus_terminal_if_editor_hidden(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if WorkspaceSettings::get_global(cx).bottom_dock_layout != BottomDockLayout::TerminalFirst {
+            return false;
+        }
+        let editor_empty = self
+            .center
+            .panes()
+            .iter()
+            .all(|pane| pane.read(cx).items_len() == 0);
+        let dock = self.bottom_dock.read(cx);
+        if editor_empty
+            && dock.is_open()
+            && let Some(panel) = dock.active_panel()
+        {
+            let focus_handle = panel.activation_focus_handle(cx);
+            window.focus(&focus_handle, cx);
+            return true;
+        }
+        false
+    }
+
     pub fn for_window(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
         window
             .root::<MultiWorkspace>()
@@ -9773,6 +10046,20 @@ impl Render for DraggedDock {
     }
 }
 
+/// Dragged divider between the terminal and the editor in the terminal-first layout.
+#[derive(Clone)]
+struct DraggedTerminalSplit;
+
+impl Render for DraggedTerminalSplit {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
+
+/// Share of the width the terminal takes while the editor is shown beside it.
+const TERMINAL_FIRST_SPLIT_KEY: &str = "solo_terminal_first_split";
+const DEFAULT_TERMINAL_FIRST_SPLIT: f32 = 0.5;
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         static FIRST_PAINT: AtomicBool = AtomicBool::new(true);
@@ -10177,6 +10464,13 @@ impl Render for Workspace {
                                                     cx,
                                                 ))),
                                         ),
+                                    BottomDockLayout::TerminalFirst => {
+                                        div().size_full().child(self.render_terminal_first_layout(
+                                            &pane_render_context,
+                                            window,
+                                            cx,
+                                        ))
+                                    }
                                     BottomDockLayout::Contained => div()
                                         .flex()
                                         .flex_row()
@@ -13271,7 +13565,7 @@ mod tests {
             });
         });
         cx.executor().run_until_parked();
-        assert_eq!(cx.window_title().as_deref(), Some("Zed — root1, root2"));
+        assert_eq!(cx.window_title().as_deref(), Some("Solo — root1, root2"));
 
         let item = cx.new(|cx| {
             TestItem::new(cx).with_project_items(&[TestProjectItem::new_in_worktree(
@@ -13288,7 +13582,7 @@ mod tests {
         let expected_file_path = path!("/root1/src/one.txt");
         assert_eq!(
             cx.window_title().as_deref(),
-            Some(format!("Zed — root1, root2 — one — {expected_file_path}").as_str())
+            Some(format!("Solo — root1, root2 — one — {expected_file_path}").as_str())
         );
     }
 

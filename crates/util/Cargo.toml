@@ -41,6 +41,7 @@ gpui_util.workspace = true
 path = { workspace = true, features = ["serde"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+sys-locale.workspace = true
 async_zip.workspace = true
 futures-lite.workspace = true
 futures.workspace = true

@@ -20201,12 +20201,94 @@ async fn test_buffer_changed_file_path_updates_git_diff(cx: &mut gpui::TestAppCo
     });
 }
 
+// SOLO: only the UI's searches follow the active terminal's project.
+#[gpui::test]
+async fn test_search_in_scope(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/repos"),
+        json!({
+            "solo": { "a.rs": "const NEEDLE: u8 = 1;" },
+            "godot": { "b.rs": "const NEEDLE: u8 = 2;" },
+        }),
+    )
+    .await;
+    let project = Project::test(
+        fs.clone(),
+        [
+            path!("/repos/solo").as_ref(),
+            path!("/repos/godot").as_ref(),
+        ],
+        cx,
+    )
+    .await;
+    let query = || {
+        SearchQuery::text(
+            "NEEDLE",
+            false,
+            true,
+            false,
+            Default::default(),
+            Default::default(),
+            false,
+            None,
+        )
+        .unwrap()
+    };
+    let both = HashMap::from_iter([
+        (path!("solo/a.rs").to_string(), vec![6..12]),
+        (path!("godot/b.rs").to_string(), vec![6..12]),
+    ]);
+
+    // Nothing focused: both searches cover every worktree.
+    assert_eq!(
+        search_with(&project, query(), true, cx).await.unwrap(),
+        both
+    );
+
+    let godot = project.read_with(cx, |project, cx| {
+        project
+            .worktrees(cx)
+            .find(|worktree| worktree.read(cx).root_name_str() == "godot")
+            .unwrap()
+            .read(cx)
+            .id()
+    });
+    project.update(cx, |project, cx| {
+        project.set_focused_worktree(Some(godot), cx)
+    });
+
+    assert_eq!(
+        search_with(&project, query(), true, cx).await.unwrap(),
+        HashMap::from_iter([(path!("godot/b.rs").to_string(), vec![6..12])])
+    );
+    // Agents' tools use the plain search, which stays project-wide.
+    assert_eq!(search(&project, query(), cx).await.unwrap(), both);
+}
+
 async fn search(
     project: &Entity<Project>,
     query: SearchQuery,
     cx: &mut gpui::TestAppContext,
 ) -> Result<HashMap<String, Vec<Range<usize>>>> {
-    let search_rx = project.update(cx, |project, cx| project.search(query, cx));
+    search_with(project, query, false, cx).await
+}
+
+async fn search_with(
+    project: &Entity<Project>,
+    query: SearchQuery,
+    in_scope: bool,
+    cx: &mut gpui::TestAppContext,
+) -> Result<HashMap<String, Vec<Range<usize>>>> {
+    let search_rx = project.update(cx, |project, cx| {
+        if in_scope {
+            project.search_in_scope(query, cx)
+        } else {
+            project.search(query, cx)
+        }
+    });
     let mut results = HashMap::default();
     while let Ok(search_result) = search_rx.rx.recv().await {
         match search_result {

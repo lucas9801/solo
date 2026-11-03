@@ -3,7 +3,7 @@ use gpui::{FontFallbacks, FontFeatures, FontWeight, Pixels};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use settings::AlternateScroll;
+pub use settings::{AlternateScroll, TerminalConfirmClose};
 
 use settings::{
     IntoGpui, PathHyperlinkRegex, RegisterSetting, ShowScrollbar, TerminalBell, TerminalBlink,
@@ -43,6 +43,7 @@ pub struct TerminalSettings {
     pub default_width: Pixels,
     pub default_height: Pixels,
     pub detect_venv: VenvSettings,
+    pub shell_integration: bool,
     pub max_scroll_history_lines: Option<usize>,
     pub scroll_multiplier: f32,
     pub toolbar: Toolbar,
@@ -52,6 +53,19 @@ pub struct TerminalSettings {
     pub path_hyperlink_timeout_ms: u64,
     pub show_count_badge: bool,
     pub bell: TerminalBell,
+    pub open_changed_files: bool,
+    pub input_editor: bool,
+    pub compact_prompt: bool,
+    pub completions_as_you_type: bool,
+    pub open_links_on_click: bool,
+    pub notify_long_commands_after_seconds: u64,
+    pub program_notifications: bool,
+    pub restore_contents: bool,
+    pub agent_commands: Vec<String>,
+    pub claude_code_hooks: bool,
+    pub follow_working_directory: bool,
+    pub confirm_close: TerminalConfirmClose,
+    pub agent_task_command: String,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -115,6 +129,7 @@ impl settings::Settings for TerminalSettings {
             default_height: user_content.default_height.unwrap().into_gpui(),
             flexible: user_content.flexible.unwrap(),
             detect_venv: project_content.detect_venv.unwrap(),
+            shell_integration: project_content.shell_integration.unwrap(),
             scroll_multiplier: user_content.scroll_multiplier.unwrap(),
             max_scroll_history_lines: user_content.max_scroll_history_lines,
             toolbar: Toolbar {
@@ -124,6 +139,21 @@ impl settings::Settings for TerminalSettings {
                 show: user_content.scrollbar.unwrap().show,
             },
             minimum_contrast: user_content.minimum_contrast.unwrap(),
+            open_changed_files: user_content.open_changed_files.unwrap(),
+            input_editor: user_content.input_editor.unwrap(),
+            compact_prompt: user_content.compact_prompt.unwrap(),
+            completions_as_you_type: user_content.completions_as_you_type.unwrap(),
+            open_links_on_click: user_content.open_links_on_click.unwrap(),
+            notify_long_commands_after_seconds: user_content
+                .notify_long_commands_after_seconds
+                .unwrap(),
+            program_notifications: user_content.program_notifications.unwrap(),
+            restore_contents: user_content.restore_contents.unwrap(),
+            agent_commands: user_content.agent_commands.unwrap(),
+            claude_code_hooks: user_content.claude_code_hooks.unwrap(),
+            follow_working_directory: user_content.follow_working_directory.unwrap(),
+            confirm_close: user_content.confirm_close.unwrap(),
+            agent_task_command: user_content.agent_task_command.unwrap(),
             path_hyperlink_regexes: project_content
                 .path_hyperlink_regexes
                 .unwrap()

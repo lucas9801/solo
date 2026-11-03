@@ -189,6 +189,8 @@ pub enum HighlightKey {
     SearchWithinRange,
     SelectedTextHighlight,
     SyntaxTreeView(usize),
+    /// SOLO: syntax highlighting of the terminal input, by token kind.
+    TerminalInputSyntax(usize),
     VimExchange,
 }
 

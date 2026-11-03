@@ -2241,7 +2241,12 @@ impl AgentPanel {
                 | TerminalEvent::OutputReplaced
                 | TerminalEvent::SelectionsChanged
                 | TerminalEvent::NewNavigationTarget(_)
-                | TerminalEvent::Open(_) => {}
+                | TerminalEvent::Open(_)
+                | TerminalEvent::CommandStarted
+                | TerminalEvent::CommandFinished
+                | TerminalEvent::PromptStarted
+                | TerminalEvent::Notification { .. }
+                | TerminalEvent::AgentHook(_) => {}
             },
         );
 

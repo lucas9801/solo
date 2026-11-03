@@ -216,6 +216,8 @@ pub struct WorktreeStore {
         HashMap<Arc<SanitizedPath>, Shared<Task<Result<Entity<Worktree>, Arc<anyhow::Error>>>>>,
     initial_scan_complete: (watch::Sender<bool>, watch::Receiver<bool>),
     state: WorktreeStoreState,
+    /// SOLO: the worktree of the project the active terminal is in.
+    focused_worktree: Option<WorktreeId>,
 }
 
 #[derive(Debug)]
@@ -262,6 +264,7 @@ impl WorktreeStore {
             scanning_enabled: true,
             retain_worktrees,
             initial_scan_complete: watch::channel_with(true),
+            focused_worktree: None,
             state: WorktreeStoreState::Local { fs },
         }
     }
@@ -282,6 +285,7 @@ impl WorktreeStore {
             scanning_enabled: true,
             retain_worktrees,
             initial_scan_complete: watch::channel_with(true),
+            focused_worktree: None,
             state: WorktreeStoreState::Remote {
                 upstream_client,
                 upstream_project_id,
@@ -444,6 +448,59 @@ impl WorktreeStore {
     ) -> impl 'a + DoubleEndedIterator<Item = Entity<Worktree>> {
         self.worktrees()
             .filter(|worktree| worktree.read(cx).is_visible() || worktree.read(cx).is_single_file())
+    }
+
+    /// SOLO: the worktree that the project panel, file finder and project
+    /// search are narrowed to, if any. It can be an invisible worktree.
+    pub fn focused_worktree(&self) -> Option<WorktreeId> {
+        self.focused_worktree
+    }
+
+    /// Returns whether the focused worktree changed.
+    pub(crate) fn set_focused_worktree(&mut self, worktree_id: Option<WorktreeId>) -> bool {
+        let changed = self.focused_worktree != worktree_id;
+        self.focused_worktree = worktree_id;
+        changed
+    }
+
+    fn focused_worktree_entity(&self, cx: &App) -> Option<Entity<Worktree>> {
+        self.worktree_for_id(self.focused_worktree?, cx)
+    }
+
+    /// SOLO: the worktrees the project panel and project search cover: the
+    /// focused one, or every visible worktree when none is focused (or the
+    /// focused one is gone).
+    pub fn scoped_worktrees(&self, cx: &App) -> Vec<Entity<Worktree>> {
+        match self.focused_worktree_entity(cx) {
+            Some(worktree) => vec![worktree],
+            None => self.visible_worktrees(cx).collect(),
+        }
+    }
+
+    /// SOLO: [`Self::scoped_worktrees`] plus single files, like
+    /// [`Self::visible_worktrees_and_single_files`].
+    pub fn scoped_worktrees_and_single_files(&self, cx: &App) -> Vec<Entity<Worktree>> {
+        match self.focused_worktree_entity(cx) {
+            Some(focused) => self
+                .worktrees()
+                .filter(|worktree| worktree == &focused || worktree.read(cx).is_single_file())
+                .collect(),
+            None => self.visible_worktrees_and_single_files(cx).collect(),
+        }
+    }
+
+    /// SOLO: whether a path in this worktree belongs in the project panel,
+    /// file finder and project search: no other visible worktree is focused.
+    pub fn is_worktree_in_scope(&self, worktree_id: WorktreeId, cx: &App) -> bool {
+        match self.focused_worktree_entity(cx) {
+            Some(focused) => {
+                focused.read(cx).id() == worktree_id
+                    || self
+                        .worktree_for_id(worktree_id, cx)
+                        .is_none_or(|worktree| !worktree.read(cx).is_visible())
+            }
+            None => true,
+        }
     }
 
     pub fn worktree_for_id(&self, id: WorktreeId, cx: &App) -> Option<Entity<Worktree>> {
