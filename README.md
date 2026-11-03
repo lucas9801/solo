@@ -115,6 +115,24 @@ Settings → Apps.
 The zip, which needs no installer, contains `install.ps1`, which installs Solo
 for the current user with Start menu and desktop shortcuts.
 
+## Updates and releases
+
+Solo checks [its GitHub releases](https://github.com/lucas9801/solo/releases)
+30 seconds after it starts and every 6 hours after that (turn this off with
+`"auto_update": false`; **Check for Updates** in the command palette always
+checks). When there's a newer version it offers to update: it downloads the
+installer, quits, installs it silently where Solo is, and starts again.
+
+To release a version, with Inno Setup and the [GitHub CLI](https://cli.github.com)
+signed in (`gh auth login`):
+
+```powershell
+script\release-solo.ps1 [-Version 1.2.3] [-Notes "What's new"] [-Draft]
+```
+
+It raises the patch version unless given one, builds the installer and zip,
+commits and tags the version, pushes, and creates the GitHub release with them.
+
 ## Credits and licensing
 
 Solo is based on [Zed](https://github.com/zed-industries/zed) by Zed

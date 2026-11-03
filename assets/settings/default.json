@@ -1735,10 +1735,10 @@
   //
   // Default: false
   "disable_ai": false,
-  // Automatically update Zed. This setting may be ignored on Linux if
-  // installed through a package manager.
-  // Solo never updates itself; updates would come from Zed.
-  "auto_update": false,
+  // Automatically check for Solo updates. Solo checks its GitHub Releases
+  // (github.com/lucas9801/solo) shortly after startup and then every 6 hours,
+  // and asks before installing anything. Stable builds only.
+  "auto_update": true,
   // How to render LSP `textDocument/documentColor` colors in the editor.
   //
   // Possible values:

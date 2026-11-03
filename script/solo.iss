@@ -55,3 +55,5 @@ Name: "{autodesktop}\Solo"; Filename: "{app}\solo.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\solo.exe"; Description: "{cm:LaunchProgram,Solo}"; Flags: nowait postinstall skipifsilent
+; Solo installs its updates silently, then starts again.
+Filename: "{app}\solo.exe"; Flags: nowait; Check: WizardSilent
