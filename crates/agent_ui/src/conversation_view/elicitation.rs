@@ -1416,7 +1416,7 @@ fn render_form_preview(
 ) -> AnyElement {
     let request = acp::CreateElicitationRequest::new(
         acp::ElicitationFormMode::new(preview_request_scope(entry_ix), preview_form_schema()),
-        "Choose how Zed should connect to this account.",
+        "Choose how Solo should connect to this account.",
     );
     let mut form_state = matches!(status, ElicitationStatus::Pending { .. }).then(|| {
         let acp::ElicitationMode::Form(mode) = &request.mode else {

@@ -30,9 +30,9 @@ pub struct OpenRecentProject {
 }
 
 actions!(
-    zed,
+    solo,
     [
-        /// Show the Zed welcome screen
+        /// Show the Solo welcome screen
         ShowWelcome
     ]
 );
@@ -451,9 +451,9 @@ impl Render for WelcomePage {
         };
 
         let welcome_label = if self.fallback_to_recent_projects {
-            "Welcome back to Zed"
+            "Welcome back to Solo"
         } else {
-            "Welcome to Zed"
+            "Welcome to Solo"
         };
 
         h_flex()

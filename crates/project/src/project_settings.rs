@@ -102,9 +102,9 @@ pub struct SessionSettings {
 pub struct NodeBinarySettings {
     /// The path to the Node binary.
     pub path: Option<String>,
-    /// The path to the npm binary Zed should use (defaults to `.path/../npm`).
+    /// The path to the npm binary Solo should use (defaults to `.path/../npm`).
     pub npm_path: Option<String>,
-    /// If enabled, Zed will download its own copy of Node.
+    /// If enabled, Solo will download its own copy of Node.
     pub ignore_system_version: bool,
 }
 
@@ -624,7 +624,7 @@ pub struct DiagnosticsSettings {
     /// Whether or not to include warning diagnostics.
     pub include_warnings: bool,
 
-    /// Settings for using LSP pull diagnostics mechanism in Zed.
+    /// Settings for using LSP pull diagnostics mechanism in Solo.
     pub lsp_pull_diagnostics: LspPullDiagnosticsSettings,
 
     /// Settings for showing inline diagnostics.

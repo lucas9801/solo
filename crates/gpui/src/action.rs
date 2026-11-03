@@ -85,6 +85,7 @@ macro_rules! actions {
 ///   These action names should *not* correspond to any actions that are registered. These old names
 ///   can then still be used to refer to invoke this action. In Zed, the keymap JSON schema will
 ///   accept these old names and provide warnings.
+///   SOLO: actions in the `solo` namespace automatically get `zed::Name` as a deprecated alias.
 ///
 /// - `deprecated = "Message about why this action is deprecation"` specifies a deprecation message.
 ///   In Zed, the keymap JSON schema will cause this to be displayed as a warning.
@@ -426,7 +427,7 @@ mod no_action {
     use serde::Deserialize;
 
     actions!(
-        zed,
+        solo,
         [
             /// Action with special handling which unbinds the keybinding this is associated with,
             /// if it is the highest precedence match.
@@ -439,9 +440,9 @@ mod no_action {
     ///
     /// In keymap JSON this is written as:
     ///
-    /// `["zed::Unbind", "editor::NewLine"]`
+    /// `["solo::Unbind", "editor::NewLine"]`
     #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, gpui::Action)]
-    #[action(namespace = zed)]
+    #[action(namespace = solo)]
     pub struct Unbind(pub gpui::SharedString);
 
     /// Returns whether or not this action represents a removed key binding.

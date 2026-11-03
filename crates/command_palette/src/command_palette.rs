@@ -71,6 +71,15 @@ pub fn normalize_action_query(input: &str) -> String {
         result.push(normalized_char);
     }
 
+    // SOLO: actions from the old `zed` namespace now live in `solo`. Let queries written with the
+    // old prefix (`zed: open settings`, `zed::OpenSettings`) still find them.
+    if result
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("zed:"))
+    {
+        result.replace_range(..3, "solo");
+    }
+
     result
 }
 
@@ -1014,6 +1023,20 @@ mod tests {
         assert_eq!(
             normalize_action_query("project_panel::ToggleFocus"),
             "project panel:ToggleFocus"
+        );
+        assert_eq!(
+            normalize_action_query("zed: open settings"),
+            "solo: open settings"
+        );
+        assert_eq!(
+            normalize_action_query("zed::OpenSettings"),
+            "solo:OpenSettings"
+        );
+        assert_eq!(normalize_action_query("Zed:quit"), "solo:quit");
+        assert_eq!(normalize_action_query("zed"), "zed");
+        assert_eq!(
+            normalize_action_query("zed predict onboarding"),
+            "zed predict onboarding"
         );
     }
 

@@ -122,7 +122,7 @@ impl LinuxWslSandboxError {
                     .to_string()
             }
             LinuxWslSandboxError::SetuidRejected => {
-                "The only `bwrap` available is setuid-root, which Zed refuses to run. Install \
+                "The only `bwrap` available is setuid-root, which Solo refuses to run. Install \
                  a non-setuid Bubblewrap to let the agent sandbox terminal commands."
                     .to_string()
             }

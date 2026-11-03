@@ -437,7 +437,7 @@ mod tests {
             let bindings = group_bindings(
                 sequences
                     .into_iter()
-                    .map(|sequence| binding(sequence, "zed: open settings"))
+                    .map(|sequence| binding(sequence, "solo: open settings"))
                     .collect(),
             );
 
@@ -531,7 +531,7 @@ mod tests {
     fn test_prepare_pending_bindings_sorts_shorter_chords_first(cx: &mut App) {
         let bindings = prepare_pending_bindings(
             vec![
-                binding_after_first_keystroke("cmd-k z a", "zed::OpenSettings"),
+                binding_after_first_keystroke("cmd-k z a", "solo::OpenSettings"),
                 binding_after_first_keystroke("cmd-k cmd-shift-t", "theme::ToggleMode"),
             ],
             cx,
@@ -595,8 +595,8 @@ mod tests {
             // Custom bindings are needed to exercise a display collision: é and É
             // are distinct keys, but non-Vim formatting capitalizes both to "É".
             let mut bindings = vec![
-                binding_after_first_keystroke("cmd-k é", "zed::OpenSettings"),
-                binding_after_first_keystroke("cmd-k É", "zed::OpenKeymap"),
+                binding_after_first_keystroke("cmd-k é", "solo::OpenSettings"),
+                binding_after_first_keystroke("cmd-k É", "solo::OpenKeymap"),
             ];
             let first = bindings.first().expect("first binding");
             let second = bindings.last().expect("second binding");
@@ -615,7 +615,7 @@ mod tests {
                 .map(|row| row.action_name.as_ref())
                 .collect::<Vec<_>>();
             action_names.sort();
-            assert_eq!(action_names, vec!["zed: open keymap", "zed: open settings"]);
+            assert_eq!(action_names, vec!["solo: open keymap", "solo: open settings"]);
             assert!(rows.iter().all(|row| !row.is_group));
         }
     }
@@ -627,8 +627,8 @@ mod tests {
         ui::KeyBinding::set_vim_mode(cx, false);
         let rows = prepare_pending_bindings(
             vec![
-                binding_after_first_keystroke("cmd-k é", "zed::OpenSettings"),
-                binding_after_first_keystroke("cmd-k É", "zed::OpenSettings"),
+                binding_after_first_keystroke("cmd-k é", "solo::OpenSettings"),
+                binding_after_first_keystroke("cmd-k É", "solo::OpenSettings"),
             ],
             cx,
         );
@@ -638,7 +638,7 @@ mod tests {
         assert_eq!(keys, vec![vec!["É"], vec!["é"]]);
         for row in rows {
             assert_eq!(text_for_keybinding_keystrokes(&row.keystrokes, cx), "É");
-            assert_eq!(row.action_name.as_ref(), "zed: open settings");
+            assert_eq!(row.action_name.as_ref(), "solo: open settings");
             assert!(!row.is_group);
         }
     }
@@ -649,9 +649,9 @@ mod tests {
         // A user keymap can extend the default cmd-k cmd-s binding with longer chords.
         let rows = prepare_pending_bindings(
             vec![
-                binding_after_first_keystroke("cmd-k cmd-s", "zed::OpenKeymap"),
-                binding_after_first_keystroke("cmd-k cmd-s cmd-,", "zed::OpenSettings"),
-                binding_after_first_keystroke("cmd-k cmd-s cmd-.", "zed::OpenKeymapFile"),
+                binding_after_first_keystroke("cmd-k cmd-s", "solo::OpenKeymap"),
+                binding_after_first_keystroke("cmd-k cmd-s cmd-,", "solo::OpenSettings"),
+                binding_after_first_keystroke("cmd-k cmd-s cmd-.", "solo::OpenKeymapFile"),
                 binding_after_first_keystroke("cmd-k cmd-o", "workspace::Open"),
                 binding_after_first_keystroke("cmd-k cmd-o cmd-p", "workspace::ReopenLastPicker"),
                 binding_after_first_keystroke("cmd-k z a", "theme::ToggleMode"),
@@ -670,7 +670,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 (parse_keystrokes("cmd-o"), "workspace: open", false),
-                (parse_keystrokes("cmd-s"), "zed: open keymap", false),
+                (parse_keystrokes("cmd-s"), "solo: open keymap", false),
                 (
                     parse_keystrokes("cmd-o cmd-p"),
                     "workspace: reopen last picker",
@@ -687,8 +687,8 @@ mod tests {
         // A longer chord can sit between two bindings for the same keys, so duplicates aren't
         // always adjacent.
         let rows = group_bindings(vec![
-            binding("a", "zed: open keymap"),
-            binding("a b", "zed: open settings"),
+            binding("a", "solo: open keymap"),
+            binding("a b", "solo: open settings"),
             binding("a", "theme selector: toggle"),
         ]);
 
@@ -697,8 +697,8 @@ mod tests {
                 .map(|row| (row.keystrokes.to_vec(), row.action_name.as_ref()))
                 .collect::<Vec<_>>(),
             vec![
-                (parse_keystrokes("a"), "zed: open keymap"),
-                (parse_keystrokes("a b"), "zed: open settings"),
+                (parse_keystrokes("a"), "solo: open keymap"),
+                (parse_keystrokes("a b"), "solo: open settings"),
             ],
         );
         assert!(rows.iter().all(|row| !row.is_group));

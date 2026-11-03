@@ -7,7 +7,7 @@ use workspace::Workspace;
 use zed_actions::feedback::{EmailZed, FileBugReport, RequestFeature};
 
 actions!(
-    zed,
+    solo,
     [
         /// Opens the Zed repository on GitHub.
         OpenZedRepo,
@@ -18,16 +18,16 @@ actions!(
 
 const ZED_REPO_URL: &str = "https://github.com/zed-industries/zed";
 
-const REQUEST_FEATURE_URL: &str = "https://github.com/zed-industries/zed/discussions/new/choose";
+// SOLO: bug reports and feature requests go to the Solo repository, not upstream Zed.
+const REQUEST_FEATURE_URL: &str = "https://github.com/lucas9801/solo/issues/new";
 
 fn file_bug_report_url(specs: &SystemSpecs) -> String {
     format!(
         concat!(
-            "https://github.com/zed-industries/zed/issues/new",
+            "https://github.com/lucas9801/solo/issues/new",
             "?",
-            "template=10_bug_report.yml",
-            "&",
-            "environment={}"
+            "body=%0A%0A---%0A",
+            "{}"
         ),
         urlencoding::encode(&specs.to_string())
     )

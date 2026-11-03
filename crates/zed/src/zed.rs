@@ -119,7 +119,7 @@ pub struct CrashHandler(pub Arc<crashes::Client>);
 impl gpui::Global for CrashHandler {}
 
 actions!(
-    zed,
+    solo,
     [
         /// Opens the element inspector for debugging UI.
         DebugElements,
@@ -746,7 +746,7 @@ fn show_software_emulation_warning_if_needed(
         };
         let message = format!(
             db::indoc! {r#"
-            Zed uses {} for rendering and requires a compatible GPU.
+            Solo uses {} for rendering and requires a compatible GPU.
 
             Currently you are using a software emulated GPU ({}) which
             will result in awful performance.
@@ -1722,7 +1722,7 @@ fn open_about_window(cx: &mut App) {
     cx.open_window(
         WindowOptions {
             titlebar: Some(TitlebarOptions {
-                title: Some("About Zed".into()),
+                title: Some("About Solo".into()),
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(12.), px(12.))),
             }),
@@ -6209,6 +6209,8 @@ mod tests {
                 "action",
                 "activity_indicator",
                 "agent",
+                "agent_board",
+                "agent_task",
                 "agents_sidebar",
                 "app_menu",
                 "assistant",
@@ -6278,6 +6280,7 @@ mod tests {
                 "settings_profile_selector",
                 "skill_creator",
                 "snippets",
+                "solo",
                 "stash_picker",
                 "svg",
                 "syntax_tree_view",
