@@ -33,6 +33,7 @@ language.workspace = true
 log.workspace = true
 markdown.workspace = true
 menu.workspace = true
+mermaid_render.workspace = true
 paths.workspace = true
 picker.workspace = true
 project.workspace = true

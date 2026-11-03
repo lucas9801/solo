@@ -1001,7 +1001,12 @@ impl TerminalElement {
         minimum_contrast: f32,
     ) -> TextRun {
         let skip_contrast = Self::is_app_chosen_exact_color(&fg);
-        let mut fg = convert_color(&fg, colors);
+        // SOLO: links (OSC 8) the program didn't color stand out from the text.
+        let mut fg = if cell.hyperlink().is_some() && fg == Color::Named(NamedColor::Foreground) {
+            colors.colors().text_accent
+        } else {
+            convert_color(&fg, colors)
+        };
         let bg = convert_color(&bg, colors);
 
         if !skip_contrast && !Self::is_decorative_character(cell.character()) {

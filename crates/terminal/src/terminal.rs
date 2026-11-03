@@ -670,6 +670,10 @@ pub fn insert_zed_terminal_env(
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("COLORTERM".to_string(), "truecolor".to_string());
     env.insert("TERM_PROGRAM_VERSION".to_string(), version.to_string());
+    // SOLO: programs that only write links (OSC 8) for terminals they know,
+    // such as Claude Code, write them here too; Solo underlines and opens them.
+    env.entry("FORCE_HYPERLINK".to_string())
+        .or_insert_with(|| "1".to_string());
 }
 
 ///Upward flowing events, for changing the title and such

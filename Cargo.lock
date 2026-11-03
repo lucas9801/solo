@@ -18020,6 +18020,7 @@ dependencies = [
  "log",
  "markdown",
  "menu",
+ "mermaid_render",
  "paths",
  "picker",
  "pretty_assertions",

@@ -11,6 +11,7 @@ mod command_notifications;
 mod follow_working_directory;
 pub mod input;
 mod mermaid_preview;
+mod mermaid_viewer;
 #[cfg(test)]
 mod output_perf_tests;
 mod persistence;

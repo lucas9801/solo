@@ -2,7 +2,7 @@ use alacritty_terminal::{
     Term,
     event::EventListener,
     grid::Dimensions,
-    index::{Boundary, Column, Direction as AlacDirection, Point as AlacPoint},
+    index::{Boundary, Column, Direction as AlacDirection, Line, Point as AlacPoint},
     term::{
         cell::Flags,
         search::{Match, RegexIter, RegexSearch},
@@ -135,14 +135,23 @@ pub(crate) fn find_from_grid_point<T: EventListener>(
         if let Some((url, url_match)) = url_match {
             Some((url, true, url_match))
         } else {
-            path_match(
-                &term,
+            joined_path_match(
+                term,
                 line_start,
                 line_end,
                 point,
                 &mut regex_searches.path_hyperlink_regexes,
                 regex_searches.path_hyperlink_timeout,
             )
+            .or_else(|| {
+                path_match(
+                    term,
+                    &[(line_start, line_end)],
+                    point,
+                    &mut regex_searches.path_hyperlink_regexes,
+                    regex_searches.path_hyperlink_timeout,
+                )
+            })
             .map(|(path, path_match)| (path, false, path_match))
         }
     };
@@ -359,14 +368,6 @@ fn path_start_in_prose(path: &str, after_prose: bool) -> Option<usize> {
 /// punctuation or non-ASCII text that follows an ASCII file name with an
 /// extension. Non-ASCII names (`docs/渲染.md`, `test、2.txt`) are kept whole.
 fn path_end_in_prose(path: &str) -> usize {
-    let has_extension = |name: &str| {
-        let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
-        name.rsplit_once('.').is_some_and(|(stem, extension)| {
-            !stem.is_empty()
-                && (1..=10).contains(&extension.len())
-                && extension.chars().all(|c| c.is_ascii_alphanumeric())
-        })
-    };
     let mut previous = None;
     let mut chars = path.char_indices().peekable();
     while let Some((ix, c)) = chars.next() {
@@ -385,7 +386,37 @@ fn path_end_in_prose(path: &str) -> usize {
     path.len()
 }
 
-fn path_match<T>(
+/// SOLO: the file name at the end of `text` has an extension, as in
+/// `src/main.rs`, unlike `Source/R` or `Templates/`.
+fn has_extension(text: &str) -> bool {
+    let name = text.rsplit(['/', '\\']).next().unwrap_or(text);
+    name.rsplit_once('.').is_some_and(|(stem, extension)| {
+        !stem.is_empty()
+            && (1..=10).contains(&extension.len())
+            && extension.chars().all(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+/// SOLO: how far from the right edge a line broken by the program in the
+/// middle of a path may end (a wide character that didn't fit leaves a gap).
+const BROKEN_LINE_SLACK: usize = 2;
+/// SOLO: how much the line going on with a broken path may be indented, as a
+/// list item's next line is.
+const CONTINUATION_INDENT: usize = 16;
+/// SOLO: programs break lines themselves only in terminals at least this wide;
+/// in narrower ones, the terminal wraps everything.
+const MIN_BROKEN_LINE_COLUMNS: usize = 20;
+
+fn is_path_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '/' | '\\' | '.' | '_' | '-' | ':' | '~')
+}
+
+/// SOLO: a path a program broke across lines itself, as Claude Code does with
+/// one longer than the room left on a line (`…（Source/R` and
+/// `  untime/Core/Windows/Setup.h:29）` below it): when the hovered line ends at
+/// the right edge in the middle of a path, or the line above it does, the two
+/// are searched as one, and a path crossing the break is taken.
+fn joined_path_match<T>(
     term: &Term<T>,
     line_start: AlacPoint,
     line_end: AlacPoint,
@@ -393,11 +424,113 @@ fn path_match<T>(
     path_hyperlink_regexes: &mut Vec<Regex>,
     path_hyperlink_timeout: Duration,
 ) -> Option<(String, Match)> {
+    let joins = [
+        (line_start.line > term.topmost_line()).then(|| {
+            let previous_line = AlacPoint::new(line_start.line - 1, Column(0));
+            (
+                term.line_search_left(previous_line),
+                previous_line.line,
+                line_start,
+                line_end,
+            )
+        }),
+        (line_end.line < term.bottommost_line()).then(|| {
+            let next_line = AlacPoint::new(line_end.line + 1, Column(0));
+            (
+                line_start,
+                line_end.line,
+                next_line,
+                term.line_search_right(next_line),
+            )
+        }),
+    ];
+    for (first_start, broken_row, second_line, second_end) in joins.into_iter().flatten() {
+        let Some((first_end, second_start)) = broken_path_ends(term, broken_row, second_line)
+        else {
+            continue;
+        };
+        let segments = [(first_start, first_end), (second_start, second_end)];
+        if let Some((path, found)) = path_match(
+            term,
+            &segments,
+            hovered,
+            path_hyperlink_regexes,
+            path_hyperlink_timeout,
+        ) && !path.is_empty()
+            && *found.start() <= first_end
+            && *found.end() >= second_start
+        {
+            return Some((path, found));
+        }
+    }
+    None
+}
+
+/// SOLO: where the path broken at the end of `row` ends on it, and where it
+/// goes on in the line starting at `next`, if `row` looks broken in a path:
+/// it ends at the right edge with a path character, the next line goes on
+/// with one after at most a little indentation, and the part before the
+/// break isn't a whole file name followed by a word.
+fn broken_path_ends<T>(
+    term: &Term<T>,
+    row: Line,
+    next: AlacPoint,
+) -> Option<(AlacPoint, AlacPoint)> {
+    let grid = term.grid();
+    let columns = grid.columns();
+    let row_chars = |line: Line| {
+        (0..columns)
+            .map(|column| (Column(column), &grid[AlacPoint::new(line, Column(column))]))
+            .filter(|(_, cell)| !cell.flags.intersects(WIDE_CHAR_SPACERS))
+            .map(|(column, cell)| (column, cell.c))
+            .collect::<Vec<_>>()
+    };
+    let first = row_chars(row);
+    let &(last_column, last_char) = first.iter().rev().find(|(_, c)| !matches!(c, ' ' | '\t'))?;
+    if columns < MIN_BROKEN_LINE_COLUMNS
+        || last_column.0 + 1 + BROKEN_LINE_SLACK < columns
+        || !is_path_char(last_char)
+        // `path:` at the end of a line is followed by what's said about it.
+        || last_char == ':'
+    {
+        return None;
+    }
+    let second = row_chars(next.line);
+    let &(indent, first_char) = second.iter().find(|(_, c)| !matches!(c, ' ' | '\t'))?;
+    if indent.0 > CONTINUATION_INDENT || !is_path_char(first_char) {
+        return None;
+    }
+    let mut tail = first
+        .iter()
+        .rev()
+        .map(|(_, c)| *c)
+        .take_while(|c| is_path_char(*c))
+        .collect::<Vec<_>>();
+    tail.reverse();
+    let tail = tail.into_iter().collect::<String>();
+    // Ignoring a position after it, as in `src/main.rs:12:`.
+    let tail = tail.trim_end_matches(|c: char| c == ':' || c.is_ascii_digit());
+    if has_extension(tail) && !matches!(first_char, ':' | '/' | '\\' | '.') {
+        return None;
+    }
+    Some((
+        AlacPoint::new(row, last_column),
+        AlacPoint::new(next.line, indent),
+    ))
+}
+
+/// Finds the path at `hovered` in the text of `segments`, searched as one
+/// line (SOLO: two of them for a path broken across lines).
+fn path_match<T>(
+    term: &Term<T>,
+    segments: &[(AlacPoint, AlacPoint)],
+    hovered: AlacPoint,
+    path_hyperlink_regexes: &mut Vec<Regex>,
+    path_hyperlink_timeout: Duration,
+) -> Option<(String, Match)> {
     if path_hyperlink_regexes.is_empty() || path_hyperlink_timeout.as_millis() == 0 {
         return None;
     }
-    debug_assert!(line_start <= hovered);
-    debug_assert!(line_end >= hovered);
     let search_start_time = Instant::now();
 
     let timed_out = || {
@@ -406,38 +539,29 @@ fn path_match<T>(
             .then_some((elapsed_time.as_millis(), path_hyperlink_timeout.as_millis()))
     };
 
-    // This used to be: `let line = term.bounds_to_string(line_start, line_end)`, however, that
-    // api compresses tab characters into a single space, whereas we require a cell accurate
-    // string representation of the line. The below algorithm does this, but seems a bit odd.
-    // Maybe there is a clean api for doing this, but I couldn't find it.
-    let mut line = String::with_capacity(
-        (line_end.line.0 - line_start.line.0 + 1) as usize * term.grid().columns(),
-    );
-    let first_cell = &term.grid()[line_start];
-    let mut prev_len = 0;
-    line.push(first_cell.c);
+    // A cell accurate string of the segments (`term.bounds_to_string` would
+    // compress tabs into a single space), with where each character is.
+    let mut line = String::new();
+    let mut char_points: Vec<(usize, AlacPoint)> = Vec::new();
     let mut hovered_point_byte_offset = None;
-
-    if line_start == hovered {
-        hovered_point_byte_offset = Some(0);
-    }
-
-    for cell in term.grid().iter_from(line_start) {
-        if cell.point > line_end {
-            break;
-        }
-
-        if !cell.flags.intersects(WIDE_CHAR_SPACERS) {
-            prev_len = line.len();
-            match cell.c {
-                ' ' | '\t' => line.push(' '),
-                c => line.push(c),
+    for &(segment_start, segment_end) in segments {
+        let grid = term.grid();
+        let cells = std::iter::once((segment_start, &grid[segment_start])).chain(
+            grid.iter_from(segment_start)
+                .take_while(|cell| cell.point <= segment_end)
+                .map(|cell| (cell.point, cell.cell)),
+        );
+        for (point, cell) in cells {
+            if !cell.flags.intersects(WIDE_CHAR_SPACERS) {
+                char_points.push((line.len(), point));
+                match cell.c {
+                    ' ' | '\t' => line.push(' '),
+                    c => line.push(c),
+                }
             }
-        }
-
-        if cell.point == hovered {
-            debug_assert!(hovered_point_byte_offset.is_none());
-            hovered_point_byte_offset = Some(prev_len);
+            if point == hovered {
+                hovered_point_byte_offset = char_points.last().map(|(offset, _)| *offset);
+            }
         }
     }
     let line = line.trim_ascii_end();
@@ -448,31 +572,18 @@ fn path_match<T>(
     let found_from_range = |path_range: StdRange<usize>,
                             link_range: StdRange<usize>,
                             position: Option<(u32, Option<u32>)>| {
-        let advance_point_by_str = |mut point: AlacPoint, s: &str| {
-            for _ in s.chars() {
-                point = term
-                    .expand_wide(point, AlacDirection::Right)
-                    .add(term, Boundary::Grid, 1);
-            }
-
-            // There does not appear to be an alacritty api that is
-            // "move to start of current wide char", so we have to do it ourselves.
-            let flags = term.grid().index(point).flags;
-            if flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
-                AlacPoint::new(point.line + 1, Column(0))
-            } else if flags.contains(Flags::WIDE_CHAR_SPACER) {
-                AlacPoint::new(point.line, point.column - 1)
-            } else {
-                point
-            }
+        let char_at = |offset: usize| {
+            let ix = char_points.partition_point(|(char_offset, _)| *char_offset <= offset);
+            char_points[ix.saturating_sub(1)].1
         };
-
-        let link_start = advance_point_by_str(line_start, &line[..link_range.start]);
-        let link_end = advance_point_by_str(link_start, &line[link_range]);
-        let link_match = link_start
-            ..=term
-                .expand_wide(link_end, AlacDirection::Left)
-                .sub(term, Boundary::Grid, 1);
+        let link_start = char_at(link_range.start);
+        let last_char = char_at(link_range.end.saturating_sub(1));
+        // A wide character ends on its spacer.
+        let link_end = if term.grid()[last_char].flags.contains(Flags::WIDE_CHAR) {
+            AlacPoint::new(last_char.line, last_char.column + 1)
+        } else {
+            last_char
+        };
 
         (
             {
@@ -483,7 +594,7 @@ fn path_match<T>(
                 });
                 path
             },
-            link_match,
+            link_start..=link_end,
         )
     };
 
@@ -647,6 +758,71 @@ mod tests {
             );
             assert_eq!(captures.name("line").map(|capture| capture.as_str()), line);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_paths_broken_across_lines() -> anyhow::Result<()> {
+        // SOLO: Claude Code breaks a path longer than the room left on a line
+        // itself, and indents the rest as the list item it's in.
+        let content = settings::parse_json_with_comments(&settings::default_settings())?;
+        let settings = TerminalSettings::from_settings(&content);
+        let mut searches = RegexSearches::new(
+            &settings.path_hyperlink_regexes,
+            Duration::from_millis(settings.path_hyperlink_timeout_ms),
+        );
+        let mut check = |lines: &[&str], columns: usize, hovered: (i32, usize)| {
+            let mut term = Term::new(
+                Config::default(),
+                &TermSize::new(columns, lines.len() + 1),
+                VoidListener,
+            );
+            for line in lines {
+                for c in line.chars() {
+                    term.input(c);
+                }
+                term.carriage_return();
+                term.linefeed();
+            }
+            let point = AlacPoint::new(Line(hovered.0), Column(hovered.1));
+            find_from_grid_point(&term, point, &mut searches, PathStyle::local()).map(|found| {
+                (
+                    found.text,
+                    (found.range.start.line, found.range.start.column),
+                    (found.range.end.line, found.range.end.column),
+                )
+            })
+        };
+
+        // "- 升级成了错误（" is 2 + 6 * 2 + 2 cells wide, so the first line is 30.
+        let broken = [
+            "- 升级成了错误（Source/Runtim",
+            "  e/Windows/Setup.h:29）。",
+        ];
+        let joined = Some((
+            "Source/Runtime/Windows/Setup.h:29".to_string(),
+            (0, 16),
+            (1, 21),
+        ));
+        assert_eq!(check(&broken, 30, (0, 18)), joined);
+        assert_eq!(check(&broken, 30, (1, 5)), joined);
+        // Not at the right edge: two lines, two separate words.
+        assert_eq!(
+            check(&broken, 36, (1, 5)).map(|found| found.0),
+            Some("e/Windows/Setup.h:29".to_string())
+        );
+        // A whole file name at the edge, and a word on the next line.
+        let words = ["and then see src/main.rs", "  next"];
+        assert_eq!(
+            check(&words, 24, (0, 16)).map(|found| found.0),
+            Some("src/main.rs".to_string())
+        );
+        // A file name broken before its line number.
+        let position = ["it is found at src/main.rs", ":12 then"];
+        assert_eq!(
+            check(&position, 26, (1, 1)).map(|found| found.0),
+            Some("src/main.rs:12".to_string())
+        );
         Ok(())
     }
 
