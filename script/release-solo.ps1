@@ -42,7 +42,8 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "Version must look like 1.2.3,
 if ([version]$Version -le [version]$current) { throw "Version $Version isn't newer than $current" }
 $tag = "v$Version"
 if (git tag --list $tag) { throw "Tag $tag already exists" }
-$previousTag = git describe --tags --abbrev=0 --match "v*" 2>$null
+# The latest release before this one in Solo's history (Zed's tags aren't in it).
+$previousTag = git tag --merged HEAD --list "v*" --sort=-v:refname | Select-Object -First 1
 
 Write-Host "Releasing Solo $Version (was $current)"
 
