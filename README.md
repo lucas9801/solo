@@ -106,8 +106,14 @@ cargo run -p zed              # debug build, runs target\debug\solo.exe
 script\package-solo.ps1       # optimized build, packaged as dist\Solo-<version>-windows-x64.zip
 ```
 
-The zip contains `install.ps1`, which installs Solo for the current user with
-Start menu and desktop shortcuts.
+With [Inno Setup 6](https://jrsoftware.org/isinfo.php) installed (or given
+with `-Iscc <path to ISCC.exe>`), it also builds `dist\Solo-Setup-<version>.exe`
+from `script\solo.iss`: an English and Chinese installer for the current user,
+with a Start menu entry, an optional desktop icon, and an uninstall entry in
+Settings → Apps.
+
+The zip, which needs no installer, contains `install.ps1`, which installs Solo
+for the current user with Start menu and desktop shortcuts.
 
 ## Credits and licensing
 

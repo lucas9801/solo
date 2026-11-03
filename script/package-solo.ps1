@@ -6,11 +6,13 @@
 # The zip holds Solo\solo.exe with the ConPTY runtime and solo-agent-hook.exe
 # (which Claude Code runs to report its status) next to it, the licenses, and
 # install.ps1, which copies Solo to %LOCALAPPDATA%\Programs\Solo and adds
-# Start menu and desktop shortcuts.
+# Start menu and desktop shortcuts. With Inno Setup 6 installed it also builds
+# Solo-Setup-<version>.exe from script\solo.iss (-Iscc to give ISCC.exe's path).
 
 param(
     [string]$TargetDir = "",
-    [string]$OutDir = "dist"
+    [string]$OutDir = "dist",
+    [string]$Iscc = ""
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -44,3 +46,21 @@ $zip = Join-Path $OutDir "Solo-$version-windows-x64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path $stage -DestinationPath $zip
 Write-Host "Packaged $zip"
+
+if (-not $Iscc) {
+    $Iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+    if (-not $Iscc) {
+        $Iscc = @(
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+}
+if (-not $Iscc -or -not (Test-Path $Iscc)) {
+    Write-Warning "Inno Setup 6 not found, so no installer was built. Install it (winget install JRSoftware.InnoSetup) or pass -Iscc <path to ISCC.exe>."
+    return
+}
+& $Iscc /Q "/DAppVersion=$version" "/DSourceDir=$((Resolve-Path $stage).Path)" "/DOutputDir=$((Resolve-Path $OutDir).Path)" "script\solo.iss"
+if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+Write-Host "Packaged $(Join-Path $OutDir "Solo-Setup-$version.exe")"
