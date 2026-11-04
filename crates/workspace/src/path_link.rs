@@ -179,6 +179,11 @@ fn resolve_open_target_internal(
     let mut potential_paths = Vec::new();
     let original_path = PathWithPosition::from_path(PathBuf::from(maybe_path));
     let path_with_position = PathWithPosition::parse_str(maybe_path);
+    // SOLO: a position without a file, like the `:161` of "(:161)", names no
+    // file; an empty path would be the worktree's root.
+    if path_with_position.path.as_os_str().is_empty() || maybe_path.starts_with(':') {
+        return Task::ready(None);
+    }
     let worktree_candidates = workspace
         .read(cx)
         .worktrees(cx)
@@ -417,6 +422,12 @@ fn resolve_open_target_internal(
                 let paths_to_check = paths_to_check
                     .into_iter()
                     .filter_map(|path_with_position| {
+                        // SOLO: a bare word ("err") matches some file or
+                        // directory of that name deep in a big project
+                        // tree; only search for what looks like a path.
+                        if !looks_like_a_path(&path_with_position.path) {
+                            return None;
+                        }
                         let path = RelPath::new(&path_with_position.path, PathStyle::local())
                             .ok()?
                             .into_owned();
@@ -457,6 +468,11 @@ fn resolve_open_target_internal(
         })
         .await
     })
+}
+
+/// Whether `path` has a directory or an extension, i.e. isn't a bare word.
+fn looks_like_a_path(path: &Path) -> bool {
+    path.components().count() > 1 || path.extension().is_some()
 }
 
 fn local_paths_to_check(
