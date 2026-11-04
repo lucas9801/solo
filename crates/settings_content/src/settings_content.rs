@@ -556,7 +556,7 @@ pub struct ExtensionsSettingsContent {
 
 /// Base key bindings scheme. Base keymaps can be overridden with user keymaps.
 ///
-/// Default: Zed
+/// Default: Zed (Solo's keymap)
 #[derive(
     Copy,
     Clone,
@@ -571,7 +571,10 @@ pub struct ExtensionsSettingsContent {
     strum::VariantArray,
 )]
 pub enum BaseKeymapContent {
+    /// SOLO: Solo's own keymap; settings keep writing "Zed" for it, and
+    /// "Solo" reads as it too.
     #[default]
+    #[serde(alias = "Solo")]
     Zed,
     VSCode,
     JetBrains,
@@ -585,7 +588,7 @@ pub enum BaseKeymapContent {
 
 impl strum::VariantNames for BaseKeymapContent {
     const VARIANTS: &'static [&'static str] = &[
-        "Zed",
+        "Solo",
         "VSCode",
         "JetBrains",
         "Sublime Text",

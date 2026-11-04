@@ -784,8 +784,7 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
         let agent_board =
             terminal_view::agent_board::AgentBoard::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
-        let channels_panel =
-            collab_ui::collab_panel::CollabPanel::load(workspace_handle.clone(), cx.clone());
+        // SOLO: no collaboration panel: Solo has no collaboration.
         let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
 
         async fn add_panel_when_ready(
@@ -809,7 +808,6 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(agent_board, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
             initialize_agent_panel(workspace_handle.clone(), cx.clone()).map(|r| r.log_err()),
         );
@@ -1322,14 +1320,6 @@ fn register_actions(
         )
         .register_action(
             |workspace: &mut Workspace,
-             _: &collab_ui::collab_panel::ToggleFocus,
-             window: &mut Window,
-             cx: &mut Context<Workspace>| {
-                workspace.toggle_panel_focus::<collab_ui::collab_panel::CollabPanel>(window, cx);
-            },
-        )
-        .register_action(
-            |workspace: &mut Workspace,
              _: &terminal_panel::ToggleFocus,
              window: &mut Window,
              cx: &mut Context<Workspace>| {
@@ -1641,7 +1631,13 @@ fn open_about_window(cx: &mut App) {
                                     .color(Color::Muted)
                                     .size(LabelSize::XSmall),
                             )
-                            .child(Label::new(self.full_version.clone()).size(LabelSize::Small)),
+                            .child(Label::new(self.full_version.clone()).size(LabelSize::Small))
+                            // SOLO: where Solo comes from, as its license asks.
+                            .child(
+                                Label::new("Based on Zed")
+                                    .color(Color::Muted)
+                                    .size(LabelSize::XSmall),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -1716,7 +1712,7 @@ fn open_about_window(cx: &mut App) {
 
     let window_size = Size {
         width: px(440.),
-        height: px(300.),
+        height: px(320.),
     };
 
     cx.open_window(
@@ -2588,6 +2584,28 @@ fn open_local_file(
     if let Some(worktree) = worktree {
         let tree_id = worktree.read(cx).id();
         Some(cx.spawn_in(window, async move |workspace, cx| {
+            // SOLO: a project that only has the file in Zed's `.zed` folder
+            // keeps editing that one.
+            let settings_relative_path = {
+                let fs = project.read_with(cx, |project, _| project.fs().clone());
+                let root = worktree.read_with(cx, |tree, _| tree.abs_path());
+                let is_file = async |path: &RelPath| {
+                    fs.metadata(&root.join(path.as_std_path()))
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|metadata| !metadata.is_dir && !metadata.is_fifo)
+                };
+                match paths::previous_local_settings_path(settings_relative_path) {
+                    Some(previous)
+                        if !is_file(settings_relative_path).await && is_file(&previous).await =>
+                    {
+                        previous
+                    }
+                    _ => settings_relative_path.to_rel_path_buf(),
+                }
+            };
+            let settings_relative_path = settings_relative_path.as_rel_path();
             // Check if the file actually exists on disk (even if it's excluded from worktree)
             let file_exists = {
                 let full_path = worktree.read_with(cx, |tree, _| {

@@ -31,7 +31,13 @@ pub(crate) fn render_edit_prediction_setup_page(
 ) -> AnyElement {
     let providers = [
         Some(render_provider_dropdown(window, cx)),
-        Some(render_zed_provider(settings_window, window, cx).into_any_element()),
+        // SOLO: Zed's edit predictions need a Zed account; only shown to whoever
+        // already picked them.
+        (AllLanguageSettings::get_global(cx)
+            .edit_predictions
+            .provider
+            == settings::EditPredictionProvider::Zed)
+            .then(|| render_zed_provider(settings_window, window, cx).into_any_element()),
         render_github_copilot_provider(settings_window, window, cx)
             .map(IntoElement::into_any_element),
         Some(

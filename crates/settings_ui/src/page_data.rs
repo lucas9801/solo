@@ -75,7 +75,7 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
         debugger_page(),
         terminal_page(),
         version_control_page(),
-        collaboration_page(),
+        // SOLO: no collaboration settings: Solo has no collaboration.
         ai_page(cx),
         network_page(),
         developer_page(cx),
@@ -4092,7 +4092,7 @@ fn search_and_files_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "File Scan Inclusions",
-                description: "Files or globs of files that will be included by Solo, even when ignored by git. This is useful for files that are not tracked by git, but are still important to your project. Note that globs that are overly broad can slow down Zed's file scanning. \"File Scan Exclusions\" takes precedence over these inclusions",
+                description: "Files or globs of files that will be included by Solo, even when ignored by git. This is useful for files that are not tracked by git, but are still important to your project. Note that globs that are overly broad can slow down Solo's file scanning. \"File Scan Exclusions\" takes precedence over these inclusions",
                 field: Box::new(
                     SettingField {
                         organization_override: None,
@@ -8658,6 +8658,10 @@ fn version_control_page() -> SettingsPage {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "SOLO: Solo has no collaboration; kept for upstream merges"
+)]
 fn collaboration_page() -> SettingsPage {
     fn calls_section() -> [SettingsPageItem; 3] {
         [
@@ -11345,25 +11349,30 @@ fn non_editor_language_settings_data() -> Box<[SettingsPageItem]> {
     )
 }
 
-fn edit_prediction_language_settings_section() -> [SettingsPageItem; 5] {
-    [
+fn edit_prediction_language_settings_section() -> Vec<SettingsPageItem> {
+    let mut items = Vec::from([
         SettingsPageItem::SectionHeader("Edit Predictions"),
         SettingsPageItem::SubPageLink(SubPageLink {
             title: "Configure Providers".into(),
             r#type: Default::default(),
             json_path: Some("edit_predictions.providers"),
-            description: Some("Set up different edit prediction providers in complement to Zed's built-in Zeta model.".into()),
+            // SOLO: Zed's Zeta model isn't offered.
+            description: Some(
+                "Set up edit prediction providers such as GitHub Copilot, Codestral, or Ollama."
+                    .into(),
+            ),
             search_aliases: &[],
             in_json: false,
             files: USER,
-            render: render_edit_prediction_setup_page
+            render: render_edit_prediction_setup_page,
         }),
         SettingsPageItem::SettingItem(SettingItem {
             title: "Data Collection",
             description: "Controls whether Zed may collect training data when using Zed's Edit Predictions. Data is only collected for files in projects detected as open source. The default value uses the preference previously set via the status-bar toggle, or false if no preference has been stored.",
             field: Box::new(SettingField {
                 organization_override: Some(|org_settings| {
-                    const DATA_COLLECTION_DISABLED: EditPredictionDataCollectionChoice = EditPredictionDataCollectionChoice::No;
+                    const DATA_COLLECTION_DISABLED: EditPredictionDataCollectionChoice =
+                        EditPredictionDataCollectionChoice::No;
 
                     if !org_settings.edit_prediction.is_feedback_enabled {
                         Some(&DATA_COLLECTION_DISABLED)
@@ -11436,7 +11445,11 @@ fn edit_prediction_language_settings_section() -> [SettingsPageItem; 5] {
             metadata: None,
             files: USER | PROJECT,
         }),
-    ]
+    ]);
+    // SOLO: "Data Collection" is about Zed's edit predictions, which aren't
+    // offered.
+    items.remove(2);
+    items
 }
 
 fn show_scrollbar_or_editor(

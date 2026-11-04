@@ -250,7 +250,8 @@ fn render_telemetry_section(tab_index: &mut isize, cx: &App) -> impl IntoElement
             SwitchField::new(
                 "onboarding-telemetry-metrics",
                 None::<&str>,
-                Some("Help improve Zed by sending anonymous usage data".into()),
+                // SOLO: the data would go to Zed's servers, not Solo's.
+                Some("Send anonymous usage data to the Zed team (Solo's upstream)".into()),
                 if TelemetrySettings::get_global(cx).metrics {
                     ui::ToggleState::Selected
                 } else {
@@ -289,10 +290,7 @@ fn render_telemetry_section(tab_index: &mut isize, cx: &App) -> impl IntoElement
             SwitchField::new(
                 "onboarding-telemetry-crash-reports",
                 None::<&str>,
-                Some(
-                    "Help fix Zed by sending crash reports so we can fix critical issues fast"
-                        .into(),
-                ),
+                Some("Send crash reports to the Zed team (Solo's upstream)".into()),
                 if TelemetrySettings::get_global(cx).diagnostics {
                     ui::ToggleState::Selected
                 } else {
@@ -346,7 +344,8 @@ fn render_base_keymap_section(tab_index: &mut isize, cx: &mut App) -> impl IntoE
         ToggleButtonGroup::two_rows(
             "base_keymap_selection",
             [
-                ToggleButtonWithIcon::new("Zed", IconName::AiZed, |_, _, cx| {
+                // SOLO: Solo's own keymap.
+                ToggleButtonWithIcon::new("Solo", IconName::AiZed, |_, _, cx| {
                     write_keymap_base(BaseKeymap::Zed, cx);
                 }),
                 ToggleButtonWithIcon::new("VS Code", IconName::EditorVsCode, |_, _, cx| {
@@ -599,6 +598,27 @@ fn render_registry_agent_button(
 }
 
 fn render_zed_agent_button(user_store: &Entity<UserStore>, cx: &mut App) -> impl IntoElement {
+    // SOLO: the built-in agent runs on the user's own API keys, so it points to
+    // setting one up instead of a Zed sign-in or trial.
+    const SHOW_ZED_ACCOUNT_SETUP: bool = false;
+    if !SHOW_ZED_ACCOUNT_SETUP {
+        return AgentSetupButton::new("zed-agent-onboarding")
+            .icon(
+                Icon::new(IconName::ZedAgent)
+                    .size(IconSize::XSmall)
+                    .color(Color::Muted),
+            )
+            .name("Solo Agent")
+            .state(
+                Label::new("Configure")
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            )
+            .on_click(|_, window, cx| {
+                window.dispatch_action(zed_actions::agent::OpenSettings.boxed_clone(), cx);
+            });
+    }
+
     let client = Client::global(cx);
     let status = *client.status().borrow();
 
@@ -650,7 +670,7 @@ fn render_zed_agent_button(user_store: &Entity<UserStore>, cx: &mut App) -> impl
                 .size(IconSize::XSmall)
                 .color(Color::Muted),
         )
-        .name("Zed Agent")
+        .name("Solo Agent")
         .state(state_element)
         .disabled(is_trial || is_pro)
         .map(|this| {

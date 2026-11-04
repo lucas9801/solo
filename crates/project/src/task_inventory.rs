@@ -90,7 +90,8 @@ impl<T: InventoryContents> InventoryFor<T> {
         let has_zed_dir = worktree_dirs
             .map(|dirs| {
                 dirs.keys()
-                    .any(|dir| dir.file_name().is_some_and(|name| name == ".zed"))
+                    // SOLO: Solo's `.solo` folder, or Zed's `.zed`.
+                    .any(|dir| dir.file_name().is_some_and(is_project_settings_folder))
             })
             .unwrap_or(false);
 
@@ -500,7 +501,8 @@ impl Inventory {
             .iter()
             .filter(|(_, dirs)| {
                 dirs.keys()
-                    .any(|dir| dir.file_name().is_some_and(|name| name == ".zed"))
+                    // SOLO: Solo's `.solo` folder, or Zed's `.zed`.
+                    .any(|dir| dir.file_name().is_some_and(is_project_settings_folder))
             })
             .map(|(id, _)| *id)
             .collect();
@@ -1146,6 +1148,12 @@ impl ContextProvider for ContextProviderWithTasks {
     fn associated_tasks(&self, _: Option<Entity<Buffer>>, _: &App) -> Task<Option<TaskTemplates>> {
         Task::ready(Some(self.templates.clone()))
     }
+}
+
+/// SOLO: Solo's `.solo` project folder, or Zed's `.zed`, which is read too.
+fn is_project_settings_folder(name: &str) -> bool {
+    name == paths::local_settings_folder_name()
+        || name == paths::previous_local_settings_folder_name()
 }
 
 #[cfg(test)]

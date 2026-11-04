@@ -6313,6 +6313,8 @@ impl BackgroundScanner {
         scannable
             || entry.path.file_name() == Some(DOT_GIT)
             || entry.path.file_name() == Some(local_settings_folder_name())
+            // SOLO: Zed's project folder is read too.
+            || entry.path.file_name() == Some(paths::previous_local_settings_folder_name())
             || entry.path.file_name() == Some(local_vscode_folder_name())
             || state.scanned_dirs.contains(&entry.id) // If we've ever scanned it, keep scanning
             || state

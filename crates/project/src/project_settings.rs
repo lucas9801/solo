@@ -1170,14 +1170,20 @@ impl SettingsObserver {
 
         let mut settings_contents = Vec::new();
         for (path, _, change) in changes.iter() {
-            let (settings_dir, kind) = if path.ends_with(local_settings_file_relative_path()) {
+            let (settings_dir, kind) = if path.ends_with(local_settings_file_relative_path())
+                // SOLO: and the same file in Zed's `.zed` folder.
+                || path.ends_with(paths::previous_local_settings_file_relative_path())
+            {
                 let settings_dir = path
                     .ancestors()
                     .nth(local_settings_file_relative_path().components().count())
                     .unwrap()
                     .into();
                 (settings_dir, LocalSettingsKind::Settings)
-            } else if path.ends_with(local_tasks_file_relative_path()) {
+            } else if path.ends_with(local_tasks_file_relative_path())
+                // SOLO: and the same file in Zed's `.zed` folder.
+                || path.ends_with(paths::previous_local_tasks_file_relative_path())
+            {
                 let settings_dir = path
                     .ancestors()
                     .nth(
@@ -1201,7 +1207,10 @@ impl SettingsObserver {
                     .unwrap()
                     .into();
                 (settings_dir, LocalSettingsKind::Tasks)
-            } else if path.ends_with(local_debug_file_relative_path()) {
+            } else if path.ends_with(local_debug_file_relative_path())
+                // SOLO: and the same file in Zed's `.zed` folder.
+                || path.ends_with(paths::previous_local_debug_file_relative_path())
+            {
                 let settings_dir = path
                     .ancestors()
                     .nth(

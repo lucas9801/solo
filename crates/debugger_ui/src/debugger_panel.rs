@@ -1199,13 +1199,21 @@ impl DebugPanel {
                     let fs =
                         workspace.read_with(cx, |workspace, _| workspace.app_state().fs.clone())?;
 
-                    path.push(paths::local_settings_folder_name());
-                    if !fs.is_dir(path.as_path()).await {
-                        fs.create_dir(path.as_path()).await?;
+                    // SOLO: a project that only has Zed's `.zed/debug.json`
+                    // keeps adding to it.
+                    let previous_debug_file =
+                        path.join(paths::previous_local_debug_file_relative_path().as_std_path());
+                    let debug_file =
+                        path.join(paths::local_debug_file_relative_path().as_std_path());
+                    if !fs.is_file(&debug_file).await && fs.is_file(&previous_debug_file).await {
+                        path = previous_debug_file;
+                    } else {
+                        path.push(paths::local_settings_folder_name());
+                        if !fs.is_dir(path.as_path()).await {
+                            fs.create_dir(path.as_path()).await?;
+                        }
+                        path = debug_file;
                     }
-                    path.pop();
-
-                    path.push(paths::local_debug_file_relative_path().as_std_path());
                     let path = path.as_path();
 
                     if !fs.is_file(path).await {

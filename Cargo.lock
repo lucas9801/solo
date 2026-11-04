@@ -620,6 +620,7 @@ dependencies = [
  "smallvec",
  "telemetry",
  "ui",
+ "util",
  "zed_actions",
 ]
 
@@ -3345,6 +3346,7 @@ dependencies = [
  "channel",
  "client",
  "collections",
+ "command_palette_hooks",
  "db",
  "editor",
  "futures 0.3.34",

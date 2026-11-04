@@ -484,9 +484,61 @@ pub fn devcontainer_dir() -> &'static PathBuf {
     DEVCONTAINER_DIR.get_or_init(|| data_dir().join("devcontainer"))
 }
 
-/// Returns the relative path to a `.zed` folder within a project.
+/// Returns the relative path to a `.solo` folder within a project.
+///
+/// SOLO: Solo's project folder. Projects may still have Zed's `.zed` folder
+/// ([`previous_local_settings_folder_name`]), which is read too, and edited
+/// when it has the file and `.solo` doesn't.
 pub fn local_settings_folder_name() -> &'static str {
+    ".solo"
+}
+
+/// SOLO: Zed's project folder, `.zed`, read as well as Solo's `.solo`.
+pub fn previous_local_settings_folder_name() -> &'static str {
     ".zed"
+}
+
+/// SOLO: `path`, a path in Solo's project folder (`.solo/settings.json`),
+/// in Zed's `.zed` folder instead.
+pub fn previous_local_settings_path(path: &RelPath) -> Option<util::rel_path::RelPathBuf> {
+    let new = local_settings_folder_name();
+    let previous = previous_local_settings_folder_name();
+    if !path.components().any(|component| component == new) {
+        return None;
+    }
+    let mut result = util::rel_path::RelPathBuf::new();
+    let mut replaced = false;
+    for component in path.components() {
+        let component = if !replaced && component == new {
+            replaced = true;
+            previous
+        } else {
+            component
+        };
+        result.push_component(component).ok()?;
+    }
+    Some(result)
+}
+
+/// SOLO: the `.zed` project files read as well as Solo's.
+pub fn previous_local_settings_file_relative_path() -> &'static RelPath {
+    static CACHED: LazyLock<&'static RelPath> =
+        LazyLock::new(|| RelPath::from_unix_str(".zed/settings.json").unwrap());
+    *CACHED
+}
+
+/// SOLO: see [`previous_local_settings_file_relative_path`].
+pub fn previous_local_tasks_file_relative_path() -> &'static RelPath {
+    static CACHED: LazyLock<&'static RelPath> =
+        LazyLock::new(|| RelPath::from_unix_str(".zed/tasks.json").unwrap());
+    *CACHED
+}
+
+/// SOLO: see [`previous_local_settings_file_relative_path`].
+pub fn previous_local_debug_file_relative_path() -> &'static RelPath {
+    static CACHED: LazyLock<&'static RelPath> =
+        LazyLock::new(|| RelPath::from_unix_str(".zed/debug.json").unwrap());
+    *CACHED
 }
 
 /// Returns the relative path to a `.vscode` folder within a project.
@@ -497,14 +549,14 @@ pub fn local_vscode_folder_name() -> &'static str {
 /// Returns the relative path to a `settings.json` file within a project.
 pub fn local_settings_file_relative_path() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::from_unix_str(".zed/settings.json").unwrap());
+        LazyLock::new(|| RelPath::from_unix_str(".solo/settings.json").unwrap());
     *CACHED
 }
 
 /// Returns the relative path to a `tasks.json` file within a project.
 pub fn local_tasks_file_relative_path() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::from_unix_str(".zed/tasks.json").unwrap());
+        LazyLock::new(|| RelPath::from_unix_str(".solo/tasks.json").unwrap());
     *CACHED
 }
 
@@ -524,10 +576,10 @@ pub fn task_file_name() -> &'static str {
 }
 
 /// Returns the relative path to a `debug.json` file within a project.
-/// .zed/debug.json
+/// .solo/debug.json
 pub fn local_debug_file_relative_path() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::from_unix_str(".zed/debug.json").unwrap());
+        LazyLock::new(|| RelPath::from_unix_str(".solo/debug.json").unwrap());
     *CACHED
 }
 

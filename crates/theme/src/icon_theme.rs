@@ -421,7 +421,12 @@ fn icon_keys_by_association(
 }
 
 /// The name of the default icon theme.
-pub const DEFAULT_ICON_THEME_NAME: &str = "Zed (Default)";
+// SOLO: Solo's name for the built-in icon theme.
+pub const DEFAULT_ICON_THEME_NAME: &str = "Solo (Default)";
+
+/// SOLO: the built-in icon theme's name before Solo renamed it, which
+/// settings may still name.
+pub const PREVIOUS_DEFAULT_ICON_THEME_NAME: &str = "Zed (Default)";
 
 static DEFAULT_ICON_THEME: LazyLock<Arc<IconTheme>> = LazyLock::new(|| {
     Arc::new(IconTheme {

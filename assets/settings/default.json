@@ -11,7 +11,7 @@
     "light": "One Light",
     "dark": "Solo Dark",
   },
-  "icon_theme": "Zed (Default)",
+  "icon_theme": "Solo (Default)",
   // The name of a base set of key bindings to use.
   // This setting can take the following values:
   //
@@ -1217,9 +1217,11 @@
     // The default model to use when creating new threads.
     "default_model": {
       // The provider to use.
-      "provider": "zed.dev",
+      // SOLO: a provider you bring your own API key to; Zed's hosted models
+      // ("zed.dev") aren't offered.
+      "provider": "anthropic",
       // The model to use.
-      "model": "claude-sonnet-4",
+      "model": "claude-sonnet-5-5",
       // Whether thinking is enabled.
       "enable_thinking": false,
     },
@@ -1240,8 +1242,8 @@
       //
       // To set parameters for a specific provider and model:
       // {
-      //   "provider": "zed.dev",
-      //   "model": "claude-sonnet-4",
+      //   "provider": "anthropic",
+      //   "model": "claude-sonnet-5-5",
       //   "temperature": 1.0
       // }
     ],

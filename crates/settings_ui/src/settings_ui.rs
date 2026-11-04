@@ -4215,6 +4215,8 @@ impl SettingsWindow {
 
                     return;
                 };
+                let settings_path =
+                    existing_project_settings_path(&settings_path, worktree.read(cx));
 
                 let create_task = if worktree.read(cx).entry_for_path(&settings_path).is_some() {
                     None
@@ -4981,6 +4983,9 @@ fn update_project_setting_file(
     else {
         anyhow::bail!("Could not find project with worktree id: {}", worktree_id);
     };
+    let rel_path = existing_project_settings_path(&rel_path, worktree.read(cx))
+        .as_rel_path()
+        .into_arc();
 
     let entry = ProjectSettingsUpdateEntry {
         worktree_id,
@@ -4994,6 +4999,23 @@ fn update_project_setting_file(
     ProjectSettingsUpdateQueue::enqueue(cx, entry);
 
     Ok(())
+}
+
+/// SOLO: `rel_path` (in Solo's `.solo` folder), or the same file in Zed's
+/// `.zed` folder when only that one exists.
+fn existing_project_settings_path(
+    rel_path: &RelPath,
+    worktree: &project::Worktree,
+) -> util::rel_path::RelPathBuf {
+    match paths::previous_local_settings_path(rel_path) {
+        Some(previous)
+            if worktree.entry_for_path(rel_path).is_none()
+                && worktree.entry_for_path(&previous).is_some() =>
+        {
+            previous
+        }
+        _ => rel_path.to_rel_path_buf(),
+    }
 }
 
 /// Derives a human-readable label for assistive technology from a setting's

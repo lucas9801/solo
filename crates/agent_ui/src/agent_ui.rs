@@ -560,7 +560,8 @@ impl Agent {
 
     pub fn label(&self) -> SharedString {
         match self {
-            Self::NativeAgent => "Zed Agent".into(),
+            // SOLO: the built-in agent is Solo's; its id stays "Zed Agent".
+            Self::NativeAgent => "Solo Agent".into(),
             Self::Custom { id, .. } => id.0.clone(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => "Stub Agent".into(),
@@ -955,8 +956,10 @@ fn update_command_palette_filter(cx: &mut App) {
                 }
             }
 
-            filter.show_namespace("zed_predict_onboarding");
-            filter.show_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
+            // SOLO: Zed's edit predictions need a Zed account, so their
+            // onboarding isn't offered.
+            filter.hide_namespace("zed_predict_onboarding");
+            filter.hide_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
 
             filter.show_namespace("multi_workspace");
         }

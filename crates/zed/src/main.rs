@@ -886,11 +886,16 @@ fn main() {
 
         cx.activate(true);
 
-        cx.spawn({
-            let client = app_state.client.clone();
-            async move |cx| authenticate(client, cx).await
-        })
-        .detach_and_log_err(cx);
+        // SOLO: Solo doesn't sign in to a Zed account on its own, even with
+        // credentials Zed stored; its sign-in UI is hidden.
+        const SIGN_IN_ON_LAUNCH: bool = false;
+        if SIGN_IN_ON_LAUNCH {
+            cx.spawn({
+                let client = app_state.client.clone();
+                async move |cx| authenticate(client, cx).await
+            })
+            .detach_and_log_err(cx);
+        }
 
         let urls: Vec<_> = args
             .paths_or_urls

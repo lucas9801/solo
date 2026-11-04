@@ -89,12 +89,17 @@ terminal settings, under `"terminal"`: `shell_integration`, `input_editor`,
 `claude_code_hooks`, `follow_working_directory`, `confirm_close`,
 `agent_task_command`.
 
-Solo's own text is shown in Chinese when the system language is Chinese
-(`SOLO_LANGUAGE=en` or `zh` overrides it).
+Project settings, tasks and debug scenarios go in a `.solo` folder in the
+project. Zed's `.zed` folder is read too, and a file that only exists there
+keeps being edited there.
 
-Zed services that need a Zed account or report to Zed (auto-update,
-telemetry, collaboration, Zed's edit predictions) are off or hidden by
-default.
+The interface language is the `ui_language` setting: `"system"` (the
+default), `"en"` or `"zh"` (`SOLO_LANGUAGE=en` or `zh` overrides it).
+
+Solo doesn't use Zed Industries' services: Zed accounts, Zed's hosted
+models, edit predictions, collaboration, auto-update and telemetry are off
+or hidden. AI comes from your own API keys (Anthropic, OpenAI, Ollama, ...)
+and external agents such as Claude Code and Codex.
 
 ## Building
 

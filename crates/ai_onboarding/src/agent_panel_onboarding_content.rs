@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use client::{Client, UserStore};
 use cloud_api_types::Plan;
-use gpui::{Entity, IntoElement, ParentElement};
+use gpui::{Action, AnyElement, Entity, IntoElement, ParentElement};
 use language_model::{LanguageModelRegistry, ZED_CLOUD_PROVIDER_ID};
-use ui::prelude::*;
+use ui::{List, ListBulletItem, Tooltip, prelude::*};
+use util::i18n::tr;
 
 use crate::{AgentPanelOnboardingCard, ApiKeysWithoutProviders, ZedAiOnboarding};
 
@@ -52,8 +53,65 @@ impl AgentPanelOnboarding {
     }
 }
 
+/// SOLO: Zed's hosted AI, with its sign-in, plans and trials, isn't offered.
+const SHOW_ZED_AI_ONBOARDING: bool = false;
+
+impl AgentPanelOnboarding {
+    /// SOLO: AI in Solo comes from the user's own API keys or an external agent.
+    fn render_solo_onboarding(&self) -> AnyElement {
+        let dismiss = self.continue_with_zed_ai.clone();
+        v_flex()
+            .w_full()
+            .relative()
+            .gap_1()
+            .child(Headline::new(tr("Set Up AI", "设置 AI")))
+            .child(
+                Label::new(tr(
+                    "Solo uses your own API keys or an external agent. No account needed.",
+                    "Solo 使用你自己的 API 密钥或外部智能体，无需账号。",
+                ))
+                .color(Color::Muted)
+                .mb_2(),
+            )
+            .child(
+                List::new()
+                    .child(ListBulletItem::new(tr(
+                        "Add an API key for a provider such as Anthropic, OpenAI, or Ollama.",
+                        "为 Anthropic、OpenAI、Ollama 等提供商添加 API 密钥。",
+                    )))
+                    .child(ListBulletItem::new(tr(
+                        "Or add an external agent such as Claude Code or Codex.",
+                        "或添加 Claude Code、Codex 等外部智能体。",
+                    ))),
+            )
+            .child(
+                Button::new("configure-providers", "Configure Providers")
+                    .full_width()
+                    .style(ButtonStyle::Tinted(ui::TintColor::Accent))
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(zed_actions::agent::OpenSettings.boxed_clone(), cx);
+                    }),
+            )
+            .child(
+                h_flex().absolute().top_0().right_0().child(
+                    IconButton::new("dismiss_onboarding", IconName::Close)
+                        .icon_size(IconSize::Small)
+                        .tooltip(Tooltip::text("Dismiss"))
+                        .on_click(move |_, window, cx| dismiss(window, cx)),
+                ),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for AgentPanelOnboarding {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !SHOW_ZED_AI_ONBOARDING {
+            return AgentPanelOnboardingCard::new()
+                .child(self.render_solo_onboarding())
+                .into_any_element();
+        }
+
         let enrolled_in_trial = self
             .user_store
             .read(cx)
@@ -86,5 +144,6 @@ impl Render for AgentPanelOnboarding {
                     this.child(ApiKeysWithoutProviders::new())
                 }
             })
+            .into_any_element()
     }
 }

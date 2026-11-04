@@ -435,7 +435,9 @@ pub fn all_schema_file_associations(
         },
         {
             "fileMatch": [
-            paths::local_settings_file_relative_path()],
+            paths::local_settings_file_relative_path(),
+            // SOLO: and Zed's `.zed` folder.
+            paths::previous_local_settings_file_relative_path()],
             "url": format!("{SCHEMA_URI_PREFIX}project_settings"),
         },
         {
@@ -445,14 +447,16 @@ pub fn all_schema_file_associations(
         {
             "fileMatch": [
                 schema_file_match(paths::tasks_file()),
-                paths::local_tasks_file_relative_path()
+                paths::local_tasks_file_relative_path(),
+                paths::previous_local_tasks_file_relative_path()
             ],
             "url": format!("{SCHEMA_URI_PREFIX}tasks"),
         },
         {
             "fileMatch": [
                 schema_file_match(paths::debug_scenarios_file()),
-                paths::local_debug_file_relative_path()
+                paths::local_debug_file_relative_path(),
+                paths::previous_local_debug_file_relative_path()
             ],
             "url": format!("{SCHEMA_URI_PREFIX}debug_tasks"),
         },
