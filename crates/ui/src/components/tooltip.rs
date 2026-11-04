@@ -27,7 +27,11 @@ impl From<SharedString> for Title {
 impl RenderOnce for Title {
     fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
         match self {
-            Title::Str(title) => title.into_any_element(),
+            // SOLO: shown in the interface language.
+            Title::Str(title) => util::i18n::translate(&title)
+                .map(SharedString::new_static)
+                .unwrap_or(title)
+                .into_any_element(),
             Title::Callback(element) => element(window, cx),
         }
     }

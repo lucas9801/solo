@@ -1566,8 +1566,11 @@ impl FileFinderDelegate {
         }
 
         (
-            HighlightedLabel::new(file_name, file_name_positions).single_line(),
+            HighlightedLabel::new(file_name, file_name_positions)
+                .untranslated()
+                .single_line(),
             HighlightedLabel::new(full_path, full_path_positions)
+                .untranslated()
                 .single_line()
                 .size(LabelSize::Small)
                 .color(Color::Muted),

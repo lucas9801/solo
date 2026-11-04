@@ -3057,7 +3057,7 @@ mod tests {
         assert_eq!(
             terminal.update(&mut cx, |terminal, _| terminal.take_input_log()),
             vec![vec![0x11]],
-            "ctrl-q in a focused terminal should send 0x11 to the PTY, not trigger zed::Quit",
+            "ctrl-q in a focused terminal should send 0x11 to the PTY, not trigger solo::Quit",
         );
     }
 

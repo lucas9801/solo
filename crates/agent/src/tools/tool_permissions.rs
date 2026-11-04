@@ -13,6 +13,15 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use util::{paths::component_matches_ignore_ascii_case, paths::normalize_path};
 
+/// SOLO: Solo's `.solo` project folder, or Zed's `.zed`, which is read too.
+fn is_local_settings_folder(component: &std::ffi::OsStr) -> bool {
+    component_matches_ignore_ascii_case(component, paths::local_settings_folder_name())
+        || component_matches_ignore_ascii_case(
+            component,
+            paths::previous_local_settings_folder_name(),
+        )
+}
+
 pub enum SensitiveSettingsKind {
     Local,
     Global,
@@ -313,14 +322,13 @@ pub async fn sensitive_settings_kind(
     canonical_worktree_roots: &[PathBuf],
     fs: &dyn Fs,
 ) -> Option<SensitiveSettingsKind> {
-    let local_settings_folder = paths::local_settings_folder_name();
-
     // Fast path: scan the raw path components before any I/O. Covers the
     // common case where the agent passes a path that literally contains
     // `.zed/` or `.agents/skills/`.
-    if path.components().any(|component| {
-        component_matches_ignore_ascii_case(component.as_os_str(), local_settings_folder)
-    }) {
+    if path
+        .components()
+        .any(|component| is_local_settings_folder(component.as_os_str()))
+    {
         return Some(SensitiveSettingsKind::Local);
     }
 
@@ -337,9 +345,10 @@ pub async fn sensitive_settings_kind(
                 continue;
             };
 
-            if relative.components().any(|component| {
-                component_matches_ignore_ascii_case(component.as_os_str(), local_settings_folder)
-            }) {
+            if relative
+                .components()
+                .any(|component| is_local_settings_folder(component.as_os_str()))
+            {
                 return Some(SensitiveSettingsKind::Local);
             }
             if is_agents_skills_path(relative) {
@@ -651,10 +660,9 @@ pub fn authorize_file_edit(
     // worktree, but we can short-circuit straight to the appropriate
     // SensitiveSettingsKind on these fast paths and skip the async
     // `sensitive_settings_kind` canonicalization step below.
-    let local_settings_folder = paths::local_settings_folder_name();
-    let is_local_settings = path.components().any(|component| {
-        component_matches_ignore_ascii_case(component.as_os_str(), local_settings_folder)
-    });
+    let is_local_settings = path
+        .components()
+        .any(|component| is_local_settings_folder(component.as_os_str()));
     let is_agents_skills = is_agents_skills_path(path);
 
     cx.spawn(async move |cx| {

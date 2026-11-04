@@ -2,9 +2,11 @@
 # it, builds the installer and zip with package-solo.ps1, pushes, and creates a
 # GitHub release with them, which running copies of Solo update from.
 #
-#   script\release-solo.ps1 [-Version <x.y.z>] [-Notes <text>] [-Draft]
+#   script\release-solo.ps1 [-Version <x.y.z>] [-Notes <text>] [-Draft] [-PublishOnly]
 #
-# Without -Version the patch version goes up by one. Needs a clean working tree
+# Without -Version the patch version goes up by one. -PublishOnly only creates
+# the GitHub release of the current version, already built, tagged and pushed
+# (when creating it failed). Needs a clean working tree
 # on the branch that tracks the repository's main branch, Inno Setup 6, and the
 # GitHub CLI (gh), signed in with `gh auth login`.
 
@@ -12,6 +14,7 @@ param(
     [string]$Version = "",
     [string]$Notes = "",
     [switch]$Draft,
+    [switch]$PublishOnly,
     [string]$Iscc = ""
 )
 $ErrorActionPreference = "Stop"
@@ -30,10 +33,21 @@ if (-not $gh) { throw "GitHub CLI not found. Install it (winget install GitHub.c
 & $gh auth status *> $null
 if ($LASTEXITCODE -ne 0) { throw "GitHub CLI isn't signed in. Run: gh auth login" }
 
-if (git status --porcelain --untracked-files=no) { throw "Commit or stash your changes first." }
+# The release goes to the repository Solo is pushed to, not to Zed's (upstream).
+$repo = (git remote get-url origin) -replace '^.*github\.com[:/]', '' -replace '\.git$', ''
 
 $cargoToml = "crates\zed\Cargo.toml"
 $current = (Select-String -Path $cargoToml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+if ($PublishOnly) {
+    $Version = $current
+    $tag = "v$Version"
+    if (-not (git tag --list $tag)) { throw "Tag $tag doesn't exist; release without -PublishOnly" }
+    $previousTag = git tag --merged "$tag^" --list "v*" --sort=-v:refname | Select-Object -First 1
+    $setup = "dist\Solo-Setup-$Version.exe"
+    $zip = "dist\Solo-$Version-windows-x64.zip"
+    foreach ($file in $setup, $zip) { if (-not (Test-Path $file)) { throw "$file isn't built" } }
+} else {
+if (git status --porcelain --untracked-files=no) { throw "Commit or stash your changes first." }
 if (-not $Version) {
     $parts = $current.Split(".")
     $Version = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
@@ -70,6 +84,7 @@ git push
 if ($LASTEXITCODE -ne 0) { throw "git push failed" }
 git push origin $tag
 if ($LASTEXITCODE -ne 0) { throw "Pushing the tag failed" }
+}
 
 if (-not $Notes) {
     $range = if ($previousTag) { "$previousTag..$tag" } else { $tag }
@@ -77,10 +92,10 @@ if (-not $Notes) {
 }
 $notesFile = New-TemporaryFile
 [IO.File]::WriteAllText($notesFile, $Notes)
-$releaseArgs = @("release", "create", $tag, $setup, $zip, "--title", "Solo $Version", "--notes-file", $notesFile)
+$releaseArgs = @("release", "create", $tag, $setup, $zip, "--repo", $repo, "--verify-tag", "--title", "Solo $Version", "--notes-file", $notesFile)
 if ($Draft) { $releaseArgs += "--draft" }
 & $gh @releaseArgs
 $created = $LASTEXITCODE
 Remove-Item $notesFile
-if ($created -ne 0) { throw "Creating the GitHub release failed; the tag $tag is pushed, so rerun: gh $($releaseArgs -join ' ')" }
+if ($created -ne 0) { throw "Creating the GitHub release failed; the tag $tag is pushed, so rerun with -PublishOnly" }
 Write-Host "Released Solo $Version"

@@ -8,7 +8,7 @@ mod updater;
 #[cfg(target_os = "windows")]
 fn main() {
     if let Err(e) = windows_impl::run() {
-        log::error!("Error: Zed update failed, {:?}", e);
+        log::error!("Error: Solo update failed, {:?}", e);
         windows_impl::show_error(format!("Error: {:?}", e));
     }
 }
@@ -123,7 +123,7 @@ mod windows_impl {
             MessageBoxW(
                 None,
                 &HSTRING::from(content),
-                windows::core::w!("Error: Zed update failed."),
+                windows::core::w!("Error: Solo update failed."),
                 MB_ICONERROR | MB_SYSTEMMODAL,
             )
         };

@@ -120,7 +120,7 @@ The debug symbols for every release are archived: `script/bundle-mac` uploads `z
 ### During the incident
 
 - Run `sample Zed 10 -f zed-sample.txt` (adjust the process name for Preview or Nightly).
-- Get the exact build: type {#action zed::About} in the command palette and copy the version and commit.
+- Get the exact build: type {#action solo::About} in the command palette and copy the version and commit.
 
 The `zed-sample.txt` file can be sent to Zed together with the exact version.
 

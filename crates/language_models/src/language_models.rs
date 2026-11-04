@@ -232,14 +232,19 @@ fn register_language_model_providers(
     credentials_provider: Arc<dyn CredentialsProvider>,
     cx: &mut Context<LanguageModelRegistry>,
 ) {
-    registry.register_provider(
-        Arc::new(CloudLanguageModelProvider::new(
-            user_store,
-            client.clone(),
+    // SOLO: Zed's hosted models are Zed's paid service and need a Zed account;
+    // Solo's AI comes from the user's own API keys and external agents.
+    const REGISTER_ZED_CLOUD_PROVIDER: bool = false;
+    if REGISTER_ZED_CLOUD_PROVIDER {
+        registry.register_provider(
+            Arc::new(CloudLanguageModelProvider::new(
+                user_store,
+                client.clone(),
+                cx,
+            )),
             cx,
-        )),
-        cx,
-    );
+        );
+    }
     registry.register_provider(
         Arc::new(AnthropicLanguageModelProvider::new(
             client.http_client(),

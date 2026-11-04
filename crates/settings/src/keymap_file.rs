@@ -1734,7 +1734,7 @@ mod tests {
                 [
                     {
                         "unbind": {
-                            "ctrl-a": ["zed::Unbind", "test_keymap_file::StringAction"]
+                            "ctrl-a": ["solo::Unbind", "test_keymap_file::StringAction"]
                         }
                     }
                 ]
@@ -1749,11 +1749,50 @@ mod tests {
                 assert!(
                     error_message
                         .0
-                        .contains("can't use `\"zed::Unbind\"` as an unbind target.")
+                        .contains("can't use `\"solo::Unbind\"` as an unbind target.")
                 );
             }
             other => panic!("expected SomeFailedToLoad, got {other:?}"),
         }
+    }
+
+    // SOLO: actions moved from the `zed` namespace to `solo`; user keymaps that still use the
+    // old `zed::` names must keep loading without errors.
+    #[gpui::test]
+    fn keymap_accepts_legacy_zed_namespace_action_names(cx: &mut App) {
+        let key_bindings = match KeymapFile::load(
+            indoc::indoc! {r#"
+                [
+                    {
+                        "bindings": {
+                            "ctrl-a": "zed::NoAction",
+                            "ctrl-b": ["zed::Unbind", "test_keymap_file::StringAction"]
+                        }
+                    }
+                ]
+            "#},
+            cx,
+        ) {
+            crate::keymap_file::KeymapFileLoadResult::Success { key_bindings } => key_bindings,
+            other => panic!("expected Success, got {other:?}"),
+        };
+        assert_eq!(key_bindings.len(), 2);
+        assert!(
+            key_bindings
+                .iter()
+                .any(|binding| binding.action().partial_eq(&gpui::NoAction))
+        );
+        assert!(key_bindings.iter().any(|binding| {
+            binding
+                .action()
+                .partial_eq(&Unbind("test_keymap_file::StringAction".into()))
+        }));
+        assert_eq!(
+            cx.deprecated_actions_to_preferred_actions()
+                .get("zed::NoAction")
+                .copied(),
+            Some("solo::NoAction")
+        );
     }
 
     #[test]

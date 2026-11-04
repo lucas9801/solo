@@ -690,6 +690,14 @@ impl TerminalInput {
                 line_height: relative(settings.buffer_line_height.value()),
                 ..Default::default()
             },
+            // SOLO: the suggested rest of the command is dimmed, unlike
+            // what was typed.
+            edit_prediction_styles: {
+                let mut styles = editor::make_suggestion_styles(cx);
+                styles.insertion.color = Some(theme.colors().text_placeholder);
+                styles
+            },
+            inlay_hints_style: editor::make_inlay_hints_style(cx),
             ..Default::default()
         }
     }

@@ -4,7 +4,9 @@ pub mod collab_panel;
 pub mod notifications;
 mod panel_settings;
 
-use std::{rc::Rc, sync::Arc};
+use std::{any::TypeId, rc::Rc, sync::Arc};
+
+use command_palette_hooks::CommandPaletteFilter;
 
 pub use collab_panel::CollabPanel;
 use gpui::{
@@ -23,6 +25,32 @@ pub fn init(app_state: &Arc<AppState>, cx: &mut App) {
     collab_panel::init(cx);
     notifications::init(app_state, cx);
     title_bar::init(cx);
+    hide_zed_account_actions(cx);
+}
+
+/// SOLO: calls, channels, shared projects, and the Zed account behind them are
+/// Zed's hosted services, so their commands stay out of the command palette.
+fn hide_zed_account_actions(cx: &mut App) {
+    CommandPaletteFilter::update_global(cx, |filter, _| {
+        filter.hide_namespace("client");
+        filter.hide_namespace("collab_panel");
+        filter.hide_namespace("channel_modal");
+        // `collab` also holds the title bar's menus, so only its call and
+        // channel actions are hidden.
+        filter.hide_action_types(&[
+            TypeId::of::<workspace::OpenChannelNotes>(),
+            TypeId::of::<workspace::OpenChannelNotesById>(),
+            TypeId::of::<workspace::Mute>(),
+            TypeId::of::<workspace::Deafen>(),
+            TypeId::of::<workspace::LeaveCall>(),
+            TypeId::of::<workspace::ShareProject>(),
+            TypeId::of::<workspace::ScreenShare>(),
+            TypeId::of::<workspace::CopyRoomId>(),
+            TypeId::of::<channel_view::CopyLink>(),
+            TypeId::of::<zed_actions::ShowCallStats>(),
+            TypeId::of::<zed_actions::OpenAccountSettings>(),
+        ]);
+    });
 }
 
 fn notification_window_options(

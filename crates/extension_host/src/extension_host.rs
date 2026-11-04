@@ -310,7 +310,7 @@ pub struct ExtensionIndexLanguageEntry {
 }
 
 actions!(
-    zed,
+    solo,
     [
         /// Reloads all installed extensions.
         ReloadExtensions

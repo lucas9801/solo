@@ -5927,7 +5927,7 @@ impl AgentPanel {
                 Some(ContextMenu::build(window, cx, |menu, _window, cx| {
                     menu.context(focus_handle.clone())
                         .item(
-                            ContextMenuEntry::new("Zed Agent")
+                            ContextMenuEntry::new("Solo Agent")
                                 .when(
                                     !showing_terminal && is_agent_selected(Agent::NativeAgent),
                                     |this| this.action(Box::new(NewThread)),
@@ -6260,7 +6260,9 @@ impl AgentPanel {
     }
 
     fn should_render_trial_end_upsell(&self, cx: &mut Context<Self>) -> bool {
-        if TrialEndUpsell::dismissed(cx) {
+        // SOLO: Zed's hosted models and their plans aren't offered.
+        const SHOW_ZED_PLAN_UPSELL: bool = false;
+        if !SHOW_ZED_PLAN_UPSELL || TrialEndUpsell::dismissed(cx) {
             return false;
         }
 
@@ -6329,8 +6331,9 @@ impl AgentPanel {
             BaseView::Uninitialized | BaseView::Terminal { .. } => false,
             BaseView::AgentThread { conversation_view } => {
                 if conversation_view.read(cx).as_native_thread(cx).is_some() {
-                    let history_is_empty = ThreadStore::global(cx).read(cx).is_empty();
-                    history_is_empty || !has_configured_non_zed_providers
+                    // SOLO: the onboarding only points to setting up a provider
+                    // or an external agent, so it's shown until one is set up.
+                    !has_configured_non_zed_providers
                 } else {
                     false
                 }

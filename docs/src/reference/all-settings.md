@@ -355,7 +355,7 @@ Add an extension here with `false` to pin it to its currently installed version.
 ```
 
 Selecting **Install Another Version…** from an extension's `⋯` menu on the Extensions
-page ({#action zed::Extensions}) does this automatically.
+page ({#action solo::Extensions}) does this automatically.
 
 ## Autosave
 
@@ -1939,7 +1939,7 @@ This setting enables integration with macOS's native window tabbing feature. Whe
 
 ## Fullscreen Mode
 
-- Description: Which fullscreen mode the `zed::ToggleFullScreen` action enters (macOS only).
+- Description: Which fullscreen mode the `solo::ToggleFullScreen` action enters (macOS only).
 - Setting: `fullscreen_mode`
 - Default: `native`
 
@@ -3751,7 +3751,7 @@ If no matching README exists, Zed leaves the project's pane empty.
 
 ### Performance Profiler
 
-- Description: Collects timing data for foreground and background executor tasks so they can be inspected via the {#action zed::OpenPerformanceProfiler} action. Enabling this may lead to increased memory usage, hence it's disabled by default for regular builds.
+- Description: Collects timing data for foreground and background executor tasks so they can be inspected via the {#action solo::OpenPerformanceProfiler} action. Enabling this may lead to increased memory usage, hence it's disabled by default for regular builds.
 - Setting: `instrumentation.performance_profiler.enabled`
 - Default: `false`
 

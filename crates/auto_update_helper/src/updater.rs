@@ -442,7 +442,7 @@ pub(crate) fn perform_update(
         #[allow(clippy::disallowed_methods, reason = "doesn't run in the main binary")]
         let _child = zed_launch_command(app_dir, launch_arguments)
             .spawn()
-            .context("Failed to launch Zed after update")?;
+            .context("Failed to launch Solo after update")?;
     }
     log::info!("Update completed successfully");
     Ok(())

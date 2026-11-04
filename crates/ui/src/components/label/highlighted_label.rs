@@ -11,6 +11,7 @@ pub struct HighlightedLabel {
     base: LabelLike,
     label: SharedString,
     highlight_indices: Vec<usize>,
+    untranslated: bool,
 }
 
 impl HighlightedLabel {
@@ -35,7 +36,14 @@ impl HighlightedLabel {
             base: LabelLike::new(),
             label,
             highlight_indices,
+            untranslated: false,
         }
+    }
+
+    /// SOLO: shows the text as given, not in the interface language.
+    pub fn untranslated(mut self) -> Self {
+        self.untranslated = true;
+        self
     }
 
     /// Constructs a label with the given byte ranges highlighted.
@@ -62,6 +70,7 @@ impl HighlightedLabel {
             base: LabelLike::new(),
             label,
             highlight_indices,
+            untranslated: false,
         }
     }
 
@@ -217,8 +226,16 @@ pub fn highlight_ranges(
 }
 
 impl RenderOnce for HighlightedLabel {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let highlight_color = cx.theme().colors().text_accent;
+        // SOLO: shown in the interface language, when nothing in it is
+        // highlighted (the highlights are positions in the English).
+        if self.highlight_indices.is_empty()
+            && !self.untranslated
+            && let Some(translation) = util::i18n::translate(&self.label)
+        {
+            self.label = SharedString::new_static(translation);
+        }
 
         let highlights = highlight_ranges(
             &self.label,

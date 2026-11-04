@@ -89,7 +89,7 @@ Zed displays diffs in two modes: **split** (side-by-side comparison) or **unifie
 
 #### Changing the diff view
 
-Open the Settings Editor ({#kb zed::OpenSettings}) and search for "diff view style". Select either **Split** or **Unified**.
+Open the Settings Editor ({#kb solo::OpenSettings}) and search for "diff view style". Select either **Split** or **Unified**.
 
 To change the default, add this to your `settings.json`:
 

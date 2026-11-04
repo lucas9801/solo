@@ -110,6 +110,16 @@ pub(crate) fn derive_action(input: TokenStream) -> TokenStream {
         );
     }
 
+    // SOLO: actions formerly in the `zed` namespace now live in `solo` (so the command palette
+    // shows "solo: ..."). Keep the old `zed::Name` working in user keymaps, tasks and settings by
+    // registering it as a deprecated alias automatically.
+    if namespace.as_deref() == Some("solo") {
+        let legacy_name = format!("zed::{name}");
+        if !deprecated_aliases.contains(&legacy_name) {
+            deprecated_aliases.push(legacy_name);
+        }
+    }
+
     let full_name = if let Some(namespace) = namespace {
         format!("{namespace}::{name}")
     } else {

@@ -3337,7 +3337,13 @@ impl Terminal {
             // the working directory on the client and persist that.
             None
         } else {
-            self.client_side_working_directory()
+            // SOLO: the directory the shell reports is where the user `cd`ed
+            // to; PowerShell's `cd` doesn't change its process's directory.
+            self.shell_integration
+                .working_directory()
+                .filter(|path| path.is_absolute())
+                .cloned()
+                .or_else(|| self.client_side_working_directory())
         }
     }
 

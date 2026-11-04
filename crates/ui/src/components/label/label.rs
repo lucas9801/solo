@@ -38,6 +38,7 @@ pub struct Label {
     base: LabelLike,
     label: SharedString,
     render_code_spans: bool,
+    untranslated: bool,
 }
 
 impl Label {
@@ -55,7 +56,14 @@ impl Label {
             base: LabelLike::new(),
             label: label.into(),
             render_code_spans: false,
+            untranslated: false,
         }
+    }
+
+    /// SOLO: shows the text as given, not in the interface language.
+    pub fn untranslated(mut self) -> Self {
+        self.untranslated = true;
+        self
     }
 
     /// When enabled, text wrapped in backticks (e.g. `` `code` ``) will be
@@ -266,7 +274,13 @@ impl LabelCommon for Label {
 }
 
 impl RenderOnce for Label {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // SOLO: shown in the interface language.
+        if !self.untranslated
+            && let Some(translation) = util::i18n::translate(&self.label)
+        {
+            self.label = SharedString::new_static(translation);
+        }
         if self.render_code_spans {
             if let Some((stripped, code_ranges)) = parse_backtick_spans(&self.label) {
                 let buffer_font_family = theme::theme_settings(cx).buffer_font(cx).family.clone();
