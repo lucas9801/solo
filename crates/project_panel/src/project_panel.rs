@@ -6809,6 +6809,7 @@ impl ProjectPanel {
 
                                 None => this.child(
                                     Label::new(file_name)
+                                        .untranslated()
                                         .single_line()
                                         .color(filename_text_color)
                                         .when(
@@ -6991,6 +6992,7 @@ impl ProjectPanel {
                         .debug_selector(|| format!("project_panel_path_component_{component}"))
                         .child(
                             Label::new(component)
+                                .untranslated()
                                 .single_line()
                                 .color(filename_text_color)
                                 .when(bold_folder_labels && !is_file, |this| {

@@ -136,8 +136,11 @@ impl CommandPalette {
                     return None;
                 }
 
+                let name = humanize_action_name(action.name());
                 Some(Command {
-                    name: SharedString::from(humanize_action_name(action.name())),
+                    // SOLO: shown in the interface language too.
+                    translation: util::i18n::translate(&name).map(SharedString::new_static),
+                    name: SharedString::from(name),
                     action,
                     usage: None,
                 })
@@ -220,9 +223,24 @@ pub struct CommandPaletteDelegate {
 
 struct Command {
     name: SharedString,
+    /// SOLO: the name in Chinese, when the interface is.
+    translation: Option<SharedString>,
     action: Box<dyn Action>,
     usage: Option<CommandUsage>,
 }
+
+impl Command {
+    /// What the query is matched against: the translation, then the name, so
+    /// both find the command.
+    fn search_text(&self) -> String {
+        match &self.translation {
+            Some(translation) => format!("{translation}{TRANSLATION_SEPARATOR}{}", self.name),
+            None => self.name.to_string(),
+        }
+    }
+}
+
+const TRANSLATION_SEPARATOR: &str = "  ";
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct CommandUsage {
@@ -319,6 +337,7 @@ impl Clone for Command {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
+            translation: self.translation.clone(),
             action: self.action.boxed_clone(),
             usage: self.usage,
         }
@@ -374,6 +393,7 @@ impl CommandPaletteDelegate {
             let string = SharedString::from(string);
             commands.push(Command {
                 name: string.clone(),
+                translation: None,
                 action,
                 usage: None,
             });
@@ -522,6 +542,36 @@ impl CommandPaletteDelegate {
     }
 }
 
+/// The command's name, after its translation when there's one.
+fn render_command_name(command: &Command, positions: &[usize]) -> AnyElement {
+    let Some(translation) = &command.translation else {
+        return HighlightedLabel::new(command.name.clone(), positions.to_vec())
+            .truncate()
+            .into_any_element();
+    };
+    let name_start = translation.len() + TRANSLATION_SEPARATOR.len();
+    let (translation_positions, name_positions): (Vec<_>, Vec<_>) = positions
+        .iter()
+        .copied()
+        .partition(|position| *position < name_start);
+    let name_positions = name_positions
+        .into_iter()
+        .map(|position| position - name_start)
+        .collect();
+    h_flex()
+        .min_w_0()
+        .gap_2()
+        .child(HighlightedLabel::new(translation.clone(), translation_positions).flex_none())
+        .child(
+            HighlightedLabel::new(command.name.clone(), name_positions)
+                .untranslated()
+                .color(Color::Muted)
+                .size(LabelSize::Small)
+                .truncate(),
+        )
+        .into_any_element()
+}
+
 impl PickerDelegate for CommandPaletteDelegate {
     type ListItem = ListItem;
 
@@ -621,7 +671,7 @@ impl PickerDelegate for CommandPaletteDelegate {
                 let candidates = commands
                     .iter()
                     .enumerate()
-                    .map(|(ix, command)| StringMatchCandidate::new(ix, &command.name))
+                    .map(|(ix, command)| StringMatchCandidate::new(ix, &command.search_text()))
                     .collect::<Vec<_>>();
 
                 let mut matches = fuzzy_nucleo::match_strings_async(
@@ -791,13 +841,7 @@ impl PickerDelegate for CommandPaletteDelegate {
                         .py_px()
                         .justify_between()
                         .gap_2()
-                        .child(
-                            HighlightedLabel::new(
-                                command.name.clone(),
-                                matching_command.positions.clone(),
-                            )
-                            .truncate(),
-                        )
+                        .child(render_command_name(command, &matching_command.positions))
                         .child(
                             h_flex()
                                 .flex_shrink_0()
@@ -1401,6 +1445,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, (name, action))| Command {
                     name: SharedString::from(name),
+                    translation: None,
                     action,
                     usage: (index < 2).then_some(CommandUsage {
                         last_invoked: 0,

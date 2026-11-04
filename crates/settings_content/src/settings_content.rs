@@ -113,6 +113,38 @@ pub enum ParseStatus {
     Failed { error: String },
 }
 
+/// SOLO: the language of Solo's interface.
+///
+/// Default: system
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum UiLanguage {
+    /// The language Windows (or macOS, Linux) is set to: Chinese for
+    /// Chinese, English otherwise.
+    #[default]
+    System,
+    /// English
+    En,
+    /// Simplified Chinese
+    Zh,
+}
+
+impl strum::VariantNames for UiLanguage {
+    const VARIANTS: &'static [&'static str] = &["System", "English", "简体中文"];
+}
+
 /// Determines when the mouse cursor should be hidden in response to keyboard
 /// input.
 ///
@@ -258,6 +290,11 @@ pub struct SettingsContent {
     ///
     /// Default: on_typing_and_action
     pub hide_mouse: Option<HideMouseMode>,
+
+    /// SOLO: the language of the interface: "system", "en" or "zh".
+    ///
+    /// Default: system
+    pub ui_language: Option<UiLanguage>,
 
     pub journal: Option<JournalSettingsContent>,
 
@@ -409,7 +446,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
         git,
         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
-        journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
+        ui_language, journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
         instrumentation,

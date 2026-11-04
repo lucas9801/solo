@@ -497,6 +497,26 @@ fn general_page(cx: &App) -> SettingsPage {
         ]
     }
 
+    fn language_section() -> [SettingsPageItem; 2] {
+        [
+            SettingsPageItem::SectionHeader("Language"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Interface Language",
+                description: "The language of Solo's interface. System follows the language the system is set to.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("ui_language"),
+                    pick: |settings_content| settings_content.ui_language.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.ui_language = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
     fn auto_update_section() -> [SettingsPageItem; 2] {
         [
             SettingsPageItem::SectionHeader("Auto Update"),
@@ -542,6 +562,7 @@ fn general_page(cx: &App) -> SettingsPage {
         items: concat_sections!(
             @vec,
             general_settings_section(cx),
+            language_section(),
             security_section(),
             workspace_restoration_section(),
             scoped_settings_section(),

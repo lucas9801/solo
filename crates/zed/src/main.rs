@@ -505,6 +505,9 @@ fn main() {
         zlog_settings::init(cx);
         zed::watch_settings_files(fs.clone(), cx);
         handle_keymap_file_changes(user_keymap_file_rx, user_keymap_watcher, cx);
+        // SOLO: the interface language follows the `ui_language` setting.
+        set_ui_language(cx);
+        cx.observe_global::<SettingsStore>(set_ui_language).detach();
 
         let user_agent = format!(
             "Zed/{} ({}; {})",
@@ -2077,5 +2080,28 @@ fn check_for_conpty_dll() {
         }
     } else {
         log::warn!("Failed to load conpty.dll. Terminal will work with reduced functionality.");
+    }
+}
+
+/// SOLO: the `ui_language` setting.
+#[derive(Clone, Copy, PartialEq, Eq, settings::RegisterSetting)]
+struct UiLanguageSetting(settings::UiLanguage);
+
+impl Settings for UiLanguageSetting {
+    fn from_settings(content: &settings::SettingsContent) -> Self {
+        Self(content.ui_language.unwrap_or_default())
+    }
+}
+
+fn set_ui_language(cx: &mut App) {
+    let language = match UiLanguageSetting::get_global(cx).0 {
+        settings::UiLanguage::System => util::i18n::Language::System,
+        settings::UiLanguage::En => util::i18n::Language::English,
+        settings::UiLanguage::Zh => util::i18n::Language::Chinese,
+    };
+    let was_chinese = util::i18n::is_chinese();
+    util::i18n::set_language(language);
+    if util::i18n::is_chinese() != was_chinese {
+        cx.refresh_windows();
     }
 }

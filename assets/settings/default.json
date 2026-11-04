@@ -1735,6 +1735,11 @@
   //
   // Default: false
   "disable_ai": false,
+  // The language of Solo's interface:
+  //   "system": the language the system is set to (Chinese or English)
+  //   "en": English
+  //   "zh": Simplified Chinese
+  "ui_language": "system",
   // Automatically check for Solo updates. Solo checks its GitHub Releases
   // (github.com/lucas9801/solo) shortly after startup and then every 6 hours,
   // and asks before installing anything. Stable builds only.
