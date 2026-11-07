@@ -2,9 +2,6 @@
 
 [中文](zh-CN.md)
 
-> Draft: table of contents and wording to be confirmed. Statements are checked
-> against the code; anything marked "unverified" still needs checking.
-
 ## 1. What Solo is
 
 Solo is a terminal-first editor forked from [Zed](https://github.com/zed-industries/zed).
@@ -227,8 +224,6 @@ collaboration and Zed's own auto-update are off or hidden.
 | Address | Why | How to turn it off |
 | --- | --- | --- |
 | `api.github.com` | Solo update checks (30 s after start, then every 6 h) | `"auto_update": false` |
-| `api.zed.dev` | Extensions: the extension update check at startup, and installing the default `html` extension on first start | unverified: no single setting turns this off yet; `"auto_install_extensions": {"html": false}` skips the html extension |
-| `cdn.agentclientprotocol.com` (plus the icon URLs listed in the registry) | the ACP agent registry, fetched at startup (for the agent panel) | `"disable_ai": true` (also turns off the built-in AI panel) |
 
 **Contacted only when you use a feature:**
 
@@ -239,8 +234,11 @@ collaboration and Zed's own auto-update are off or hidden.
 - AI providers you set up yourself (Anthropic, OpenAI, Ollama, ...);
 - avatars in git blame and commit details: `avatars.githubusercontent.com` and
   the GitHub API;
-- browsing or installing extensions: `api.zed.dev`; the remote server for SSH
-  remote development: `cloud.zed.dev`;
+- browsing or installing extensions, and update checks for installed ones
+  (none when no extension is installed): `api.zed.dev`, Zed's extension
+  service; the remote server for SSH remote development: `cloud.zed.dev`;
+- looking at the ACP agent registry, or using an agent configured from it:
+  `cdn.agentclientprotocol.com` and the icon URLs the registry lists;
 - the agents you run in the terminal (Claude Code, Codex, ...) make their own
   connections, not through Solo.
 

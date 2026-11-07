@@ -2,8 +2,6 @@
 
 [English](en.md)
 
-> 草稿：目录和内容待确认。所有说法都已对照代码核实；标“待核实”的地方还需要再确认。
-
 ## 1. Solo 是什么
 
 Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/zed-industries/zed) 修改而来。终端占据整个窗口，代码编辑器在需要时从右侧打开。它是为在终端里使用 AI 智能体（Claude Code、Codex 等）设计的：你能看到智能体在做什么，按轮审阅它改了什么，也可以让多个智能体在各自的 git worktree 里并行工作。
@@ -145,8 +143,6 @@ Claude Code 每开始和结束一轮，Solo 都会给工作目录拍一个快照
 | 地址 | 用途 | 怎么关 |
 | --- | --- | --- |
 | `api.github.com` | 检查 Solo 更新（启动 30 秒后，之后每 6 小时） | `"auto_update": false` |
-| `api.zed.dev` | 扩展服务：启动时检查扩展更新；第一次启动时安装默认的 `html` 扩展 | 待核实：目前没有能完全关掉的设置；`"auto_install_extensions": {"html": false}` 可以不装 html 扩展 |
-| `cdn.agentclientprotocol.com`（以及注册表里列出的图标地址） | 启动时下载 ACP 智能体注册表（智能体面板用） | `"disable_ai": true`（会同时关掉内置 AI 面板） |
 
 **只在你用到某个功能时才访问：**
 
@@ -154,7 +150,8 @@ Claude Code 每开始和结束一轮，Solo 都会给工作目录拍一个快照
 - 打开某种语言的文件时自动下载语言服务器：GitHub Releases、npm 源；系统里没有合适的 Node.js 时还会访问 `nodejs.org`；
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
-- 浏览或安装扩展：`api.zed.dev`；SSH 远程开发时下载远程服务端：`cloud.zed.dev`；
+- 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；SSH 远程开发时下载远程服务端：`cloud.zed.dev`；
+- 打开 ACP 智能体注册表，或使用从注册表配置的智能体：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
 - 在终端里运行的智能体（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
 
 ## 10. 故障排查
