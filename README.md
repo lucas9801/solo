@@ -104,10 +104,13 @@ keeps being edited there.
 The interface language is the `ui_language` setting: `"system"` (the
 default), `"en"` or `"zh"` (`SOLO_LANGUAGE=en` or `zh` overrides it).
 
-Solo doesn't use Zed Industries' services: Zed accounts, Zed's hosted
-models, edit predictions, collaboration, auto-update and telemetry are off
-or hidden. AI comes from your own API keys (Anthropic, OpenAI, Ollama, ...)
-and external agents such as Claude Code and Codex.
+Solo doesn't use Zed Industries' services by default: Zed accounts, Zed's
+hosted models, edit predictions, collaboration, auto-update and telemetry
+are off or hidden. On its own it only asks GitHub for Solo's updates. Zed's
+extension API is used when you browse or install extensions (and to update
+installed ones), and the ACP agent registry when you look at it or use an
+agent from it. AI comes from your own API keys (Anthropic, OpenAI, Ollama,
+...) and external agents such as Claude Code and Codex.
 
 ## Building
 

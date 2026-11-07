@@ -12,7 +12,7 @@ pub struct ExtensionSettings {
     /// This is used to make functionality provided by extensions (e.g., language support)
     /// available out-of-the-box.
     ///
-    /// Default: { "html": true }
+    /// Default: {} (SOLO: Zed installs html)
     pub auto_install_extensions: HashMap<Arc<str>, bool>,
     pub auto_update_extensions: HashMap<Arc<str>, bool>,
     pub suggest_extensions: bool,
