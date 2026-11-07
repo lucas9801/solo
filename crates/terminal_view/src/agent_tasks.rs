@@ -666,8 +666,9 @@ enum Page {
     Outcome {
         message: SharedString,
         is_error: bool,
-        /// Offer to delete the task at this index, e.g. once it's merged.
-        offer_delete: Option<usize>,
+        /// Offer to delete the task with this branch, e.g. once it's merged.
+        /// By branch, since the list is reloaded meanwhile.
+        offer_delete: Option<String>,
     },
 }
 
@@ -737,6 +738,15 @@ impl AgentTasksModal {
 
     fn entry(&self, index: usize) -> Option<&AgentTaskEntry> {
         self.entries.as_ref()?.as_ref().ok()?.get(index)
+    }
+
+    fn index_of(&self, branch: &str) -> Option<usize> {
+        self.entries
+            .as_ref()?
+            .as_ref()
+            .ok()?
+            .iter()
+            .position(|entry| entry.task.branch == branch)
     }
 
     fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
@@ -898,18 +908,12 @@ impl AgentTasksModal {
             return;
         };
         match action {
-            FinishAction::Merge => self.merge(entry, index, window, cx),
+            FinishAction::Merge => self.merge(entry, window, cx),
             FinishAction::Delete => self.delete(workspace, entry, window, cx),
         }
     }
 
-    fn merge(
-        &mut self,
-        entry: AgentTaskEntry,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn merge(&mut self, entry: AgentTaskEntry, window: &mut Window, cx: &mut Context<Self>) {
         let task = entry.task;
         self.page = Page::Working(tr("Merging…", "正在合并…").into());
         cx.notify();
@@ -929,7 +933,7 @@ impl AgentTasksModal {
                         format!("Merged {} into {}.", task.branch, task.base_branch)
                     },
                     false,
-                    Some(index),
+                    Some(task.branch.clone()),
                 ),
                 Ok(MergeOutcome::NothingToMerge) => (
                     if chinese {
@@ -1443,7 +1447,7 @@ impl Render for AgentTasksModal {
                 is_error,
                 offer_delete,
             } => {
-                let offer_delete = *offer_delete;
+                let offer_delete = offer_delete.clone();
                 v_flex()
                     .gap_2()
                     .child(
@@ -1469,7 +1473,7 @@ impl Render for AgentTasksModal {
                                         cx.notify();
                                     })),
                             )
-                            .when_some(offer_delete, |this, index| {
+                            .when_some(offer_delete, |this, branch| {
                                 this.child(
                                     Button::new(
                                         "agent-task-delete-merged",
@@ -1477,8 +1481,14 @@ impl Render for AgentTasksModal {
                                     )
                                     .style(ButtonStyle::Tinted(TintColor::Error))
                                     .on_click(cx.listener(
-                                        move |this, _, window, cx| {
-                                            this.ask(FinishAction::Delete, index, window, cx)
+                                        move |this, _, window, cx| match this.index_of(&branch) {
+                                            Some(index) => {
+                                                this.ask(FinishAction::Delete, index, window, cx)
+                                            }
+                                            None => {
+                                                this.page = Page::List;
+                                                cx.notify();
+                                            }
                                         },
                                     )),
                                 )
