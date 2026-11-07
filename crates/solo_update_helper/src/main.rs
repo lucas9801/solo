@@ -1,12 +1,13 @@
 //! SOLO: installs a downloaded Solo update once Solo has exited.
 //!
 //! ```text
-//! solo-update-helper <Solo's process id> <installer> <install folder> <installer log>
+//! solo-update-helper <Solo's process id> <installer> <install folder> <installer log> [--no-launch]
 //! ```
 //!
 //! Solo starts it from a copy next to the downloaded installer, since the
 //! installer replaces the one next to solo.exe. It waits for Solo to exit, runs
-//! the installer silently into the install folder, and exits. Problems go to
+//! the installer silently into the install folder (which starts Solo again,
+//! unless `--no-launch`), and exits. Problems go to
 //! `update-helper.log` next to the installer log.
 //!
 //! It replaces a hidden PowerShell script, which security software tends to
@@ -25,11 +26,17 @@ use std::path::Path;
 
 fn main() {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let [pid, installer, install_dir, log_file] = args.as_slice() else {
-        eprintln!(
-            "usage: solo-update-helper <Solo's process id> <installer> <install folder> <installer log>"
-        );
-        std::process::exit(2);
+    let (pid, installer, install_dir, log_file, relaunch) = match args.as_slice() {
+        [pid, installer, install_dir, log_file] => (pid, installer, install_dir, log_file, true),
+        [pid, installer, install_dir, log_file, flag] if flag == "--no-launch" => {
+            (pid, installer, install_dir, log_file, false)
+        }
+        _ => {
+            eprintln!(
+                "usage: solo-update-helper <Solo's process id> <installer> <install folder> <installer log> [--no-launch]"
+            );
+            std::process::exit(2);
+        }
     };
     let installer = Path::new(installer);
     let install_dir = Path::new(install_dir);
@@ -41,7 +48,7 @@ fn main() {
     } else {
         log(&helper_log, &format!("not a process id: {pid:?}"));
     }
-    if let Err(error) = run_installer(installer, install_dir, log_file) {
+    if let Err(error) = run_installer(installer, install_dir, log_file, relaunch) {
         log(
             &helper_log,
             &format!("couldn't run {}: {error}", installer.display()),
@@ -62,26 +69,36 @@ fn log(path: &Path, message: &str) {
 
 /// The installer's command line after its path. Inno Setup takes
 /// `/DIR="..."` and `/LOG="..."` with the quotes inside the argument, and
-/// Windows paths can't contain `"`.
-fn installer_args(install_dir: &Path, log_file: &Path) -> Vec<String> {
+/// Windows paths can't contain `"`. `/NOLAUNCH` is Solo's own (solo.iss):
+/// don't start Solo after installing.
+fn installer_args(install_dir: &Path, log_file: &Path, relaunch: bool) -> Vec<String> {
     let install_dir = install_dir.to_string_lossy();
     // A trailing backslash would read as escaping the closing quote.
     let install_dir = install_dir.trim_end_matches(['\\', '/']);
-    vec![
+    let mut args = vec![
         "/SILENT".to_string(),
         "/SUPPRESSMSGBOXES".to_string(),
         "/NORESTART".to_string(),
         format!("/DIR=\"{install_dir}\""),
         format!("/LOG=\"{}\"", log_file.display()),
-    ]
+    ];
+    if !relaunch {
+        args.push("/NOLAUNCH".to_string());
+    }
+    args
 }
 
 #[cfg(windows)]
-fn run_installer(installer: &Path, install_dir: &Path, log_file: &Path) -> std::io::Result<()> {
+fn run_installer(
+    installer: &Path,
+    install_dir: &Path,
+    log_file: &Path,
+    relaunch: bool,
+) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt as _;
 
     let mut command = std::process::Command::new(installer);
-    for arg in installer_args(install_dir, log_file) {
+    for arg in installer_args(install_dir, log_file, relaunch) {
         command.raw_arg(arg);
     }
     // The installer outlives the helper; it shows its own progress.
@@ -89,8 +106,13 @@ fn run_installer(installer: &Path, install_dir: &Path, log_file: &Path) -> std::
 }
 
 #[cfg(not(windows))]
-fn run_installer(_installer: &Path, install_dir: &Path, log_file: &Path) -> std::io::Result<()> {
-    let _ = installer_args(install_dir, log_file);
+fn run_installer(
+    _installer: &Path,
+    install_dir: &Path,
+    log_file: &Path,
+    relaunch: bool,
+) -> std::io::Result<()> {
+    let _ = installer_args(install_dir, log_file, relaunch);
     Err(std::io::Error::other(
         "updates are only installed on Windows",
     ))
@@ -127,6 +149,7 @@ mod tests {
             installer_args(
                 Path::new(r"D:\Program Files\终端 Solo's\"),
                 Path::new(r"C:\Users\张三\AppData\Local\Temp\solo-update\install.log"),
+                true,
             ),
             vec![
                 "/SILENT",

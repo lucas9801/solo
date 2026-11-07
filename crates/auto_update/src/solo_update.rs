@@ -7,9 +7,12 @@
 //! - it asks the GitHub API for the latest release of [`SOLO_GITHUB_REPO`],
 //! - tells the user about a newer version with a notification
 //!   ("update and restart", "skip this version", "view release notes"),
-//! - and on Windows downloads the Inno Setup installer, starts a hidden helper
-//!   that waits for Solo to exit and runs the installer silently, then quits
-//!   Solo through the normal quit flow (so unsaved files still prompt).
+//! - and on Windows downloads the Inno Setup installer (checked against the
+//!   SHA-256 GitHub reports) and starts `solo-update-helper`, which waits for
+//!   Solo to exit and runs the installer silently. "Update and restart" then
+//!   quits Solo through the normal quit flow (so unsaved files still prompt)
+//!   and the installer starts it again; "install when Solo quits" waits for
+//!   the user to quit, so agents running in terminals carry on meanwhile.
 //!
 //! Only stable builds check. Automatic checks follow the `auto_update`
 //! setting; the "check for updates" command always checks.
@@ -26,10 +29,15 @@ use semver::Version;
 use serde::Deserialize;
 use settings::{Settings as _, SettingsStore};
 use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use util::ResultExt as _;
 use workspace::{
     MultiWorkspace,
+    item::RunningProgram,
     notifications::{
         NotificationId, dismiss_app_notification, show_app_notification,
         simple_message_notification::MessageNotification,
@@ -50,6 +58,9 @@ const API_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 const SKIPPED_VERSION_KEY: &str = "solo-update-skipped-version";
+/// The version an update is installing (or will install when Solo quits), to
+/// say how it went on the next start.
+const PENDING_VERSION_KEY: &str = "solo-update-pending-version";
 
 /// A release as published on GitHub.
 #[derive(Clone, Debug, PartialEq)]
@@ -69,6 +80,9 @@ pub struct SoloInstaller {
     pub name: String,
     pub url: String,
     pub size: u64,
+    /// The SHA-256 GitHub computed when the installer was uploaded (lowercase
+    /// hex), if it reported one.
+    pub sha256: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +105,15 @@ struct GithubAssetJson {
     browser_download_url: String,
     #[serde(default)]
     size: u64,
+    /// `sha256:<hex>`.
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+/// The hex SHA-256 of a GitHub asset `digest` (`sha256:<hex>`).
+fn sha256_of_digest(digest: &str) -> Option<String> {
+    let hex = digest.strip_prefix("sha256:")?.to_ascii_lowercase();
+    (hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit())).then_some(hex)
 }
 
 /// Parses a release tag such as `v1.28.1`, `1.28.1` or `v1.29` into a version.
@@ -130,6 +153,7 @@ pub fn parse_release(json: &[u8]) -> Result<SoloRelease> {
             name: asset.name,
             url: asset.browser_download_url,
             size: asset.size,
+            sha256: asset.digest.as_deref().and_then(sha256_of_digest),
         });
     Ok(SoloRelease {
         version,
@@ -225,7 +249,7 @@ pub async fn check_for_update(
 }
 
 /// Downloads the installer to `target`, reporting whole percentages, and
-/// checks the size against the one GitHub reported.
+/// checks its size and SHA-256 against the ones GitHub reported.
 pub async fn download_installer(
     http: Arc<dyn HttpClient>,
     installer: &SoloInstaller,
@@ -292,30 +316,77 @@ pub async fn download_installer(
             installer.size
         );
     }
+    match &installer.sha256 {
+        Some(expected) => {
+            let path = target.to_path_buf();
+            let actual = smol::unblock(move || sha256_of_file(&path)).await?;
+            if &actual != expected {
+                smol::fs::remove_file(target).await.ok();
+                anyhow::bail!(
+                    "the downloaded installer is corrupt: its SHA-256 is {actual}, not {expected}"
+                );
+            }
+        }
+        None => log::warn!(
+            "solo update: GitHub reported no SHA-256 for {}",
+            installer.name
+        ),
+    }
     Ok(())
+}
+
+fn sha256_of_file(path: &Path) -> Result<String> {
+    use sha2::Digest as _;
+    use std::io::Read as _;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("couldn't read {}", path.display()))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = vec![0u8; 256 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 const UPDATE_HELPER: &str = "solo-update-helper.exe";
 
 /// The arguments for `solo-update-helper` (the `solo_update_helper` crate):
 /// wait for Solo (`pid`) to exit, then run the installer silently into
-/// `install_dir`.
+/// `install_dir`, and have it start Solo again if `relaunch`.
 pub fn installer_helper_args(
     pid: u32,
     installer: &Path,
     install_dir: &Path,
     log_file: &Path,
+    relaunch: bool,
 ) -> Vec<std::ffi::OsString> {
-    vec![
+    let mut args = vec![
         pid.to_string().into(),
         installer.as_os_str().to_owned(),
         install_dir.as_os_str().to_owned(),
         log_file.as_os_str().to_owned(),
-    ]
+    ];
+    if !relaunch {
+        args.push("--no-launch".into());
+    }
+    args
 }
 
 #[cfg(target_os = "windows")]
-fn spawn_installer_helper(installer: &Path, install_dir: &Path, log_file: &Path) -> Result<()> {
+fn spawn_installer_helper(
+    installer: &Path,
+    install_dir: &Path,
+    log_file: &Path,
+    relaunch: bool,
+) -> Result<()> {
     use smol::process::windows::CommandExt as _;
     use std::process::Stdio;
 
@@ -336,7 +407,13 @@ fn spawn_installer_helper(installer: &Path, install_dir: &Path, log_file: &Path)
             helper.display()
         )
     })?;
-    let args = installer_helper_args(std::process::id(), installer, install_dir, log_file);
+    let args = installer_helper_args(
+        std::process::id(),
+        installer,
+        install_dir,
+        log_file,
+        relaunch,
+    );
     let spawn = |flags: u32| {
         smol::process::Command::new(&helper_copy)
             .args(&args)
@@ -361,7 +438,12 @@ fn spawn_installer_helper(installer: &Path, install_dir: &Path, log_file: &Path)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn spawn_installer_helper(_installer: &Path, _install_dir: &Path, _log_file: &Path) -> Result<()> {
+fn spawn_installer_helper(
+    _installer: &Path,
+    _install_dir: &Path,
+    _log_file: &Path,
+    _relaunch: bool,
+) -> Result<()> {
     anyhow::bail!("installing updates is only supported on Windows")
 }
 
@@ -403,6 +485,15 @@ fn read_skipped_version(cx: &App) -> Task<Option<Version>> {
     })
 }
 
+/// When a downloaded update is installed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallWhen {
+    /// Now: Solo quits, and the installer starts it again.
+    Restart,
+    /// When the user quits Solo; it isn't started again.
+    OnQuit,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Activity {
     Idle,
@@ -410,14 +501,47 @@ enum Activity {
     Downloading {
         version: Version,
         percent: Option<u8>,
+        when: InstallWhen,
+        /// Replacing an update waiting for Solo to quit, without asking.
+        quiet: bool,
     },
     Installing,
+}
+
+/// A downloaded update, installed when Solo quits.
+#[derive(Clone, Debug, PartialEq)]
+struct ReadyOnQuit {
+    version: Version,
+    installer: PathBuf,
+    install_dir: PathBuf,
+    log_file: PathBuf,
 }
 
 pub struct SoloUpdater {
     current_version: Version,
     activity: Activity,
+    /// Survives other activity: a newer version may be checked for and
+    /// downloaded meanwhile.
+    ready_on_quit: Option<ReadyOnQuit>,
     poll_task: Option<Task<()>>,
+    _quit_subscription: gpui::Subscription,
+}
+
+/// What to tell the user about the update the last run was installing.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StartupNotice {
+    Updated(Version),
+    NotInstalled(Version),
+}
+
+/// Compares the version an update was installing with the one running now.
+pub fn startup_notice(current: &Version, pending: Option<&Version>) -> Option<StartupNotice> {
+    let pending = pending?;
+    if without_build_metadata(current) >= without_build_metadata(pending) {
+        Some(StartupNotice::Updated(current.clone()))
+    } else {
+        Some(StartupNotice::NotInstalled(pending.clone()))
+    }
 }
 
 struct GlobalSoloUpdater(Entity<SoloUpdater>);
@@ -438,14 +562,100 @@ pub fn init(cx: &mut App) {
         let mut updater = SoloUpdater {
             current_version,
             activity: Activity::Idle,
+            ready_on_quit: None,
             poll_task: None,
+            _quit_subscription: cx.on_app_quit(|updater: &mut SoloUpdater, _| {
+                updater.install_ready_update_at_quit();
+                async {}
+            }),
         };
         updater.sync_polling(cx);
         cx.observe_global::<SettingsStore>(|updater, cx| updater.sync_polling(cx))
             .detach();
         updater
     });
-    cx.set_global(GlobalSoloUpdater(updater));
+    cx.set_global(GlobalSoloUpdater(updater.clone()));
+    report_last_update(updater.read(cx).current_version.clone(), cx);
+}
+
+/// Says whether the update the last run was installing went in.
+fn report_last_update(current: Version, cx: &mut App) {
+    let kvp = KeyValueStore::global(cx);
+    cx.spawn(async move |cx| {
+        let pending = kvp
+            .read_kvp(PENDING_VERSION_KEY)
+            .ok()
+            .flatten()
+            .and_then(|version| parse_version(&version));
+        let Some(notice) = startup_notice(&current, pending.as_ref()) else {
+            return;
+        };
+        kvp.delete_kvp(PENDING_VERSION_KEY.to_string())
+            .await
+            .log_err();
+        let chinese = util::i18n::is_chinese();
+        let message = match notice {
+            StartupNotice::Updated(version) => {
+                log::info!("solo update: updated to {version}");
+                if chinese {
+                    format!("Solo 已更新到 {version}。")
+                } else {
+                    format!("Solo was updated to {version}.")
+                }
+            }
+            StartupNotice::NotInstalled(version) => {
+                let log = update_download_dir().join("install.log");
+                log::warn!("solo update: {version} wasn't installed");
+                if chinese {
+                    format!("Solo {version} 没有装上，日志在 {}。", log.display())
+                } else {
+                    format!(
+                        "Solo {version} wasn't installed; the log is in {}.",
+                        log.display()
+                    )
+                }
+            }
+        };
+        cx.update(|cx| show_status_message(message, cx));
+    })
+    .detach();
+}
+
+fn write_pending_version(version: &Version, cx: &App) -> Task<()> {
+    let kvp = KeyValueStore::global(cx);
+    let version = version.to_string();
+    cx.background_spawn(async move {
+        kvp.write_kvp(PENDING_VERSION_KEY.to_string(), version)
+            .await
+            .log_err();
+    })
+}
+
+/// Where this Solo downloads updates: a folder of its own, so another Solo
+/// (another channel, say) doesn't delete an installer waiting to run.
+fn update_download_dir() -> PathBuf {
+    std::env::temp_dir()
+        .join("solo-update")
+        .join(std::process::id().to_string())
+}
+
+/// The programs running in Solo's windows that quitting would end, e.g.
+/// agents in terminals.
+fn running_programs(cx: &App) -> Vec<RunningProgram> {
+    cx.windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<MultiWorkspace>())
+        .filter_map(|window| window.read(cx).ok())
+        .flat_map(|multi_workspace| multi_workspace.workspaces().cloned().collect::<Vec<_>>())
+        .flat_map(|workspace| {
+            workspace
+                .read(cx)
+                .items_with_panels(cx)
+                .iter()
+                .filter_map(|item| item.running_program(cx))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// The "check for updates" command: always checks, and always reports back.
@@ -556,6 +766,25 @@ impl SoloUpdater {
         cx: &mut Context<Self>,
     ) {
         match outcome {
+            Ok(CheckOutcome::UpdateAvailable(release)) if self.ready_on_quit.is_some() => {
+                let ready = self
+                    .ready_on_quit
+                    .as_ref()
+                    .map(|ready| ready.version.clone());
+                if ready.as_ref() == Some(&release.version) {
+                    if check_type.is_manual() {
+                        show_status_message(on_quit_message(&release.version), cx);
+                    }
+                } else {
+                    // The user chose to update when Solo quits: they get the
+                    // newest version then, without being asked again.
+                    log::info!(
+                        "solo update: {} replaces the update waiting for Solo to quit",
+                        release.version
+                    );
+                    self.install(release, InstallWhen::OnQuit, true, cx);
+                }
+            }
             Ok(CheckOutcome::UpdateAvailable(release)) => {
                 log::info!("solo update: {} is available", release.version);
                 if check_type.is_manual() {
@@ -601,7 +830,9 @@ impl SoloUpdater {
 
     fn progress_text(&self) -> String {
         match &self.activity {
-            Activity::Downloading { version, percent } => {
+            Activity::Downloading {
+                version, percent, ..
+            } => {
                 let percent = percent.map(|p| format!(" {p}%")).unwrap_or_default();
                 if util::i18n::is_chinese() {
                     format!("正在下载 Solo {version}…{percent}")
@@ -618,7 +849,13 @@ impl SoloUpdater {
         }
     }
 
-    fn install(&mut self, release: SoloRelease, cx: &mut Context<Self>) {
+    fn install(
+        &mut self,
+        release: SoloRelease,
+        when: InstallWhen,
+        quiet: bool,
+        cx: &mut Context<Self>,
+    ) {
         if !matches!(self.activity, Activity::Idle) {
             return;
         }
@@ -626,22 +863,67 @@ impl SoloUpdater {
             cx.open_url(&release.html_url);
             return;
         };
+        let version = release.version;
+        // Already downloaded, to install when Solo quits.
+        let downloaded = self
+            .ready_on_quit
+            .clone()
+            .filter(|ready| ready.version == version && ready.installer.is_file());
+        if let Some(ready) = &downloaded
+            && when == InstallWhen::OnQuit
+        {
+            show_status_message(on_quit_message(&ready.version), cx);
+            return;
+        }
         self.activity = Activity::Downloading {
-            version: release.version,
+            version: version.clone(),
             percent: None,
+            when,
+            quiet,
         };
         cx.notify();
-        show_download_notification(cx.entity(), cx);
+        if !quiet {
+            show_download_notification(cx.entity(), cx);
+        }
 
         let http = cx.http_client();
         let current = self.current_version.clone();
         cx.spawn(async move |this, cx| {
-            let result = download_and_install(this.clone(), http, installer, current, cx).await;
+            let result = async {
+                let ready = match downloaded {
+                    Some(ready) => ready,
+                    None => {
+                        download(this.clone(), http, installer, version, current, cx.clone())
+                            .await?
+                    }
+                };
+                cx.update(|cx| write_pending_version(&ready.version, cx))
+                    .await;
+                match when {
+                    InstallWhen::Restart => install_and_restart(this.clone(), ready, cx).await,
+                    InstallWhen::OnQuit => {
+                        this.update(cx, |this, _| {
+                            if let Some(previous) = this.ready_on_quit.replace(ready.clone())
+                                && previous.installer != ready.installer
+                            {
+                                std::fs::remove_file(&previous.installer).ok();
+                            }
+                        })?;
+                        log::info!(
+                            "solo update: {} will be installed when Solo quits",
+                            ready.version
+                        );
+                        Ok(InstallResult::OnQuit(ready.version))
+                    }
+                }
+            }
+            .await;
             cx.update(|cx| {
                 dismiss_app_notification(&NotificationId::unique::<DownloadNotification>(), cx)
             });
             let message = match result {
                 Ok(InstallResult::Quitting) => return,
+                Ok(InstallResult::OnQuit(version)) => on_quit_message(&version),
                 Ok(InstallResult::QuitCancelled) => util::i18n::tr(
                     "Update cancelled because Solo didn't quit.",
                     "Solo 没有退出，更新已取消。",
@@ -659,32 +941,77 @@ impl SoloUpdater {
             this.update(cx, |this, cx| {
                 this.activity = Activity::Idle;
                 cx.notify();
-                show_status_message(message, cx);
+                if !quiet {
+                    show_status_message(message, cx);
+                }
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Starts the helper for an update waiting for Solo to quit. It can't stop
+    /// Solo from quitting: problems are only logged.
+    fn install_ready_update_at_quit(&mut self) {
+        let Some(ready) = self.ready_on_quit.take() else {
+            return;
+        };
+        if !ready.installer.is_file() {
+            log::error!(
+                "solo update: the installer {} is gone",
+                ready.installer.display()
+            );
+            return;
+        }
+        match spawn_installer_helper(&ready.installer, &ready.install_dir, &ready.log_file, false) {
+            Ok(()) => log::info!("solo update: installing {} as Solo quits", ready.version),
+            Err(error) => log::error!("solo update: couldn't install at quit: {error:#}"),
+        }
+    }
+
+    /// Forgets a downloaded update the user skipped.
+    fn forget_skipped(&mut self, version: &Version) {
+        if let Some(ready) = self
+            .ready_on_quit
+            .take_if(|ready| &ready.version == version)
+        {
+            std::fs::remove_file(&ready.installer).ok();
+            log::info!("solo update: {version} was skipped; it won't be installed");
+        }
+    }
+}
+
+fn on_quit_message(version: &Version) -> String {
+    if util::i18n::is_chinese() {
+        format!("Solo {version} 会在你退出 Solo 时安装。")
+    } else {
+        format!("Solo {version} will be installed when you quit Solo.")
     }
 }
 
 enum InstallResult {
     Quitting,
     QuitCancelled,
+    OnQuit(Version),
 }
 
-async fn download_and_install(
+/// Downloads and checks the installer.
+async fn download(
     this: gpui::WeakEntity<SoloUpdater>,
     http: Arc<dyn HttpClient>,
     installer: SoloInstaller,
+    version: Version,
     current: Version,
-    cx: &mut AsyncApp,
-) -> Result<InstallResult> {
+    cx: AsyncApp,
+) -> Result<ReadyOnQuit> {
     let install_dir = std::env::current_exe()
         .context("couldn't locate Solo")?
         .parent()
         .context("couldn't locate Solo's folder")?
         .to_path_buf();
-    let download_dir = std::env::temp_dir().join("solo-update");
+    // A folder per version: an installer waiting for Solo to quit stays until
+    // its replacement is downloaded.
+    let download_dir = update_download_dir().join(version.to_string());
     if smol::fs::metadata(&download_dir).await.is_ok() {
         smol::fs::remove_dir_all(&download_dir).await.ok();
     }
@@ -692,23 +1019,33 @@ async fn download_and_install(
         .await
         .with_context(|| format!("couldn't create {}", download_dir.display()))?;
     let target = download_dir.join(&installer.name);
-    let log_file = download_dir.join("install.log");
+    let log_file = update_download_dir().join("install.log");
 
-    let progress_cx = cx.clone();
-    let progress_this = this.clone();
     download_installer(http, &installer, &current, &target, move |percent| {
-        progress_this
-            .update(&mut progress_cx.clone(), |this, cx| {
-                if let Activity::Downloading { percent: p, .. } = &mut this.activity {
-                    *p = Some(percent);
-                    cx.notify();
-                }
-            })
-            .ok();
+        this.update(&mut cx.clone(), |this, cx| {
+            if let Activity::Downloading { percent: p, .. } = &mut this.activity {
+                *p = Some(percent);
+                cx.notify();
+            }
+        })
+        .ok();
     })
     .await?;
     log::info!("solo update: downloaded {}", target.display());
+    Ok(ReadyOnQuit {
+        version,
+        installer: target,
+        install_dir,
+        log_file,
+    })
+}
 
+/// Quits Solo through the normal quit flow and installs the update.
+async fn install_and_restart(
+    this: gpui::WeakEntity<SoloUpdater>,
+    ready: ReadyOnQuit,
+    cx: &mut AsyncApp,
+) -> Result<InstallResult> {
     this.update(cx, |this, cx| {
         this.activity = Activity::Installing;
         cx.notify();
@@ -725,10 +1062,12 @@ async fn download_and_install(
         return Ok(InstallResult::QuitCancelled);
     }
 
-    spawn_installer_helper(&target, &install_dir, &log_file)?;
+    // Installing now: not again at quit.
+    this.update(cx, |this, _| this.ready_on_quit = None).ok();
+    spawn_installer_helper(&ready.installer, &ready.install_dir, &ready.log_file, true)?;
     log::info!(
         "solo update: helper started; installing into {}",
-        install_dir.display()
+        ready.install_dir.display()
     );
     cx.update(|cx| cx.quit());
     Ok(InstallResult::Quitting)
@@ -777,22 +1116,13 @@ fn show_update_available(release: SoloRelease, cx: &mut App) {
                 if let Some(excerpt) = excerpt {
                     notification = notification.secondary_content(excerpt);
                 }
-                if can_install() && release.installer.is_some() {
-                    let release = release.clone();
-                    notification = notification
-                        .primary_message(util::i18n::tr("Update and Restart", "更新并重启"))
-                        .primary_on_click(move |_, cx| {
-                            if let Some(global) = cx.try_global::<GlobalSoloUpdater>() {
-                                let updater = global.0.clone();
-                                let release = release.clone();
-                                updater.update(cx, |updater, cx| updater.install(release, cx));
-                            }
-                        });
-                }
-                notification
-                    .secondary_message(util::i18n::tr("Skip This Version", "跳过此版本"))
-                    .secondary_on_click(move |_, cx| {
+                let skip = {
+                    move |_: &mut Window, cx: &mut Context<MessageNotification>| {
                         let kvp = KeyValueStore::global(cx);
+                        if let Some(global) = cx.try_global::<GlobalSoloUpdater>() {
+                            let updater = global.0.clone();
+                            updater.update(cx, |updater, _| updater.forget_skipped(&version));
+                        }
                         let version = version.to_string();
                         cx.background_spawn(async move {
                             kvp.write_kvp(SKIPPED_VERSION_KEY.to_string(), version)
@@ -800,7 +1130,61 @@ fn show_update_available(release: SoloRelease, cx: &mut App) {
                                 .log_err();
                         })
                         .detach();
-                    })
+                    }
+                };
+                if !(can_install() && release.installer.is_some()) {
+                    return notification
+                        .secondary_message(util::i18n::tr("Skip This Version", "跳过此版本"))
+                        .secondary_on_click(skip)
+                        .more_info_message(util::i18n::tr("View Release Notes", "查看更新内容"))
+                        .more_info_url(release.html_url.clone());
+                }
+                let install = |when: InstallWhen| {
+                    let release = release.clone();
+                    move |_: &mut Window, cx: &mut Context<MessageNotification>| {
+                        if let Some(global) = cx.try_global::<GlobalSoloUpdater>() {
+                            let updater = global.0.clone();
+                            let release = release.clone();
+                            updater.update(cx, |updater, cx| {
+                                updater.install(release, when, false, cx)
+                            });
+                        }
+                    }
+                };
+                let restart = util::i18n::tr("Update and Restart", "更新并重启");
+                let on_quit = util::i18n::tr("Install When Solo Quits", "退出时安装");
+                // With agents running, updating now would end them: installing
+                // when the user quits comes first.
+                let running = running_programs(cx);
+                let notification = if running.is_empty() {
+                    notification
+                        .primary_message(restart)
+                        .primary_on_click(install(InstallWhen::Restart))
+                        .secondary_message(on_quit)
+                        .secondary_on_click(install(InstallWhen::OnQuit))
+                } else {
+                    let names = running
+                        .iter()
+                        .map(|program| program.name.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let warning = if util::i18n::is_chinese() {
+                        format!("现在更新并重启会结束：{names}")
+                    } else {
+                        format!("Updating and restarting now ends: {names}")
+                    };
+                    let notes = notes_excerpt(&release.notes)
+                        .map(|excerpt| format!("{warning}\n\n{excerpt}"))
+                        .unwrap_or(warning);
+                    notification
+                        .secondary_content(notes)
+                        .primary_message(on_quit)
+                        .primary_on_click(install(InstallWhen::OnQuit))
+                        .secondary_message(restart)
+                        .secondary_on_click(install(InstallWhen::Restart))
+                };
+                notification
+                    .secondary_menu_entry(util::i18n::tr("Skip This Version", "跳过此版本"), skip)
                     .more_info_message(util::i18n::tr("View Release Notes", "查看更新内容"))
                     .more_info_url(release.html_url.clone())
             })
@@ -830,7 +1214,8 @@ mod tests {
 
     const SETUP_ASSET: &str = r#"
         {"name": "Solo-1.29.0-windows-x64.zip", "size": 10, "browser_download_url": "https://example.com/solo.zip"},
-        {"name": "Solo-Setup-1.29.0.exe", "size": 1234, "browser_download_url": "https://example.com/Solo-Setup-1.29.0.exe"}
+        {"name": "Solo-Setup-1.29.0.exe", "size": 1234, "browser_download_url": "https://example.com/Solo-Setup-1.29.0.exe",
+         "digest": "sha256:2C26B46B68FFC68FF99B453C1D30413413422D706483BFA0F98A5E886266E7AE"}
     "#;
 
     fn version(text: &str) -> Version {
@@ -854,6 +1239,9 @@ mod tests {
                 name: "Solo-Setup-1.29.0.exe".into(),
                 url: "https://example.com/Solo-Setup-1.29.0.exe".into(),
                 size: 1234,
+                sha256: Some(
+                    "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae".into()
+                ),
             })
         );
     }
@@ -961,7 +1349,7 @@ mod tests {
         let install_dir = Path::new(r"D:\Program Files\终端 Solo's");
         let log_file = Path::new(r"C:\Users\张三\AppData\Local\Temp\solo-update\install.log");
         assert_eq!(
-            installer_helper_args(4242, installer, install_dir, log_file),
+            installer_helper_args(4242, installer, install_dir, log_file, true),
             vec![
                 std::ffi::OsString::from("4242"),
                 installer.into(),
@@ -1062,6 +1450,8 @@ mod tests {
             name: "Solo-Setup-1.29.0.exe".into(),
             url: "https://example.com/Solo-Setup-1.29.0.exe".into(),
             size: 1000,
+            // Of 1000 sevens.
+            sha256: Some(sha256_of_bytes(&[7u8; 1000])),
         };
         let mut progress = Vec::new();
         download_installer(http.clone(), &installer, &version("1.28.1"), &target, |p| {
@@ -1072,11 +1462,69 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap().len(), 1000);
         assert_eq!(progress.last(), Some(&100));
 
+        // A different file than GitHub hashed is thrown away.
+        installer.sha256 = Some(sha256_of_bytes(b"something else"));
+        let error = download_installer(
+            http.clone(),
+            &installer,
+            &version("1.28.1"),
+            &target,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("corrupt"), "{error:#}");
+        assert!(!target.exists());
+
         installer.size = 2000;
         let error = download_installer(http, &installer, &version("1.28.1"), &target, |_| {})
             .await
             .unwrap_err();
         assert!(error.to_string().contains("incomplete"), "{error:#}");
         assert!(!target.exists());
+    }
+
+    fn sha256_of_bytes(bytes: &[u8]) -> String {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), bytes).unwrap();
+        sha256_of_file(file.path()).unwrap()
+    }
+
+    #[test]
+    fn hashes_files() {
+        assert_eq!(
+            sha256_of_bytes(b"foo"),
+            "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+        );
+        assert_eq!(sha256_of_digest("sha256:ABC"), None);
+        assert_eq!(
+            sha256_of_digest(
+                "md5:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn tells_how_the_last_update_went() {
+        assert_eq!(startup_notice(&version("1.28.3"), None), None);
+        assert_eq!(
+            startup_notice(&version("1.28.4"), Some(&version("1.28.4"))),
+            Some(StartupNotice::Updated(version("1.28.4")))
+        );
+        assert_eq!(
+            startup_notice(&version("1.28.3"), Some(&version("1.28.4"))),
+            Some(StartupNotice::NotInstalled(version("1.28.4")))
+        );
+    }
+
+    #[test]
+    fn helper_args_say_whether_to_start_solo_again() {
+        let path = Path::new("x");
+        assert_eq!(installer_helper_args(1, path, path, path, true).len(), 4);
+        assert_eq!(
+            installer_helper_args(1, path, path, path, false).last(),
+            Some(&std::ffi::OsString::from("--no-launch"))
+        );
     }
 }
