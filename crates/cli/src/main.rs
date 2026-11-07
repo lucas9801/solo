@@ -474,6 +474,37 @@ fn parse_path_in_wsl(source: &str, wsl: &str) -> Result<String> {
     Ok(source.to_string(&|path| path.to_string_lossy().into_owned()))
 }
 
+/// SOLO: `solo-cli agent <args>`: sends them to the running Solo, with the
+/// terminal it runs in, and prints what comes back.
+fn run_agent(args: Vec<String>) -> Result<i32> {
+    let (server, server_name) =
+        IpcOneShotServer::<IpcHandshake>::new().context("Handshake before contacting Solo")?;
+    #[cfg(target_os = "windows")]
+    windows::send_to_running_instance(&format!("zed-cli://{server_name}"))?;
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = server_name;
+        anyhow::bail!("`solo-cli agent` only works on Windows so far");
+    }
+    let (_, handshake) = server.accept().context("Handshake with Solo")?;
+    handshake.requests.send(CliRequest::Agent {
+        args,
+        caller: std::env::var("SOLO_TERMINAL_ID")
+            .ok()
+            .filter(|id| !id.is_empty()),
+        cwd: std::env::current_dir().ok(),
+    })?;
+    loop {
+        match handshake.responses.recv() {
+            Ok(CliResponse::Stdout { message }) => print!("{message}"),
+            Ok(CliResponse::Stderr { message }) => eprintln!("{message}"),
+            Ok(CliResponse::Exit { status }) => return Ok(status),
+            Ok(CliResponse::Ping | CliResponse::PromptOpenBehavior) => {}
+            Err(error) => anyhow::bail!("lost the connection to Solo: {error}"),
+        }
+    }
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error:#}");
@@ -508,6 +539,13 @@ fn run() -> Result<()> {
     if let Ok(socket) = std::env::var("ZED_ASKPASS_SOCKET") {
         askpass::main_from_args(&socket, std::env::args().skip(1));
         return Ok(());
+    }
+
+    // SOLO: `solo-cli agent ...` asks the running Solo and prints its answer;
+    // it doesn't start Solo.
+    if std::env::args().nth(1).as_deref() == Some("agent") {
+        let status = run_agent(std::env::args().skip(2).collect())?;
+        std::process::exit(status);
     }
 
     let args = Args::parse();
@@ -1197,6 +1235,29 @@ mod windows {
         last_err != ERROR_ALREADY_EXISTS
     }
 
+    /// SOLO: hands `url` to the Solo that's running, without starting one.
+    pub(crate) fn send_to_running_instance(url: &str) -> anyhow::Result<()> {
+        if check_single_instance() {
+            anyhow::bail!("Solo isn't running");
+        }
+        unsafe {
+            let pipe = CreateFileW(
+                &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", app_identifier())),
+                GENERIC_WRITE.0,
+                FILE_SHARE_MODE::default(),
+                None,
+                OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES::default(),
+                None,
+            )
+            .context("Solo isn't taking requests")?;
+            let mut bytes_written = 0;
+            WriteFile(pipe, Some(url.as_bytes()), Some(&mut bytes_written), None)?;
+            CloseHandle(pipe)?;
+        }
+        Ok(())
+    }
+
     struct App(PathBuf);
 
     impl InstalledApp for App {
@@ -1275,8 +1336,13 @@ mod windows {
                 let dir = cli.parent().context("no parent path for cli")?;
 
                 // ../Zed.exe is the standard, lib/zed is for MSYS2, ./zed.exe is for the target
-                // directory in development builds.
-                let possible_locations = ["../Zed.exe", "../lib/zed/zed-editor.exe", "./zed.exe"];
+                // directory in development builds. SOLO: solo-cli.exe is next to solo.exe.
+                let possible_locations = [
+                    "./solo.exe",
+                    "../Zed.exe",
+                    "../lib/zed/zed-editor.exe",
+                    "./zed.exe",
+                ];
                 possible_locations
                     .iter()
                     .find_map(|p| dir.join(p).canonicalize().ok().filter(|path| path != &cli))

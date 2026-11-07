@@ -1,4 +1,5 @@
 pub mod agent_board;
+pub mod agent_cli;
 mod agent_context;
 mod agent_resume;
 mod agent_session;

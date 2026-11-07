@@ -2306,6 +2306,12 @@
     //   tell a command from the shell, except for agents),
     // "never": never ask.
     "confirm_close": "agents",
+    // What agents in Solo's terminals can do with `solo-cli agent` (see
+    // docs/agent-cli.md): "full" lets them list terminals, wait for agents,
+    // read their answers, open files and reviews, send agents prompts and
+    // start agent tasks; "read_only" all but sending prompts and starting
+    // tasks; "off" nothing.
+    "agent_control": "full",
     // The command "New Agent Task" runs in the new task's terminal, in the
     // git worktree made for the task (see `git.worktree_directory`).
     "agent_task_command": "claude",

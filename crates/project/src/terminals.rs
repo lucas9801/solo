@@ -441,6 +441,7 @@ impl Project {
                             }
                             None if settings.shell_integration => {
                                 let mut env = env;
+                                terminal::shell_integration::add_terminal_env(&mut env);
                                 if settings.input_editor && settings.compact_prompt {
                                     env.insert("SOLO_COMPACT_PROMPT".to_string(), "1".to_string());
                                 }
@@ -458,7 +459,11 @@ impl Project {
                                 }
                                 (shell, env)
                             }
-                            None => (settings.shell, env),
+                            None => {
+                                let mut env = env;
+                                terminal::shell_integration::add_terminal_env(&mut env);
+                                (settings.shell, env)
+                            }
                         }
                     };
                     anyhow::Ok(TerminalBuilder::new(
