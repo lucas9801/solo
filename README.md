@@ -77,7 +77,25 @@ as Claude Code in the terminal while viewing and editing code beside it.
 - Send the selection, the cursor position or the file's diagnostics from the
   editor to an agent (ctrl-alt-k, ctrl-alt-shift-m).
 - New agent task: a git worktree with its own branch and an agent terminal,
-  to merge or discard when done ("agent task" in the command palette).
+  to merge or discard when done ("agent task" in the command palette). A
+  repository can set its tasks up in `.solo/tasks.json`:
+
+  ```jsonc
+  {
+    // Where task worktrees go, relative to the repository ({repo}: its folder name).
+    "worktree_directory": "../{repo}-worktrees",
+    // Ignored files each task gets a copy of (wildcards in file names only).
+    "copy": [".env", ".env.*", "config/local.*"],
+    // Run in the task's terminal before the agent starts.
+    "setup": "npm install",
+    // Run in the task's worktree before it's deleted.
+    "teardown": "docker compose down",
+    // Each task gets a port of its own, in SOLO_TASK_PORT.
+    "port_range": [4100, 4199],
+    // More environment variables for tasks' terminals.
+    "env": { "NODE_ENV": "development" }
+  }
+  ```
 - Click a `mermaid` line in an agent's output to see the diagram, taken from
   Claude Code's transcript when the screen only shows part of it. The tab's
   tooltip shows the session's token use and context.

@@ -6,6 +6,7 @@
 //! Tasks live in git (see [`git`]), so they're found again after a restart.
 //! [`agent_tasks`] lists them with their terminals.
 
+pub mod config;
 pub mod git;
 
 use std::{
@@ -37,6 +38,76 @@ use workspace::{
 use zed_actions::agent_task::{ManageAgentTasks, NewAgentTask};
 
 pub use git::{AgentTask, MergeOutcome};
+
+/// SOLO: a new task, made the way the repository's `.solo/tasks.json` says
+/// (see `config`), with what its terminal needs.
+pub(crate) struct NewTask {
+    pub task: AgentTask,
+    /// For its terminal: the task's port and the config's variables.
+    pub env: collections::HashMap<String, String>,
+    /// Run in its terminal before the agent.
+    pub setup: Option<String>,
+    /// What went wrong after the worktree was made (copying files, a port),
+    /// which doesn't undo it.
+    pub warnings: Vec<String>,
+}
+
+/// Makes a task's branch and worktree, copies files into it and gives it a
+/// port, as the repository's config says. Blocks on git.
+pub(crate) fn make_task(
+    info: &git::RepositoryInfo,
+    name: &str,
+    worktree_directory_setting: &str,
+) -> Result<NewTask> {
+    let config = config::TasksConfig::load(&info.main_root)?.unwrap_or_default();
+    let plan = match config.worktrees_directory(&info.main_root)? {
+        Some(directory) => git::plan_task_in(info, name, directory)?,
+        None => git::plan_task(info, name, worktree_directory_setting)?,
+    };
+    let mut task = git::create_task(info, &plan)?;
+    let mut warnings = Vec::new();
+    if let Some(worktree) = task.worktree_path.clone()
+        && let Err(error) = config::copy_files(&config.copy, &info.main_root, &worktree)
+    {
+        warnings.push(format!("{error:#}"));
+    }
+    if let Some(range) = config.port_range {
+        let used: Vec<u16> = git::list_tasks(&info.main_root)
+            .unwrap_or_default()
+            .iter()
+            .filter(|other| other.branch != task.branch)
+            .filter_map(|other| other.port)
+            .collect();
+        match config::free_port(range, &used) {
+            Some(port) => {
+                if let Err(error) = git::set_task_port(&mut task, port) {
+                    warnings.push(format!("{error:#}"));
+                }
+            }
+            None => warnings.push(if is_chinese() {
+                format!("端口范围 {}–{} 已经用完", range[0], range[1])
+            } else {
+                format!("every port in {}–{} is taken", range[0], range[1])
+            }),
+        }
+    }
+    Ok(NewTask {
+        env: config.task_env(task.port),
+        setup: config.setup.filter(|setup| !setup.trim().is_empty()),
+        task,
+        warnings,
+    })
+}
+
+/// The commands a new task's terminal runs: the setup, then the agent.
+pub(crate) fn task_commands(setup: Option<String>, agent: Option<String>) -> Option<String> {
+    let commands: Vec<String> = setup
+        .into_iter()
+        .chain(agent)
+        .filter(|command| !command.trim().is_empty())
+        .collect();
+    (!commands.is_empty()).then(|| commands.join("\r"))
+}
 
 use crate::{
     TerminalView,
@@ -194,12 +265,13 @@ pub(crate) fn open_task_terminal(
     workspace: &mut Workspace,
     directory: PathBuf,
     title: String,
+    env: collections::HashMap<String, String>,
     command: Option<String>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Task<Result<Entity<TerminalView>>> {
     let terminal = TerminalPanel::add_center_terminal(workspace, window, cx, move |project, cx| {
-        project.create_terminal_shell(Some(directory), cx)
+        project.create_terminal_shell_with_env(Some(directory), env, cx)
     });
     cx.spawn_in(window, async move |workspace, cx| {
         let terminal = terminal.await?.upgrade().context("the terminal closed")?;
@@ -474,14 +546,16 @@ impl NewAgentTaskModal {
             let created = cx
                 .background_spawn({
                     let name = name.clone();
-                    async move {
-                        let plan = git::plan_task(&info, &name, &setting)?;
-                        git::create_task(&info, &plan)
-                    }
+                    async move { make_task(&info, &name, &setting) }
                 })
                 .await;
-            let task = match created {
-                Ok(task) => task,
+            let NewTask {
+                task,
+                env,
+                setup,
+                warnings,
+            } = match created {
+                Ok(new_task) => new_task,
                 Err(error) => {
                     this.update(cx, |this, cx| {
                         this.creating = false;
@@ -497,11 +571,24 @@ impl NewAgentTaskModal {
                 return;
             };
             let opened = workspace.update_in(cx, |workspace, window, cx| {
+                if !warnings.is_empty() {
+                    // The workspace is being updated: not through `show_toast`.
+                    struct TaskSetupToast;
+                    workspace.show_toast(
+                        Toast::new(
+                            NotificationId::unique::<TaskSetupToast>(),
+                            warnings.join("\n"),
+                        )
+                        .autohide(),
+                        cx,
+                    );
+                }
                 open_task_terminal(
                     workspace,
                     directory,
                     task.name.clone(),
-                    Some(command),
+                    env,
+                    task_commands(setup, Some(command)),
                     window,
                     cx,
                 )
@@ -809,7 +896,12 @@ impl AgentTasksModal {
                 return;
             };
             workspace.update(cx, |workspace, cx| {
-                open_task_terminal(workspace, directory, entry.task.name, None, window, cx)
+                let env = config::TasksConfig::load(&entry.task.repository_root)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .task_env(entry.task.port);
+                open_task_terminal(workspace, directory, entry.task.name, env, None, window, cx)
                     .detach_and_log_err(cx);
             });
         });
@@ -1004,17 +1096,47 @@ impl AgentTasksModal {
             let deleted = cx
                 .background_spawn({
                     let task = task.clone();
-                    async move { git::delete_task(&task) }
+                    async move {
+                        // The repository's teardown runs first; failing, it
+                        // doesn't keep the task.
+                        let teardown = config::TasksConfig::load(&task.repository_root)
+                            .ok()
+                            .flatten()
+                            .and_then(|config| config.teardown)
+                            .filter(|teardown| !teardown.trim().is_empty());
+                        let teardown_error = match (teardown, &task.worktree_path) {
+                            (Some(teardown), Some(worktree)) if worktree.exists() => {
+                                config::run_teardown(&teardown, worktree).err()
+                            }
+                            _ => None,
+                        };
+                        git::delete_task(&task)?;
+                        anyhow::Ok(teardown_error)
+                    }
                 })
                 .await;
             let (message, is_error) = match deleted {
-                Ok(()) => (
+                Ok(None) => (
                     if is_chinese() {
                         format!("已删除任务 {} 的工作区和分支。", task.name)
                     } else {
                         format!("Deleted the worktree and branch of {}.", task.name)
                     },
                     false,
+                ),
+                Ok(Some(teardown_error)) => (
+                    if is_chinese() {
+                        format!(
+                            "已删除任务 {} 的工作区和分支，但清理命令失败：{teardown_error:#}",
+                            task.name
+                        )
+                    } else {
+                        format!(
+                            "Deleted the worktree and branch of {}, but the teardown failed: {teardown_error:#}",
+                            task.name
+                        )
+                    },
+                    true,
                 ),
                 Err(error) => (format!("{error:#}"), true),
             };

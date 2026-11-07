@@ -776,8 +776,13 @@ async fn new_task(
     let created = cx
         .background_spawn(async move { create_task(&directory, &name, base, &setting) })
         .await;
-    let task = match created {
-        Ok(task) => task,
+    let crate::agent_tasks::NewTask {
+        task,
+        env,
+        setup,
+        warnings,
+    } = match created {
+        Ok(new_task) => new_task,
         Err(error) => return AgentCliOutput::error(format!("{error:#}")),
     };
     let Some(worktree) = task.worktree_path.clone() else {
@@ -789,7 +794,8 @@ async fn new_task(
                 workspace,
                 worktree.clone(),
                 task.name.clone(),
-                Some(command),
+                env,
+                crate::agent_tasks::task_commands(setup, Some(command)),
                 window,
                 cx,
             )
@@ -847,6 +853,9 @@ async fn new_task(
     } else {
         format!("{id}\n")
     });
+    if !warnings.is_empty() {
+        result.stderr = warnings.join("\n");
+    }
     if !sent {
         result.stderr = if is_chinese() {
             format!("agent 没有在终端 {id} 里启动，提示词没有发送")
@@ -863,13 +872,12 @@ fn create_task(
     name: &str,
     base: Option<String>,
     worktree_directory_setting: &str,
-) -> anyhow::Result<git::AgentTask> {
+) -> anyhow::Result<crate::agent_tasks::NewTask> {
     let mut info = git::repository_info(directory)?;
     if let Some(base) = base {
         info.current_branch = Some(base);
     }
-    let plan = git::plan_task(&info, name, worktree_directory_setting)?;
-    git::create_task(&info, &plan)
+    crate::agent_tasks::make_task(&info, name, worktree_directory_setting)
 }
 
 #[cfg(test)]

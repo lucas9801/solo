@@ -30,6 +30,8 @@ const MAX_SLUG_CHARS: usize = 40;
 const MAX_UNTRACKED_FILES_IN_DIFF: usize = 200;
 const BASE_KEY: &str = "solobase";
 const NAME_KEY: &str = "solotask";
+/// The port the task got from `.solo/tasks.json`'s `port_range`.
+const PORT_KEY: &str = "soloport";
 
 /// An agent task: a branch checked out in its own worktree.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +45,8 @@ pub struct AgentTask {
     pub worktree_path: Option<PathBuf>,
     /// The repository's main worktree.
     pub repository_root: PathBuf,
+    /// The port the task was given (`SOLO_TASK_PORT`), if any.
+    pub port: Option<u16>,
 }
 
 /// The repository around a directory.
@@ -207,6 +211,16 @@ pub fn plan_task(
     name: &str,
     worktree_directory_setting: &str,
 ) -> Result<TaskPlan> {
+    let directory = worktrees_directory(&repository.main_root, worktree_directory_setting)?;
+    plan_task_in(repository, name, directory)
+}
+
+/// Like [`plan_task`], with the task's worktree in `directory`.
+pub fn plan_task_in(
+    repository: &RepositoryInfo,
+    name: &str,
+    directory: PathBuf,
+) -> Result<TaskPlan> {
     let name = name.trim();
     if name.is_empty() {
         bail!(tr("Give the task a name", "请输入任务名"));
@@ -217,7 +231,6 @@ pub fn plan_task(
             "HEAD 处于分离状态，请先切换到任务要基于的分支",
         ));
     };
-    let directory = worktrees_directory(&repository.main_root, worktree_directory_setting)?;
     let slug = unique_slug(&task_slug(name), |candidate| {
         branch_exists(&repository.main_root, &branch_for_slug(candidate))
             || directory.join(candidate).exists()
@@ -265,6 +278,7 @@ pub fn create_task(repository: &RepositoryInfo, plan: &TaskPlan) -> Result<Agent
             base_branch: plan.base_branch.clone(),
             worktree_path: Some(plan.worktree_path.clone()),
             repository_root: repository.main_root.clone(),
+            port: None,
         };
         if let Err(rollback_error) = delete_task(&task) {
             log::error!("failed to roll back the agent task worktree: {rollback_error:#}");
@@ -278,7 +292,22 @@ pub fn create_task(repository: &RepositoryInfo, plan: &TaskPlan) -> Result<Agent
         base_branch: plan.base_branch.clone(),
         worktree_path: Some(plan.worktree_path.clone()),
         repository_root: repository.main_root.clone(),
+        port: None,
     })
+}
+
+/// Remembers the port the task was given, for it and the other tasks.
+pub fn set_task_port(task: &mut AgentTask, port: u16) -> Result<()> {
+    git_ok(
+        &task.repository_root,
+        [
+            "config",
+            &format!("branch.{}.{PORT_KEY}", task.branch),
+            &port.to_string(),
+        ],
+    )?;
+    task.port = Some(port);
+    Ok(())
 }
 
 /// The worktrees of the repository with the branch checked out in each.
@@ -331,7 +360,7 @@ pub fn list_tasks(repository_root: &Path) -> Result<Vec<AgentTask>> {
         [
             "config",
             "--get-regexp",
-            &format!(r"^branch\..*\.({BASE_KEY}|{NAME_KEY})$"),
+            &format!(r"^branch\..*\.({BASE_KEY}|{NAME_KEY}|{PORT_KEY})$"),
         ],
     )?;
     // Exit code 1: no such keys.
@@ -368,6 +397,7 @@ pub fn list_tasks(repository_root: &Path) -> Result<Vec<AgentTask>> {
                 .find(|(_, worktree_branch)| worktree_branch.as_deref() == Some(branch))
                 .map(|(path, _)| path.clone()),
             repository_root: repository_root.to_path_buf(),
+            port: value_of(PORT_KEY).and_then(|port| port.parse().ok()),
         });
     }
     Ok(tasks)
