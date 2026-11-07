@@ -54,6 +54,8 @@ pub(crate) struct LoadedFile {
     pub abs_path: PathBuf,
     /// The contents before, or `None` if it didn't exist.
     pub base: Option<String>,
+    /// The contents the turn left, or `None` if it left no file.
+    pub after: Option<String>,
     pub buffer: Entity<Buffer>,
 }
 
@@ -71,6 +73,10 @@ struct ReviewFile {
     /// What the file is compared with: its contents before the turn, with the
     /// hunks kept since. `None` if it didn't exist.
     base: Option<Arc<str>>,
+    /// The file as the turn left it, with the hunks rejected since (`None`
+    /// if it left no file). Anything else in it is someone else's edit, which
+    /// rejecting mustn't overwrite.
+    expected: Option<Arc<str>>,
     /// Updates to the diff run one after another.
     diff_update: Shared<Task<()>>,
     _subscriptions: [Subscription; 2],
@@ -225,13 +231,14 @@ impl AgentTurnReview {
                 .background_spawn(async move {
                     // Rolling back discards everything since the turn started,
                     // not only what the turn changed.
-                    let changed = if confirming {
+                    let (after, changed) = if confirming {
                         let now = store.snapshot()?;
-                        store.changed_files(&before, &now)?
+                        let changed = store.changed_files(&before, &now)?;
+                        (now, changed)
                     } else {
-                        turn.changed.clone()
+                        (turn.after.clone(), turn.changed.clone())
                     };
-                    anyhow::Ok(load_bases(&store, &before, changed))
+                    anyhow::Ok(load_bases(&store, &before, &after, changed))
                 })
                 .await;
             let (bases, mut skipped) = match loaded {
@@ -247,7 +254,7 @@ impl AgentTurnReview {
                 }
             };
             let mut files = Vec::new();
-            for (path, abs_path, base) in bases {
+            for (path, abs_path, base, after) in bases {
                 let buffer = project
                     .update(cx, |project, cx| project.open_local_buffer(&abs_path, cx))
                     .await;
@@ -256,6 +263,7 @@ impl AgentTurnReview {
                         path,
                         abs_path,
                         base,
+                        after,
                         buffer,
                     }),
                     Err(error) => {
@@ -319,6 +327,7 @@ impl AgentTurnReview {
                 buffer: file.buffer,
                 diff,
                 base: file.base.map(|base| base.into()),
+                expected: file.after.map(|after| normalized_text(after).into()),
                 diff_update: Task::ready(()).shared(),
                 _subscriptions: subscriptions,
             });
@@ -444,8 +453,13 @@ impl AgentTurnReview {
             return;
         }
         let mut deleted = Vec::new();
+        let mut changed_since = Vec::new();
         for (ix, hunks) in self.hunks_by_file(&ranges, cx) {
             let file = &self.files[ix];
+            if !file.is_as_the_turn_left_it(cx) {
+                changed_since.push(file.path_key.path.as_unix_str().to_string());
+                continue;
+            }
             if file.base.is_none() {
                 // The turn created the file.
                 deleted.push(ix);
@@ -475,11 +489,34 @@ impl AgentTurnReview {
                 })
                 .collect();
             let buffer = file.buffer.clone();
-            buffer.update(cx, |buffer, cx| buffer.edit(edits, None, cx));
+            let text = buffer.update(cx, |buffer, cx| {
+                buffer.edit(edits, None, cx);
+                buffer.text()
+            });
+            self.files[ix].expected = Some(text.into());
             self.project
                 .update(cx, |project, cx| project.save_buffer(buffer, cx))
                 .detach_and_log_err(cx);
         }
+        self.status = if changed_since.is_empty() {
+            None
+        } else if is_chinese() {
+            Some(
+                format!(
+                    "这一轮之后又有人改过 {}，为了不覆盖这些改动，没有拒绝其中的改动。请手动修改。",
+                    changed_since.join("、")
+                )
+                .into(),
+            )
+        } else {
+            Some(
+                format!(
+                    "{} changed after the turn, so its changes weren't rejected, not to overwrite those edits. Edit it by hand.",
+                    changed_since.join(", ")
+                )
+                .into(),
+            )
+        };
         for ix in deleted.into_iter().rev() {
             let file = self.files.remove(ix);
             self.multibuffer.update(cx, |multibuffer, cx| {
@@ -905,32 +942,73 @@ impl AgentTurnReview {
     }
 }
 
-/// The text files among `changed`, with their contents before; and how many
-/// weren't text.
+impl ReviewFile {
+    /// Whether nothing but the review changed the file since the turn, and
+    /// its buffer has no unsaved edits.
+    fn is_as_the_turn_left_it(&self, cx: &App) -> bool {
+        let buffer = self.buffer.read(cx);
+        if buffer.is_dirty() || buffer.has_conflict() {
+            return false;
+        }
+        match &self.expected {
+            Some(expected) => buffer.text() == **expected,
+            None => buffer.len() == 0,
+        }
+    }
+}
+
+/// Text as a buffer holds it: without a byte order mark, with `\n` line
+/// endings.
+fn normalized_text(text: String) -> String {
+    let mut text = match text.strip_prefix('\u{feff}') {
+        Some(text) => text.to_string(),
+        None => text,
+    };
+    language::LineEnding::normalize(&mut text);
+    text
+}
+
+/// A changed file's path, absolute path, contents before and contents after.
+type FileContents = (String, PathBuf, Option<String>, Option<String>);
+
+/// The text files among `changed`, with their contents before `before` and
+/// in `after`; and how many weren't text.
 fn load_bases(
     store: &SnapshotStore,
     before: &str,
+    after: &str,
     changed: Vec<ChangedFile>,
-) -> (Vec<(String, PathBuf, Option<String>)>, usize) {
+) -> (Vec<FileContents>, usize) {
+    let text_in = |tree: &str, path: &str| {
+        store
+            .file_contents(tree, path)
+            .log_err()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|text| !text.contains('\0'))
+    };
     let mut skipped = 0;
     let mut files = Vec::new();
     for file in changed {
         let base = if file.change == FileChange::Added {
             None
         } else {
-            let text = store
-                .file_contents(before, &file.path)
-                .log_err()
-                .and_then(|bytes| String::from_utf8(bytes).ok())
-                .filter(|text| !text.contains('\0'));
-            let Some(text) = text else {
+            let Some(text) = text_in(before, &file.path) else {
+                skipped += 1;
+                continue;
+            };
+            Some(text)
+        };
+        let after = if file.change == FileChange::Deleted {
+            None
+        } else {
+            let Some(text) = text_in(after, &file.path) else {
                 skipped += 1;
                 continue;
             };
             Some(text)
         };
         let abs_path = store.abs_path(&file.path);
-        files.push((file.path, abs_path, base));
+        files.push((file.path, abs_path, base, after));
     }
     (files, skipped)
 }
@@ -1220,20 +1298,20 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    async fn test_turn_review_reject_and_keep(cx: &mut TestAppContext) {
+    /// A review of a turn that left `/project` as `tree`, changing the files
+    /// in `bases` from those contents (`None`: the turn created the file).
+    async fn open_review<'a>(
+        cx: &'a mut TestAppContext,
+        tree: serde_json::Value,
+        bases: &[(&str, Option<&str>)],
+    ) -> (
+        Arc<FakeFs>,
+        Entity<AgentTurnReview>,
+        &'a mut VisualTestContext,
+    ) {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
-        // As the agent left them; the bases are as they were before its turn.
-        fs.insert_tree(
-            path!("/project"),
-            json!({
-                "a.txt": "one\nTWO\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n",
-                "b.txt": "b changed\n",
-                "c.txt": "created\n",
-            }),
-        )
-        .await;
+        fs.insert_tree(path!("/project"), tree).await;
         let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
         let (workspace, cx) =
             cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
@@ -1262,15 +1340,9 @@ mod tests {
         });
 
         let mut files = Vec::new();
-        for (name, base) in [
-            (
-                "a.txt",
-                Some("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n"),
-            ),
-            ("b.txt", Some("b\n")),
-            ("c.txt", None),
-        ] {
+        for (name, base) in bases {
             let abs_path = PathBuf::from(path!("/project")).join(name);
+            let after = fs.load(&abs_path).await.ok();
             let buffer = project
                 .update(cx, |project, cx| project.open_local_buffer(&abs_path, cx))
                 .await
@@ -1279,6 +1351,7 @@ mod tests {
                 path: name.to_string(),
                 abs_path,
                 base: base.map(str::to_string),
+                after,
                 buffer,
             });
         }
@@ -1287,6 +1360,29 @@ mod tests {
         });
         review.update(cx, |review, cx| review.set_files(files, 0, cx));
         cx.run_until_parked();
+        (fs, review, cx)
+    }
+
+    #[gpui::test]
+    async fn test_turn_review_reject_and_keep(cx: &mut TestAppContext) {
+        // As the agent left them; the bases are as they were before its turn.
+        let (fs, review, cx) = open_review(
+            cx,
+            json!({
+                "a.txt": "one\nTWO\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n",
+                "b.txt": "b changed\n",
+                "c.txt": "created\n",
+            }),
+            &[
+                (
+                    "a.txt",
+                    Some("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n"),
+                ),
+                ("b.txt", Some("b\n")),
+                ("c.txt", None),
+            ],
+        )
+        .await;
 
         let hunk_count = |review: &Entity<AgentTurnReview>, cx: &mut VisualTestContext| {
             review.update(cx, |review, cx| {
@@ -1355,11 +1451,104 @@ mod tests {
         fs.save(
             path!("/project/b.txt").as_ref(),
             &"b changed\nand more\n".into(),
-            Default::default(),
+            language::LineEnding::Unix,
         )
         .await
         .unwrap();
         cx.run_until_parked();
         assert_eq!(hunk_count(&review, cx), 2);
+
+        // Rejecting the rest puts a.txt back, after its first hunk was
+        // rejected; b.txt changed since the turn, so it's left alone.
+        review.update(cx, |review, cx| {
+            review.reject_hunks(AgentTurnReview::all_hunks(), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            fs.load(path!("/project/a.txt").as_ref()).await.unwrap(),
+            "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n"
+        );
+        assert_eq!(
+            fs.load(path!("/project/b.txt").as_ref()).await.unwrap(),
+            "b changed\nand more\n"
+        );
+        assert_eq!(hunk_count(&review, cx), 1);
+    }
+
+    #[gpui::test]
+    async fn test_rejecting_keeps_edits_made_after_the_turn(cx: &mut TestAppContext) {
+        let (fs, review, cx) = open_review(
+            cx,
+            json!({
+                "edited.txt": "one\nTWO\nthree\n",
+                "created.txt": "created\n",
+                "unsaved.txt": "agent\n",
+                "untouched.txt": "agent\n",
+            }),
+            &[
+                ("edited.txt", Some("one\ntwo\nthree\n")),
+                ("created.txt", None),
+                ("unsaved.txt", Some("before\n")),
+                ("untouched.txt", Some("before\n")),
+            ],
+        )
+        .await;
+
+        // After the turn, the user edits two files on disk and one in its
+        // buffer, without saving.
+        for (path, text) in [
+            (path!("/project/edited.txt"), "one\nTWO, mine\nthree\n"),
+            (path!("/project/created.txt"), "created\nmine\n"),
+        ] {
+            fs.save(path.as_ref(), &text.into(), language::LineEnding::Unix)
+                .await
+                .unwrap();
+        }
+        cx.run_until_parked();
+        review.update(cx, |review, cx| {
+            review.files[2]
+                .buffer
+                .update(cx, |buffer, cx| buffer.edit([(0..0, "mine ")], None, cx));
+        });
+        cx.run_until_parked();
+
+        review.update(cx, |review, cx| {
+            review.reject_hunks(AgentTurnReview::all_hunks(), cx)
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            fs.load(path!("/project/edited.txt").as_ref())
+                .await
+                .unwrap(),
+            "one\nTWO, mine\nthree\n"
+        );
+        assert_eq!(
+            fs.load(path!("/project/created.txt").as_ref())
+                .await
+                .unwrap(),
+            "created\nmine\n"
+        );
+        assert_eq!(
+            fs.load(path!("/project/unsaved.txt").as_ref())
+                .await
+                .unwrap(),
+            "agent\n"
+        );
+        review.update(cx, |review, cx| {
+            assert_eq!(review.files[2].buffer.read(cx).text(), "mine agent\n");
+            let status = review.status.clone().unwrap();
+            for name in ["edited.txt", "created.txt", "unsaved.txt"] {
+                assert!(status.contains(name), "{status}");
+            }
+            assert!(!status.contains("untouched.txt"), "{status}");
+        });
+        // The file nobody touched since is rejected.
+        assert_eq!(
+            fs.load(path!("/project/untouched.txt").as_ref())
+                .await
+                .unwrap(),
+            "before\n"
+        );
     }
 }

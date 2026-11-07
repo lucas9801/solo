@@ -87,6 +87,9 @@ pub(crate) struct AgentTurn {
     pub prompt: Option<String>,
     pub store: Arc<SnapshotStore>,
     pub before: TreeId,
+    /// The work tree when the turn ended, to tell the agent's changes from
+    /// ones made since.
+    pub after: TreeId,
     pub changed: Vec<ChangedFile>,
 }
 
@@ -266,12 +269,12 @@ impl AgentTurns {
                         let changed = started.store.changed_files(&started.before, &after)?;
                         let prompt = prompt_source
                             .and_then(|directory| last_claude_prompt(&directory, started_at));
-                        anyhow::Ok((changed, prompt))
+                        anyhow::Ok((after, changed, prompt))
                     }
                 })
                 .await
                 .log_err();
-            let Some((changed, prompt)) = changes else {
+            let Some((after, changed, prompt)) = changes else {
                 return;
             };
             this.update(cx, |this, cx| {
@@ -287,6 +290,7 @@ impl AgentTurns {
                         prompt,
                         store: started.store.clone(),
                         before: started.before.clone(),
+                        after,
                         changed,
                     });
                     if terminal.turns.len() > MAX_TURNS {
