@@ -337,7 +337,7 @@ pub struct SettingsContent {
 
     /// Configuration for session-related features
     pub session: Option<SessionSettingsContent>,
-    /// Control what info is collected by Zed.
+    /// Control what info is sent to Zed. Solo sends none by default.
     pub telemetry: Option<TelemetrySettingsContent>,
 
     /// Configuration of the terminal in Solo.
@@ -644,7 +644,7 @@ impl From<Option<String>> for AudioOutputDeviceName {
     }
 }
 
-/// Control what info is collected by Zed.
+/// Control what info is sent to Zed. Solo sends none by default.
 #[with_fallible_options]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Debug, MergeFrom)]
 pub struct TelemetrySettingsContent {

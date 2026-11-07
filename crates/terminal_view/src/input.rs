@@ -46,7 +46,7 @@ use ui::{
 use zed_actions::editor::{MoveDown, MoveUp};
 
 use completion::{CompletionKind, ShellFlavor, complete};
-use history::{CommandHistory, load_shell_history};
+use history::{CommandHistory, SuggestionContext, load_shell_history};
 
 actions!(
     terminal,
@@ -310,9 +310,10 @@ impl TerminalInput {
         let suggestion = if self.history.borrow().is_navigating() || text.contains('\n') {
             None
         } else {
+            let context = self.suggestion_context(cx);
             self.history
                 .borrow()
-                .suggestion(&text)
+                .suggestion_in(&text, &context)
                 .map(|entry| entry[text.len()..].to_string())
                 .filter(|suffix| !suffix.contains('\n'))
         };
@@ -335,6 +336,30 @@ impl TerminalInput {
                 cx,
             );
         });
+    }
+
+    /// SOLO: where the shell is and what ran there, from the command blocks.
+    fn suggestion_context(&self, cx: &App) -> SuggestionContext {
+        let integration = self.terminal.read(cx).shell_integration();
+        let cwd = integration.working_directory().cloned();
+        let mut context = SuggestionContext::default();
+        for block in integration.blocks() {
+            let Some(command) = block.command.as_ref().map(|command| command.trim_end()) else {
+                continue;
+            };
+            if block.end_line.is_some() {
+                if block.exit_code.is_some_and(|code| code != 0) {
+                    context.failed.insert(command.to_string());
+                } else {
+                    context.failed.remove(command);
+                }
+            }
+            if cwd.is_some() && block.working_directory == cwd {
+                context.run_here.insert(command.to_string());
+            }
+        }
+        context.cwd = cwd.filter(|cwd| cwd.is_absolute());
+        context
     }
 
     fn cursor_row_and_last_row(&self, cx: &mut App) -> (u32, u32) {
@@ -445,13 +470,14 @@ impl TerminalInput {
             selection.is_empty()
                 && selection.head() == editor.buffer().read(cx).snapshot(cx).max_point()
         });
-        match self.suggestion.take() {
+        match self.suggestion.clone() {
+            // The suggestion stays set until the edit updates it, which takes
+            // its ghost text away.
             Some(suggestion) if at_end => {
                 self.editor
                     .update(cx, |editor, cx| editor.insert(&suggestion, window, cx));
             }
-            suggestion => {
-                self.suggestion = suggestion;
+            _ => {
                 self.editor
                     .update(cx, |editor, cx| editor.move_right(&MoveRight, window, cx));
             }
@@ -1524,6 +1550,13 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(input_text(&view, cx), "git status --short");
         assert_eq!(suggestion(cx), None);
+        // Its ghost text is gone too.
+        let shown = input.update(cx, |input, cx| {
+            input
+                .editor
+                .update(cx, |editor, cx| editor.display_text(cx))
+        });
+        assert_eq!(shown, "git status --short");
 
         // Elsewhere, right only moves the cursor.
         cx.simulate_keystrokes("ctrl-a backspace");

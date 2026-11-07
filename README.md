@@ -54,8 +54,16 @@ as Claude Code in the terminal while viewing and editing code beside it.
   moment behind. More programs can be added with `agent_commands`.
 - Tab titles say what a terminal is doing: the agent and its session title,
   the running command, or the directory and git branch.
-- The file tree, file finder and project search follow the focused terminal's
-  git repository (`follow_working_directory`).
+- Each project folder is a workspace with a tab in the title bar, holding its
+  own terminals, agents, editors and file tree; switching tabs swaps all of
+  them. A tab counts the agents working, waiting for you or failed in that
+  workspace, and its menu (the arrow, or right click) lists its terminals to
+  jump to one. `+` (or opening a folder) adds a workspace to the window;
+  ctrl-alt-1…9 and ctrl-alt-pageup/pagedown switch between them. Workspaces
+  come back after a restart, each loading when you first switch to it.
+- With `follow_working_directory`, the file tree, file finder and project
+  search follow the focused terminal's git repository instead (off by
+  default).
 - Closing a terminal, a window or Solo while an agent runs asks first
   (`confirm_close`). After a restart, a terminal that was running one offers
   to continue its session.
@@ -65,7 +73,7 @@ as Claude Code in the terminal while viewing and editing code beside it.
 - Send the selection, the cursor position or the file's diagnostics from the
   editor to an agent (ctrl-alt-k, ctrl-alt-shift-m).
 - New agent task: a git worktree with its own branch and an agent terminal,
-  to merge or discard when done (the + menu).
+  to merge or discard when done ("agent task" in the command palette).
 - Click a `mermaid` line in an agent's output to see the diagram, taken from
   Claude Code's transcript when the screen only shows part of it. The tab's
   tooltip shows the session's token use and context.

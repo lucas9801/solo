@@ -714,6 +714,9 @@ pub struct PathLikeTarget {
     pub maybe_path: String,
     /// Current working directory of the terminal
     pub working_directory: Option<PathBuf>,
+    /// SOLO: file paths written near this one, which tell which of several
+    /// files of its name it means.
+    pub context_paths: Vec<String>,
 }
 
 /// A string inside terminal, potentially useful as a URI that can be opened.
@@ -2201,6 +2204,7 @@ impl Terminal {
             text: maybe_url_or_path,
             is_url,
             range,
+            context_paths,
         } = hyperlink;
         let prev_hovered_word = self.last_content.last_hovered_word.take();
         let match_line = range.start().line;
@@ -2215,6 +2219,7 @@ impl Terminal {
                 MaybeNavigationTarget::PathLike(PathLikeTarget {
                     maybe_path: decoded_path,
                     working_directory,
+                    context_paths,
                 })
             } else {
                 MaybeNavigationTarget::Url(maybe_url_or_path.clone())
@@ -2223,6 +2228,7 @@ impl Terminal {
             MaybeNavigationTarget::PathLike(PathLikeTarget {
                 maybe_path: maybe_url_or_path.clone(),
                 working_directory,
+                context_paths,
             })
         };
 

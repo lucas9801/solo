@@ -171,15 +171,6 @@ impl TerminalPanel {
                                             "Spawn Task",
                                             zed_actions::Spawn::modal().boxed_clone(),
                                         )
-                                        // SOLO: an agent in its own git worktree.
-                                        .action(
-                                            util::i18n::tr("New Agent Task", "新建 agent 任务"),
-                                            zed_actions::agent_task::NewAgentTask.boxed_clone(),
-                                        )
-                                        .action(
-                                            util::i18n::tr("Agent Tasks", "agent 任务列表"),
-                                            zed_actions::agent_task::ManageAgentTasks.boxed_clone(),
-                                        )
                                 });
 
                                 Some(menu)

@@ -1297,9 +1297,9 @@ pub struct LanguageTaskSettingsContent {
     /// Extra task variables to set for a particular language.
     pub variables: Option<HashMap<String, String>>,
     pub enabled: Option<bool>,
-    /// Use LSP tasks over Zed language extension ones.
+    /// Use LSP tasks over language extension ones.
     /// If no LSP tasks are returned due to error/timeout or regular execution,
-    /// Zed language extension tasks will be used instead.
+    /// language extension tasks will be used instead.
     ///
     /// Other Solo tasks will still be shown:
     /// * Solo task from either of the task config file

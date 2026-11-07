@@ -43,6 +43,11 @@ pub static RELEASE_CHANNEL: LazyLock<ReleaseChannel> =
 /// The app identifier for the current release channel, Windows only.
 #[cfg(target_os = "windows")]
 pub fn app_identifier() -> &'static str {
+    // SOLO: a debug build of the stable channel mustn't hand off to (or take
+    // over from) the installed Solo.
+    if cfg!(debug_assertions) && *RELEASE_CHANNEL == ReleaseChannel::Stable {
+        return "Solo-Terminal-Stable-Debug";
+    }
     match *RELEASE_CHANNEL {
         // SOLO: its own single-instance mutex and pipe, so opening Solo never
         // hands off to a running Zed or the other way around.
