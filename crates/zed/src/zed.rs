@@ -239,7 +239,7 @@ pub fn init(cx: &mut App) {
         with_active_or_new_workspace(cx, |workspace, window, cx| {
             open_bundled_file(
                 workspace,
-                asset_str::<Assets>("licenses.md"),
+                licenses(),
                 "Open Source License Attribution",
                 "Markdown",
                 window,
@@ -2674,6 +2674,28 @@ fn open_local_file(
         None
     }
 }
+
+/// SOLO: `licenses.md` is generated when Solo is packaged
+/// (script/package-solo.ps1), so a build without it says where the licenses
+/// are instead of panicking.
+fn licenses() -> Cow<'static, str> {
+    const LICENSES: &str = "licenses.md";
+    if Assets::get(LICENSES).is_some() {
+        asset_str::<Assets>(LICENSES)
+    } else {
+        MISSING_LICENSES.into()
+    }
+}
+
+const MISSING_LICENSES: &str = "# Open Source License Attribution
+
+This build of Solo doesn't include the licenses of its dependencies: they're
+generated when Solo is packaged (`script/package-solo.ps1`).
+
+Solo is licensed under the GNU General Public License v3.0 (`LICENSE-GPL`).
+An installed Solo has the licenses of its dependencies in `licenses.md`, and
+those of the code it vendors in `THIRD-PARTY-VENDORED.md`, next to `solo.exe`.
+";
 
 fn open_bundled_file(
     workspace: &mut Workspace,

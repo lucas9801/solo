@@ -6,7 +6,10 @@
 # The zip holds Solo\solo.exe with the ConPTY runtime and solo-agent-hook.exe
 # (which Claude Code runs to report its status) next to it, the licenses, and
 # install.ps1, which copies Solo to %LOCALAPPDATA%\Programs\Solo and adds
-# Start menu and desktop shortcuts. With Inno Setup 6 installed it also builds
+# Start menu and desktop shortcuts. The licenses of Solo's dependencies are
+# generated first (script\generate-licenses.ps1, which installs cargo-about if
+# needed), embedded in solo.exe (Help > Open Licenses) and put next to it as
+# licenses.md. With Inno Setup 6 installed it also builds
 # Solo-Setup-<version>.exe from script\solo.iss (-Iscc to give ISCC.exe's path).
 
 param(
@@ -21,6 +24,10 @@ Set-Location $root
 if ($TargetDir) { $env:CARGO_TARGET_DIR = $TargetDir } else { $TargetDir = Join-Path $root "target" }
 $env:RELEASE_CHANNEL = "stable"
 $env:CARGO_INCREMENTAL = "0"
+
+# Before building: solo.exe embeds assets\licenses.md when it's compiled.
+& (Join-Path $PSScriptRoot "generate-licenses.ps1") (Join-Path $root "assets\licenses.md")
+if (-not (Test-Path (Join-Path $root "assets\licenses.md"))) { throw "Generating the licenses failed" }
 
 cargo build --profile solo-dist -p zed -p solo_agent_hook --bin solo --bin solo-agent-hook
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
@@ -38,6 +45,7 @@ foreach ($runtime in "conpty.dll", "OpenConsole.exe") {
     if (Test-Path $path) { Copy-Item $path $stage } else { Write-Warning "$runtime not found; terminals fall back to the system ConPTY" }
 }
 Copy-Item "LICENSE-GPL" $stage -ErrorAction SilentlyContinue
+Copy-Item "assets\licenses.md" $stage
 Copy-Item "vendor\README.md" (Join-Path $stage "THIRD-PARTY-VENDORED.md")
 Copy-Item "vendor\warp_command_signatures\LICENSE.md" (Join-Path $stage "LICENSE-command-signatures.md")
 Copy-Item "script\install-solo.ps1" (Join-Path $stage "install.ps1")
