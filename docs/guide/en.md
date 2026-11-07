@@ -1,0 +1,320 @@
+# Solo User Guide
+
+[中文](zh-CN.md)
+
+## 1. What Solo is
+
+Solo is a terminal-first editor forked from [Zed](https://github.com/zed-industries/zed).
+The terminal fills the window, and the editor opens on the right when you need it.
+It is built for running AI agents (Claude Code, Codex, ...) in the terminal: you
+see what each agent is doing, review its changes turn by turn, and can run
+several agents in parallel in their own git worktrees.
+
+## 2. Installing
+
+Both ways install Solo for the current user only (no administrator rights) into
+`%LOCALAPPDATA%\Programs\Solo`.
+
+- **Installer** `Solo-Setup-<version>.exe`: English or Chinese setup, a Start
+  menu entry, an optional desktop icon (unchecked by default), and an uninstall
+  entry in Settings → Apps.
+- **Portable zip** `Solo-<version>-windows-x64.zip`: run `solo.exe` straight
+  from the unpacked folder, or run
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File install.ps1
+  ```
+
+  to copy it to `%LOCALAPPDATA%\Programs\Solo` with Start menu and desktop
+  shortcuts.
+
+The install folder holds `solo.exe`, `solo-agent-hook.exe` (which Claude Code
+runs to report its status), `solo-update-helper.exe` (which installs updates),
+`OpenConsole.exe` and `conpty.dll` (the terminal runtime), and license files.
+
+## 3. Updating
+
+- Solo checks [its GitHub releases](https://github.com/lucas9801/solo/releases)
+  30 seconds after it starts and every 6 hours after that (stable builds only).
+- A newer version shows a notification: update and restart, skip this version,
+  or view the release notes. Nothing is installed without you agreeing to it.
+- When you update, the installer is downloaded to `%TEMP%\solo-update\`. Solo
+  closes its windows the way Quit does, so it still asks about unsaved files.
+  `solo-update-helper.exe` then waits for Solo to exit, runs the installer
+  silently into the same folder, and Solo starts again. Logs:
+  `%TEMP%\solo-update\install.log` and `update-helper.log`.
+- `"auto_update": false` turns off the automatic checks. **Check for Updates**
+  in the command palette always checks.
+
+## 4. Uninstalling and removing everything
+
+- Installer: uninstall Solo from Settings → Apps.
+- Zip:
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Solo\install.ps1" -Uninstall
+  ```
+
+**Neither one removes your settings and data.** To remove everything, quit Solo
+and run:
+
+```powershell
+Remove-Item -Recurse -Force "$env:APPDATA\Solo", "$env:LOCALAPPDATA\Solo", `
+  "$env:TEMP\solo-shell-integration", "$env:TEMP\solo-update" -ErrorAction SilentlyContinue
+```
+
+Outside those folders, remove these yourself if you want them gone:
+
+- `.solo` folders in your projects (project settings, tasks, debug scenarios);
+- git worktrees and branches left by agent tasks (by default in `../worktrees/`
+  next to the project). Delete them from **Manage Agent Tasks**, or with
+  `git worktree remove` and `git branch -D`.
+
+Solo doesn't change your Claude Code configuration (see section 8), so there's
+nothing to clean up there.
+
+## 5. Where data and settings live
+
+| Location | What's there |
+| --- | --- |
+| `%APPDATA%\Solo` | Settings: `settings.json`, `keymap.json`, `tasks.json`, `debug.json`, `AGENTS.md`, `workflows.json` (saved commands) |
+| `%LOCALAPPDATA%\Solo` | Data: `logs\`, `db\` (workspace and session state), `extensions\`, `languages\` (downloaded language servers), `node\`, `external_agents\`, `terminal_sessions\` (restored terminal contents, removed after 30 days), `agent_turns\` (agent turn snapshots), `hang_traces\` |
+| `%TEMP%\solo-shell-integration` | Shell integration scripts and Claude Code hook settings |
+| `%TEMP%\solo-update` | Downloaded update installers and their logs |
+| `.solo\` in a project | Project settings, tasks and debug scenarios (Zed's `.zed\` is read too) |
+
+These are separate from Zed's folders, so Solo and Zed can be installed side by side.
+
+## 6. First use: running an agent in a Solo terminal
+
+Open a project folder and run `claude` (or `codex`, `gemini`, ...) in the
+terminal. Solo adds the following.
+
+### Status in the tab
+The terminal's tab shows whether the agent is **working** (spinner), **needs
+your input**, is **idle**, **done** or **failed**, with the agent's name and
+session title. Hovering over the tab shows token use and context. While Solo is
+in the background, you get a desktop notification when an agent needs you or
+stops after working for a while.
+
+### Per-turn review (Claude Code)
+Solo takes a snapshot of the working directory when each Claude Code turn
+starts and ends. After a turn, the tab shows **"N files changed"** (command:
+`terminal: review agent turn`). In the review you can:
+
+- **Keep** or **Reject** each hunk, or **Keep All** / **Reject All**;
+- comment on lines and send the comments to the agent;
+- **Roll Back** the work tree to before any recorded turn.
+
+Snapshots are kept in Solo's data folder. They never touch your branch, HEAD,
+index, stash list or git object database, and ignored files aren't included.
+
+### Timeline (Claude Code)
+`terminal: show agent timeline` opens the session's timeline beside the
+terminal: each turn's prompt, the files read and changed, the commands run and
+the answer. It's read from Claude Code's own transcript (`~/.claude/projects/...`),
+which Solo only reads. If Solo picks the wrong session, use
+`terminal: choose agent session`.
+
+### Agent tasks (git worktrees)
+**New Agent Task** in the command palette asks for a task name, then creates a
+branch with its own git worktree (where it goes is set by
+`git.worktree_directory`, `../worktrees` by default) and opens a terminal there
+running `terminal.agent_task_command` (`claude` by default). **Manage Agent
+Tasks** lists the tasks: open a task's terminal, view its diff, merge it into
+the branch it started from, or delete it. Tasks are stored in the repository's
+git config, so they're still there after a restart. Local projects only.
+
+### Agent board
+The board in the left dock (`agent board: toggle focus`) lists every terminal
+that runs or ran an agent and every agent task, with its status, branch, last
+turn's changes, running time and last message. Agents that need input come
+first; click one to go to its terminal.
+
+### Workspace tabs in the title bar
+Each project folder is a workspace with its own tab in the title bar, holding
+its own terminals, agents, editors and file tree. Each tab counts the agents
+working, waiting for you, or failed in that workspace, so you can see an agent
+waiting in the background.
+
+- `+` (or opening a folder) adds a workspace;
+- `ctrl-alt-1` … `ctrl-alt-9` switch to a workspace by position;
+  `ctrl-alt-pagedown` / `ctrl-alt-pageup` go to the next / previous one;
+- the tab's menu (its arrow, or right click) lists its terminals to jump to;
+- after a restart only the active workspace loads; the others load when you
+  first switch to them.
+
+### Sending things to an agent
+- From the editor: `ctrl-alt-k` sends the selection or the cursor position,
+  `ctrl-alt-shift-k` lets you pick which terminal to send to, and
+  `ctrl-alt-shift-m` sends the file's diagnostics.
+- In a terminal, select a command block (`ctrl-up/down` or click its gutter)
+  and press `alt-enter` to send the command and its output to an agent in
+  another terminal.
+- **Enable Remote Control** in a Claude Code terminal's menu types
+  `/remote-control` into Claude Code, so you can carry on from the Claude app
+  on your phone.
+
+### Also
+- Closing a terminal, window or Solo while an agent runs asks first
+  (`terminal.confirm_close`, `"agents"` by default).
+- After a restart, a terminal that was running an agent offers to continue its
+  session (for example `claude --continue`).
+
+## 7. Supported agents
+
+| | Claude Code | codex, gemini, aider, opencode, qwen, amp, cursor-agent, copilot | programs in `agent_commands` |
+| --- | --- | --- | --- |
+| Recognized as an agent (status, close confirmation, sending command blocks) | yes | yes | yes |
+| Where the status comes from | hooks; exact | read from the terminal; may lag a moment | read from the terminal |
+| Per-turn review and roll back | yes | no | no |
+| Timeline, session title, token use | yes | no | no |
+| Continue the session after a restart | yes (`--continue`) | yes, with each one's resume option (not qwen or amp) | no |
+| Agent tasks | the default command | set `agent_task_command` to it | same |
+
+For agents without hooks, Solo reads the status from the terminal: a spinner
+means working, about 3 seconds without output means stopped, and a bell or
+notification (OSC 9/777) means it needs you.
+
+To treat another program as an agent:
+
+```json
+{ "terminal": { "agent_commands": ["my-agent"] } }
+```
+
+## 8. What Solo does to your system
+
+- **Claude Code hooks apply to one session only.** In a terminal with shell
+  integration, Solo defines a `claude` wrapper function that starts Claude
+  with `--settings %TEMP%\solo-shell-integration\claude-settings.json`. Claude
+  Code adds those settings to your own, so **your `~/.claude/settings.json` and
+  your own hooks are not changed**. If you already have your own `claude`
+  function or alias, Solo leaves it alone. Subcommands such as `claude mcp` or
+  `claude update`, and commands where you pass `--settings` yourself, run as
+  typed. To turn the hooks off: `"terminal": {"claude_code_hooks": false}`
+  (takes effect in new terminals).
+- **Shell integration**: PowerShell, bash, zsh and fish started without custom
+  arguments load Solo's integration script from `%TEMP%\solo-shell-integration`,
+  after your own profile. PowerShell runs it with `-NoExit -Command`, which
+  reads the script file; there's no `-ExecutionPolicy Bypass` and no
+  `-EncodedCommand`. To turn it off: `"terminal": {"shell_integration": false}`.
+- **The hook program** is `solo-agent-hook.exe` from the install folder. It
+  reads the event from its input, writes one escape sequence to the terminal
+  and exits. It doesn't use the network and doesn't write files.
+- **Turn snapshots** are kept in `%LOCALAPPDATA%\Solo\agent_turns`, apart from
+  your repository.
+- **Agent tasks** create a branch and a worktree in your repository and record
+  the task in its git config (`branch.<branch>.solotask` / `solobase`). This
+  only happens when you create a task.
+- **Updates** are installed only when you choose to, by
+  `solo-update-helper.exe` after Solo exits.
+- Solo reads Claude Code's transcripts (`~/.claude/projects`) for the timeline
+  and session details. It never writes to them.
+
+## 9. Privacy and network
+
+**Solo sends no telemetry and uploads no crash reports.** Telemetry
+`diagnostics` and `metrics` are off by default. Solo's builds have no crash
+upload endpoint, so no minidumps are written or uploaded. Solo doesn't sign in
+to a Zed account at startup. Zed's hosted models, edit predictions,
+collaboration and Zed's own auto-update are off or hidden.
+
+**Contacted by default, without you doing anything:**
+
+| Address | Why | How to turn it off |
+| --- | --- | --- |
+| `api.github.com` | Solo update checks (30 s after start, then every 6 h) | `"auto_update": false` |
+
+**Contacted only when you use a feature:**
+
+- downloading an update: `github.com` and GitHub's download CDN;
+- language servers downloaded when you open a file in that language: GitHub
+  releases, the npm registry, and `nodejs.org` if no suitable Node.js is
+  installed;
+- AI providers you set up yourself (Anthropic, OpenAI, Ollama, ...);
+- avatars in git blame and commit details: `avatars.githubusercontent.com` and
+  the GitHub API;
+- browsing or installing extensions, and update checks for installed ones
+  (none when no extension is installed): `api.zed.dev`, Zed's extension
+  service; the remote server for SSH remote development: `cloud.zed.dev`;
+- looking at the ACP agent registry, or using an agent configured from it:
+  `cdn.agentclientprotocol.com` and the icon URLs the registry lists;
+- the agents you run in the terminal (Claude Code, Codex, ...) make their own
+  connections, not through Solo.
+
+## 10. Troubleshooting
+
+### Blocked by security software
+**Symptoms**: a terminal doesn't open, closes right away, or never shows a
+prompt; Claude Code's status never changes; updates fail to install.
+
+**Why**: Solo has PowerShell run scripts from `%TEMP%`, Claude Code runs
+`solo-agent-hook.exe` for each event, and updates run an installer silently.
+Some security software treats these as suspicious.
+
+**What to do**:
+
+1. Add these to your security software's trusted list:
+   `%LOCALAPPDATA%\Programs\Solo` (solo.exe, solo-agent-hook.exe,
+   solo-update-helper.exe, OpenConsole.exe, conpty.dll),
+   `%TEMP%\solo-shell-integration` and `%TEMP%\solo-update`.
+2. To check whether that's the cause, set
+   `"terminal": {"shell_integration": false}` and open a new terminal. If it
+   works now, the integration script was being blocked.
+3. Report the false positive to the vendor, for example through 360's open
+   platform at open.soft.360.cn (unverified). Other vendors have similar
+   false-positive forms. Include the installer and the version.
+
+### A terminal won't open
+- Check the log (below) for `shell integration` or `failed to`.
+- A shell with custom arguments isn't integrated: no command blocks, input
+  editor or Claude hooks, but the terminal itself should still open.
+- Without `conpty.dll` / `OpenConsole.exe` in the install folder, Solo falls back
+  to Windows' own ConPTY.
+
+### The agent status is wrong
+- Use PowerShell, bash, zsh or fish without custom arguments. The `bash.exe` in
+  System32 (WSL) isn't supported.
+- If you have your own `claude` function or alias, Solo's wrapper isn't used,
+  and the status is read from the output.
+- Changing `claude_code_hooks` only affects new terminals.
+- If `solo-agent-hook.exe` is blocked or missing, Solo falls back to a
+  PowerShell script, and every report is slower.
+- If Solo picked the wrong session, use `terminal: choose agent session`.
+- For other agents the status is read from the screen, so it can lag a second
+  or two.
+
+### Logs and crash information
+- Log: `%LOCALAPPDATA%\Solo\logs\Solo.log`, and `Solo.log.old` for the previous
+  run. `solo: open log` and `solo: reveal log in file manager` are in the
+  command palette.
+- Hang traces: `%LOCALAPPDATA%\Solo\hang_traces\`.
+- Crashes: Solo writes no minidumps by default; what led up to a crash is
+  usually in `Solo.log.old`. To get a minidump, start Solo with the environment
+  variable `ZED_GENERATE_MINIDUMPS=1`; it's written to the logs folder (exact
+  file name unverified).
+- Failed updates: `%TEMP%\solo-update\install.log` and `update-helper.log`.
+- Report problems at [github.com/lucas9801/solo/issues](https://github.com/lucas9801/solo/issues),
+  with the log attached.
+
+## 11. Settings at a glance
+
+Solo's own settings, under `"terminal"`:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `shell_integration` | `true` | load the shell integration (command blocks, input editor and hooks need it) |
+| `claude_code_hooks` | `true` | add status hooks to Claude Code with `--settings` |
+| `agent_commands` | `[]` | more programs to treat as agents |
+| `agent_task_command` | `"claude"` | what a new agent task runs |
+| `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |
+| `follow_working_directory` | `false` | file tree and search follow the active terminal's repository |
+| `restore_contents` | `false` | show terminals' previous contents after a restart |
+| `open_changed_files` | `true` | open files that change while a command runs |
+| `input_editor` | `true` | type commands in an editor at the bottom |
+| `notify_long_commands_after_seconds` | `10` | notify when a long command finishes; 0 turns it off |
+| `program_notifications` | `true` | let programs show desktop notifications (OSC 9/777) |
+
+Outside `"terminal"`: `"ui_language"` (`"system"`, `"en"` or `"zh"`; the
+environment variable `SOLO_LANGUAGE` overrides it), `"auto_update"` and
+`"disable_ai"`.

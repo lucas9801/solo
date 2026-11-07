@@ -1,5 +1,7 @@
 # Solo
 
+**User guide / 用户指南:** [中文](docs/guide/zh-CN.md) · [English](docs/guide/en.md)
+
 Solo is a terminal-first editor: a fork of [Zed](https://github.com/zed-industries/zed)
 that puts a Warp-style terminal at the center, for working with AI agents such
 as Claude Code in the terminal while viewing and editing code beside it.
