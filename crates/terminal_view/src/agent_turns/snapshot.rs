@@ -620,6 +620,130 @@ mod tests {
         );
     }
 
+    /// Everything about the user's repository a snapshot or a restore must not
+    /// change: branches, HEAD, index, stash and objects.
+    fn repository_state(repository: &Path) -> Vec<String> {
+        vec![
+            git(repository, &["symbolic-ref", "HEAD"]),
+            git(repository, &["for-each-ref"]),
+            git(repository, &["stash", "list"]),
+            git(repository, &["ls-files", "--stage"]),
+            git(repository, &["count-objects", "-v"]),
+            git(repository, &["worktree", "list", "--porcelain"]),
+        ]
+    }
+
+    #[test]
+    fn test_restore_leaves_branches_index_and_stash_alone() {
+        let (_temp, repository, storage) = repository();
+        git(&repository, &["branch", "other"]);
+        fs::write(repository.join("a.txt"), "stashed\n").unwrap();
+        git(
+            &repository,
+            &["stash", "push", "--quiet", "-m", "user stash"],
+        );
+        fs::write(repository.join("src/b.txt"), "b\nstaged\n").unwrap();
+        git(&repository, &["add", "src/b.txt"]);
+        let state = repository_state(&repository);
+        let index = fs::read(repository.join(".git/index")).unwrap();
+
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let before = store.snapshot().unwrap();
+        fs::write(repository.join("a.txt"), "agent\n").unwrap();
+        fs::write(repository.join("src/b.txt"), "b\nstaged\nagent\n").unwrap();
+        fs::write(repository.join("new.txt"), "new\n").unwrap();
+        store.snapshot().unwrap();
+        let restored = store.restore(&before).unwrap();
+        store.restore(&restored.undo).unwrap();
+        store.restore(&before).unwrap();
+
+        assert_eq!(repository_state(&repository), state);
+        assert_eq!(fs::read(repository.join(".git/index")).unwrap(), index);
+        assert_eq!(
+            fs::read_to_string(repository.join("src/b.txt")).unwrap(),
+            "b\nstaged\n"
+        );
+        assert_eq!(
+            git(&repository, &["status", "--porcelain"]),
+            "M  src/b.txt\n"
+        );
+    }
+
+    #[test]
+    fn test_restore_untracked_binary_and_large_files() {
+        let (_temp, repository, storage) = repository();
+        let binary: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        // Bigger than any buffer git or a pipe might use on the way.
+        let large: Vec<u8> = (0..8 * 1024 * 1024u32)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        fs::write(repository.join("untracked.txt"), "untracked\n").unwrap();
+        fs::write(repository.join("image.bin"), &binary).unwrap();
+        fs::write(repository.join("large.bin"), &large).unwrap();
+        fs::write(repository.join("lf-only.txt"), "no\r\nconversion\n").unwrap();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let before = store.snapshot().unwrap();
+
+        fs::write(repository.join("untracked.txt"), "changed\n").unwrap();
+        fs::write(repository.join("image.bin"), b"\0\0").unwrap();
+        fs::remove_file(repository.join("large.bin")).unwrap();
+        fs::write(repository.join("lf-only.txt"), "changed\n").unwrap();
+        let after = store.snapshot().unwrap();
+        assert_eq!(
+            sorted(store.changed_files(&before, &after).unwrap()),
+            vec![
+                ("image.bin".to_string(), FileChange::Modified),
+                ("large.bin".to_string(), FileChange::Deleted),
+                ("lf-only.txt".to_string(), FileChange::Modified),
+                ("untracked.txt".to_string(), FileChange::Modified),
+            ]
+        );
+
+        let restored = store.restore(&before).unwrap();
+        assert_eq!(
+            fs::read_to_string(repository.join("untracked.txt")).unwrap(),
+            "untracked\n"
+        );
+        assert_eq!(fs::read(repository.join("image.bin")).unwrap(), binary);
+        assert_eq!(fs::read(repository.join("large.bin")).unwrap(), large);
+        assert_eq!(
+            fs::read(repository.join("lf-only.txt")).unwrap(),
+            b"no\r\nconversion\n"
+        );
+        // Restored untracked files stay untracked.
+        assert!(git(&repository, &["status", "--porcelain"]).contains("?? untracked.txt"),);
+
+        store.restore(&restored.undo).unwrap();
+        assert_eq!(fs::read(repository.join("image.bin")).unwrap(), b"\0\0");
+        assert!(!repository.join("large.bin").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_restore_symlinks() {
+        let (_temp, repository, storage) = repository();
+        std::os::unix::fs::symlink("a.txt", repository.join("link")).unwrap();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let before = store.snapshot().unwrap();
+
+        // The agent writes through the link, then replaces it with a file.
+        fs::write(repository.join("link"), "through the link\n").unwrap();
+        fs::remove_file(repository.join("link")).unwrap();
+        fs::write(repository.join("link"), "a file now\n").unwrap();
+        store.restore(&before).unwrap();
+
+        let link = fs::symlink_metadata(repository.join("link")).unwrap();
+        assert!(link.file_type().is_symlink());
+        assert_eq!(
+            fs::read_link(repository.join("link")).unwrap(),
+            Path::new("a.txt")
+        );
+        assert_eq!(
+            fs::read_to_string(repository.join("a.txt")).unwrap(),
+            "one\ntwo\nthree\n"
+        );
+    }
+
     #[test]
     fn test_directory_outside_a_repository() {
         let temp = tempfile::tempdir().unwrap();
