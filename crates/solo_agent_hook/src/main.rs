@@ -20,6 +20,22 @@ fn main() {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis().to_string())
         .unwrap_or_default();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("report") {
+        match report_sequence(&args[1..], &sent_at_ms) {
+            Ok(sequence) => {
+                if let Err(error) = write_to_terminal(sequence.as_bytes()) {
+                    eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
+                    std::process::exit(1);
+                }
+            }
+            Err(error) => {
+                eprintln!("solo-agent-hook: {error}\n{REPORT_USAGE}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
     let mut input = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut input) {
         eprintln!("solo-agent-hook: failed to read the hook input: {error}");
@@ -33,6 +49,63 @@ fn main() {
     if let Err(error) = write_to_terminal(sequence.as_bytes()) {
         eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
     }
+}
+
+const REPORT_USAGE: &str = "usage: solo-agent-hook report --state <working|blocked|idle> \
+[--agent <name>] [--session <id>] [--seq <n>]";
+
+/// The escape sequence for `solo-agent-hook report ...`: the public form of
+/// the protocol (docs/agent-status-protocol.md), for agents and scripts.
+fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> {
+    let mut state = None;
+    let mut agent = String::new();
+    let mut session = String::new();
+    let mut order = sent_at_ms.to_string();
+    let mut args = args.iter();
+    while let Some(flag) = args.next() {
+        let mut value = || {
+            args.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value"))
+        };
+        match flag.as_str() {
+            "--state" => state = Some(value()?),
+            "--agent" => agent = value()?,
+            "--session" => session = value()?,
+            "--seq" => order = value()?,
+            other => return Err(format!("unknown argument {other:?}")),
+        }
+    }
+    let kind = match state.as_deref() {
+        Some("working" | "prompt") => "prompt",
+        Some("blocked" | "input") => "input",
+        Some("idle" | "stop") => "stop",
+        Some("start") => "start",
+        Some(other) => return Err(format!("unknown state {other:?}")),
+        None => return Err("--state is required".to_string()),
+    };
+    if order.parse::<u64>().is_err() {
+        return Err(format!("--seq {order:?} isn't a number"));
+    }
+    // Everything goes into an escape sequence: nothing that could end it.
+    if !session
+        .chars()
+        .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
+        return Err(format!("--session {session:?} isn't a UUID"));
+    }
+    if agent.chars().count() > 40
+        || !agent.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '-' | '_' | '.' | ' ')
+        })
+    {
+        return Err(format!(
+            "--agent {agent:?} must be up to 40 letters, digits, spaces, '-', '_' or '.'"
+        ));
+    }
+    Ok(format!(
+        "\x1b]6973;agent;{kind};{order};{session};{agent}\x07"
+    ))
 }
 
 /// The kind of report for a hook event, from the hook's JSON input, or else
@@ -186,6 +259,46 @@ fn write_to_terminal(bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_from_the_command_line() {
+        let args =
+            |args: &[&str]| -> Vec<String> { args.iter().map(|arg| arg.to_string()).collect() };
+        assert_eq!(
+            report_sequence(
+                &args(&["--state", "working", "--agent", "my agent", "--seq", "7"]),
+                "123"
+            ),
+            Ok("\x1b]6973;agent;prompt;7;;my agent\x07".to_string())
+        );
+        assert_eq!(
+            report_sequence(
+                &args(&[
+                    "--state",
+                    "blocked",
+                    "--session",
+                    "0f6ed4b2-755b-4e18-8bd1-f60252548036"
+                ]),
+                "123"
+            ),
+            Ok("\x1b]6973;agent;input;123;0f6ed4b2-755b-4e18-8bd1-f60252548036;\x07".to_string())
+        );
+        assert_eq!(
+            report_sequence(&args(&["--state", "idle"]), "5"),
+            Ok("\x1b]6973;agent;stop;5;;\x07".to_string())
+        );
+        for bad in [
+            &["--state", "dancing"][..],
+            &[][..],
+            &["--state"][..],
+            &["--state", "idle", "--seq", "x"][..],
+            &["--state", "idle", "--agent", "a\x07b"][..],
+            &["--state", "idle", "--session", "x;y"][..],
+            &["--state", "idle", "--what", "x"][..],
+        ] {
+            assert!(report_sequence(&args(bad), "1").is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn session_ids_from_hook_input() {

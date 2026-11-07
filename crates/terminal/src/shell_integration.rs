@@ -37,6 +37,10 @@ const ZSH_STARTUP_FILES: [(&str, &str); 3] = [
 /// too, but can't know the nonce.
 pub const SHELL_NONCE_ENV: &str = "SOLO_SHELL_NONCE";
 
+/// The environment variable with the path of `solo-agent-hook`, which agents
+/// and scripts run in Solo's terminals report their status with.
+pub const AGENT_HOOK_ENV: &str = "SOLO_AGENT_HOOK";
+
 /// Upper bound on remembered blocks; older ones have scrolled out of history anyway.
 const MAX_BLOCKS: usize = 10_000;
 
@@ -60,6 +64,13 @@ pub fn integrate_shell(
     };
     // Unused by shells that aren't integrated below.
     env.insert(SHELL_NONCE_ENV.to_string(), new_nonce());
+    // How agents and scripts report their status (docs/agent-status-protocol.md).
+    if let Some(hook) = agent_hook_executable() {
+        env.insert(
+            AGENT_HOOK_ENV.to_string(),
+            hook.to_string_lossy().into_owned(),
+        );
+    }
     let stem = Path::new(program)
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_lowercase());
@@ -363,34 +374,63 @@ impl AgentHookKind {
             AgentHookKind::Idle => "idle",
         }
     }
+
+    /// A kind by its name, or by the state it leads to (`working`,
+    /// `blocked`), as other tools name them.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "working" => Some(AgentHookKind::PromptSubmitted),
+            "blocked" => Some(AgentHookKind::NeedsInput),
+            text => AgentHookKind::ALL
+                .into_iter()
+                .find(|candidate| candidate.as_str() == text),
+        }
+    }
 }
 
 /// SOLO: A report from an AI agent's hook, sent as
-/// `OSC 6973 ; agent ; <kind> [; <ms since the epoch> [; <session id>]]`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `OSC 6973 ; agent ; <kind> [; <order> [; <session id> [; <agent>]]]`
+/// (documented in docs/agent-status-protocol.md).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentHook {
     pub kind: AgentHookKind,
-    /// When the hook started. Hooks run in the background and can arrive out
-    /// of order.
+    /// When the hook started (ms since the epoch), or any number that grows
+    /// with each report. Hooks run in the background and can arrive out of
+    /// order.
     pub sent_at_ms: Option<u64>,
     /// The agent's session (Claude Code's `session_id`), which tells which
     /// transcript is this terminal's.
     pub session_id: Option<AgentSessionId>,
+    /// What the agent calls itself, for programs Solo doesn't know as agents.
+    pub agent: Option<String>,
 }
+
+/// Longest agent name a report can give.
+const MAX_AGENT_NAME_CHARS: usize = 40;
 
 impl AgentHook {
     /// Parses the parameters after `agent`.
     pub fn parse(params: &[String]) -> Option<Self> {
         let (kind, rest) = params.split_first()?;
-        let kind = AgentHookKind::ALL
-            .into_iter()
-            .find(|candidate| candidate.as_str() == kind.trim())?;
+        let kind = AgentHookKind::parse(kind)?;
         let sent_at_ms = rest.first().and_then(|sent_at| sent_at.trim().parse().ok());
         let session_id = rest.get(1).and_then(|id| AgentSessionId::parse(id));
+        let agent = rest
+            .get(2)
+            .map(|name| name.trim())
+            .filter(|name| {
+                !name.is_empty()
+                    && name.chars().count() <= MAX_AGENT_NAME_CHARS
+                    && name.chars().all(|character| {
+                        character.is_alphanumeric() || matches!(character, '-' | '_' | '.' | ' ')
+                    })
+            })
+            .map(str::to_string);
         Some(Self {
             kind,
             sent_at_ms,
             session_id,
+            agent,
         })
     }
 }
@@ -777,8 +817,13 @@ mod tests {
         assert!(
             matches!(shell, Shell::WithArguments { ref args, .. } if args[0] == "--init-command")
         );
-        // Only the nonce: these shells take their scripts as arguments.
-        assert_eq!(env.keys().collect::<Vec<_>>(), [SHELL_NONCE_ENV]);
+        // Only the nonce (and the hook program, when it's next to Solo):
+        // these shells take their scripts as arguments.
+        assert!(
+            env.keys()
+                .all(|key| key == SHELL_NONCE_ENV || key == AGENT_HOOK_ENV),
+            "{env:?}"
+        );
 
         for unsupported in ["wsl.exe", r"C:\Windows\System32\bash.exe"] {
             let shell = Shell::Program(unsupported.into());
@@ -883,6 +928,7 @@ mod tests {
                 kind: AgentHookKind::PromptSubmitted,
                 sent_at_ms: Some(1793624689993),
                 session_id: None,
+                agent: None,
             })
         );
         // `date` without %N leaves the time out.
@@ -892,6 +938,7 @@ mod tests {
                 kind: AgentHookKind::Stopped,
                 sent_at_ms: None,
                 session_id: None,
+                agent: None,
             })
         );
         // The session id, added at the end.
@@ -914,6 +961,24 @@ mod tests {
             Some(AgentHookKind::NeedsInput)
         );
         assert_eq!(AgentHook::parse(&params(&["dance", "1"])), None);
+        // The public protocol: states by name, a sequence number, an agent's
+        // name for programs Solo doesn't know.
+        let hook = AgentHook::parse(&params(&["working", "3", "", "my agent"])).unwrap();
+        assert_eq!(hook.kind, AgentHookKind::PromptSubmitted);
+        assert_eq!(hook.sent_at_ms, Some(3));
+        assert_eq!(hook.session_id, None);
+        assert_eq!(hook.agent.as_deref(), Some("my agent"));
+        assert_eq!(
+            AgentHook::parse(&params(&["blocked"])).map(|hook| hook.kind),
+            Some(AgentHookKind::NeedsInput)
+        );
+        for name in ["", "a\u{7}b", "evil;x", &"x".repeat(41)] {
+            assert_eq!(
+                AgentHook::parse(&params(&["idle", "1", "", name])).and_then(|hook| hook.agent),
+                None,
+                "{name:?}"
+            );
+        }
         assert_eq!(AgentHook::parse(&[]), None);
         for kind in AgentHookKind::ALL {
             assert_eq!(

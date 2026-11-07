@@ -108,7 +108,29 @@ impl TerminalView {
             return;
         };
         let title = command.lines().next().unwrap_or_default().to_string();
-        let body = format!("{} · {}", util::i18n::tr("Waiting for you", "等待你的操作"), terminal.title(true));
+        let body = format!(
+            "{} · {}",
+            util::i18n::tr("Waiting for you", "等待你的操作"),
+            terminal.title(true)
+        );
+        self.show_notification(title, body, window, cx);
+    }
+
+    /// An agent reported that it needs the user (a permission or a question),
+    /// while Solo's window is in the background.
+    pub(crate) fn notify_agent_needs_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !TerminalSettings::get_global(cx).program_notifications || window.is_window_active() {
+            return;
+        }
+        let Some((name, _)) = self.agent_status() else {
+            return;
+        };
+        let title = if util::i18n::is_chinese() {
+            format!("{name} 需要你的输入")
+        } else {
+            format!("{name} needs your input")
+        };
+        let body = self.terminal.read(cx).title(true);
         self.show_notification(title, body, window, cx);
     }
 
