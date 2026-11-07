@@ -451,6 +451,20 @@ pub fn merge_task(task: &AgentTask) -> Result<MergeOutcome> {
             task.base_branch
         );
     };
+    // Aborting below would take the user's own merge, or the conflicts
+    // they're resolving, with it.
+    if merge_in_progress(&target) {
+        bail!(tr(
+            "A merge is in progress where the base branch is checked out; finish or abort it first",
+            "基础分支所在的工作区里有一个未完成的合并，请先完成或中止它",
+        ));
+    }
+    if !git_ok(&target, ["diff", "--name-only", "--diff-filter=U"])?.is_empty() {
+        bail!(tr(
+            "The base branch's worktree has unresolved conflicts; resolve them first",
+            "基础分支所在的工作区里有未解决的冲突，请先解决",
+        ));
+    }
     let message = format!("Merge agent task \"{}\" ({})", task.name, task.branch);
     let output = git(
         &target,
@@ -468,7 +482,7 @@ pub fn merge_task(task: &AgentTask) -> Result<MergeOutcome> {
     }
     let conflicts = git_ok(&target, ["diff", "--name-only", "--diff-filter=U"])?;
     let conflicts: Vec<String> = conflicts.lines().map(str::to_string).collect();
-    if conflicts.is_empty() {
+    if conflicts.is_empty() || !merge_in_progress(&target) {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         bail!("git merge failed: {}", format!("{stderr}\n{stdout}").trim());
@@ -477,12 +491,45 @@ pub fn merge_task(task: &AgentTask) -> Result<MergeOutcome> {
     Ok(MergeOutcome::Conflicts(conflicts))
 }
 
+fn merge_in_progress(worktree: &Path) -> bool {
+    git(worktree, ["rev-parse", "--quiet", "--verify", "MERGE_HEAD"])
+        .is_ok_and(|output| output.status.success())
+}
+
+fn same_directory(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 /// Removes the task's worktree, uncommitted changes and all, and its branch.
+/// Only ever a linked worktree: never the repository's main one, where the
+/// user may have checked out the task's branch.
 pub fn delete_task(task: &AgentTask) -> Result<()> {
     let repository = &task.repository_root;
     if let Some(worktree) = &task.worktree_path
         && worktree.exists()
     {
+        let is_main = same_directory(worktree, repository)
+            || worktrees(repository)?
+                .first()
+                .is_some_and(|(main, _)| same_directory(worktree, main));
+        // A linked worktree has a `.git` file pointing at the repository.
+        if is_main || !worktree.join(".git").is_file() {
+            if is_chinese() {
+                bail!(
+                    "{} 检出在 {}，它不是任务自己的工作区，所以没有删除。请先在那里切换到别的分支。",
+                    task.branch,
+                    worktree.display()
+                );
+            }
+            bail!(
+                "{} is checked out in {}, which isn't the task's own worktree, so nothing was deleted. Check out another branch there first.",
+                task.branch,
+                worktree.display()
+            );
+        }
         let removed = git_ok(
             repository,
             [
@@ -749,6 +796,177 @@ mod tests {
             "one\nmain\nthree\n"
         );
         assert!(uncommitted_changes(&root).unwrap().is_empty());
+        delete_task(&task).unwrap();
+    }
+
+    /// What a task must never change in the main worktree: its branch, HEAD,
+    /// index, stash, files and other branches.
+    fn main_state(root: &Path) -> Vec<String> {
+        vec![
+            run_git(root, &["symbolic-ref", "HEAD"]),
+            run_git(root, &["rev-parse", "HEAD"]),
+            run_git(root, &["status", "--porcelain", "--untracked-files=all"]),
+            run_git(root, &["diff", "--cached"]),
+            run_git(root, &["diff"]),
+            run_git(root, &["stash", "list"]),
+            run_git(
+                root,
+                &["for-each-ref", "refs/heads/main", "refs/heads/other"],
+            ),
+            fs::read_to_string(root.join("shared.txt")).unwrap(),
+            fs::read_to_string(root.join("untracked.txt")).unwrap(),
+        ]
+    }
+
+    /// Staged, unstaged and untracked changes, a stash and another branch in
+    /// the main worktree.
+    fn busy_main_worktree(root: &Path) {
+        run_git(root, &["branch", "other"]);
+        fs::write(root.join("stashed.txt"), "stashed\n").unwrap();
+        run_git(root, &["stash", "push", "-q", "-u", "-m", "user stash"]);
+        fs::write(root.join("staged.txt"), "staged\n").unwrap();
+        run_git(root, &["add", "staged.txt"]);
+        fs::write(root.join("shared.txt"), "one\ntwo\nthree\nunstaged\n").unwrap();
+        fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+    }
+
+    #[test]
+    fn tasks_leave_the_main_worktree_alone() {
+        let (_temp, root) = new_repository();
+        busy_main_worktree(&root);
+        let before = main_state(&root);
+
+        let info = repository_info(&root).unwrap();
+        let keep = create_task(&info, &plan_task(&info, "Keep", "../worktrees").unwrap()).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Edit", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        fs::write(worktree.join("task.txt"), "task\n").unwrap();
+        commit_all(&worktree, "task");
+        fs::write(worktree.join("uncommitted.txt"), "uncommitted\n").unwrap();
+        assert_eq!(main_state(&root), before);
+
+        delete_task(&task).unwrap();
+        assert!(!worktree.exists());
+        assert!(!branch_exists(&root, &task.branch));
+        assert_eq!(main_state(&root), before);
+        // The other task is untouched.
+        let keep_worktree = keep.worktree_path.clone().unwrap();
+        assert!(keep_worktree.join("shared.txt").exists());
+        assert!(branch_exists(&root, &keep.branch));
+        assert_eq!(list_tasks(&root).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleting_a_task_checked_out_in_the_main_worktree_keeps_it() {
+        let (_temp, root) = new_repository();
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Try", "../worktrees").unwrap()).unwrap();
+        // The user removes the task's worktree and tries the branch in the
+        // main worktree instead.
+        let worktree = task.worktree_path.clone().unwrap();
+        run_git(&root, &["worktree", "remove", worktree.to_str().unwrap()]);
+        run_git(&root, &["checkout", "-q", &task.branch]);
+        fs::write(root.join("work.txt"), "the user's work\n").unwrap();
+
+        let task = list_tasks(&root).unwrap().pop().unwrap();
+        assert!(delete_task(&task).is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("work.txt")).unwrap(),
+            "the user's work\n"
+        );
+        assert!(root.join(".git").is_dir());
+        assert!(branch_exists(&root, &task.branch));
+    }
+
+    #[test]
+    fn merging_doesnt_abort_the_users_own_merge() {
+        let (_temp, root) = new_repository();
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Edit", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        fs::write(worktree.join("task.txt"), "task\n").unwrap();
+        commit_all(&worktree, "task");
+
+        // The user is in the middle of merging another branch, with a conflict
+        // they've half resolved.
+        run_git(&root, &["checkout", "-q", "-b", "feature"]);
+        fs::write(root.join("shared.txt"), "one\nfeature\nthree\n").unwrap();
+        commit_all(&root, "feature");
+        run_git(&root, &["checkout", "-q", "main"]);
+        fs::write(root.join("shared.txt"), "one\nmain\nthree\n").unwrap();
+        commit_all(&root, "main");
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["merge", "feature"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        fs::write(root.join("resolving.txt"), "notes\n").unwrap();
+        let conflicted = fs::read_to_string(root.join("shared.txt")).unwrap();
+        assert!(conflicted.contains("<<<<<<<"));
+
+        assert!(merge_task(&task).is_err());
+        assert!(root.join(".git").join("MERGE_HEAD").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("shared.txt")).unwrap(),
+            conflicted
+        );
+        assert_eq!(
+            run_git(&root, &["diff", "--name-only", "--diff-filter=U"]),
+            "shared.txt"
+        );
+        delete_task(&task).unwrap();
+    }
+
+    #[test]
+    fn conflicting_merges_keep_uncommitted_changes() {
+        let (_temp, root) = new_repository();
+        fs::write(root.join("other.txt"), "other\n").unwrap();
+        commit_all(&root, "other");
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Edit", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        fs::write(worktree.join("shared.txt"), "one\ntask\nthree\n").unwrap();
+        commit_all(&worktree, "task edit");
+        fs::write(root.join("shared.txt"), "one\nmain\nthree\n").unwrap();
+        commit_all(&root, "main edit");
+
+        // Uncommitted work in files the merge doesn't touch.
+        fs::write(root.join("other.txt"), "other\nunstaged\n").unwrap();
+        fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+        let status = run_git(&root, &["status", "--porcelain"]);
+
+        assert_eq!(
+            merge_task(&task).unwrap(),
+            MergeOutcome::Conflicts(vec!["shared.txt".to_string()])
+        );
+        assert_eq!(run_git(&root, &["status", "--porcelain"]), status);
+        assert_eq!(
+            fs::read_to_string(root.join("other.txt")).unwrap(),
+            "other\nunstaged\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("shared.txt")).unwrap(),
+            "one\nmain\nthree\n"
+        );
+        assert!(!root.join(".git").join("MERGE_HEAD").exists());
+
+        // Staged changes stop the merge before it starts, and stay staged.
+        fs::write(root.join("staged.txt"), "staged\n").unwrap();
+        run_git(&root, &["add", "staged.txt"]);
+        let status = run_git(&root, &["status", "--porcelain"]);
+        assert!(merge_task(&task).is_err());
+        assert_eq!(run_git(&root, &["status", "--porcelain"]), status);
+        run_git(&root, &["reset", "-q", "staged.txt"]);
+
+        // So do uncommitted changes to a file the merge changes.
+        fs::write(root.join("shared.txt"), "one\nmine\nthree\n").unwrap();
+        assert!(merge_task(&task).is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("shared.txt")).unwrap(),
+            "one\nmine\nthree\n"
+        );
         delete_task(&task).unwrap();
     }
 
