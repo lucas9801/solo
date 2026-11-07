@@ -16,7 +16,6 @@
 
 use crate::{AutoUpdateSetting, UpdateCheckType};
 use anyhow::{Context as _, Result};
-use base64::Engine as _;
 use db::kvp::KeyValueStore;
 use gpui::{
     App, AppContext as _, AsyncApp, Context, Entity, Global, IntoElement as _, Task, Window,
@@ -296,106 +295,50 @@ pub async fn download_installer(
     Ok(())
 }
 
-/// Quotes `value` as a PowerShell single-quoted string. PowerShell also treats
-/// the typographic single quotes as quote characters, so those are doubled too.
-pub fn powershell_quote(value: &str) -> String {
-    let mut quoted = String::with_capacity(value.len() + 2);
-    quoted.push('\'');
-    for ch in value.chars() {
-        if matches!(ch, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
-            quoted.push(ch);
-        }
-        quoted.push(ch);
-    }
-    quoted.push('\'');
-    quoted
-}
+const UPDATE_HELPER: &str = "solo-update-helper.exe";
 
-/// The PowerShell script the helper runs: wait for Solo (`pid`) to exit, then
-/// run the installer silently into `install_dir`.
-pub fn installer_helper_script(
-    pid: u32,
-    installer: &Path,
-    install_dir: &Path,
-    log_file: &Path,
-) -> String {
-    // `Start-Process -ArgumentList` joins its items with spaces without quoting
-    // them, so values with spaces carry their own double quotes (Windows paths
-    // can't contain `"`). Inno Setup reads `/DIR="..."` and `/LOG="..."`.
-    let setup_args = [
-        "/SILENT".to_string(),
-        "/SUPPRESSMSGBOXES".to_string(),
-        "/NORESTART".to_string(),
-        format!("/DIR=\"{}\"", install_dir.display()),
-        format!("/LOG=\"{}\"", log_file.display()),
-    ]
-    .iter()
-    .map(|arg| powershell_quote(arg))
-    .collect::<Vec<_>>()
-    .join(", ");
-    format!(
-        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue\n\
-         Start-Process -FilePath {} -ArgumentList @({setup_args})\n",
-        powershell_quote(&installer.display().to_string()),
-    )
-}
-
-/// Encodes a script for `powershell -EncodedCommand` (base64 of UTF-16LE).
-/// This keeps spaces, quotes and non-ASCII paths out of command-line parsing.
-pub fn encode_powershell_command(script: &str) -> String {
-    let bytes: Vec<u8> = script
-        .encode_utf16()
-        .flat_map(|unit| unit.to_le_bytes())
-        .collect();
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-/// The arguments for `powershell.exe` that run [`installer_helper_script`].
+/// The arguments for `solo-update-helper` (the `solo_update_helper` crate):
+/// wait for Solo (`pid`) to exit, then run the installer silently into
+/// `install_dir`.
 pub fn installer_helper_args(
     pid: u32,
     installer: &Path,
     install_dir: &Path,
     log_file: &Path,
-) -> Vec<String> {
+) -> Vec<std::ffi::OsString> {
     vec![
-        "-NoProfile".into(),
-        "-NonInteractive".into(),
-        "-ExecutionPolicy".into(),
-        "Bypass".into(),
-        "-WindowStyle".into(),
-        "Hidden".into(),
-        "-EncodedCommand".into(),
-        encode_powershell_command(&installer_helper_script(
-            pid,
-            installer,
-            install_dir,
-            log_file,
-        )),
+        pid.to_string().into(),
+        installer.as_os_str().to_owned(),
+        install_dir.as_os_str().to_owned(),
+        log_file.as_os_str().to_owned(),
     ]
 }
 
 #[cfg(target_os = "windows")]
 fn spawn_installer_helper(installer: &Path, install_dir: &Path, log_file: &Path) -> Result<()> {
     use smol::process::windows::CommandExt as _;
-    use std::{path::PathBuf, process::Stdio};
+    use std::process::Stdio;
 
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    let powershell = std::env::var_os("SystemRoot")
-        .map(|root| {
-            PathBuf::from(root)
-                .join("System32")
-                .join("WindowsPowerShell")
-                .join("v1.0")
-                .join("powershell.exe")
-        })
-        .filter(|path| path.exists())
-        .unwrap_or_else(|| PathBuf::from("powershell.exe"));
+    // The installer replaces the helper next to solo.exe, so it runs from a
+    // copy next to the installer.
+    let helper = install_dir.join(UPDATE_HELPER);
+    let helper_copy = installer
+        .parent()
+        .context("the installer has no folder")?
+        .join(UPDATE_HELPER);
+    std::fs::copy(&helper, &helper_copy).with_context(|| {
+        format!(
+            "couldn't copy the update helper {}; reinstall Solo from its release page",
+            helper.display()
+        )
+    })?;
     let args = installer_helper_args(std::process::id(), installer, install_dir, log_file);
     let spawn = |flags: u32| {
-        smol::process::Command::new(&powershell)
+        smol::process::Command::new(&helper_copy)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -1012,61 +955,20 @@ mod tests {
     }
 
     #[test]
-    fn quotes_powershell_strings() {
-        assert_eq!(powershell_quote(r"C:\Solo"), r"'C:\Solo'");
-        assert_eq!(powershell_quote("it's"), "'it''s'");
-        assert_eq!(powershell_quote("a\u{2019}b"), "'a\u{2019}\u{2019}b'");
-        assert_eq!(powershell_quote("$env:TEMP `x`"), "'$env:TEMP `x`'");
-    }
-
-    fn decode_powershell_command(encoded: &str) -> String {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .unwrap();
-        let units: Vec<u16> = bytes
-            .chunks(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
-        String::from_utf16(&units).unwrap()
-    }
-
-    #[test]
-    fn builds_helper_command_for_paths_with_spaces_and_chinese() {
+    fn helper_args_keep_paths_whole() {
         let installer =
             Path::new(r"C:\Users\张三\AppData\Local\Temp\solo-update\Solo-Setup-1.29.0.exe");
         let install_dir = Path::new(r"D:\Program Files\终端 Solo's");
         let log_file = Path::new(r"C:\Users\张三\AppData\Local\Temp\solo-update\install.log");
-        let script = installer_helper_script(4242, installer, install_dir, log_file);
         assert_eq!(
-            script,
-            "Wait-Process -Id 4242 -ErrorAction SilentlyContinue\n\
-             Start-Process -FilePath 'C:\\Users\\张三\\AppData\\Local\\Temp\\solo-update\\Solo-Setup-1.29.0.exe' \
-             -ArgumentList @('/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', \
-             '/DIR=\"D:\\Program Files\\终端 Solo''s\"', \
-             '/LOG=\"C:\\Users\\张三\\AppData\\Local\\Temp\\solo-update\\install.log\"')\n"
-        );
-
-        let args = installer_helper_args(4242, installer, install_dir, log_file);
-        assert_eq!(
-            &args[..7],
-            &[
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-WindowStyle",
-                "Hidden",
-                "-EncodedCommand"
+            installer_helper_args(4242, installer, install_dir, log_file),
+            vec![
+                std::ffi::OsString::from("4242"),
+                installer.into(),
+                install_dir.into(),
+                log_file.into(),
             ]
         );
-        assert_eq!(args.len(), 8);
-        // The encoded command is plain base64, so nothing needs command-line quoting.
-        assert!(
-            args[7]
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
-        );
-        assert_eq!(decode_powershell_command(&args[7]), script);
     }
 
     #[test]

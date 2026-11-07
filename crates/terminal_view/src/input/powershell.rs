@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
-use base64::Engine as _;
 use futures::channel::oneshot;
 use serde::Deserialize;
 
@@ -253,16 +252,13 @@ impl Process {
     reason = "completion helpers only run on background threads"
 )]
 fn start_process(program: &str) -> Result<Process> {
-    let script: Vec<u8> = SCRIPT.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let script =
+        terminal::shell_integration::powershell_script_command("powershell-completer", SCRIPT)
+            .context("writing the PowerShell completer script")?;
     let mut command = Command::new(program);
     command
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-EncodedCommand",
-        ])
-        .arg(base64::engine::general_purpose::STANDARD.encode(script))
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+        .arg(script)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());

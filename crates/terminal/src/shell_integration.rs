@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::ShellMark as AlacShellMark;
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use util::shell::Shell;
 
@@ -57,12 +56,20 @@ pub fn integrate_shell(
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_lowercase());
     let args = match stem.as_deref() {
-        Some("powershell" | "pwsh") => vec![
-            "-NoLogo".to_string(),
-            "-NoExit".to_string(),
-            "-EncodedCommand".to_string(),
-            powershell_encoded_command(POWERSHELL_SCRIPT),
-        ],
+        Some("powershell" | "pwsh") => {
+            match powershell_script_command("powershell-integration", POWERSHELL_SCRIPT) {
+                Ok(command) => vec![
+                    "-NoLogo".to_string(),
+                    "-NoExit".to_string(),
+                    "-Command".to_string(),
+                    command,
+                ],
+                Err(error) => {
+                    log::warn!("failed to write the PowerShell shell integration script: {error}");
+                    return shell;
+                }
+            }
+        }
         // The bash.exe in System32 runs WSL, which can't read the script's path.
         Some("bash") if !(is_windows && program.to_lowercase().contains("system32")) => {
             match write_script("bash-integration.sh", BASH_SCRIPT) {
@@ -130,16 +137,44 @@ fn write_script(name: &str, script: &str) -> std::io::Result<String> {
         std::fs::create_dir_all(dir)?;
     }
     if std::fs::read_to_string(&path).ok().as_deref() != Some(script) {
-        std::fs::write(&path, script)?;
+        // Written aside and renamed, so a shell starting meanwhile (in this
+        // Solo or another) never reads half a script.
+        let partial = path.with_extension(format!("{}.partial", std::process::id()));
+        std::fs::write(&partial, script)?;
+        if let Err(error) = std::fs::rename(&partial, &path) {
+            std::fs::remove_file(&partial).ok();
+            // Another Solo may have just written the same script.
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(script) {
+                return Err(error);
+            }
+        }
     }
     // Forward slashes work both natively and in Git Bash on Windows.
     Ok(path.to_string_lossy().replace('\\', "/"))
 }
 
-/// `-EncodedCommand` takes base64 of the script's UTF-16LE bytes.
-fn powershell_encoded_command(script: &str) -> String {
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    base64::engine::general_purpose::STANDARD.encode(bytes)
+/// A `-Command` for PowerShell that runs `script`, which is written to the
+/// temp dir as `<name>-<hash>.ps1` (by its contents, so Solo versions running
+/// side by side don't swap each other's scripts).
+///
+/// The script runs as a script block read from the file rather than with
+/// `-File` or `. '<path>'`: those fail under the `Restricted` execution policy,
+/// Windows PowerShell's default. It replaces `-EncodedCommand`, whose base64
+/// command lines security software tends to stop.
+pub fn powershell_script_command(name: &str, script: &str) -> std::io::Result<String> {
+    // FNV-1a, which doesn't change between Rust versions like `DefaultHasher` may.
+    let hash = script.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ byte as u64).wrapping_mul(0x100000001b3)
+    });
+    let path = write_script(&format!("{name}-{:08x}.ps1", hash as u32), script)?;
+    Ok(powershell_load_command(&path))
+}
+
+fn powershell_load_command(path: &str) -> String {
+    format!(
+        ". ([scriptblock]::Create([IO.File]::ReadAllText('{}', [Text.Encoding]::UTF8)))",
+        path.replace('\'', "''")
+    )
 }
 
 /// SOLO: Lets Claude Code started from the integrated shell report what it's
@@ -652,7 +687,13 @@ mod tests {
     fn integrates_supported_shells_without_user_args() {
         let env = &mut HashMap::default();
         let shell = integrate_shell(Shell::System, "powershell.exe", true, env);
-        assert!(matches!(shell, Shell::WithArguments { ref args, .. } if args.len() == 4));
+        assert!(matches!(
+            shell,
+            Shell::WithArguments { ref args, .. }
+                if args[..3] == ["-NoLogo", "-NoExit", "-Command"]
+                    && args[3].contains("solo-shell-integration/powershell-integration-")
+                    && !args.iter().any(|arg| arg.contains("Encoded"))
+        ));
 
         let shell = integrate_shell(Shell::Program("bash".into()), "bash", false, env);
         assert!(matches!(shell, Shell::WithArguments { ref args, .. } if args[0] == "--rcfile"));
@@ -679,6 +720,39 @@ mod tests {
         assert_eq!(
             integrate_shell(user_shell.clone(), "pwsh", true, env),
             user_shell
+        );
+    }
+
+    /// The load command runs the script whatever the execution policy, from a
+    /// path with quotes and non-ASCII characters in it.
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "test")]
+    fn powershell_loads_scripts_under_a_restricted_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("it's 终端");
+        std::fs::create_dir_all(&directory).unwrap();
+        let script = directory.join("script.ps1");
+        std::fs::write(
+            &script,
+            "$global:solo = '已加载'\nWrite-Output \"loaded $global:solo\"\n",
+        )
+        .unwrap();
+        let path = script.to_string_lossy().replace('\\', "/");
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive"])
+            .args(["-ExecutionPolicy", "Restricted", "-Command"])
+            .arg(format!(
+                "{}; if ($global:solo -eq '已加载') {{ 'script-loaded' }}",
+                powershell_load_command(&path)
+            ))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("script-loaded"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 

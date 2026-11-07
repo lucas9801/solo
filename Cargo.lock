@@ -1402,7 +1402,6 @@ name = "auto_update"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "client",
  "clock",
  "ctor",
@@ -16906,6 +16905,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "solo_update_helper"
+version = "0.1.0"
+dependencies = [
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "spdx"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17980,6 +17986,7 @@ dependencies = [
  "settings",
  "sysinfo 0.39.6",
  "task",
+ "tempfile",
  "theme",
  "theme_settings",
  "thiserror 2.0.17",

@@ -203,6 +203,7 @@ members = [
     "crates/snippet_provider",
     "crates/snippets_ui",
     "crates/solo_agent_hook",
+    "crates/solo_update_helper",
     "crates/sqlez",
     "crates/sqlez_macros",
     "crates/streaming_diff",

@@ -3,8 +3,9 @@
 #
 #   script\package-solo.ps1 [-TargetDir <cargo target dir>] [-OutDir dist]
 #
-# The zip holds Solo\solo.exe with the ConPTY runtime and solo-agent-hook.exe
-# (which Claude Code runs to report its status) next to it, the licenses, and
+# The zip holds Solo\solo.exe with the ConPTY runtime, solo-agent-hook.exe
+# (which Claude Code runs to report its status) and solo-update-helper.exe
+# (which installs updates once Solo has exited) next to it, the licenses, and
 # install.ps1, which copies Solo to %LOCALAPPDATA%\Programs\Solo and adds
 # Start menu and desktop shortcuts. The licenses of Solo's dependencies are
 # generated first (script\generate-licenses.ps1, which installs cargo-about if
@@ -29,7 +30,7 @@ $env:CARGO_INCREMENTAL = "0"
 & (Join-Path $PSScriptRoot "generate-licenses.ps1") (Join-Path $root "assets\licenses.md")
 if (-not (Test-Path (Join-Path $root "assets\licenses.md"))) { throw "Generating the licenses failed" }
 
-cargo build --profile solo-dist -p zed -p solo_agent_hook --bin solo --bin solo-agent-hook
+cargo build --profile solo-dist -p zed -p solo_agent_hook -p solo_update_helper --bin solo --bin solo-agent-hook --bin solo-update-helper
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 $built = Join-Path $TargetDir "solo-dist"
@@ -40,6 +41,7 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 
 Copy-Item (Join-Path $built "solo.exe") $stage
 Copy-Item (Join-Path $built "solo-agent-hook.exe") $stage
+Copy-Item (Join-Path $built "solo-update-helper.exe") $stage
 foreach ($runtime in "conpty.dll", "OpenConsole.exe") {
     $path = Join-Path $built $runtime
     if (Test-Path $path) { Copy-Item $path $stage } else { Write-Warning "$runtime not found; terminals fall back to the system ConPTY" }
