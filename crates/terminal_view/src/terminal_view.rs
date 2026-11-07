@@ -22,6 +22,7 @@ pub mod terminal_element;
 pub mod terminal_panel;
 mod terminal_path_like_target;
 pub mod terminal_scrollbar;
+mod workspace_terminals;
 
 pub use agent_status::AgentTurnEvent;
 use command_blocks::{
@@ -138,6 +139,7 @@ pub fn init(cx: &mut App) {
     agent_turns::init(cx);
     agent_context::init(cx);
     agent_board::init(cx);
+    workspace_terminals::init(cx);
 
     register_serializable_item::<TerminalView>(cx);
 
@@ -327,6 +329,9 @@ impl TerminalView {
         let workspace_handle = workspace.clone();
         let terminal_subscriptions =
             subscribe_for_terminal_events(&terminal, workspace, window, cx);
+        // SOLO: a closed terminal's agent leaves its workspace's tab.
+        cx.on_release(|_, cx| workspace::agent_activity::notify(cx))
+            .detach();
 
         let focus_handle = cx.focus_handle();
         let focus_in = cx.on_focus_in(&focus_handle, window, |terminal_view, window, cx| {
@@ -2000,6 +2005,8 @@ impl Item for TerminalView {
                     .child(
                         Label::new(title)
                             .single_line()
+                            // SOLO: a folder or program name, like "Admin".
+                            .untranslated()
                             .color(params.text_color())
                             .when(self.is_renaming(), |this| this.alpha(0.)),
                     )

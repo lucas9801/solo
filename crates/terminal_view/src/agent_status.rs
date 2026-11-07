@@ -313,6 +313,7 @@ impl TerminalView {
             }
             cx.emit(ItemEvent::UpdateTab);
             cx.notify();
+            workspace::agent_activity::notify(cx);
         } else {
             self.agent_activity.status = status;
         }

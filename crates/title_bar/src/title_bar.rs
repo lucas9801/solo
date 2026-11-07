@@ -4,6 +4,7 @@ mod onboarding_banner;
 mod plan_chip;
 mod title_bar_settings;
 mod update_version;
+mod workspace_tabs;
 
 use crate::application_menu::{ApplicationMenu, show_menus};
 use crate::plan_chip::PlanChip;
@@ -117,6 +118,7 @@ pub fn init(cx: &mut App) {
         let multi_workspace = workspace.multi_workspace().cloned();
         let item = cx.new(|cx| TitleBar::new("title-bar", workspace, multi_workspace, window, cx));
         workspace.set_titlebar_item(item.into(), window, cx);
+        workspace_tabs::register_actions(workspace);
 
         workspace.register_action(|_workspace, _: &UseClassicLayout, _window, cx| {
             set_window_layout(WindowLayout::Editor(None), cx);
@@ -232,6 +234,7 @@ impl Render for TitleBar {
                 .and_then(|ws| ws.read(cx).multi_workspace().cloned())
             {
                 self.multi_workspace = Some(mw.clone());
+                self.observe_multi_workspace(&mw, cx);
                 self.platform_titlebar.update(cx, |titlebar, _cx| {
                     titlebar.set_multi_workspace(mw);
                 });
@@ -245,6 +248,10 @@ impl Render for TitleBar {
         let show_menus = show_menus(cx);
 
         let mut children = <ArrayVec<_, 5>>::new();
+        let multi_workspace = self
+            .multi_workspace
+            .as_ref()
+            .and_then(|multi_workspace| multi_workspace.upgrade());
 
         let mut project_name = None;
         let mut repository = None;
@@ -338,6 +345,34 @@ impl Render for TitleBar {
                             },
                         )
                         .children(self.render_restricted_mode(cx))
+                        // SOLO: a tab for each workspace in the window, the
+                        // active one with its branch.
+                        .when_some(
+                            multi_workspace.filter(|_| {
+                                render_project_items && title_bar_settings.show_project_items
+                            }),
+                            |title_bar, multi_workspace| {
+                                let branch = repository
+                                    .clone()
+                                    .filter(|_| is_git_enabled)
+                                    .and_then(|repository| {
+                                        self.render_worktree_and_branch(
+                                            repository,
+                                            linked_worktree_name.clone(),
+                                            cx,
+                                        )
+                                    });
+                                render_project_items = false;
+                                title_bar.children(self.render_project_host(cx)).child(
+                                    self.render_workspace_tabs(
+                                        multi_workspace,
+                                        project_name.clone(),
+                                        branch,
+                                        cx,
+                                    ),
+                                )
+                            },
+                        )
                         .when(render_project_items, |title_bar| {
                             title_bar
                                 .when(title_bar_settings.show_project_items, |title_bar| {
@@ -547,8 +582,26 @@ impl TitleBar {
         };
 
         this.observe_diagnostics(cx);
+        if let Some(multi_workspace) = this.multi_workspace.clone() {
+            this.observe_multi_workspace(&multi_workspace, cx);
+        }
+        let agent_activity = workspace::agent_activity::AgentActivity::global(cx);
+        this._subscriptions
+            .push(cx.observe(&agent_activity, |_, _, cx| cx.notify()));
 
         this
+    }
+
+    /// SOLO: the workspace tabs change with the window's workspaces.
+    fn observe_multi_workspace(
+        &mut self,
+        multi_workspace: &WeakEntity<MultiWorkspace>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(multi_workspace) = multi_workspace.upgrade() {
+            self._subscriptions
+                .push(cx.observe(&multi_workspace, |_, _, cx| cx.notify()));
+        }
     }
 
     fn worktree_count(&self, cx: &App) -> usize {

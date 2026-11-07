@@ -35,6 +35,9 @@ pub(crate) struct HyperlinkMatch {
     pub(crate) text: String,
     pub(crate) is_url: bool,
     pub(crate) range: Range,
+    /// SOLO: file paths written near a path link, which tell which of several
+    /// files of its name it means (see [`path_with_context`]).
+    pub(crate) context_paths: Vec<String>,
 }
 
 impl From<(String, bool, Match)> for HyperlinkMatch {
@@ -43,6 +46,7 @@ impl From<(String, bool, Match)> for HyperlinkMatch {
             text,
             is_url,
             range: Range::from_alacritty(range),
+            context_paths: Vec::new(),
         }
     }
 }
@@ -156,7 +160,119 @@ pub(crate) fn find_from_grid_point<T: EventListener>(
         }
     };
 
-    found_word.map(|found_word| normalize_found_word(found_word, path_style))
+    found_word.map(|(text, is_url, word_match)| {
+        let (text, context_paths) = if is_url {
+            (text, Vec::new())
+        } else {
+            path_with_context(term, text, &word_match)
+        };
+        let mut hyperlink = normalize_found_word((text, is_url, word_match), path_style);
+        hyperlink.context_paths = context_paths;
+        hyperlink
+    })
+}
+
+/// SOLO: how many lines above a bare position (`:403-405`) to look for the
+/// file it's in.
+const POSITION_FILE_LINES: i32 = 200;
+/// SOLO: how many lines around a path link to look for other paths in.
+const CONTEXT_LINES_ABOVE: i32 = 40;
+const CONTEXT_LINES_BELOW: i32 = 10;
+const MAX_CONTEXT_PATHS: usize = 20;
+
+/// SOLO: a path link with the paths written near it. A bare position, like
+/// the `:403-405` of "(:403-405)" in an agent's answer, is in the file named
+/// last before it (`DnActionSignalImp.cpp:410-445` a few lines up), so it
+/// becomes `DnActionSignalImp.cpp:403`.
+fn path_with_context<T>(term: &Term<T>, text: String, word_match: &Match) -> (String, Vec<String>) {
+    let start = *word_match.start();
+    let text = match bare_position(&text) {
+        Some(position) => {
+            let previous_file = (0..=POSITION_FILE_LINES)
+                .map(|lines_up| start.line - lines_up)
+                .take_while(|line| *line >= term.topmost_line())
+                .find_map(|line| {
+                    let end = (line == start.line).then_some(start.column);
+                    paths_in(&row_text(term, line, end)).pop()
+                });
+            match previous_file {
+                Some(file) => format!("{file}{position}"),
+                None => text,
+            }
+        }
+        None => text,
+    };
+    let file_name = text.rsplit(['/', '\\']).next().unwrap_or(&text);
+    let file_name = file_name.split(':').next().unwrap_or(file_name);
+    let first_line = (start.line - CONTEXT_LINES_ABOVE).max(term.topmost_line());
+    let last_line = (start.line + CONTEXT_LINES_BELOW).min(term.bottommost_line());
+    let mut context_paths = Vec::new();
+    for line in first_line.0..=last_line.0 {
+        for path in paths_in(&row_text(term, Line(line), None)) {
+            let name = path.rsplit(['/', '\\']).next().unwrap_or(&path);
+            if name != file_name && !context_paths.contains(&path) {
+                context_paths.push(path);
+            }
+        }
+    }
+    let excess = context_paths.len().saturating_sub(MAX_CONTEXT_PATHS);
+    context_paths.drain(..excess);
+    (text, context_paths)
+}
+
+/// SOLO: the line and column of `text` when it's a position without a file,
+/// as `:403` of `:403-405`.
+fn bare_position(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix(':')?;
+    let digits = |text: &str| {
+        text.find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len())
+    };
+    let row_end = digits(rest);
+    if row_end == 0 {
+        return None;
+    }
+    let mut end = 1 + row_end;
+    if let Some(column) = text[end..].strip_prefix(':') {
+        let column_end = digits(column);
+        if column_end > 0 {
+            end += 1 + column_end;
+        }
+    }
+    Some(&text[..end])
+}
+
+/// SOLO: the text of the row `line`, up to `end` (exclusive) if given.
+fn row_text<T>(term: &Term<T>, line: Line, end: Option<Column>) -> String {
+    let row = &term.grid()[line];
+    let end = end.map_or(row.len(), |end| end.0.min(row.len()));
+    row[..Column(end)]
+        .iter()
+        .filter(|cell| !cell.flags.intersects(WIDE_CHAR_SPACERS))
+        .map(|cell| cell.c)
+        .collect()
+}
+
+/// SOLO: the file paths with an extension in `text`, without positions, in
+/// order: `register_types.cpp` and `modules/a/b.h` of
+/// "见 register_types.cpp:19，以及（modules/a/b.h）".
+fn paths_in(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_ascii() || c.is_ascii_whitespace() || "()[]{}<>\"'`,;|".contains(c))
+        .filter(|word| !word.contains("://"))
+        .filter_map(|word| {
+            let path = word.split(':').next()?;
+            // A Windows drive, as in `C:\src\main.rs:3`.
+            let path = if path.len() == 1 && word[1..].starts_with(":\\") {
+                let rest = &word[2..];
+                &word[..2 + rest.find(':').unwrap_or(rest.len())]
+            } else {
+                path
+            };
+            let path = path.trim_end_matches('.');
+            (has_extension(path) && path.chars().any(|c| c.is_ascii_alphabetic()))
+                .then(|| path.to_string())
+        })
+        .collect()
 }
 
 fn normalize_found_word(
@@ -191,6 +307,7 @@ fn normalize_hyperlink_match(
                         text: path.to_string_lossy().into_owned(),
                         is_url: false,
                         range,
+                        context_paths: Vec::new(),
                     };
                 } else if let Some(path) = try_osc8_url_to_path(url)
                     && path_style.is_posix()
@@ -199,6 +316,7 @@ fn normalize_hyperlink_match(
                         text: path,
                         is_url: false,
                         range,
+                        context_paths: Vec::new(),
                     };
                 }
             }
@@ -210,12 +328,14 @@ fn normalize_hyperlink_match(
                 text: path.to_string(),
                 is_url: false,
                 range,
+                context_paths: Vec::new(),
             }
         } else {
             HyperlinkMatch {
                 text: maybe_url_or_path,
                 is_url: true,
                 range,
+                context_paths: Vec::new(),
             }
         }
     } else {
@@ -223,6 +343,7 @@ fn normalize_hyperlink_match(
             text: maybe_url_or_path,
             is_url: false,
             range,
+            context_paths: Vec::new(),
         }
     }
 }
@@ -822,6 +943,72 @@ mod tests {
         assert_eq!(
             check(&position, 26, (1, 1)).map(|found| found.0),
             Some("src/main.rs:12".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_paths_with_context() -> anyhow::Result<()> {
+        // SOLO: an agent writes a position without its file when the file was
+        // named just before, and file names that tell which of several files
+        // of the same name it means.
+        let content = settings::parse_json_with_comments(&settings::default_settings())?;
+        let settings = TerminalSettings::from_settings(&content);
+        let mut searches = RegexSearches::new(
+            &settings.path_hyperlink_regexes,
+            Duration::from_millis(settings.path_hyperlink_timeout_ms),
+        );
+        let mut check = |lines: &[&str], hovered: (i32, usize)| {
+            let mut term = Term::new(
+                Config::default(),
+                &TermSize::new(100, lines.len() + 1),
+                VoidListener,
+            );
+            for line in lines {
+                for c in line.chars() {
+                    term.input(c);
+                }
+                term.carriage_return();
+                term.linefeed();
+            }
+            let point = AlacPoint::new(Line(hovered.0), Column(hovered.1));
+            find_from_grid_point(&term, point, &mut searches, PathStyle::local())
+                .map(|found| (found.text, found.context_paths))
+        };
+
+        let lines = [
+            "fixed in (DnActionSignalImp.cpp:410-445) first",
+            "then (:403-405); see a.rs:3 and (:7:2)",
+            "改动（:333、:340）",
+        ];
+        assert_eq!(
+            check(&lines, (1, 7)).map(|found| found.0),
+            Some("DnActionSignalImp.cpp:403".to_string())
+        );
+        assert_eq!(
+            check(&lines, (1, 33)).map(|found| found.0),
+            Some("a.rs:7:2".to_string())
+        );
+        assert_eq!(
+            check(&lines, (2, 6)).map(|found| found.0),
+            Some("a.rs:333".to_string())
+        );
+        // Nothing named before it.
+        assert_eq!(
+            check(&["just (:12) here"], (0, 7)),
+            Some((":12".to_string(), Vec::new()))
+        );
+
+        let lines = [
+            "    void set_radius(real_t p_radius);  // dynamic_bone_collider_3d.h:15",
+            "GDREGISTER_CLASS(DynamicBoneCollider3D);  // register_types.cpp:19",
+        ];
+        assert_eq!(
+            check(&lines, (1, 50)),
+            Some((
+                "register_types.cpp:19".to_string(),
+                vec!["dynamic_bone_collider_3d.h".to_string()]
+            ))
         );
         Ok(())
     }

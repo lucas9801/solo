@@ -91,6 +91,7 @@ pub struct Button {
     alpha: Option<f32>,
     truncate: bool,
     loading: bool,
+    untranslated: bool,
 }
 
 impl Button {
@@ -116,7 +117,15 @@ impl Button {
             alpha: None,
             truncate: false,
             loading: false,
+            untranslated: false,
         }
+    }
+
+    /// SOLO: shows the label as it is, not translated: for a name, like a
+    /// language's or a file's, that may look like interface text.
+    pub fn untranslated(mut self) -> Self {
+        self.untranslated = true;
+        self
     }
 
     /// Sets the color of the button's label.
@@ -516,7 +525,8 @@ impl RenderOnce for Button {
                             .color(label_color)
                             .size(self.label_size.unwrap_or_default())
                             .when_some(self.alpha, |this, alpha| this.alpha(alpha))
-                            .when(self.truncate, |this| this.truncate()),
+                            .when(self.truncate, |this| this.truncate())
+                            .when(self.untranslated, |this| this.untranslated()),
                     )
                     .children(self.key_binding),
             )

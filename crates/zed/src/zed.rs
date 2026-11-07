@@ -3284,7 +3284,9 @@ mod tests {
         multi_workspace_1
             .update(cx, |multi_workspace, _window, cx| {
                 assert_eq!(multi_workspace.workspaces().count(), 2);
-                assert!(multi_workspace.sidebar_open());
+                // SOLO: `threads_sidebar.auto_open` is off by default; the
+                // workspace tabs in the title bar show the new workspace.
+                assert!(!multi_workspace.sidebar_open());
                 let workspace = multi_workspace.workspace().read(cx);
                 assert_eq!(
                     workspace

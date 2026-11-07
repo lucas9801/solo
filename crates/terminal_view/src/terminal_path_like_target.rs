@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use terminal::PathLikeTarget;
 use workspace::path_link::PathMatching;
 #[cfg(not(test))]
-use workspace::path_link::resolve_open_target;
+use workspace::path_link::resolve_open_target_near;
 #[cfg(test)]
 use workspace::path_link::{
     BackgroundPathChecks, OpenTargetFoundBy, resolve_open_target_with_fs_checks,
@@ -43,11 +43,12 @@ fn possible_hover_target(
     #[cfg(test)] background_path_checks: BackgroundPathChecks,
 ) -> Task<()> {
     #[cfg(not(test))]
-    let file_to_open_task = resolve_open_target(
+    let file_to_open_task = resolve_open_target_near(
         workspace,
         PathMatching::Heuristic,
         &path_like_target.maybe_path,
         path_like_target.working_directory.as_deref(),
+        &path_like_target.context_paths,
         cx,
     );
     #[cfg(test)]
@@ -56,6 +57,7 @@ fn possible_hover_target(
         PathMatching::Heuristic,
         &path_like_target.maybe_path,
         path_like_target.working_directory.as_deref(),
+        &path_like_target.context_paths,
         cx,
         background_path_checks,
     );
@@ -125,11 +127,12 @@ fn possibly_open_target(
             .update(cx, |_, cx| {
                 #[cfg(not(test))]
                 {
-                    resolve_open_target(
+                    resolve_open_target_near(
                         &workspace,
                         PathMatching::Heuristic,
                         &path_like_target.maybe_path,
                         path_like_target.working_directory.as_deref(),
+                        &path_like_target.context_paths,
                         cx,
                     )
                 }
@@ -140,6 +143,7 @@ fn possibly_open_target(
                         PathMatching::Heuristic,
                         &path_like_target.maybe_path,
                         path_like_target.working_directory.as_deref(),
+                        &path_like_target.context_paths,
                         cx,
                         background_path_checks,
                     )
@@ -286,6 +290,7 @@ mod tests {
             PathLikeTarget {
                 maybe_path: maybe_path.to_string(),
                 working_directory,
+                context_paths: Vec::new(),
             },
             background_path_checks,
         )
@@ -1009,5 +1014,55 @@ mod tests {
                 }
             )
         }
+    }
+
+    // SOLO: of several files of a name, the one near the paths written around it.
+    #[gpui::test]
+    async fn test_scan_prefers_file_near_context_paths(cx: &mut TestAppContext) {
+        let mut test_path_like = init_test(
+            cx,
+            vec![(
+                path!("/godot"),
+                json!({
+                    "modules": {
+                        "ai_generator": { "register_types.cpp": "" },
+                        "dynamicbone": {
+                            "register_types.cpp": "",
+                            "runtime": { "dynamic_bone_collider_3d.h": "" },
+                        },
+                    },
+                }),
+            )],
+            vec![path!("/godot")],
+        )
+        .await;
+        let mut opened = Vec::new();
+        for context_paths in [Vec::new(), vec!["dynamic_bone_collider_3d.h".to_string()]] {
+            let (_, open_target) = test_path_like(
+                HoveredWord {
+                    word: "register_types.cpp:19".to_string(),
+                    word_match: Range::new(Point::new(0, 0), Point::new(0, 0)),
+                    id: 0,
+                },
+                PathLikeTarget {
+                    maybe_path: "register_types.cpp:19".to_string(),
+                    working_directory: Some(PathBuf::from(path!("/godot"))),
+                    context_paths,
+                },
+                BackgroundPathChecks::LocalFileSystem,
+            )
+            .await;
+            let open_target = open_target.expect("register_types.cpp should open");
+            assert_eq!(open_target.found_by(), OpenTargetFoundBy::WorktreeScan);
+            assert_eq!(open_target.path().row, Some(19));
+            opened.push(open_target.path().path.clone());
+        }
+        assert_eq!(
+            opened,
+            [
+                PathBuf::from(path!("/godot/modules/ai_generator/register_types.cpp")),
+                PathBuf::from(path!("/godot/modules/dynamicbone/register_types.cpp")),
+            ]
+        );
     }
 }

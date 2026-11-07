@@ -54,6 +54,8 @@ impl Render for ActiveBufferLanguage {
 
             el.child(
                 Button::new("change-language", active_language_text.clone())
+                    // SOLO: "Go" is a language here, not the Go menu.
+                    .untranslated()
                     .label_size(LabelSize::Small)
                     .tab_index(0isize)
                     .aria_label(format!("Language: {active_language_text}"))

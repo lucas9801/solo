@@ -319,6 +319,12 @@ async fn test_open_new_window_does_not_open_sidebar_on_existing_window(cx: &mut 
 #[gpui::test]
 async fn test_open_directory_in_existing_window_opens_sidebar(cx: &mut TestAppContext) {
     init_test(cx);
+    // SOLO: off by default, as the title bar has a tab for each workspace.
+    cx.update(|cx| {
+        let mut settings = AgentSettings::get_global(cx).clone();
+        settings.threads_sidebar.auto_open = true;
+        AgentSettings::override_global(settings, cx);
+    });
 
     let app_state = cx.update(AppState::test);
     let fs = app_state.fs.as_fake();

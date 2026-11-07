@@ -1,7 +1,7 @@
 // Solo settings
 //
-// For information on how to configure Zed, see the Zed
-// documentation: https://zed.dev/docs/configuring-zed
+// Solo's settings work like those of Zed, which Solo is based on; see
+// Zed's documentation: https://zed.dev/docs/configuring-zed
 //
 // To see all of Solo's default settings without changing your
 // custom settings, run `solo: open default settings` from the

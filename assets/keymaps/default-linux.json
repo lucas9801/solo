@@ -634,6 +634,18 @@
   {
     "context": "Workspace",
     "bindings": {
+      // SOLO: switch between the workspace tabs in the title bar.
+      "ctrl-alt-1": ["solo::ActivateWorkspace", { "index": 0 }],
+      "ctrl-alt-2": ["solo::ActivateWorkspace", { "index": 1 }],
+      "ctrl-alt-3": ["solo::ActivateWorkspace", { "index": 2 }],
+      "ctrl-alt-4": ["solo::ActivateWorkspace", { "index": 3 }],
+      "ctrl-alt-5": ["solo::ActivateWorkspace", { "index": 4 }],
+      "ctrl-alt-6": ["solo::ActivateWorkspace", { "index": 5 }],
+      "ctrl-alt-7": ["solo::ActivateWorkspace", { "index": 6 }],
+      "ctrl-alt-8": ["solo::ActivateWorkspace", { "index": 7 }],
+      "ctrl-alt-9": ["solo::ActivateWorkspace", { "index": 8 }],
+      "ctrl-alt-pagedown": "solo::NextWorkspace",
+      "ctrl-alt-pageup": "solo::PreviousWorkspace",
       "alt-/": "which_key::ShowPendingBindings",
       // Move focus between the major regions of the window (editor, open
       // panels, status bar). Accessibility navigation; mirrors VS Code's

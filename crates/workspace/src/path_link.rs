@@ -142,7 +142,30 @@ pub fn resolve_open_target(
     cwd: Option<&Path>,
     cx: &App,
 ) -> Task<Option<OpenTarget>> {
-    resolve_open_target_internal(workspace, matching, maybe_path, cwd, cx, None)
+    resolve_open_target_internal(workspace, matching, maybe_path, cwd, &[], cx, None)
+}
+
+/// SOLO: [`resolve_open_target`] for a path written among `context_paths`:
+/// when several files have the name it ends with, the one nearest to those
+/// paths is meant (`register_types.cpp` next to `dynamic_bone_collider_3d.h`
+/// is `modules/dynamicbone/register_types.cpp`).
+pub fn resolve_open_target_near(
+    workspace: &WeakEntity<Workspace>,
+    matching: PathMatching,
+    maybe_path: &str,
+    cwd: Option<&Path>,
+    context_paths: &[String],
+    cx: &App,
+) -> Task<Option<OpenTarget>> {
+    resolve_open_target_internal(
+        workspace,
+        matching,
+        maybe_path,
+        cwd,
+        context_paths,
+        cx,
+        None,
+    )
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -151,6 +174,7 @@ pub fn resolve_open_target_with_fs_checks(
     matching: PathMatching,
     maybe_path: &str,
     cwd: Option<&Path>,
+    context_paths: &[String],
     cx: &App,
     background_path_checks: BackgroundPathChecks,
 ) -> Task<Option<OpenTarget>> {
@@ -159,6 +183,7 @@ pub fn resolve_open_target_with_fs_checks(
         matching,
         maybe_path,
         cwd,
+        context_paths,
         cx,
         Some(background_path_checks),
     )
@@ -169,6 +194,7 @@ fn resolve_open_target_internal(
     matching: PathMatching,
     maybe_path: &str,
     cwd: Option<&Path>,
+    context_paths: &[String],
     cx: &App,
     background_path_checks: Option<BackgroundPathChecks>,
 ) -> Task<Option<OpenTarget>> {
@@ -176,6 +202,7 @@ fn resolve_open_target_internal(
         return Task::ready(None);
     };
 
+    let context_paths = context_paths.to_vec();
     let mut potential_paths = Vec::new();
     let original_path = PathWithPosition::from_path(PathBuf::from(maybe_path));
     let path_with_position = PathWithPosition::parse_str(maybe_path);
@@ -434,40 +461,94 @@ fn resolve_open_target_internal(
                         Some((path_with_position, path))
                     })
                     .collect::<Vec<_>>();
-                (
-                    worktree.read_with(cx, |worktree, _| worktree.snapshot()),
-                    paths_to_check,
-                )
+                let snapshot = worktree.read_with(cx, |worktree, _| worktree.snapshot());
+                let context_paths = context_paths
+                    .iter()
+                    .filter_map(|path| {
+                        let path = Path::new(path);
+                        let path = path.strip_prefix(snapshot.abs_path()).unwrap_or(path);
+                        let path = path.strip_prefix(".").unwrap_or(path);
+                        Some(RelPath::new(path, PathStyle::local()).ok()?.into_owned())
+                    })
+                    .collect::<Vec<_>>();
+                (snapshot, paths_to_check, context_paths)
             })
             .collect::<Vec<_>>();
         cx.background_spawn(async move {
-            for (snapshot, paths_to_check) in worktree_paths_to_check {
+            for (snapshot, paths_to_check, context_paths) in worktree_paths_to_check {
                 let traversal = snapshot.traverse_from_path(true, true, false, RelPath::empty());
+                let mut candidates = Vec::new();
+                let mut context_entries = vec![Vec::new(); context_paths.len()];
                 for entry in traversal {
-                    if let Some(path_with_position) =
-                        paths_to_check
-                            .iter()
-                            .find_map(|(path_with_position, path)| {
-                                entry.path.ends_with(path).then_some(path_with_position)
-                            })
+                    if candidates.len() < MAX_SCAN_CANDIDATES
+                        && let Some(path_with_position) =
+                            paths_to_check
+                                .iter()
+                                .find_map(|(path_with_position, path)| {
+                                    entry.path.ends_with(path).then_some(path_with_position)
+                                })
                     {
-                        return Some(OpenTarget::Worktree(
-                            PathWithPosition {
-                                path: snapshot.absolutize(&entry.path),
-                                row: path_with_position.row,
-                                column: path_with_position.column,
-                            },
-                            entry.clone(),
-                            #[cfg(any(test, feature = "test-support"))]
-                            OpenTargetFoundBy::WorktreeScan,
-                        ));
+                        candidates.push((entry.clone(), path_with_position));
+                        if context_paths.is_empty() {
+                            break;
+                        }
                     }
+                    for (context_path, entries) in context_paths.iter().zip(&mut context_entries) {
+                        if entries.len() < MAX_SCAN_CANDIDATES && entry.path.ends_with(context_path)
+                        {
+                            entries.push(entry.path.clone());
+                        }
+                    }
+                }
+                // The first one found wins a tie.
+                let best = candidates
+                    .into_iter()
+                    .enumerate()
+                    .max_by_key(|(ix, (entry, _))| {
+                        let score: usize = context_entries
+                            .iter()
+                            .map(|entries| {
+                                entries
+                                    .iter()
+                                    .map(|path| shared_directories(&entry.path, path))
+                                    .max()
+                                    .unwrap_or(0)
+                            })
+                            .sum();
+                        (score, std::cmp::Reverse(*ix))
+                    });
+                if let Some((_, (entry, path_with_position))) = best {
+                    return Some(OpenTarget::Worktree(
+                        PathWithPosition {
+                            path: snapshot.absolutize(&entry.path),
+                            row: path_with_position.row,
+                            column: path_with_position.column,
+                        },
+                        entry,
+                        #[cfg(any(test, feature = "test-support"))]
+                        OpenTargetFoundBy::WorktreeScan,
+                    ));
                 }
             }
             None
         })
         .await
     })
+}
+
+/// SOLO: how many files of the name a scanned path ends with are compared
+/// with the paths around it.
+const MAX_SCAN_CANDIDATES: usize = 100;
+
+/// SOLO: how many leading directories two worktree paths have in common.
+fn shared_directories(a: &RelPath, b: &RelPath) -> usize {
+    let (Some(a), Some(b)) = (a.parent(), b.parent()) else {
+        return 0;
+    };
+    a.components()
+        .zip(b.components())
+        .take_while(|(a, b)| a == b)
+        .count()
 }
 
 /// Whether `path` has a directory or an extension, i.e. isn't a bare word.

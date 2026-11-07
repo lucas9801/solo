@@ -827,6 +827,8 @@ impl Item for Editor {
                     )
                 })
                 .single_line()
+                // SOLO: a file name.
+                .untranslated()
                 .color(label_color)
                 .when(params.truncate_title_middle, |this| {
                     this.truncate_middle().flex_1()

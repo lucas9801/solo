@@ -595,6 +595,15 @@ mod tests {
         cx.update(|cx| {
             let store = SettingsStore::test(cx);
             cx.set_global(store);
+            // SOLO: off by default, now that each workspace has a tab.
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .terminal
+                        .get_or_insert_default()
+                        .follow_working_directory = Some(true);
+                });
+            });
         });
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(
