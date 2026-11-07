@@ -5,6 +5,12 @@
 //! (see `terminal::shell_integration::integrate_claude_code`): a submitted
 //! prompt starts a turn, a permission request or question waits for the user,
 //! and stopping ends the turn. Once an agent has reported, its reports decide.
+//! Other agents and scripts can report the same way
+//! (docs/agent-status-protocol.md), which also makes a program Solo doesn't
+//! know an agent.
+//!
+//! A turn that ends while you aren't looking at its terminal shows as done
+//! until you do; then the agent is idle.
 //!
 //! Other agents don't report it, so it's read from the terminal: they animate
 //! a spinner while they work and go quiet when they stop, and ring the bell or
@@ -53,17 +59,31 @@ pub(crate) enum AgentStatus {
     NeedsInput,
     /// Running but quiet, likely waiting for the next prompt.
     Idle,
+    /// Still running, and finished a turn you haven't looked at yet.
+    Finished,
+    /// Exited.
     Done,
     Failed,
 }
 
 impl AgentStatus {
+    /// Whether the agent is still running.
+    pub(crate) fn is_running(self) -> bool {
+        matches!(
+            self,
+            AgentStatus::Working
+                | AgentStatus::NeedsInput
+                | AgentStatus::Idle
+                | AgentStatus::Finished
+        )
+    }
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             AgentStatus::Working => util::i18n::tr("Working", "工作中"),
             AgentStatus::NeedsInput => util::i18n::tr("Needs your input", "需要你的输入"),
             AgentStatus::Idle => util::i18n::tr("Idle", "空闲"),
-            AgentStatus::Done => util::i18n::tr("Done", "已完成"),
+            AgentStatus::Finished | AgentStatus::Done => util::i18n::tr("Done", "已完成"),
             AgentStatus::Failed => util::i18n::tr("Failed", "失败"),
         }
     }
@@ -73,7 +93,7 @@ impl AgentStatus {
             AgentStatus::Working => (IconName::LoadCircle, Color::Accent),
             AgentStatus::NeedsInput => (IconName::Bell, Color::Warning),
             AgentStatus::Idle => (IconName::Circle, Color::Muted),
-            AgentStatus::Done => (IconName::Check, Color::Success),
+            AgentStatus::Finished | AgentStatus::Done => (IconName::Check, Color::Success),
             AgentStatus::Failed => (IconName::XCircle, Color::Error),
         }
     }
@@ -98,6 +118,10 @@ pub(crate) struct AgentActivity {
     hook: Option<HookReport>,
     /// Whether a turn reported by the agent's hooks is under way.
     in_turn: bool,
+    /// The name the agent gave in its reports.
+    reported_agent: Option<String>,
+    /// Whether the agent finished a turn you haven't looked at since.
+    unseen_finish: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -172,6 +196,26 @@ fn quiet_deadline(
         }
     };
     Some(last_sign + QUIET_AFTER)
+}
+
+/// What to show for an agent that is `status` now and was shown as
+/// `previous`, and whether it has finished a turn you haven't seen: a turn
+/// that ends while you aren't looking stays done until you look.
+fn shown_status(
+    status: AgentStatus,
+    previous: Option<AgentStatus>,
+    watched: bool,
+    unseen_finish: bool,
+) -> (AgentStatus, bool) {
+    if status != AgentStatus::Idle {
+        return (status, false);
+    }
+    let unseen_finish = unseen_finish || (previous == Some(AgentStatus::Working) && !watched);
+    if unseen_finish {
+        (AgentStatus::Finished, true)
+    } else {
+        (AgentStatus::Idle, false)
+    }
 }
 
 /// What an agent is doing, from what was seen of it.
@@ -255,6 +299,10 @@ impl TerminalView {
             log::debug!("agent hook {hook:?} arrived after a later one");
             return;
         }
+        if hook.agent.is_some() {
+            activity.reported_agent = hook.agent.clone();
+        }
+        let needs_input = hook.kind == AgentHookKind::NeedsInput;
         activity.hook = Some(HookReport {
             kind: hook.kind,
             received_at: Instant::now(),
@@ -265,20 +313,49 @@ impl TerminalView {
             cx.emit(AgentTurnEvent::Started);
         }
         self.update_agent_status(window, cx);
+        if needs_input
+            && self.agent_status().map(|(_, status)| status) == Some(AgentStatus::NeedsInput)
+        {
+            self.notify_agent_needs_input(window, cx);
+        }
+    }
+
+    /// You're looking at the terminal: a turn it finished is seen.
+    pub(crate) fn agent_seen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.agent_activity.unseen_finish {
+            self.agent_activity.unseen_finish = false;
+            self.update_agent_status(window, cx);
+        }
+    }
+
+    fn is_watched(&self, window: &Window, cx: &Context<Self>) -> bool {
+        window.is_window_active() && self.focus_handle.contains_focused(window, cx)
     }
 
     pub(crate) fn update_agent_status(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
-        let status = self.compute_agent_status(now, cx);
+        let mut status = self.compute_agent_status(now, cx);
         if status.is_none() {
             // Reports are about the agent that sent them; the next one starts afresh.
             self.agent_activity.hook = None;
+            self.agent_activity.reported_agent = None;
         }
         let previous = self
             .agent_activity
             .status
             .as_ref()
             .map(|(_, status)| *status);
+        if let Some((_, current)) = status.as_mut() {
+            let watched = self.is_watched(window, cx);
+            (*current, self.agent_activity.unseen_finish) = shown_status(
+                *current,
+                previous,
+                watched,
+                self.agent_activity.unseen_finish,
+            );
+        } else {
+            self.agent_activity.unseen_finish = false;
+        }
         let new = status.as_ref().map(|(_, status)| *status);
         if self.agent_activity.in_turn
             && !matches!(new, Some(AgentStatus::Working | AgentStatus::NeedsInput))
@@ -289,16 +366,13 @@ impl TerminalView {
         if new == Some(AgentStatus::Working) {
             self.agent_activity.working_since.get_or_insert(now);
         }
-        if matches!(
-            new,
-            Some(AgentStatus::Working | AgentStatus::NeedsInput | AgentStatus::Idle)
-        ) {
+        if new.is_some_and(AgentStatus::is_running) {
             self.keep_agent_session(cx);
         }
         if previous != new {
             log::debug!("agent status {previous:?} -> {new:?}");
             let worked_for = match (previous, new) {
-                (Some(AgentStatus::Working), Some(AgentStatus::Idle)) => self
+                (Some(AgentStatus::Working), Some(AgentStatus::Finished)) => self
                     .agent_activity
                     .working_since
                     .map(|since| now.duration_since(since)),
@@ -389,19 +463,33 @@ impl TerminalView {
         let (name, running, exit_code) = match block {
             Some(block) => {
                 let command = block.command.as_deref()?;
-                if !is_agent_command(command, extra) {
-                    return None;
-                }
                 if block.is_running() {
                     if activity.started_at != block.started_at {
                         // Reports from a previous run don't apply to this one.
-                        activity.hook = None;
+                        let reported_before = |received_at: Instant| {
+                            block
+                                .started_at
+                                .is_some_and(|started_at| received_at < started_at)
+                        };
+                        if activity
+                            .hook
+                            .is_some_and(|hook| reported_before(hook.received_at))
+                        {
+                            activity.hook = None;
+                            activity.reported_agent = None;
+                        }
                     }
                     activity.started_at = block.started_at;
                 } else if activity.started_at != block.started_at {
                     return None;
                 }
-                (agent_name(command), block.is_running(), block.exit_code)
+                let name = if is_agent_command(command, extra) {
+                    agent_name(command)
+                } else {
+                    // A program that reports its status is an agent.
+                    activity.reported_agent.clone()?
+                };
+                (name, block.is_running(), block.exit_code)
             }
             // Without shell integration, go by the foreground process.
             None => {
@@ -449,6 +537,45 @@ fn agent_name(command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turns_finished_unseen_stay_done_until_seen() {
+        use AgentStatus::*;
+        // Stopping while you look: idle.
+        assert_eq!(
+            shown_status(Idle, Some(Working), true, false),
+            (Idle, false)
+        );
+        // Stopping in the background: done, and it stays done.
+        assert_eq!(
+            shown_status(Idle, Some(Working), false, false),
+            (Finished, true)
+        );
+        assert_eq!(
+            shown_status(Idle, Some(Finished), false, true),
+            (Finished, true)
+        );
+        assert_eq!(
+            shown_status(Idle, Some(Finished), true, true),
+            (Finished, true)
+        );
+        // Once seen (`agent_seen` clears it): idle.
+        assert_eq!(
+            shown_status(Idle, Some(Finished), true, false),
+            (Idle, false)
+        );
+        // A new turn, or a question, starts afresh.
+        assert_eq!(
+            shown_status(Working, Some(Finished), false, true),
+            (Working, false)
+        );
+        assert_eq!(
+            shown_status(NeedsInput, Some(Finished), false, true),
+            (NeedsInput, false)
+        );
+        // Idle without a turn ending isn't done.
+        assert_eq!(shown_status(Idle, None, false, false), (Idle, false));
+    }
 
     #[test]
     fn test_status_from() {

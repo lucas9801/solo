@@ -153,7 +153,10 @@ impl TerminalView {
                 self.agent_status(),
                 Some((
                     _,
-                    AgentStatus::Working | AgentStatus::NeedsInput | AgentStatus::Idle
+                    AgentStatus::Working
+                        | AgentStatus::NeedsInput
+                        | AgentStatus::Idle
+                        | AgentStatus::Finished
                 ))
             )
     }
@@ -667,7 +670,7 @@ pub(crate) fn remote_control_for(agent: Option<(&str, AgentStatus)>) -> RemoteCo
         Some((name, status)) if name.eq_ignore_ascii_case("claude") => match status {
             // A prompt waiting for an answer would take the typed Enter as one.
             AgentStatus::Working | AgentStatus::NeedsInput => RemoteControl::WaitUntilIdle,
-            AgentStatus::Idle => RemoteControl::Type,
+            AgentStatus::Idle | AgentStatus::Finished => RemoteControl::Type,
             AgentStatus::Done | AgentStatus::Failed => RemoteControl::StartNew,
         },
         _ => RemoteControl::StartNew,

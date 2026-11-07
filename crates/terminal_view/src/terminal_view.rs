@@ -1553,7 +1553,7 @@ fn subscribe_for_terminal_events(
                     terminal_view.agent_wants_attention(window, cx);
                     terminal_view.notify_from_program(title.clone(), body.clone(), window, cx)
                 }
-                Event::AgentHook(hook) => terminal_view.agent_hook(*hook, window, cx),
+                Event::AgentHook(hook) => terminal_view.agent_hook(hook.clone(), window, cx),
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
                     MaybeNavigationTarget::Url(url) => cx.open_url(url),
                     MaybeNavigationTarget::PathLike(_)
@@ -1666,6 +1666,7 @@ impl TerminalView {
 
     fn focus_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         agent_context::record_terminal_focus(cx.entity_id(), cx);
+        self.agent_seen(window, cx);
         self.terminal.update(cx, |terminal, _| {
             terminal.set_cursor_shape(self.cursor_shape);
             if !self.read_only {

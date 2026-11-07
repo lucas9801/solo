@@ -81,7 +81,10 @@ impl TerminalView {
                 .filter(|(_, status)| {
                     matches!(
                         status,
-                        AgentStatus::Working | AgentStatus::NeedsInput | AgentStatus::Idle
+                        AgentStatus::Working
+                            | AgentStatus::NeedsInput
+                            | AgentStatus::Idle
+                            | AgentStatus::Finished
                     )
                 })
                 .map(|(_, status)| status.label().into());
