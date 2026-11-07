@@ -133,6 +133,9 @@ where
     util::command::new_std_command("git")
         .arg("-C")
         .arg(directory)
+        // Paths as they are, not quoted with octal escapes (e.g. Chinese
+        // file names).
+        .args(["-c", "core.quotePath=false"])
         .args(arguments)
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
@@ -414,8 +417,15 @@ pub fn diff_against_base(task: &AgentTask) -> Result<String> {
         worktree,
         ["diff", "--no-color", "--no-ext-diff", &merge_base],
     )?;
-    let untracked = git_ok(worktree, ["ls-files", "--others", "--exclude-standard"])?;
-    for file in untracked.lines().take(MAX_UNTRACKED_FILES_IN_DIFF) {
+    let untracked = git_ok(
+        worktree,
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
+    for file in untracked
+        .split(' ')
+        .filter(|file| !file.is_empty())
+        .take(MAX_UNTRACKED_FILES_IN_DIFF)
+    {
         // `--no-index` exits with 1 when the files differ, which they do.
         let output = git(
             worktree,
@@ -743,7 +753,18 @@ mod tests {
             &first_dir
         ));
 
-        // The diff covers new files that aren't committed yet.
+        // The diff covers new files that aren't committed yet, whatever their
+        // names.
+        fs::write(
+            first_dir.join("问候 it's.txt"),
+            "你好
+",
+        )
+        .unwrap();
+        let diff = diff_against_base(&first).unwrap();
+        assert!(diff.contains("问候 it's.txt"), "{diff}");
+        assert!(diff.contains("+你好"), "{diff}");
+        fs::remove_file(first_dir.join("问候 it's.txt")).unwrap();
         let diff = diff_against_base(&first).unwrap();
         assert!(diff.contains("greeting.txt"), "{diff}");
         assert!(diff.contains("+hello"), "{diff}");
