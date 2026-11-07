@@ -6,6 +6,10 @@
 
 if [[ -n ${__solo_integration-} ]]; then return; fi
 __solo_integration=1
+# The terminal's nonce goes with the sequences it trusts; programs run here
+# don't inherit it.
+__solo_nonce=${SOLO_SHELL_NONCE-}
+unset SOLO_SHELL_NONCE
 __solo_command_running=
 
 __solo_preexec() {
@@ -16,7 +20,7 @@ __solo_preexec() {
     command=${command//$bs/$bs$bs}
     command=${command//;/$semicolon}
     command=${command//$'\n'/$newline}
-    printf '\e]633;E;%s\a\e]133;C\a' "$command"
+    printf '\e]633;E;%s;%s\a\e]133;C\a' "$command" "$__solo_nonce"
 }
 
 # Runs first, to see the command's exit status.
@@ -73,7 +77,7 @@ if [[ -n ${SOLO_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} )); then
     }
 fi
 
-printf '\e]633;P;Shell=%s\a' "${commands[zsh]:-zsh}"
+printf '\e]633;P;Shell=%s;%s\a' "${commands[zsh]:-zsh}" "$__solo_nonce"
 
 precmd_functions=(__solo_precmd_status $precmd_functions __solo_precmd_prompt)
 preexec_functions+=(__solo_preexec)

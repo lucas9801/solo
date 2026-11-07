@@ -10,11 +10,15 @@ $Global:__SoloShellIntegration = $true
 $Global:__SoloCommandExecuted = $false
 $Global:__SoloFirstPrompt = $true
 $Global:__SoloOriginalPrompt = $function:prompt
+# The terminal's nonce goes with the sequences it trusts; programs run here
+# don't inherit it.
+$Global:__SoloNonce = $env:SOLO_SHELL_NONCE
+Remove-Item Env:SOLO_SHELL_NONCE -ErrorAction SilentlyContinue
 
 # Tell the terminal which PowerShell this is, so its input editor can ask the
 # same one for completions.
 $__soloShellPath = (Get-Process -Id $PID).Path -replace '\\', '\\' -replace ';', '\x3b'
-[Console]::Write("$([char]27)]633;P;Shell=$__soloShellPath$([char]7)")
+[Console]::Write("$([char]27)]633;P;Shell=$__soloShellPath;$Global:__SoloNonce$([char]7)")
 Remove-Variable __soloShellPath
 
 function Global:prompt {
@@ -111,7 +115,7 @@ if (Get-Command PSConsoleHostReadLine -ErrorAction SilentlyContinue) {
             elseif ($char -eq ';' -or [int]$char -lt 0x20) { [void]$escaped.Append(('\x{0:x2}' -f [int]$char)) }
             else { [void]$escaped.Append($char) }
         }
-        [Console]::Write("$([char]27)]633;E;$escaped$([char]7)$([char]27)]133;C$([char]7)")
+        [Console]::Write("$([char]27)]633;E;$escaped;$Global:__SoloNonce$([char]7)$([char]27)]133;C$([char]7)")
         $line
     }
 }

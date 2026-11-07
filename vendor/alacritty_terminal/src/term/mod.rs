@@ -1928,15 +1928,20 @@ impl<T: EventListener> Handler for Term<T> {
                 },
                 _ => return,
             },
-            [b"633", b"E", command_line, ..] => {
-                ShellMark::CommandLine(unescape_command_line(command_line))
+            [b"633", b"E", command_line, rest @ ..] => ShellMark::CommandLine {
+                command: unescape_command_line(command_line),
+                nonce: osc_nonce(rest),
             },
-            [b"633", b"P", property, ..] => {
+            [b"633", b"P", property, rest @ ..] => {
                 let property = unescape_command_line(property);
                 let Some((key, value)) = property.split_once('=') else {
                     return;
                 };
-                ShellMark::Property { key: key.to_string(), value: value.to_string() }
+                ShellMark::Property {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                    nonce: osc_nonce(rest),
+                }
             },
             [b"7", uri @ ..] if !uri.is_empty() => {
                 let uri: Vec<&str> =
@@ -2576,6 +2581,13 @@ pub mod test {
 
         term
     }
+}
+
+/// SOLO: The nonce after an `OSC 633` sequence's value, which tells the
+/// terminal's own shell integration from output that only looks like it.
+fn osc_nonce(rest: &[&[u8]]) -> Option<String> {
+    let nonce = str::from_utf8(rest.first()?).ok()?;
+    (!nonce.is_empty()).then(|| nonce.to_string())
 }
 
 /// SOLO: Undo the escaping of `OSC 633 ; E`, where a doubled backslash is a

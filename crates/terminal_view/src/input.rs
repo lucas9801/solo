@@ -1303,7 +1303,7 @@ mod tests {
 
     /// A shell with no history file, so the user's own history stays out.
     const SHELL_PROMPT: &[u8] =
-        b"\x1b]633;P;Shell=solo-test-shell\x07\x1b]133;A\x07$ \x1b]133;B\x07";
+        b"\x1b]633;P;Shell=solo-test-shell;test-nonce\x07\x1b]133;A\x07$ \x1b]133;B\x07";
 
     async fn terminal_with_view(
         cx: &mut TestAppContext,
@@ -1333,6 +1333,7 @@ mod tests {
             )
             .subscribe(cx)
         });
+        terminal.update(cx, |terminal, _| terminal.set_shell_nonce("test-nonce"));
         let (view, cx) = cx.add_window_view(|window, cx| {
             TerminalView::new(
                 terminal.clone(),
@@ -1413,7 +1414,7 @@ mod tests {
         // A full screen program takes the whole terminal.
         write(
             &terminal,
-            b"vim\r\n\x1b]633;E;vim\x07\x1b]133;C\x07\x1b[?1049h",
+            b"vim\r\n\x1b]633;E;vim;test-nonce\x07\x1b]133;C\x07\x1b[?1049h",
             cx,
         );
         assert!(!input_focused(&view, cx));
@@ -1431,7 +1432,7 @@ mod tests {
 
         write(
             &terminal,
-            b"python\r\n\x1b]633;E;python\x07\x1b]133;C\x07>>> ",
+            b"python\r\n\x1b]633;E;python;test-nonce\x07\x1b]133;C\x07>>> ",
             cx,
         );
         assert!(!input_focused(&view, cx));

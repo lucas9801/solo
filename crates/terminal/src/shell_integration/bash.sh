@@ -7,6 +7,10 @@
 
 if [[ -n "${__solo_integration-}" ]]; then return; fi
 __solo_integration=1
+# The terminal's nonce goes with the sequences it trusts; programs run here
+# don't inherit it.
+__solo_nonce=${SOLO_SHELL_NONCE-}
+unset SOLO_SHELL_NONCE
 
 if [[ -r ~/.bashrc ]]; then
     . ~/.bashrc
@@ -41,7 +45,7 @@ __solo_preexec() {
     command=${command//\\/\\\\}
     command=${command//;/\\x3b}
     command=${command//$'\n'/\\x0a}
-    printf '\e]633;E;%s\a\e]133;C\a' "$command"
+    printf '\e]633;E;%s;%s\a\e]133;C\a' "$command" "$__solo_nonce"
 }
 
 __solo_prompt_command() {
@@ -82,7 +86,7 @@ if [[ -n "$__solo_has_cygpath" ]]; then
     __solo_shell_path=$(cygpath -w "$BASH")
 fi
 __solo_shell_path=${__solo_shell_path//\\/\\\\}
-printf '\e]633;P;Shell=%s\a' "${__solo_shell_path//;/\\x3b}"
+printf '\e]633;P;Shell=%s;%s\a' "${__solo_shell_path//;/\\x3b}" "$__solo_nonce"
 unset __solo_shell_path
 
 # Claude Code reports what it's doing through hooks in the settings file Solo

@@ -31,6 +31,12 @@ const ZSH_STARTUP_FILES: [(&str, &str); 3] = [
     (".zshrc", include_str!("shell_integration/zsh/zshrc.zsh")),
 ];
 
+/// The environment variable that gives an integrated shell its terminal's
+/// nonce, which it adds to `OSC 633` sequences. Anything else the terminal
+/// shows (`cat`ed files, web pages, remote output) can print those sequences
+/// too, but can't know the nonce.
+pub const SHELL_NONCE_ENV: &str = "SOLO_SHELL_NONCE";
+
 /// Upper bound on remembered blocks; older ones have scrolled out of history anyway.
 const MAX_BLOCKS: usize = 10_000;
 
@@ -52,6 +58,8 @@ pub fn integrate_shell(
         Shell::Program(program) => program.as_str(),
         Shell::WithArguments { .. } => return shell,
     };
+    // Unused by shells that aren't integrated below.
+    env.insert(SHELL_NONCE_ENV.to_string(), new_nonce());
     let stem = Path::new(program)
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_lowercase());
@@ -107,6 +115,17 @@ pub fn integrate_shell(
     }
 }
 
+/// 64 unpredictable bits: the hasher's keys are random.
+fn new_nonce() -> String {
+    use std::hash::{BuildHasher as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u32(std::process::id());
+    if let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        hasher.write_u128(elapsed.as_nanos());
+    }
+    format!("{:016x}", hasher.finish())
+}
+
 fn integrate_zsh(env: &mut HashMap<String, String>) -> std::io::Result<()> {
     let integration = write_script("zsh/integration.zsh", ZSH_SCRIPT)?;
     for (name, script) in ZSH_STARTUP_FILES {
@@ -128,11 +147,40 @@ fn integrate_zsh(env: &mut HashMap<String, String>) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Where the scripts go: a directory in the temp dir of this user's own.
+fn scripts_dir() -> std::io::Result<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+        // /tmp is shared between users, who mustn't be able to swap the
+        // scripts this user's shells and agents run.
+        // SAFETY: getuid has no preconditions and can't fail.
+        let uid = unsafe { libc::getuid() };
+        let dir = std::env::temp_dir().join(format!("solo-shell-integration-{uid}"));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        let metadata = std::fs::symlink_metadata(&dir)?;
+        if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+            return Err(std::io::Error::other(format!(
+                "{} isn't a private directory of this user",
+                dir.display()
+            )));
+        }
+        Ok(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows' temp dir is the user's own.
+        Ok(std::env::temp_dir().join("solo-shell-integration"))
+    }
+}
+
 /// Shells only load extra scripts from disk, so they go to the temp dir.
 fn write_script(name: &str, script: &str) -> std::io::Result<String> {
-    let path = std::env::temp_dir()
-        .join("solo-shell-integration")
-        .join(name);
+    let path = scripts_dir()?.join(name);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -452,9 +500,24 @@ pub struct ShellIntegration {
     shell: Option<String>,
     blocks: Vec<CommandBlock>,
     working_directory: Option<PathBuf>,
+    /// The nonce the shell was started with ([`SHELL_NONCE_ENV`]), `None` if
+    /// Solo didn't integrate it.
+    nonce: Option<String>,
 }
 
 impl ShellIntegration {
+    pub fn new(nonce: Option<String>) -> Self {
+        Self {
+            nonce,
+            ..Self::default()
+        }
+    }
+
+    /// Whether a sequence came from the shell Solo integrated.
+    fn from_integration(&self, nonce: Option<&str>) -> bool {
+        self.nonce.is_some() && self.nonce.as_deref() == nonce
+    }
+
     /// Whether the shell has sent any marks, i.e. integration is working.
     pub fn is_active(&self) -> bool {
         !self.blocks.is_empty()
@@ -573,13 +636,19 @@ impl ShellIntegration {
                     }
                 }
             }
-            AlacShellMark::CommandLine(command) => {
+            AlacShellMark::CommandLine { command, nonce } => {
+                // What re-running a block runs: only from Solo's integration
+                // when it has one, not from output that looks like it.
+                if self.nonce.is_some() && !self.from_integration(nonce.as_deref()) {
+                    return;
+                }
                 if let Some(block) = self.blocks.last_mut() {
                     block.command = Some(command);
                 }
             }
-            AlacShellMark::Property { key, value } => {
-                if key == "Shell" {
+            AlacShellMark::Property { key, value, nonce } => {
+                // Completions run this program: only from Solo's integration.
+                if key == "Shell" && self.from_integration(nonce.as_deref()) {
                     self.shell = Some(value);
                 }
             }
@@ -650,7 +719,13 @@ mod tests {
         let mut integration = ShellIntegration::default();
         for (prompt, output, end) in [(0, 1, 3), (4, 5, 6)] {
             integration.handle_mark(AlacShellMark::PromptStart, prompt);
-            integration.handle_mark(AlacShellMark::CommandLine("ls".into()), prompt);
+            integration.handle_mark(
+                AlacShellMark::CommandLine {
+                    command: "ls".into(),
+                    nonce: None,
+                },
+                prompt,
+            );
             integration.handle_mark(AlacShellMark::CommandExecuted, output);
             integration.handle_mark(AlacShellMark::CommandFinished { exit_code: Some(0) }, end);
         }
@@ -691,7 +766,7 @@ mod tests {
             shell,
             Shell::WithArguments { ref args, .. }
                 if args[..3] == ["-NoLogo", "-NoExit", "-Command"]
-                    && args[3].contains("solo-shell-integration/powershell-integration-")
+                    && args[3].contains("/powershell-integration-")
                     && !args.iter().any(|arg| arg.contains("Encoded"))
         ));
 
@@ -702,7 +777,8 @@ mod tests {
         assert!(
             matches!(shell, Shell::WithArguments { ref args, .. } if args[0] == "--init-command")
         );
-        assert!(env.is_empty());
+        // Only the nonce: these shells take their scripts as arguments.
+        assert_eq!(env.keys().collect::<Vec<_>>(), [SHELL_NONCE_ENV]);
 
         for unsupported in ["wsl.exe", r"C:\Windows\System32\bash.exe"] {
             let shell = Shell::Program(unsupported.into());
@@ -754,6 +830,46 @@ mod tests {
             "{stdout}{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn only_trusts_sequences_with_the_nonce() {
+        let shell = |value: &str, nonce: Option<&str>| AlacShellMark::Property {
+            key: "Shell".into(),
+            value: value.into(),
+            nonce: nonce.map(str::to_string),
+        };
+        let command = |command: &str, nonce: Option<&str>| AlacShellMark::CommandLine {
+            command: command.into(),
+            nonce: nonce.map(str::to_string),
+        };
+
+        let mut integration = ShellIntegration::new(Some("abc123".into()));
+        integration.handle_mark(AlacShellMark::PromptStart, 0);
+        integration.handle_mark(shell(r"C:\evil.exe", None), 0);
+        integration.handle_mark(shell(r"C:\evil.exe", Some("guess")), 0);
+        assert_eq!(integration.shell(), None);
+        integration.handle_mark(shell("pwsh.exe", Some("abc123")), 0);
+        assert_eq!(integration.shell(), Some("pwsh.exe"));
+        integration.handle_mark(command("rm -rf ~", None), 1);
+        assert_eq!(integration.blocks()[0].command, None);
+        integration.handle_mark(command("ls", Some("abc123")), 1);
+        assert_eq!(integration.blocks()[0].command.as_deref(), Some("ls"));
+
+        // Without Solo's integration, no shell to run is trusted.
+        let mut integration = ShellIntegration::new(None);
+        integration.handle_mark(shell("pwsh.exe", Some("abc123")), 0);
+        assert_eq!(integration.shell(), None);
+    }
+
+    #[test]
+    fn integrated_shells_get_a_nonce() {
+        let env = &mut HashMap::default();
+        integrate_shell(Shell::Program("bash".into()), "bash", false, env);
+        let nonce = env.get(SHELL_NONCE_ENV).cloned().unwrap();
+        assert_eq!(nonce.len(), 16);
+        integrate_shell(Shell::Program("bash".into()), "bash", false, env);
+        assert_ne!(env.get(SHELL_NONCE_ENV), Some(&nonce));
     }
 
     #[test]

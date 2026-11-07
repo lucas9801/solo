@@ -1179,6 +1179,8 @@ impl TerminalBuilder {
             // Remove SHLVL so the spawned shell initializes it to 1, matching
             // the behavior of standalone terminal emulators like iTerm2/Kitty/Alacritty.
             env.remove("SHLVL");
+            // SOLO: what tells the shell's integration from output posing as it.
+            let shell_nonce = env.get(shell_integration::SHELL_NONCE_ENV).cloned();
 
             // If the parent environment doesn't have a locale set
             // (As is the case when launched from a .app on MacOS),
@@ -1410,7 +1412,7 @@ impl TerminalBuilder {
                 init_command_startup_marker: None,
                 init_command_startup_tx: None,
                 event_loop_task: Task::ready(Ok(())),
-                shell_integration: ShellIntegration::default(),
+                shell_integration: ShellIntegration::new(shell_nonce),
                 background_executor,
                 path_style,
                 cwd_history: if is_remote_terminal {
@@ -1852,6 +1854,13 @@ impl Terminal {
     /// Solo's shell integration.
     pub fn shell_integration(&self) -> &ShellIntegration {
         &self.shell_integration
+    }
+
+    /// Trusts shell integration sequences that carry `nonce`, as if the shell
+    /// had been started with it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_shell_nonce(&mut self, nonce: &str) {
+        self.shell_integration = ShellIntegration::new(Some(nonce.to_string()));
     }
 
     /// The command line of the command block at `ix`, as reported by the shell

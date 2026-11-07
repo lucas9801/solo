@@ -9,6 +9,10 @@ if set -q __solo_integration
     return
 end
 set -g __solo_integration 1
+# The terminal's nonce goes with the sequences it trusts; programs run here
+# don't inherit it.
+set -g __solo_nonce "$SOLO_SHELL_NONCE"
+set -e SOLO_SHELL_NONCE
 set -g __solo_command_running
 
 function __solo_preexec --on-event fish_preexec
@@ -18,7 +22,7 @@ function __solo_preexec --on-event fish_preexec
     set command (string replace -a -- '\\' '\\\\' $command)
     set command (string replace -a -- ';' '\x3b' $command)
     set command (string join '\x0a' -- $command)
-    printf '\e]633;E;%s\a\e]133;C\a' "$command"
+    printf '\e]633;E;%s;%s\a\e]133;C\a' "$command" "$__solo_nonce"
 end
 
 function __solo_postexec --on-event fish_postexec
@@ -78,4 +82,4 @@ if set -q SOLO_CLAUDE_SETTINGS; and not functions -q claude
     end
 end
 
-printf '\e]633;P;Shell=%s\a' (command -s fish)
+printf '\e]633;P;Shell=%s;%s\a' (command -s fish) "$__solo_nonce"
