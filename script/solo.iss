@@ -3,6 +3,11 @@
 ; entry in Settings > Apps to uninstall it.
 ;
 ;   ISCC.exe /DAppVersion=<version> /DSourceDir=<dist\Solo> /DOutputDir=<dist> script\solo.iss
+;
+; To sign the installer and the uninstaller, define SignInstaller and the sign
+; tool SoloSign as well (package-solo.ps1 does when SOLO_SIGN_COMMAND is set):
+;
+;   ISCC.exe ... /DSignInstaller "/sSoloSign=signtool.exe sign ... $f" script\solo.iss
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -38,6 +43,10 @@ Compression=lzma2/max
 SolidCompression=yes
 OutputDir={#OutputDir}
 OutputBaseFilename=Solo-Setup-{#AppVersion}
+#ifdef SignInstaller
+SignTool=SoloSign
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
