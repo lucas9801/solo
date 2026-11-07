@@ -1,12 +1,13 @@
 pub mod agent_board;
 pub mod agent_cli;
 mod agent_context;
+mod agent_detection;
 mod agent_resume;
 mod agent_session;
-mod agent_timeline;
 mod agent_status;
-mod agent_turns;
 pub mod agent_tasks;
+mod agent_timeline;
+mod agent_turns;
 pub mod command_blocks;
 mod command_notifications;
 mod follow_working_directory;
@@ -77,8 +78,8 @@ use ui::{
 };
 use util::ResultExt;
 use workspace::{
-    CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal, OpenOptions, Pane,
-    ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
+    CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal, OpenOptions,
+    Pane, ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
     item::{
         HighlightedText, Item, ItemEvent, SerializableItem, TabContentParams, TabTooltipContent,
     },
@@ -780,10 +781,22 @@ impl TerminalView {
                 .action("Select All", Box::new(SelectAll))
                 .when(shell_integration_active, |menu| {
                     menu.separator()
-                        .action(util::i18n::tr("Copy Command", "复制命令"), Box::new(CopyCommandBlockCommand))
-                        .action(util::i18n::tr("Copy Output", "复制输出"), Box::new(CopyCommandBlockOutput))
-                        .action(util::i18n::tr("Copy Command and Output", "复制命令和输出"), Box::new(CopyCommandBlock))
-                        .action(util::i18n::tr("Send to AI Agent", "发送给 AI agent"), Box::new(SendCommandBlockToAgent))
+                        .action(
+                            util::i18n::tr("Copy Command", "复制命令"),
+                            Box::new(CopyCommandBlockCommand),
+                        )
+                        .action(
+                            util::i18n::tr("Copy Output", "复制输出"),
+                            Box::new(CopyCommandBlockOutput),
+                        )
+                        .action(
+                            util::i18n::tr("Copy Command and Output", "复制命令和输出"),
+                            Box::new(CopyCommandBlock),
+                        )
+                        .action(
+                            util::i18n::tr("Send to AI Agent", "发送给 AI agent"),
+                            Box::new(SendCommandBlockToAgent),
+                        )
                         .action(
                             util::i18n::tr("Save Command as Workflow", "把命令存为 Workflow"),
                             Box::new(SaveCommandBlockAsWorkflow),
@@ -1558,11 +1571,10 @@ fn subscribe_for_terminal_events(
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
                     MaybeNavigationTarget::Url(url) => cx.open_url(url),
                     MaybeNavigationTarget::PathLike(_)
-                        if let Some(diagram) = terminal
-                            .read(cx)
-                            .opened_word()
-                            .cloned()
-                            .and_then(|word| mermaid_preview::diagram_at_word(terminal, &word, cx)) =>
+                        if let Some(diagram) =
+                            terminal.read(cx).opened_word().cloned().and_then(|word| {
+                                mermaid_preview::diagram_at_word(terminal, &word, cx)
+                            }) =>
                     {
                         terminal_view.open_mermaid_diagram(diagram, window, cx)
                     }
@@ -1575,8 +1587,10 @@ fn subscribe_for_terminal_events(
                     ),
                 },
                 Event::BreadcrumbsChanged => {
-                    // SOLO: an agent's session title shows on its tab.
+                    // SOLO: an agent's session title shows on its tab, and
+                    // may say what it's doing.
                     terminal_view.program_title_changed();
+                    terminal_view.agent_title_changed(window, cx);
                     cx.emit(ItemEvent::UpdateBreadcrumbs);
                     cx.emit(ItemEvent::UpdateTab);
                 }
@@ -2433,7 +2447,9 @@ impl SerializableItem for TerminalView {
                 .ok()
                 .unwrap_or((None, None, None));
 
-            let contents = if cx.update(|_, cx| TerminalSettings::get_global(cx).restore_contents)? {
+            let contents = if cx
+                .update(|_, cx| TerminalSettings::get_global(cx).restore_contents)?
+            {
                 cx.background_spawn(async move { session_contents::load(workspace_id, item_id) })
                     .await
             } else {
@@ -3937,23 +3953,69 @@ mod tests {
         assert_eq!(status(cx), None);
         // Output right after input or a resize is the program answering it.
         std::thread::sleep(std::time::Duration::from_millis(500));
-        write(b"claude\r\n\x1b]633;E;claude\x07\x1b]133;C\x07spinner", cx);
+        write(b"aider\r\n\x1b]633;E;aider\x07\x1b]133;C\x07spinner", cx);
         assert_eq!(
             status(cx),
-            Some(("claude".to_string(), agent_status::AgentStatus::Working))
+            Some(("aider".to_string(), agent_status::AgentStatus::Working))
         );
         write(b"\x07", cx);
         assert_eq!(
             status(cx),
-            Some(("claude".to_string(), agent_status::AgentStatus::NeedsInput))
+            Some(("aider".to_string(), agent_status::AgentStatus::NeedsInput))
         );
         write(b"\r\n\x1b]133;D;1\x07\x1b]133;A\x07$ \x1b]133;B\x07", cx);
         assert_eq!(
             status(cx),
-            Some(("claude".to_string(), agent_status::AgentStatus::Failed))
+            Some(("aider".to_string(), agent_status::AgentStatus::Failed))
         );
         write(b"ls\r\n\x1b]633;E;ls\x07\x1b]133;C\x07", cx);
         assert_eq!(status(cx), None);
+    }
+
+    #[gpui::test]
+    async fn test_agent_status_from_screen(cx: &mut TestAppContext) {
+        let (project, workspace) = init_test(cx).await;
+        let terminal = cx.new(|cx| {
+            terminal::TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                terminal::terminal_settings::AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        let (terminal_view, cx) = cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal.clone(),
+                workspace.downgrade(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+        let write = |bytes: &[u8], cx: &mut gpui::VisualTestContext| {
+            terminal.update(cx, |terminal, cx| terminal.write_raw_output(bytes, cx));
+            cx.run_until_parked();
+        };
+        let status = |cx: &mut gpui::VisualTestContext| {
+            terminal_view.read_with(cx, |view, _| view.agent_status().map(|(_, status)| status))
+        };
+
+        write(b"\x1b]133;A\x07$ \x1b]133;B\x07", cx);
+        write(b"codex\r\n\x1b]633;E;codex\x07\x1b]133;C\x07", cx);
+        // Codex says what it's doing in the terminal's title; the screen is
+        // read at most every 150 ms.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        write("\x1b]0;\u{280b} my-repo\x07thinking".as_bytes(), cx);
+        assert_eq!(status(cx), Some(agent_status::AgentStatus::Working));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        write(b"\x1b]0;Action Required\x07", cx);
+        assert_eq!(status(cx), Some(agent_status::AgentStatus::NeedsInput));
+        write(b"\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07", cx);
+        assert_eq!(status(cx), Some(agent_status::AgentStatus::Done));
     }
 
     #[gpui::test]

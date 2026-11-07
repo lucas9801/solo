@@ -1,0 +1,20 @@
+[package]
+name = "agent_detection"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/agent_detection.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+# `\s`, `\d` and case-insensitive matching in the rules need Unicode tables.
+regex = { workspace = true, features = ["unicode"] }
+serde = { workspace = true, features = ["derive"] }
+toml.workspace = true

@@ -1015,6 +1015,50 @@ pub(super) fn text_lines(term: &Term<ZedListener>) -> Vec<(i32, String)> {
     lines
 }
 
+/// SOLO: the screen as agent detection reads it (the `agent_detection`
+/// crate): a screenful of rows ending at the lower of the last non-blank row
+/// and the cursor's, so it reaches into the scrollback when the bottom of the
+/// screen is blank; each row trimmed at the end, wrapped rows not joined, no
+/// blank rows at the end, joined with `\n`.
+pub(super) fn detection_text(term: &Term<ZedListener>) -> String {
+    let grid = term.grid();
+    let row_text = |line: i32| -> String {
+        let row = &grid[Line(line)];
+        let mut text = String::new();
+        for column in 0..grid.columns() {
+            let cell = &row[Column(column)];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            text.push(cell.c);
+            if let Some(zerowidth) = cell.zerowidth() {
+                text.extend(zerowidth);
+            }
+        }
+        text.trim_end().to_string()
+    };
+    let rows = term.screen_lines() as i32;
+    let bottom = term.bottommost_line().0;
+    let last_non_blank = (0..=bottom)
+        .rev()
+        .find(|line| !row_text(*line).is_empty())
+        .unwrap_or(bottom);
+    let end = last_non_blank.max(grid.cursor.point.line.0).min(bottom);
+    let start = (end + 1 - rows).max(term.topmost_line().0);
+    let mut lines: Vec<String> = (start..=end).map(row_text).collect();
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        lines.join("\n") + "\n"
+    }
+}
+
 pub(super) fn grid_columns(term: &Term<ZedListener>) -> usize {
     term.grid().columns()
 }

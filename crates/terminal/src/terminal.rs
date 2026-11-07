@@ -70,14 +70,14 @@ use crate::alacritty::{
     AlacrittyCell, AlacrittyGridIterator, AlacrittyHyperlink, AlacrittySearch, AlacrittyTerm,
     AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
     append_text_to_term, apply_config, clear_saved_screen, content_text, cursor_line,
-    display_offset, display_only_term_config, find_from_terminal_point, full_content_range,
-    grid_columns, history_size, is_blank, last_non_empty_lines, lines_text, logical_lines,
-    make_content, new_term, open_pty, pty_options, pty_term_config, resize, screen_lines,
-    scroll_display, scroll_to_point, search_matches, selection_text, set_default_cursor_style,
-    set_selection as set_term_selection, shrink_to_used, spawn_event_loop, styled_rows, text_lines,
-    toggle_vi_mode as toggle_term_vi_mode, total_lines, update_selection as update_term_selection,
-    update_selection_to_vi_cursor, update_vi_cursor_for_scroll, used_lines, vi_goto_point,
-    vi_motion,
+    detection_text, display_offset, display_only_term_config, find_from_terminal_point,
+    full_content_range, grid_columns, history_size, is_blank, last_non_empty_lines, lines_text,
+    logical_lines, make_content, new_term, open_pty, pty_options, pty_term_config, resize,
+    screen_lines, scroll_display, scroll_to_point, search_matches, selection_text,
+    set_default_cursor_style, set_selection as set_term_selection, shrink_to_used,
+    spawn_event_loop, styled_rows, text_lines, toggle_vi_mode as toggle_term_vi_mode, total_lines,
+    update_selection as update_term_selection, update_selection_to_vi_cursor,
+    update_vi_cursor_for_scroll, used_lines, vi_goto_point, vi_motion,
 };
 use crate::mappings::colors::to_vte_rgb;
 use crate::mappings::keys::to_esc_str;
@@ -2870,6 +2870,12 @@ impl Terminal {
     pub fn get_content(&self) -> String {
         let term = self.term.lock_unfair();
         content_text(&term)
+    }
+
+    /// SOLO: the screen's text as agent detection reads it.
+    pub fn agent_detection_text(&self) -> String {
+        let term = self.term.lock_unfair();
+        detection_text(&term)
     }
 
     pub fn last_n_non_empty_lines(&self, n: usize) -> Vec<String> {

@@ -202,6 +202,7 @@ members = [
     "crates/snippet",
     "crates/snippet_provider",
     "crates/snippets_ui",
+    "crates/agent_detection",
     "crates/solo_agent_hook",
     "crates/solo_update_helper",
     "crates/sqlez",
@@ -293,6 +294,7 @@ activity_indicator = { path = "crates/activity_indicator" }
 agent = { path = "crates/agent" }
 agent_servers = { path = "crates/agent_servers" }
 agent_settings = { path = "crates/agent_settings" }
+agent_detection = { path = "crates/agent_detection" }
 agent_sessions = { path = "crates/agent_sessions" }
 agent_skills = { path = "crates/agent_skills" }
 agent_ui = { path = "crates/agent_ui" }

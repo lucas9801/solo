@@ -52,8 +52,10 @@ as Claude Code in the terminal while viewing and editing code beside it.
   shows what it's doing: working, idle, needs your input, done or failed.
   Claude Code started in a Solo terminal reports it through hooks Solo adds
   for that session (`claude_code_hooks`, nothing is written to your Claude
-  settings); other agents' status is read from the terminal, so it can lag a
-  moment behind. More programs can be added with `agent_commands`.
+  settings); other agents' status is read from their screen with per-agent
+  rules (see the table below), so it can lag a moment behind. More programs
+  can be added with `agent_commands`; any program can report its own status
+  ([docs/agent-status-protocol.md](docs/agent-status-protocol.md)).
 - Tab titles say what a terminal is doing: the agent and its session title,
   the running command, or the directory and git branch.
 - Each project folder is a workspace with a tab in the title bar, holding its
@@ -88,6 +90,22 @@ as Claude Code in the terminal while viewing and editing code beside it.
 To get Claude Code's turn notifications, run
 `claude config set --global preferredNotifChannel iterm2` (OSC 9) or keep its
 terminal bell.
+
+### Supported agents
+
+| Agent | Status from | Per-turn review | Resume after a restart |
+|---|---|---|---|
+| Claude Code | hooks Solo adds per session, and its screen | yes | its session (`claude --resume <id>`) |
+| Codex, Gemini CLI, Copilot CLI, Cursor CLI | its screen | yes, turns read from the screen | the most recent session |
+| OpenCode, Amp, Qwen Code, Cline, Kimi, Kiro, Grok, Droid, Devin, Antigravity, Kilo, Letta, Hermes, Pi, Qoder, Maki, Muse | its screen | yes, turns read from the screen | no |
+| Aider and programs added with `agent_commands` | its output (working while it prints, needs input when it rings the bell) | no | no |
+| Anything that reports through [the status protocol](docs/agent-status-protocol.md) | its reports | yes | no |
+
+The screen rules are Herdr's ([vendor/herdr_agent_detection](vendor/herdr_agent_detection)).
+To change an agent's rules, put a file of the same format named after the
+agent's id (for example `codex.toml`) in an `agent-detection` folder in Solo's
+settings directory (`%APPDATA%\Solo\agent-detection`); it replaces the bundled
+rules for that agent. Solo reads them when it starts.
 
 ## Settings
 

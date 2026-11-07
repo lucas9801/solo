@@ -35,6 +35,7 @@ markdown.workspace = true
 menu.workspace = true
 mermaid_render.workspace = true
 paths.workspace = true
+agent_detection.workspace = true
 picker.workspace = true
 project.workspace = true
 release_channel.workspace = true

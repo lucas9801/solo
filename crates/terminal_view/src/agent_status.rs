@@ -12,11 +12,15 @@
 //! A turn that ends while you aren't looking at its terminal shows as done
 //! until you do; then the agent is idle.
 //!
-//! Other agents don't report it, so it's read from the terminal: they animate
-//! a spinner while they work and go quiet when they stop, and ring the bell or
-//! ask for a notification when they need the user. Output right after input
-//! (echoed keys, redraws after a resize or a focus change) doesn't count as
-//! working.
+//! Other agents don't report it, so it's read from the screen, with rules for
+//! each agent (`crate::agent_detection`): its spinner, its prompt, its
+//! questions. A question plainly on screen also wins over a hook's report.
+//! Agents without rules are judged by their output: they animate a spinner
+//! while they work and go quiet when they stop, and ring the bell or ask for
+//! a notification when they need the user. Output right after input (echoed
+//! keys, redraws after a resize or a focus change) doesn't count as working.
+//! Read from the screen, working starts a turn and stopping ends it, as hooks
+//! do.
 
 use std::time::{Duration, Instant};
 
@@ -27,7 +31,13 @@ use terminal::terminal_settings::TerminalSettings;
 use ui::{Color, IconName};
 use workspace::item::ItemEvent;
 
+use crate::agent_detection::{self, ScreenReading};
 use crate::{TerminalView, command_blocks::is_agent_command};
+
+/// How often the screen is read while output keeps coming.
+const SCREEN_READ_INTERVAL: Duration = Duration::from_millis(150);
+/// After output, when the screen is read again if nothing else happens.
+const SCREEN_SETTLE: Duration = Duration::from_millis(300);
 
 /// SOLO: An agent that reports through hooks started or ended a turn: from the
 /// prompt the user submitted to when it stopped, was interrupted or exited.
@@ -122,6 +132,11 @@ pub(crate) struct AgentActivity {
     reported_agent: Option<String>,
     /// Whether the agent finished a turn you haven't looked at since.
     unseen_finish: bool,
+    /// What the agent's screen last said, for agents with screen rules.
+    screen: ScreenReading,
+    /// Whether the screen was read for this run (the agent has rules).
+    screen_read: bool,
+    screen_read_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -320,6 +335,13 @@ impl TerminalView {
         }
     }
 
+    /// The terminal's title changed, which agents use to say what they're
+    /// doing: read the screen again now.
+    pub(crate) fn agent_title_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.agent_activity.screen_read_at = None;
+        self.update_agent_status(window, cx);
+    }
+
     /// You're looking at the terminal: a turn it finished is seen.
     pub(crate) fn agent_seen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.agent_activity.unseen_finish {
@@ -357,6 +379,15 @@ impl TerminalView {
             self.agent_activity.unseen_finish = false;
         }
         let new = status.as_ref().map(|(_, status)| *status);
+        // Agents without hooks start a turn when their screen shows them at work.
+        if new == Some(AgentStatus::Working)
+            && !self.agent_activity.in_turn
+            && self.agent_activity.hook.is_none()
+            && self.agent_activity.screen_read
+        {
+            self.agent_activity.in_turn = true;
+            cx.emit(AgentTurnEvent::Started);
+        }
         if self.agent_activity.in_turn
             && !matches!(new, Some(AgentStatus::Working | AgentStatus::NeedsInput))
         {
@@ -419,6 +450,29 @@ impl TerminalView {
             ),
             _ => None,
         };
+        // Read the screen again once it settles after output, or once a
+        // working agent's idle screen has lasted.
+        let screen_deadline = if self.agent_activity.screen_read && new.is_some() {
+            let after_output = self
+                .agent_activity
+                .output_at
+                .zip(self.agent_activity.screen_read_at)
+                .filter(|(output_at, read_at)| output_at >= read_at)
+                .map(|(output_at, _)| output_at + SCREEN_SETTLE);
+            [
+                after_output,
+                agent_detection::recheck_at(&self.agent_activity.screen),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+        } else {
+            None
+        };
+        let deadline = match (deadline, screen_deadline) {
+            (Some(deadline), Some(screen)) => Some(deadline.min(screen)),
+            (deadline, screen) => deadline.or(screen),
+        };
         match deadline {
             // A recheck that comes before the deadline schedules the next one,
             // so output, which moves the deadline on, doesn't start a timer
@@ -478,6 +532,9 @@ impl TerminalView {
                             activity.hook = None;
                             activity.reported_agent = None;
                         }
+                        activity.screen = ScreenReading::default();
+                        activity.screen_read = false;
+                        activity.screen_read_at = None;
                     }
                     activity.started_at = block.started_at;
                 } else if activity.started_at != block.started_at {
@@ -500,14 +557,43 @@ impl TerminalView {
                 (agent_name(&command), true, None)
             }
         };
+        if running {
+            let due = activity
+                .screen_read_at
+                .is_none_or(|read_at| now.duration_since(read_at) >= SCREEN_READ_INTERVAL);
+            if due {
+                let program = command_program(block.and_then(|block| block.command.as_deref()))
+                    .unwrap_or_else(|| name.to_lowercase());
+                activity.screen_read =
+                    agent_detection::read_screen(&program, terminal, &mut activity.screen, now)
+                        .is_some();
+                activity.screen_read_at = Some(now);
+            }
+        }
+        let screen_status = activity
+            .screen_read
+            .then_some(activity.screen.status)
+            .flatten();
         let status = match activity.hook {
-            Some(hook) if running => status_from_hook(
-                hook.kind,
-                hook.received_at,
-                activity.output_at,
-                last_input_at,
-                now,
-            ),
+            Some(hook) if running => {
+                let status = status_from_hook(
+                    hook.kind,
+                    hook.received_at,
+                    activity.output_at,
+                    last_input_at,
+                    now,
+                );
+                // A question plainly on screen wins over what the hook said.
+                if activity.screen_read
+                    && activity.screen.visible_blocker
+                    && screen_status == Some(AgentStatus::NeedsInput)
+                {
+                    AgentStatus::NeedsInput
+                } else {
+                    status
+                }
+            }
+            _ if running && screen_status.is_some() => screen_status.unwrap_or(AgentStatus::Idle),
             _ => status_from(
                 running,
                 exit_code,
@@ -519,6 +605,12 @@ impl TerminalView {
         };
         Some((name, status))
     }
+}
+
+/// The program a command runs, lowercased, to find its screen rules.
+fn command_program(command: Option<&str>) -> Option<String> {
+    let program = agent_name(command?);
+    (!program.is_empty()).then(|| program.to_lowercase())
 }
 
 /// The agent's program name, for display.
