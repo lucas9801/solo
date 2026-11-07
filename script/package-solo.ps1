@@ -12,11 +12,25 @@
 # needed), embedded in solo.exe (Help > Open Licenses) and put next to it as
 # licenses.md. With Inno Setup 6 installed it also builds
 # Solo-Setup-<version>.exe from script\solo.iss (-Iscc to give ISCC.exe's path).
+#
+# Signing (optional): with -SignCommand, or the SOLO_SIGN_COMMAND environment
+# variable, set to a command line that signs the file given as $f, e.g.
+#
+#   signtool.exe sign /fd sha256 /tr http://timestamp.example /td sha256 /a $f
+#   powershell.exe -ExecutionPolicy Bypass -File C:\path\sign.ps1 $f
+#
+# solo.exe, solo-agent-hook.exe and solo-update-helper.exe are signed before
+# they're zipped, and Inno Setup signs the installer and its uninstaller with
+# the same command. It uses Inno Setup's sign tool syntax: $f is the quoted
+# path of the file, $q a double quote (use it instead of quotes, which Windows
+# PowerShell doesn't pass on reliably) and $$ a dollar sign. Without it nothing
+# is signed and packaging works as before.
 
 param(
     [string]$TargetDir = "",
     [string]$OutDir = "dist",
-    [string]$Iscc = ""
+    [string]$Iscc = "",
+    [string]$SignCommand = $env:SOLO_SIGN_COMMAND
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -52,6 +66,23 @@ Copy-Item "vendor\README.md" (Join-Path $stage "THIRD-PARTY-VENDORED.md")
 Copy-Item "vendor\warp_command_signatures\LICENSE.md" (Join-Path $stage "LICENSE-command-signatures.md")
 Copy-Item "script\install-solo.ps1" (Join-Path $stage "install.ps1")
 
+# Runs $SignCommand on a file the way Inno Setup runs a sign tool.
+function Invoke-Sign([string]$file) {
+    $line = $SignCommand.Replace('$$', "`0").Replace('$q', '"').Replace('$f', "`"$file`"").Replace("`0", '$')
+    Write-Host "Signing $file"
+    # Through ProcessStartInfo, so the command line reaches cmd.exe unchanged.
+    $info = New-Object System.Diagnostics.ProcessStartInfo "cmd.exe", "/d /s /c `"$line`""
+    $info.UseShellExecute = $false
+    $process = [System.Diagnostics.Process]::Start($info)
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) { throw "Signing $file failed (exit code $($process.ExitCode))" }
+}
+if ($SignCommand) {
+    foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe") {
+        Invoke-Sign (Resolve-Path (Join-Path $stage $exe)).Path
+    }
+}
+
 $zip = Join-Path $OutDir "Solo-$version-windows-x64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path $stage -DestinationPath $zip
@@ -71,6 +102,10 @@ if (-not $Iscc -or -not (Test-Path $Iscc)) {
     Write-Warning "Inno Setup 6 not found, so no installer was built. Install it (winget install JRSoftware.InnoSetup) or pass -Iscc <path to ISCC.exe>."
     return
 }
-& $Iscc /Q "/DAppVersion=$version" "/DSourceDir=$((Resolve-Path $stage).Path)" "/DOutputDir=$((Resolve-Path $OutDir).Path)" "script\solo.iss"
+$isccArgs = @("/Q", "/DAppVersion=$version", "/DSourceDir=$((Resolve-Path $stage).Path)", "/DOutputDir=$((Resolve-Path $OutDir).Path)")
+# solo.iss signs the installer and uninstaller with the sign tool SoloSign
+# when SignInstaller is defined.
+if ($SignCommand) { $isccArgs += @("/DSignInstaller", "/sSoloSign=$SignCommand") }
+& $Iscc @isccArgs "script\solo.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 Write-Host "Packaged $(Join-Path $OutDir "Solo-Setup-$version.exe")"

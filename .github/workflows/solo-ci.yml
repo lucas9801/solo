@@ -1,0 +1,103 @@
+# SOLO: Solo's own CI. Zed's workflows (run_tests.yml etc.) only run in
+# zed-industries' repositories or on their self-hosted runners, so this is what
+# checks Solo on GitHub-hosted runners.
+#
+# On every push and pull request to main it checks that the `solo` binary
+# builds and runs the tests of the crates Solo changes most. It never uploads
+# or publishes anything.
+#
+# WebRTC: livekit's webrtc-sys (pulled in through call/livekit_client) links a
+# prebuilt libwebrtc. Without LK_CUSTOM_WEBRTC its build script downloads it
+# (93 MB) from zed-industries/livekit-rust-sdks' releases into its OUT_DIR on
+# every fresh build. Here it's downloaded once, its SHA-256 checked, cached
+# with actions/cache and passed with LK_CUSTOM_WEBRTC, as Solo is built
+# locally. WEBRTC_TAG must match WEBRTC_TAG in the livekit-rust-sdks revision
+# pinned in Cargo.toml (webrtc-sys/build/src/lib.rs).
+
+name: Solo CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: solo-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # Debug info makes test binaries several times larger, and disk is the
+  # scarcest thing on a hosted runner.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  WEBRTC_TAG: webrtc-0001d84-4
+  WEBRTC_SHA256: b16f68e1fef8bd8089b9c7fc46c3c9b43ad5257c84460794a3668ec5accc1f13
+
+jobs:
+  check-and-test:
+    name: Check solo and test Solo's crates (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 340
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show free disk space
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
+
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - name: Cache the prebuilt WebRTC
+        id: webrtc-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/webrtc
+          key: webrtc-${{ env.WEBRTC_TAG }}-win-x64-release
+
+      - name: Download the prebuilt WebRTC
+        if: steps.webrtc-cache.outputs.cache-hit != 'true'
+        run: ./script/solo-ci-webrtc.ps1 -Tag $env:WEBRTC_TAG -Sha256 $env:WEBRTC_SHA256 -Dir "${{ runner.temp }}/webrtc"
+
+      - name: Use the prebuilt WebRTC
+        run: |
+          $dir = Join-Path "${{ runner.temp }}" "webrtc/win-x64-release"
+          if (-not (Test-Path (Join-Path $dir "webrtc.ninja"))) { throw "No WebRTC in $dir" }
+          "LK_CUSTOM_WEBRTC=$dir" >> $env:GITHUB_ENV
+
+      - name: Cache cargo registry and dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: solo-ci-windows
+          # Pull requests reuse main's cache but don't write their own, which
+          # would push it out of the 10 GB a repository gets.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check the solo binary
+        run: cargo check --locked -p zed --bin solo
+
+      - name: Build the tests
+        run: cargo test --locked --no-run -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_update_helper -p agent_sessions
+
+      - name: Run the tests
+        run: cargo test --locked --no-fail-fast -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_update_helper -p agent_sessions
+
+      - name: Show free disk space
+        if: always()
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
