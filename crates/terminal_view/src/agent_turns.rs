@@ -7,6 +7,7 @@
 //! rejected, commented on for the agent, or the work tree rolled back to
 //! before any recorded turn. Terminals without hooks have no turns.
 
+mod diagnostics;
 mod review;
 mod snapshot;
 
@@ -27,7 +28,8 @@ use workspace::{Workspace, item::ItemEvent};
 
 use crate::{AgentTurnEvent, TerminalView, terminal_panel::TerminalPanel};
 pub(crate) use review::AgentTurnReview;
-use snapshot::{ChangedFile, SnapshotStore, TreeId};
+use diagnostics::{DiagnosticsBefore, TurnDiagnostics};
+use snapshot::{ChangedFile, FileChange, SnapshotStore, TreeId};
 
 actions!(
     terminal,
@@ -53,8 +55,21 @@ pub(crate) fn init(cx: &mut App) {
                         .is_some_and(|(name, _)| name == "claude")
                         .then(|| directory.clone())
                         .flatten();
+                    // What the language servers said before the turn.
+                    let project = view.project.clone();
+                    let diagnostics_before = project
+                        .upgrade()
+                        .map(|project| diagnostics::capture_before(&project, cx))
+                        .unwrap_or_default();
                     AgentTurns::global(cx).update(cx, |turns, cx| {
-                        turns.start_turn(terminal_view, directory, prompt_source, cx)
+                        turns.start_turn(
+                            terminal_view,
+                            directory,
+                            prompt_source,
+                            project,
+                            diagnostics_before,
+                            cx,
+                        )
                     });
                     // Here, as the view is being updated already.
                     cx.emit(ItemEvent::UpdateTab);
@@ -91,6 +106,8 @@ pub(crate) struct AgentTurn {
     /// ones made since.
     pub after: TreeId,
     pub changed: Vec<ChangedFile>,
+    /// What the turn did to the language servers' diagnostics.
+    pub diagnostics: TurnDiagnostics,
 }
 
 struct StartedTurn {
@@ -103,6 +120,8 @@ struct PendingTurn {
     started_at: time::OffsetDateTime,
     directory: PathBuf,
     prompt_source: Option<PathBuf>,
+    project: WeakEntity<project::Project>,
+    diagnostics_before: DiagnosticsBefore,
     snapshot: Shared<BoxFuture<'static, Option<Arc<StartedTurn>>>>,
 }
 
@@ -189,6 +208,8 @@ impl AgentTurns {
         terminal_view: Entity<TerminalView>,
         directory: Option<PathBuf>,
         prompt_source: Option<PathBuf>,
+        project: WeakEntity<project::Project>,
+        diagnostics_before: DiagnosticsBefore,
         cx: &mut Context<Self>,
     ) {
         let Some(directory) = directory else {
@@ -229,6 +250,8 @@ impl AgentTurns {
             started_at: now(),
             directory: directory.clone(),
             prompt_source,
+            project,
+            diagnostics_before,
             snapshot: snapshot.clone(),
         });
         // Keep the store for the next turn once it's open.
@@ -261,6 +284,8 @@ impl AgentTurns {
             };
             let prompt_source = pending.prompt_source;
             let started_at = pending.started_at;
+            let project = pending.project;
+            let diagnostics_before = pending.diagnostics_before;
             let changes = cx
                 .background_spawn({
                     let started = started.clone();
@@ -277,12 +302,20 @@ impl AgentTurns {
             let Some((after, changed, prompt)) = changes else {
                 return;
             };
-            this.update(cx, |this, cx| {
+            // The files to have the language servers check: those still there.
+            let changed_paths: Vec<PathBuf> = changed
+                .iter()
+                .filter(|file| file.change != FileChange::Deleted)
+                .map(|file| started.store.abs_path(&file.path))
+                .collect();
+            let number = pending.number;
+            let recorded = this.update(cx, |this, cx| {
                 let Some(terminal) = this.terminals.get_mut(&terminal_id) else {
-                    return;
+                    return false;
                 };
                 terminal.offer_last_turn = !changed.is_empty();
-                if !changed.is_empty() {
+                let recorded = !changed.is_empty();
+                if recorded {
                     terminal.turns.push_back(AgentTurn {
                         number: pending.number,
                         started_at,
@@ -292,6 +325,7 @@ impl AgentTurns {
                         before: started.before.clone(),
                         after,
                         changed,
+                        diagnostics: TurnDiagnostics::Checking,
                     });
                     if terminal.turns.len() > MAX_TURNS {
                         terminal.turns.pop_front();
@@ -299,8 +333,31 @@ impl AgentTurns {
                 }
                 cx.notify();
                 update_tab(&terminal_view, cx);
+                recorded
+            });
+            if !matches!(recorded, Ok(true)) {
+                return;
+            }
+            // Checked apart: the next turn's end mustn't cancel it.
+            cx.spawn(async move |cx| {
+                let result =
+                    diagnostics::check_turn(project, diagnostics_before, changed_paths, cx).await;
+                this.update(cx, |this, cx| {
+                    let turn = this
+                        .terminals
+                        .get_mut(&terminal_id)
+                        .and_then(|terminal| {
+                            terminal.turns.iter_mut().find(|turn| turn.number == number)
+                        });
+                    if let Some(turn) = turn {
+                        turn.diagnostics = result;
+                        cx.notify();
+                        update_tab(&terminal_view, cx);
+                    }
+                })
+                .ok();
             })
-            .ok();
+            .detach();
         }));
     }
 
@@ -348,13 +405,24 @@ pub(crate) fn render_tab_entry(view: &TerminalView, cx: &App) -> Option<AnyEleme
     let turns = AgentTurns::try_global(cx)?.read(cx);
     let turn = turns.offered_turn(terminal_view.entity_id())?;
     let count = turn.changed.len();
-    let label = if util::i18n::is_chinese() {
+    let chinese = util::i18n::is_chinese();
+    let mut label = if chinese {
         format!("{count} 个文件已修改")
     } else if count == 1 {
         "1 file changed".to_string()
     } else {
         format!("{count} files changed")
     };
+    // What the turn did to the errors, once the language servers checked.
+    if let Some((added, fixed)) = turn.diagnostics.error_delta()
+        && (added > 0 || fixed > 0)
+    {
+        label.push_str(&if chinese {
+            format!(" · 错误 +{added} / −{fixed}")
+        } else {
+            format!(" · errors +{added} / −{fixed}")
+        });
+    }
     let number = turn.number;
     Some(
         Button::new(
@@ -580,7 +648,14 @@ mod tests {
         let terminal_id = terminal_view.entity_id();
         let run_turn = |edit: &dyn Fn(), cx: &mut TestAppContext| {
             turns.update(cx, |turns, cx| {
-                turns.start_turn(terminal_view.clone(), Some(repository.clone()), None, cx)
+                turns.start_turn(
+                    terminal_view.clone(),
+                    Some(repository.clone()),
+                    None,
+                    WeakEntity::new_invalid(),
+                    DiagnosticsBefore::default(),
+                    cx,
+                )
             });
             cx.run_until_parked();
             edit();

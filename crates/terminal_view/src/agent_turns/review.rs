@@ -28,6 +28,7 @@ use workspace::{
     item::{ItemEvent, TabContentParams},
 };
 
+use super::diagnostics::{TurnDiagnostic, TurnDiagnostics};
 use super::snapshot::{ChangedFile, FileChange, SnapshotStore, TreeId};
 use super::{AgentTurn, AgentTurns};
 use crate::TerminalView;
@@ -147,12 +148,14 @@ impl AgentTurnReview {
             editor.set_read_only(true);
             editor.set_should_serialize(false, cx);
             editor.disable_code_lens(cx);
-            editor.disable_inline_diagnostics();
             // Comments go to the agent in the terminal, not to an agent panel.
             editor.set_show_diff_review_button(true, cx);
             editor.register_addon(editor::DiffReviewWithoutFlag);
             editor
         });
+        if let Some(turns) = AgentTurns::try_global(cx).cloned() {
+            cx.observe(&turns, |_, _, cx| cx.notify()).detach();
+        }
         let renderer: Arc<dyn DiffHunkRenderer> = Arc::new(TurnHunkRenderer {
             review: cx.weak_entity(),
         });
@@ -677,6 +680,48 @@ impl AgentTurnReview {
             return;
         }
         let message = review_message(&comments);
+        let count = comments.len();
+        let sent = if is_chinese() {
+            format!("已把 {count} 条批注发送给 agent。")
+        } else if count == 1 {
+            "Sent 1 comment to the agent.".to_string()
+        } else {
+            format!("Sent {count} comments to the agent.")
+        };
+        self.paste_to_agent(message, sent, window, cx);
+    }
+
+    /// Sends the problems the turn added to its agent, to fix them.
+    fn send_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Mode::Turn(number) = self.mode else {
+            return;
+        };
+        let Some(turn) = self.turn(number, cx) else {
+            return;
+        };
+        let TurnDiagnostics::Checked { added, .. } = &turn.diagnostics else {
+            return;
+        };
+        if added.is_empty() {
+            return;
+        }
+        let message = diagnostics_message(added, &turn.directory);
+        let sent = tr(
+            "Sent the new problems to the agent.",
+            "已把新增的问题发送给 agent。",
+        )
+        .to_string();
+        self.paste_to_agent(message, sent, window, cx);
+    }
+
+    /// Pastes `message` into the agent's prompt, or else copies it.
+    fn paste_to_agent(
+        &mut self,
+        message: String,
+        sent: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let terminal_view = self.terminal_view.upgrade();
         let workspace = terminal_view
             .as_ref()
@@ -685,8 +730,8 @@ impl AgentTurnReview {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
             self.status = Some(
                 tr(
-                    "The agent's terminal is gone; copied the comments instead.",
-                    "agent 终端已关闭，已改为复制批注。",
+                    "The agent's terminal is gone; copied the message instead.",
+                    "agent 终端已关闭，已改为复制。",
                 )
                 .into(),
             );
@@ -697,8 +742,8 @@ impl AgentTurnReview {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
             self.status = Some(
                 tr(
-                    "The agent isn't running in its terminal, or isn't taking pasted text; copied the comments instead.",
-                    "agent 已不在终端里运行，或现在不接受粘贴，已改为复制批注。",
+                    "The agent isn't running in its terminal, or isn't taking pasted text; copied the message instead.",
+                    "agent 已不在终端里运行，或现在不接受粘贴，已改为复制。",
                 )
                 .into(),
             );
@@ -709,19 +754,227 @@ impl AgentTurnReview {
             view.terminal
                 .update(cx, |terminal, _| terminal.paste(&message))
         });
-        let count = comments.len();
-        self.status = Some(if is_chinese() {
-            format!("已把 {count} 条批注发送给 agent。").into()
-        } else if count == 1 {
-            "Sent 1 comment to the agent.".into()
-        } else {
-            format!("Sent {count} comments to the agent.").into()
-        });
+        self.status = Some(sent.into());
         cx.notify();
         // Switching to the terminal deactivates this view, which is being updated.
         window.defer(cx, move |window, cx| {
             crate::agent_context::reveal_terminal_view(&workspace, &terminal_view, window, cx)
         });
+    }
+
+    /// Opens a diagnostic's file at its position.
+    fn open_diagnostic(
+        &self,
+        diagnostic: &TurnDiagnostic,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self
+            .terminal_view
+            .upgrade()
+            .and_then(|view| view.read(cx).workspace.upgrade())
+        else {
+            return;
+        };
+        let point = Point::new(
+            diagnostic.line.saturating_sub(1),
+            diagnostic.column.saturating_sub(1),
+        );
+        let opened = workspace.update(cx, |workspace, cx| {
+            workspace.open_abs_path(
+                diagnostic.path.clone(),
+                workspace::OpenOptions::default(),
+                window,
+                cx,
+            )
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(item) = opened.await else {
+                return;
+            };
+            if let Ok(Some(editor)) = cx.update(|_, cx| item.act_as::<Editor>(cx)) {
+                editor
+                    .update_in(cx, |editor, window, cx| {
+                        editor.go_to_singleton_buffer_point(point, window, cx)
+                    })
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// What the turn did to the language servers' diagnostics.
+    fn render_diagnostics(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let Mode::Turn(number) = self.mode else {
+            return None;
+        };
+        let turn = self.turn(number, cx)?;
+        let chinese = is_chinese();
+        let muted = |text: String| {
+            Some(
+                h_flex()
+                    .px_3()
+                    .py_1()
+                    .child(Label::new(text).size(LabelSize::Small).color(Color::Muted))
+                    .into_any_element(),
+            )
+        };
+        let (added, added_uncertain, fixed_errors) = match &turn.diagnostics {
+            TurnDiagnostics::Checking => {
+                return muted(tr("Checking diagnostics…", "正在检查诊断…").to_string());
+            }
+            TurnDiagnostics::Unchecked => {
+                return muted(
+                    tr(
+                        "Diagnostics: not checked (no language server, or it didn't finish)",
+                        "诊断：未检查（没有语言服务器，或它没有及时完成）",
+                    )
+                    .to_string(),
+                );
+            }
+            TurnDiagnostics::Checked {
+                added,
+                added_uncertain,
+                fixed_errors,
+            } => (added, *added_uncertain, *fixed_errors),
+        };
+        let errors = added
+            .iter()
+            .filter(|diagnostic| diagnostic.is_error)
+            .count();
+        let warnings = added.len() - errors;
+        if added.is_empty() && added_uncertain == 0 {
+            let text = match (fixed_errors, chinese) {
+                (0, true) => "诊断：没有新的错误或警告".to_string(),
+                (0, false) => "Diagnostics: no new errors or warnings".to_string(),
+                (fixed, true) => format!("诊断：没有新问题，修掉了 {fixed} 个错误"),
+                (fixed, false) => format!("Diagnostics: nothing new, {fixed} errors fixed"),
+            };
+            return muted(text);
+        }
+        let summary = if chinese {
+            format!(
+                "这一轮新增 {} 个错误、{warnings} 个警告，修掉了 {fixed_errors} 个错误",
+                errors + added_uncertain
+            )
+        } else {
+            format!(
+                "This turn added {} errors and {warnings} warnings, and fixed {fixed_errors} errors",
+                errors + added_uncertain
+            )
+        };
+        const MAX_SHOWN: usize = 20;
+        let rows = added
+            .iter()
+            .take(MAX_SHOWN)
+            .enumerate()
+            .map(|(ix, diagnostic)| {
+                let path = diagnostic
+                    .path
+                    .strip_prefix(&turn.directory)
+                    .unwrap_or(&diagnostic.path)
+                    .display()
+                    .to_string();
+                let location = format!("{path}:{}:{}", diagnostic.line, diagnostic.column);
+                let message = diagnostic
+                    .message
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                let target = diagnostic.clone();
+                h_flex()
+                    .id(("turn-diagnostic", ix))
+                    .gap_2()
+                    .px_3()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(cx.theme().colors().element_hover))
+                    .child(
+                        Icon::new(if diagnostic.is_error {
+                            IconName::XCircle
+                        } else {
+                            IconName::Warning
+                        })
+                        .size(IconSize::Small)
+                        .color(if diagnostic.is_error {
+                            Color::Error
+                        } else {
+                            Color::Warning
+                        }),
+                    )
+                    .child(
+                        Label::new(location)
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(Label::new(message).size(LabelSize::Small).truncate())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_diagnostic(&target, window, cx)
+                    }))
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let more = added.len().saturating_sub(MAX_SHOWN);
+        Some(
+            v_flex()
+                .py_1()
+                .gap_0p5()
+                .child(
+                    h_flex()
+                        .px_3()
+                        .gap_2()
+                        .child(Label::new(summary).size(LabelSize::Small))
+                        .when(!added.is_empty(), |this| {
+                            this.child(
+                                Button::new(
+                                    "send-diagnostics",
+                                    tr("Send to Agent", "发给 agent"),
+                                )
+                                .label_size(LabelSize::Small)
+                                .tooltip(Tooltip::text(tr(
+                                    "Paste the new problems into the agent's terminal to fix them",
+                                    "把新增的问题粘贴到 agent 终端，让它修复",
+                                )))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.send_diagnostics(window, cx)
+                                })),
+                            )
+                        }),
+                )
+                .children(rows)
+                .when(more > 0, |this| {
+                    this.child(
+                        h_flex().px_3().child(
+                            Label::new(if chinese {
+                                format!("还有 {more} 个")
+                            } else {
+                                format!("and {more} more")
+                            })
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                        ),
+                    )
+                })
+                .when(added_uncertain > 0, |this| {
+                    this.child(
+                        h_flex().px_3().child(
+                            Label::new(if chinese {
+                                format!(
+                                    "另有 {added_uncertain} 个新错误在改动前没有打开的文件里，分不出是哪几个"
+                                )
+                            } else {
+                                format!(
+                                    "and {added_uncertain} more errors in files that weren't open before the turn, which can't be told apart from the old ones"
+                                )
+                            })
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                        ),
+                    )
+                })
+                .child(Divider::horizontal())
+                .into_any_element(),
+        )
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -983,6 +1236,39 @@ fn normalized_text(text: String) -> String {
 /// A changed file's path, absolute path, contents before and contents after.
 type FileContents = (String, PathBuf, Option<String>, Option<String>);
 
+/// The message that asks the agent to fix the problems its turn added.
+fn diagnostics_message(diagnostics: &[TurnDiagnostic], directory: &std::path::Path) -> String {
+    let mut message = String::from(tr(
+        "Your last turn added these problems; please fix them:\n",
+        "你上一轮的改动引入了下面这些问题，请修复：\n",
+    ));
+    for diagnostic in diagnostics {
+        let path = diagnostic
+            .path
+            .strip_prefix(directory)
+            .unwrap_or(&diagnostic.path)
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        let severity = if diagnostic.is_error {
+            "error"
+        } else {
+            "warning"
+        };
+        let source = diagnostic
+            .source
+            .as_deref()
+            .map(|source| format!(" [{source}]"))
+            .unwrap_or_default();
+        let text = diagnostic.message.trim_end().replace('\n', "\n  ");
+        message.push_str(&format!(
+            "- {path}:{}:{} {severity}{source}: {text}\n",
+            diagnostic.line, diagnostic.column
+        ));
+    }
+    message
+}
+
 /// The text files among `changed`, with their contents before `before` and
 /// in `after`; and how many weren't text.
 fn load_bases(
@@ -1239,6 +1525,7 @@ impl Render for AgentTurnReview {
             .track_focus(&self.focus_handle)
             .bg(cx.theme().colors().editor_background)
             .child(self.render_header(cx))
+            .children(self.render_diagnostics(cx))
             .child(if empty {
                 let message = if self.loading {
                     tr("Loading…", "正在加载…")
@@ -1280,6 +1567,30 @@ mod tests {
             editor::init(cx);
             crate::init(cx);
         });
+    }
+
+    #[test]
+    fn test_diagnostics_message() {
+        let directory = PathBuf::from(path!("/project"));
+        let message = diagnostics_message(
+            &[TurnDiagnostic {
+                path: directory.join("src").join("main.rs"),
+                line: 3,
+                column: 9,
+                is_error: true,
+                message: "mismatched types\nexpected u32".into(),
+                source: Some("rustc".into()),
+            }],
+            &directory,
+        );
+        let heading = tr(
+            "Your last turn added these problems; please fix them:\n",
+            "你上一轮的改动引入了下面这些问题，请修复：\n",
+        );
+        assert_eq!(
+            message,
+            format!("{heading}- src/main.rs:3:9 error [rustc]: mismatched types\n  expected u32\n")
+        );
     }
 
     #[test]
