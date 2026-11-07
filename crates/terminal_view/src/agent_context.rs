@@ -126,6 +126,15 @@ pub(crate) fn most_recently_focused_first(views: &mut [Entity<TerminalView>], cx
     views.sort_by_key(|view| std::cmp::Reverse(last_focused(view.entity_id(), cx)));
 }
 
+/// Whether `message` can go to the prompt of the agent in `view` as one
+/// paste: an agent still runs there, and a message of several lines arrives
+/// whole (with bracketed paste). Otherwise the shell, or the agent, would take
+/// each line as a command or prompt of its own.
+pub(crate) fn can_paste_to_agent(view: &TerminalView, message: &str, cx: &App) -> bool {
+    view.runs_agent(cx)
+        && (!message.trim_end().contains('\n') || view.terminal.read(cx).bracketed_paste_enabled())
+}
+
 impl TerminalView {
     /// Whether an AI agent is running in this terminal now.
     pub(crate) fn runs_agent(&self, cx: &App) -> bool {

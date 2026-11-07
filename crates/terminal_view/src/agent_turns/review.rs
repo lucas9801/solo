@@ -693,6 +693,18 @@ impl AgentTurnReview {
             cx.notify();
             return;
         };
+        if !crate::agent_context::can_paste_to_agent(terminal_view.read(cx), &message, cx) {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
+            self.status = Some(
+                tr(
+                    "The agent isn't running in its terminal, or isn't taking pasted text; copied the comments instead.",
+                    "agent 已不在终端里运行，或现在不接受粘贴，已改为复制批注。",
+                )
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
         terminal_view.update(cx, |view, cx| {
             view.terminal
                 .update(cx, |terminal, _| terminal.paste(&message))

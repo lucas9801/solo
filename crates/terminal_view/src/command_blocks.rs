@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use gpui::{ClipboardItem, Context, Entity, Window, actions};
 use settings::Settings as _;
-use terminal::terminal_settings::TerminalSettings;
 use terminal::shell_integration::CommandBlock;
+use terminal::terminal_settings::TerminalSettings;
 use workspace::{Toast, Workspace, notifications::NotificationId};
 
 use crate::{TerminalView, terminal_panel::TerminalPanel};
@@ -290,6 +290,24 @@ impl TerminalView {
             });
             return;
         };
+        if !crate::agent_context::can_paste_to_agent(agent.read(cx), &markdown, cx) {
+            cx.write_to_clipboard(ClipboardItem::new_string(markdown));
+            workspace.update(cx, |workspace, cx| {
+                struct NoBracketedPasteToast;
+                workspace.show_toast(
+                    Toast::new(
+                        NotificationId::unique::<NoBracketedPasteToast>(),
+                        util::i18n::tr(
+                            "The agent isn't taking pasted text right now; copied the block instead",
+                            "agent 现在不接受粘贴，已改为复制命令块",
+                        ),
+                    )
+                    .autohide(),
+                    cx,
+                );
+            });
+            return;
+        }
         self.select_command_block(None, cx);
         agent.update(cx, |agent, cx| {
             agent
