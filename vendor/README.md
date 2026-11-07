@@ -7,6 +7,7 @@ Patched copies of upstream crates that Solo needs to change.
 | `alacritty_terminal` | github.com/zed-industries/alacritty | rev `4c129667ce56611becdc82de6e28218c80e2e88f` | Forward shell integration sequences (OSC 133, OSC 633 E and P, OSC 7) as terminal events |
 | `vte` | crates.io `vte` | `0.15.0` | Pass OSC sequences the ANSI processor doesn't handle on to the `Handler` |
 | `warp_command_signatures` | github.com/warpdotdev/command-signatures (MIT) | rev in `REVISION` | Completion specs and generators for ~500 commands, used by the terminal input |
+| `herdr_agent_detection` | github.com/herdrdev/herdr (Apache-2.0) | commit `ee5bfb5041bb3e4a49d591c72308aae3c81ecdde` | Unmodified agent screen-detection rules (TOML), used to tell which coding agent runs in a terminal and whether it is working, waiting for input or idle |
 
 Search for `SOLO:` to find every local change.
 
