@@ -37,6 +37,26 @@ const ZSH_STARTUP_FILES: [(&str, &str); 3] = [
 /// too, but can't know the nonce.
 pub const SHELL_NONCE_ENV: &str = "SOLO_SHELL_NONCE";
 
+/// The environment variable with the terminal's id, which `solo-cli agent`
+/// names terminals by.
+pub const TERMINAL_ID_ENV: &str = "SOLO_TERMINAL_ID";
+/// The environment variable with the path of `solo-cli`, for agents to drive
+/// Solo with (`solo-cli agent ...`).
+pub const CLI_ENV: &str = "SOLO_CLI";
+
+/// SOLO: Gives a local terminal its id and the path of `solo-cli`.
+pub fn add_terminal_env(env: &mut HashMap<String, String>) {
+    env.insert(TERMINAL_ID_ENV.to_string(), new_nonce()[..8].to_string());
+    let cli = format!("solo-cli{}", std::env::consts::EXE_SUFFIX);
+    if let Some(cli) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join(cli)))
+        .filter(|cli| cli.is_file())
+    {
+        env.insert(CLI_ENV.to_string(), cli.to_string_lossy().into_owned());
+    }
+}
+
 /// The environment variable with the path of `solo-agent-hook`, which agents
 /// and scripts run in Solo's terminals report their status with.
 pub const AGENT_HOOK_ENV: &str = "SOLO_AGENT_HOOK";
@@ -543,6 +563,8 @@ pub struct ShellIntegration {
     /// The nonce the shell was started with ([`SHELL_NONCE_ENV`]), `None` if
     /// Solo didn't integrate it.
     nonce: Option<String>,
+    /// The terminal's id ([`TERMINAL_ID_ENV`]).
+    terminal_id: Option<String>,
 }
 
 impl ShellIntegration {
@@ -551,6 +573,16 @@ impl ShellIntegration {
             nonce,
             ..Self::default()
         }
+    }
+
+    pub fn with_terminal_id(mut self, terminal_id: Option<String>) -> Self {
+        self.terminal_id = terminal_id;
+        self
+    }
+
+    /// The id the terminal's shell got in [`TERMINAL_ID_ENV`].
+    pub fn terminal_id(&self) -> Option<&str> {
+        self.terminal_id.as_deref()
     }
 
     /// Whether a sequence came from the shell Solo integrated.

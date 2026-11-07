@@ -989,6 +989,7 @@ impl VsCodeSettings {
             claude_code_hooks: None,
             follow_working_directory: None,
             agent_task_command: None,
+            agent_control: None,
             confirm_close: self.read_enum("terminal.integrated.confirmOnKill", |confirm| {
                 Some(match confirm {
                     "never" => TerminalConfirmClose::Never,

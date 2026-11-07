@@ -190,14 +190,14 @@ pub fn agent_tasks(
 
 /// Opens a terminal in `directory` named `title`, and types `command` in it
 /// once its shell is ready.
-fn open_task_terminal(
+pub(crate) fn open_task_terminal(
     workspace: &mut Workspace,
     directory: PathBuf,
     title: String,
     command: Option<String>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
-) -> Task<Result<()>> {
+) -> Task<Result<Entity<TerminalView>>> {
     let terminal = TerminalPanel::add_center_terminal(workspace, window, cx, move |project, cx| {
         project.create_terminal_shell(Some(directory), cx)
     });
@@ -207,14 +207,14 @@ fn open_task_terminal(
         cx.update(|_, cx| {
             let view = terminal_views(&workspace, cx)
                 .into_iter()
-                .find(|view| view.read(cx).terminal == terminal);
-            if let Some(view) = view {
-                view.update(cx, |view, cx| view.set_custom_title(Some(title), cx));
-            }
+                .find(|view| view.read(cx).terminal == terminal)
+                .context("the terminal's view is gone")?;
+            view.update(cx, |view, cx| view.set_custom_title(Some(title), cx));
             if let Some(command) = command.filter(|command| !command.trim().is_empty()) {
                 type_when_ready(terminal, command, cx);
             }
-        })
+            anyhow::Ok(view)
+        })?
     })
 }
 

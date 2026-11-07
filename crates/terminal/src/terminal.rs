@@ -1181,6 +1181,7 @@ impl TerminalBuilder {
             env.remove("SHLVL");
             // SOLO: what tells the shell's integration from output posing as it.
             let shell_nonce = env.get(shell_integration::SHELL_NONCE_ENV).cloned();
+            let terminal_id = env.get(shell_integration::TERMINAL_ID_ENV).cloned();
 
             // If the parent environment doesn't have a locale set
             // (As is the case when launched from a .app on MacOS),
@@ -1412,7 +1413,7 @@ impl TerminalBuilder {
                 init_command_startup_marker: None,
                 init_command_startup_tx: None,
                 event_loop_task: Task::ready(Ok(())),
-                shell_integration: ShellIntegration::new(shell_nonce),
+                shell_integration: ShellIntegration::new(shell_nonce).with_terminal_id(terminal_id),
                 background_executor,
                 path_style,
                 cwd_history: if is_remote_terminal {
