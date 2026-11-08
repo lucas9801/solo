@@ -337,10 +337,9 @@ fn workspace_menu(
     if let Some(workspace) = &tab.workspace {
         agent_activity::refresh_tasks(workspace, cx);
     }
-    let builder_multi_workspace = multi_workspace.clone();
     let builder_tab = tab.clone();
     let menu = ContextMenu::build_persistent(window, cx, move |menu, _, cx| {
-        build_workspace_menu(menu, &builder_multi_workspace, &builder_tab, can_close, cx)
+        build_workspace_menu(menu, &multi_workspace, &builder_tab, can_close, cx)
     });
     if tab.workspace.is_some() {
         let activity = agent_activity::AgentActivity::global(cx);

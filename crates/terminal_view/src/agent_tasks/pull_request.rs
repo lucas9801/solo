@@ -1,6 +1,11 @@
 //! SOLO: a task's pull request on GitHub, through the `gh` CLI: opening it
 //! from the task's branch, and gathering what its checks and reviewers said,
-//! to send to the task's agent.
+//! to send to the task's agent. Everything here runs `gh` or `git` and
+//! blocks, so call it from a background task.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "runs gh and git synchronously, only from background tasks"
+)]
 
 use std::ffi::OsStr;
 use std::path::Path;
