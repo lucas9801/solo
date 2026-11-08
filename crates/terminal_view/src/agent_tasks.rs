@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod git;
+pub mod pull_request;
 
 use std::{
     cell::RefCell,
@@ -765,6 +766,8 @@ pub struct AgentTasksModal {
     workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
     entries: Option<Result<Vec<AgentTaskEntry>, SharedString>>,
+    /// The tasks' pull requests, by branch, once looked up.
+    pull_requests: collections::HashMap<String, pull_request::PullRequest>,
     selected: usize,
     /// The directory of the terminal that was active, to select its task.
     active_directory: Option<PathBuf>,
@@ -783,6 +786,7 @@ impl AgentTasksModal {
                 workspace: weak_workspace,
                 focus_handle: cx.focus_handle(),
                 entries: None,
+                pull_requests: Default::default(),
                 selected: 0,
                 active_directory,
                 page: Page::List,
@@ -816,10 +820,175 @@ impl AgentTasksModal {
                 if let Ok(entries) = &entries {
                     this.selected = this.selected.min(entries.len().saturating_sub(1));
                 }
+                let tasks: Vec<AgentTask> = entries
+                    .iter()
+                    .flatten()
+                    .map(|entry| entry.task.clone())
+                    .collect();
                 this.entries = Some(entries);
                 cx.notify();
+                // Looking pull requests up asks GitHub; the list shows first.
+                cx.spawn(async move |this, cx| {
+                    let found = cx
+                        .background_spawn(async move {
+                            tasks
+                                .into_iter()
+                                .filter_map(|task| {
+                                    let worktree = task.worktree_path.as_deref()?;
+                                    let pull_request =
+                                        pull_request::find_pull_request(worktree, &task.branch)
+                                            .ok()??;
+                                    Some((task.branch, pull_request))
+                                })
+                                .collect::<collections::HashMap<_, _>>()
+                        })
+                        .await;
+                    this.update(cx, |this, cx| {
+                        this.pull_requests = found;
+                        cx.notify();
+                    })
+                    .log_err();
+                })
+                .detach();
             })
             .log_err();
+        });
+    }
+
+    /// Pushes the task's branch and opens a pull request for it.
+    fn open_pull_request(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.entry(index).cloned() else {
+            return;
+        };
+        self.page =
+            Page::Working(tr("Pushing and opening a pull request…", "正在推送并开 PR…").into());
+        cx.notify();
+        let task = entry.task;
+        self._task = cx.spawn_in(window, async move |this, cx| {
+            let opened = cx
+                .background_spawn(async move { pull_request::open_pull_request(&task) })
+                .await;
+            let (message, is_error) = match opened {
+                Ok(pull_request) => (
+                    if is_chinese() {
+                        format!("已开 PR #{}：{}", pull_request.number, pull_request.url)
+                    } else {
+                        format!(
+                            "Opened pull request #{}: {}",
+                            pull_request.number, pull_request.url
+                        )
+                    },
+                    false,
+                ),
+                Err(error) => (format!("{error:#}"), true),
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.page = Page::Outcome {
+                    message: message.into(),
+                    is_error,
+                    offer_delete: None,
+                };
+                this.reload(window, cx);
+            })
+            .log_err();
+        });
+    }
+
+    /// Pastes what the pull request's checks and reviewers said into the
+    /// task's agent; without one, copies it.
+    fn send_pull_request_feedback(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(entry) = self.entry(index).cloned() else {
+            return;
+        };
+        let Some(pull_request) = self.pull_requests.get(&entry.task.branch).cloned() else {
+            return;
+        };
+        let Some(worktree) = entry.task.worktree_path.clone() else {
+            return;
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        self.page = Page::Working(
+            tr(
+                "Reading the pull request's feedback…",
+                "正在读取 PR 的反馈…",
+            )
+            .into(),
+        );
+        cx.notify();
+        self._task = cx.spawn_in(window, async move |this, cx| {
+            let number = pull_request.number;
+            let feedback = cx
+                .background_spawn(async move {
+                    pull_request::pull_request_feedback(&worktree, number)
+                })
+                .await;
+            let outcome = this.update_in(cx, |_, window, cx| match feedback {
+                Err(error) => (format!("{error:#}"), true),
+                Ok(feedback) if feedback.is_empty() => (
+                    tr(
+                        "No failed checks or comments on the pull request.",
+                        "PR 上没有失败的检查，也没有评论。",
+                    )
+                    .to_string(),
+                    false,
+                ),
+                Ok(feedback) => {
+                    let message = pull_request::feedback_message(&pull_request, &feedback);
+                    let agent = entry
+                        .terminals
+                        .iter()
+                        .find(|view| crate::agent_context::can_paste_to_agent(view.read(cx), &message, cx))
+                        .cloned();
+                    match agent {
+                        Some(agent) => {
+                            agent.update(cx, |agent, cx| {
+                                agent.terminal.update(cx, |terminal, _| terminal.paste(&message))
+                            });
+                            let workspace = workspace.clone();
+                            window.defer(cx, move |window, cx| {
+                                activate_terminal_view(&workspace, &agent, window, cx)
+                            });
+                            (
+                                tr(
+                                    "Sent the failed checks and comments to the task's agent.",
+                                    "已把失败的检查和评论发给任务的 agent。",
+                                )
+                                .to_string(),
+                                false,
+                            )
+                        }
+                        None => {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
+                            (
+                                tr(
+                                    "No agent is taking pasted text in the task's terminals; copied the failed checks and comments to the clipboard instead.",
+                                    "任务的终端里没有能接收粘贴的 agent，已把失败的检查和评论复制到剪贴板。",
+                                )
+                                .to_string(),
+                                false,
+                            )
+                        }
+                    }
+                }
+            });
+            if let Ok((message, is_error)) = outcome {
+                this.update(cx, |this, cx| {
+                    this.page = Page::Outcome {
+                        message: message.into(),
+                        is_error,
+                        offer_delete: None,
+                    };
+                    cx.notify();
+                })
+                .log_err();
+            }
         });
     }
 
@@ -1268,6 +1437,53 @@ impl AgentTasksModal {
                                     },
                                 )),
                             )
+                            .map(|this| match self.pull_requests.get(&task.branch) {
+                                Some(pull_request) => {
+                                    let url = pull_request.url.clone();
+                                    this.child(
+                                        Button::new(
+                                            ("pull-request", index),
+                                            format!("PR #{}", pull_request.number),
+                                        )
+                                        .style(ButtonStyle::Subtle)
+                                        .label_size(LabelSize::Small)
+                                        .tooltip(ui::Tooltip::text(url.clone()))
+                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                    )
+                                    .child(
+                                        Button::new(
+                                            ("pull-request-feedback", index),
+                                            tr("Send PR Feedback to Agent", "把 PR 反馈发给 agent"),
+                                        )
+                                        .style(ButtonStyle::Subtle)
+                                        .label_size(LabelSize::Small)
+                                        .disabled(!has_worktree)
+                                        .tooltip(ui::Tooltip::text(tr(
+                                            "Paste the failed checks and the comments into the task's agent",
+                                            "把失败的检查和评论粘贴给任务的 agent",
+                                        )))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.send_pull_request_feedback(index, window, cx)
+                                        })),
+                                    )
+                                }
+                                None => this.child(
+                                    Button::new(
+                                        ("open-pull-request", index),
+                                        tr("Push and Open PR", "推送并开 PR"),
+                                    )
+                                    .style(ButtonStyle::Subtle)
+                                    .label_size(LabelSize::Small)
+                                    .disabled(!has_worktree)
+                                    .tooltip(ui::Tooltip::text(tr(
+                                        "Push the branch to origin and open a pull request with gh, titled from its commits",
+                                        "把分支推送到 origin，用 gh 开一个 PR，标题和说明取自它的提交",
+                                    )))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_pull_request(index, window, cx)
+                                    })),
+                                ),
+                            })
                             .child(
                                 Button::new(("delete", index), tr("Delete", "删除"))
                                     .style(ButtonStyle::Subtle)
