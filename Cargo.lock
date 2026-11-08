@@ -22577,6 +22577,7 @@ dependencies = [
  "project_symbols",
  "prompt_store",
  "proto",
+ "pulldown-cmark 0.13.4",
  "rayon",
  "recent_projects",
  "release_channel",
