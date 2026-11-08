@@ -204,6 +204,7 @@ members = [
     "crates/snippets_ui",
     "crates/agent_detection",
     "crates/solo_agent_hook",
+    "crates/solo_terminal_host",
     "crates/solo_update_helper",
     "crates/sqlez",
     "crates/sqlez_macros",

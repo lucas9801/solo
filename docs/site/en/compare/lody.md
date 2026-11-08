@@ -10,7 +10,6 @@
 
 - **Teamwork.** Workspaces are shared, so several people watch and review together. Solo is a single-user tool and doesn't do teams.
 - **A phone app**, with Live Activities on iPhone.
-- **Agents survive closing the window**, kept by a daemon.
 - **Review** per turn or per session, with line comments, and page elements can be annotated and sent to the agent.
 - Several platforms.
 

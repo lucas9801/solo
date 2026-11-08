@@ -2303,6 +2303,12 @@
     // session with `copilot --plugin-dir`, so its turns can be reviewed like
     // Claude Code's. Takes effect in new terminals.
     "copilot_hooks": true,
+    // On Windows, terminals run their shell in a small background process
+    // (solo-terminal-host). When Solo quits, or restarts for an update,
+    // terminals that are running a command or an agent keep running there,
+    // and Solo connects to them again when it reopens them. Takes effect in
+    // new terminals.
+    "keep_running_on_quit": true,
     // Narrow the project panel, file finder and project search to the git
     // repository the active terminal is in (or its directory, outside a
     // repository). They switch when another terminal becomes active or the

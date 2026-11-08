@@ -3800,8 +3800,14 @@ impl Workspace {
                 CloseIntent::CloseWindow => util::i18n::tr("Close Window", "关闭窗口"),
                 CloseIntent::ReplaceWindow => util::i18n::tr("Close", "关闭"),
             };
+            // What keeps running when Solo quits isn't ended by quitting.
+            let quits = close_intent == CloseIntent::Quit
+                || (remaining_workspaces == 0 && closing_last_window_quits);
             let confirmation = this.update_in(cx, |this, window, cx| {
-                let items = this.items_with_panels(cx);
+                let mut items = this.items_with_panels(cx);
+                if quits {
+                    items.retain(|item| !item.keeps_running_after_quit(cx));
+                }
                 let confirmation = Pane::confirm_ending_programs(&items, close_label, window, cx);
                 if confirmation.is_some() {
                     cx.emit(Event::Activate);

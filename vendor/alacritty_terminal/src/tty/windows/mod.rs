@@ -14,7 +14,7 @@ mod child;
 mod conpty;
 
 use blocking::{UnblockedReader, UnblockedWriter};
-use conpty::Conpty as Backend;
+use conpty::Conpty;
 use miow::pipe::{AnonRead, AnonWrite};
 use polling::{Event, Poller};
 
@@ -35,6 +35,57 @@ pub struct Pty {
 
 pub fn new(config: &Options, window_size: WindowSize, _window_id: u64) -> Result<Pty> {
     conpty::new(config, window_size)
+}
+
+/// SOLO: a pseudo console held by another process (Solo's terminal host),
+/// which reports what it needs here; dropping it ends nothing by itself.
+pub trait HostedConsole: Send {
+    fn on_resize(&mut self, window_size: WindowSize);
+}
+
+enum Backend {
+    Conpty(Conpty),
+    Hosted(Box<dyn HostedConsole>),
+}
+
+impl From<Conpty> for Backend {
+    fn from(conpty: Conpty) -> Self {
+        Backend::Conpty(conpty)
+    }
+}
+
+impl OnResize for Backend {
+    fn on_resize(&mut self, window_size: WindowSize) {
+        match self {
+            Backend::Conpty(conpty) => conpty.on_resize(window_size),
+            Backend::Hosted(hosted) => hosted.on_resize(window_size),
+        }
+    }
+}
+
+/// SOLO: a pty whose console another process holds: its output and input
+/// come through `output` and `input` (pipe handles), and `child` is a handle
+/// to the program running in it, watched for its exit.
+///
+/// # Safety
+///
+/// `output`, `input` and `child` must be valid handles this takes ownership of.
+pub unsafe fn new_hosted(
+    output: std::os::windows::io::RawHandle,
+    input: std::os::windows::io::RawHandle,
+    child: windows_sys::Win32::Foundation::HANDLE,
+    console: Box<dyn HostedConsole>,
+) -> Result<Pty> {
+    use std::os::windows::io::FromRawHandle;
+    let conout = unsafe { AnonRead::from_raw_handle(output) };
+    let conin = unsafe { AnonWrite::from_raw_handle(input) };
+    let child_watcher = ChildExitWatcher::new(child)?;
+    Ok(Pty::new(
+        Backend::Hosted(console),
+        UnblockedReader::new(conout, conpty::PIPE_CAPACITY),
+        UnblockedWriter::new(conin, conpty::PIPE_CAPACITY),
+        child_watcher,
+    ))
 }
 
 impl Pty {
@@ -155,7 +206,8 @@ fn push_escaped_arg(cmd: &mut String, arg: &str) {
     }
 }
 
-fn cmdline(config: &Options) -> String {
+// SOLO: public, for Solo's terminal host to run the same command line.
+pub fn cmdline(config: &Options) -> String {
     let default_shell = Shell::new("powershell".to_owned(), Vec::new());
     let shell = config.shell.as_ref().unwrap_or(&default_shell);
 

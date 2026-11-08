@@ -8,7 +8,6 @@
 
 ## Where Orca is ahead
 
-- **Agents survive closing the window.** A background daemon holds the terminals through quitting, auto-update restarts and app crashes. Solo can't do this yet.
 - **More ground covered.** A phone app, a built-in browser (pick page elements and send them to the agent), hooks installed for twenty-odd agents.
 - **Several platforms, signed on Windows.** Solo is Windows only and not yet signed.
 - **More mature.** More users, so problems are found and fixed sooner.
@@ -21,4 +20,4 @@
 
 ## Which to pick
 
-For a phone app, a built-in browser, or agents that must never be interrupted: Orca. If most of your time is reading code and reviewing what agents changed, in projects that need full language servers: try Solo. They can be used side by side too; the agents aren't tied to either.
+For a phone app or a built-in browser: Orca. If most of your time is reading code and reviewing what agents changed, in projects that need full language servers: try Solo. They can be used side by side too; the agents aren't tied to either.

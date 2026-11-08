@@ -117,7 +117,7 @@ impl PtySender {
     }
 }
 
-fn window_size_from_terminal_bounds(bounds: TerminalBounds) -> WindowSize {
+pub(super) fn window_size_from_terminal_bounds(bounds: TerminalBounds) -> WindowSize {
     WindowSize {
         num_lines: bounds.num_lines() as u16,
         num_cols: bounds.num_columns() as u16,

@@ -74,9 +74,13 @@ as Claude Code in the terminal while viewing and editing code beside it.
 - With `follow_working_directory`, the file tree, file finder and project
   search follow the focused terminal's git repository instead (off by
   default).
-- Closing a terminal, a window or Solo while an agent runs asks first
-  (`confirm_close`). After a restart, a terminal that was running one offers
-  to continue its session.
+- Terminals running something (an agent, a build) keep running when Solo
+  quits, restarts for an update or crashes: each terminal's shell runs in a
+  small background process (`solo-terminal-host.exe`), and Solo connects to
+  them again when it opens (`keep_running_on_quit`, Windows). Idle shells end
+  with Solo. Closing a terminal or a window while an agent runs asks first
+  (`confirm_close`); a terminal whose agent couldn't be kept offers to
+  continue its session after a restart.
 - Each agent turn's changes can be reviewed (the "N files changed" button on
   the tab): reject or keep hunks, comment on lines and send the comments to
   the agent, or roll back to before a turn.

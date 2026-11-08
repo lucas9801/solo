@@ -316,6 +316,14 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub copilot_hooks: Option<bool>,
+    /// On Windows, terminals run their shell in a small background process
+    /// (`solo-terminal-host`). When Solo quits, or restarts for an update,
+    /// terminals that are running a command or an agent keep running there,
+    /// and Solo connects to them again when it reopens them. Takes effect in
+    /// new terminals.
+    ///
+    /// Default: true
+    pub keep_running_on_quit: Option<bool>,
     /// When to ask before closing a terminal (its tab, its window or Solo)
     /// would end the program running in it.
     ///
@@ -352,7 +360,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
         input_editor, compact_prompt, completions_as_you_type, open_links_on_click,
         notify_long_commands_after_seconds, program_notifications, restore_contents,
-        agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, follow_working_directory, confirm_close,
+        agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
         agent_task_command, agent_control,
     },
     defaults: {},

@@ -19,7 +19,7 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
 
   这会把文件复制到 `%LOCALAPPDATA%\Programs\Solo`，并创建开始菜单和桌面快捷方式。
 
-安装目录里有 `solo.exe`、`solo-agent-hook.exe`（Claude Code 用它上报状态）、`solo-update-helper.exe`（安装更新用）、`OpenConsole.exe` 和 `conpty.dll`（终端运行时），以及几份许可证文件。
+安装目录里有 `solo.exe`、`solo-agent-hook.exe`（Claude Code 用它上报状态）、`solo-update-helper.exe`（安装更新用）、`solo-terminal-host.exe`（运行终端的 shell，让它能在 Solo 关掉后继续跑）、`OpenConsole.exe` 和 `conpty.dll`（终端运行时），以及几份许可证文件。
 
 ## 3. 更新
 
@@ -37,9 +37,10 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
   powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Solo\install.ps1" -Uninstall
   ```
 
-**两种方式都只删程序本身，不删你的设置和数据。** 要彻底清除，先关掉 Solo，再运行：
+**两种方式都只删程序本身，不删你的设置和数据。** 要彻底清除，先关掉 Solo，再运行（第一行结束还在后台运行的终端）：
 
 ```powershell
+Get-Process solo-terminal-host -ErrorAction SilentlyContinue | Stop-Process
 Remove-Item -Recurse -Force "$env:APPDATA\Solo", "$env:LOCALAPPDATA\Solo", `
   "$env:TEMP\solo-shell-integration", "$env:TEMP\solo-update" -ErrorAction SilentlyContinue
 ```
@@ -56,7 +57,7 @@ Solo 不会修改你的 Claude Code 配置（见第 8 节），所以那边没�
 | 位置 | 内容 |
 | --- | --- |
 | `%APPDATA%\Solo` | 设置目录：`settings.json`、`keymap.json`、`tasks.json`、`debug.json`、`AGENTS.md`、`workflows.json`（保存的命令） |
-| `%LOCALAPPDATA%\Solo` | 数据目录：`logs\`（日志）、`db\`（工作区和会话状态）、`extensions\`、`languages\`（自动下载的语言服务器）、`node\`、`external_agents\`、`terminal_sessions\`（终端内容恢复，30 天后清理）、`agent_turns\`（智能体轮次快照）、`hang_traces\` |
+| `%LOCALAPPDATA%\Solo` | 数据目录：`logs\`（日志）、`db\`（工作区和会话状态）、`extensions\`、`languages\`（自动下载的语言服务器）、`node\`、`external_agents\`、`terminal_sessions\`（终端内容恢复，30 天后清理）、`agent_turns\`（智能体轮次快照）、`terminal-host\`（终端宿主进程的副本）、`hang_traces\` |
 | `%TEMP%\solo-shell-integration` | shell 集成脚本和 Claude Code 的 hook 设置文件 |
 | `%TEMP%\solo-update` | 下载的更新安装包和安装日志 |
 | 项目里的 `.solo\` | 项目设置、任务和调试配置（也会读 Zed 的 `.zed\`） |
@@ -111,9 +112,16 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 - 智能体可以用 `solo-cli agent` 驱动其他终端（列出终端、发消息、等它完成、读它的回答、新开任务），见 [agent-cli.md](../agent-cli.md)。设置项 `agent_control` 控制它能做到什么程度。
 - 在 Claude Code 终端的菜单里选“启用远程控制”，Solo 会往 Claude Code 里输入 `/remote-control`，之后可以用手机上的 Claude App 继续这个会话。
 
+### 关掉 Solo，智能体照样在跑
+每个终端的 shell 跑在一个小的后台进程 `solo-terminal-host.exe` 里。Solo 退出、更新重启，甚至崩溃时，正在运行东西（智能体，或者编译之类的命令）的终端会在那里继续跑；Solo 再打开那个工作区时会自动连回去，期间的输出也都在。空闲的 shell 还是随 Solo 一起结束；关掉终端标签会结束里面运行的东西。
+
+- 所以退出和更新时不再因为终端里的智能体而询问；关闭标签或窗口时仍然会问。
+- 关闭方法：`"terminal": {"keep_running_on_quit": false}`，之后新开的终端跑在 Solo 里面，随 Solo 结束。
+- 如果某个后台进程自己出了问题，它的终端就结束了；重启后会按下面的方式提示继续会话。
+
 ### 其他
-- 关闭正在运行智能体的终端、窗口或 Solo 前会先确认（`terminal.confirm_close`，默认 `"agents"`）。
-- 重启后，之前跑着智能体的终端会提示是否继续上次的会话（例如 `claude --continue`）。
+- 关闭正在运行智能体的终端或窗口前会先确认（`terminal.confirm_close`，默认 `"agents"`）。
+- 重启后，跑着智能体、但没能保留下来的终端会提示是否继续上次的会话（例如 `claude --continue`）。
 
 ## 7. 支持哪些智能体、支持到什么程度
 
@@ -144,6 +152,7 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 - **轮次快照**存在 `%LOCALAPPDATA%\Solo\agent_turns`，不碰你仓库里的东西。
 - **智能体任务**会在你的仓库里新建分支和 worktree，并往仓库的 git 配置里写 `branch.<分支>.solotask` / `solobase`（跨仓库任务还有 `sologroup`）。这些只在你新建任务时才会发生。
 - **更新**：只有你点了更新才会安装，由 `solo-update-helper.exe` 在 Solo 退出后静默运行安装包。
+- **终端宿主进程**：每个终端的 shell 跑在各自的 `solo-terminal-host.exe` 里，它从 `%LOCALAPPDATA%\Solo	erminal-host` 里的副本启动（这样更新时可以替换 Solo 的文件）。它和 Solo 之间用只有你这个用户能打开的命名管道通信；shell 结束、关掉标签，或者 Solo 结束而终端里没在运行东西时，它就结束（见第 6 节）。
 - Solo 会读 Claude Code 的对话记录（`~/.claude/projects`），用来显示时间线和会话信息，只读不写。
 
 ## 9. 隐私与网络
@@ -211,6 +220,7 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `claude_code_hooks` | `true` | 通过 `--settings` 给 Claude Code 加状态 hooks |
 | `codex_hooks` | `true` | 通过 `-c hooks...` 给 Codex 加状态 hooks |
 | `copilot_hooks` | `true` | 通过 `--plugin-dir` 给 Copilot CLI 加状态 hooks |
+| `keep_running_on_quit` | `true` | Solo 退出、更新或崩溃时，正在运行东西的终端继续运行，之后自动连回去 |
 | `agent_commands` | `[]` | 把其他程序也当作智能体 |
 | `agent_task_command` | `"claude"` | 新建智能体任务时运行的命令 |
 | `confirm_close` | `"agents"` | 关闭前确认：`agents` / `commands` / `never` |

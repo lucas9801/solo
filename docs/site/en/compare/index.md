@@ -24,7 +24,7 @@ Plenty of tools help you run several AI agents at once. Here Solo is set beside 
 | Code editor | full Zed: language servers, go to definition, references, debugger, multiple windows | Monaco, partial language server support | yes | file browsing, external editor for editing | none |
 | Where agents run | your own terminal and CLIs | terminal | daemon; Claude through the Agent SDK | ACP | terminal |
 | Reviewing changes | per-turn snapshots, keep or reject hunks, roll back, diagnostics per turn, document comments | line comments, PRs | changes view | per turn or per session, line comments | third-party plugins |
-| When the window closes or updates | **agents end**; their sessions can be continued after a restart | a daemon keeps them | a daemon keeps them | a daemon keeps them | a background service keeps them |
+| When the window closes or updates | a background process per terminal keeps them (Windows) | a daemon keeps them | a daemon keeps them | a daemon keeps them | a background service keeps them |
 | Interface for agents | `solo-cli agent` | CLI | CLI, SDK, MCP, skills | CLI, session tools | CLI, socket API |
 | Phone | through Claude's Remote Control | yes | full app | yes | over SSH |
 | Built-in browser | no | yes, pick page elements | yes | annotate elements | no |
@@ -41,7 +41,6 @@ Plenty of tools help you run several AI agents at once. Here Solo is set beside 
 ## When something else fits better
 
 - Following and answering agents from your phone: Paseo, Lody and Orca have real phone apps.
-- Agents that must not stop when the window closes or updates: Solo can't do that yet (it's been prototyped); the other four can.
 - A team sharing one workspace: Lody.
 - Just a light terminal multiplexer, no editor: Herdr.
 - macOS or Linux: Solo is Windows only for now.
