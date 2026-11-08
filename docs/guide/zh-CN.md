@@ -151,7 +151,7 @@ Claude Code 每开始和结束一轮，Solo 都会给工作目录拍一个快照
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
 - 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；SSH 远程开发时下载远程服务端：`cloud.zed.dev`；
-- Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 自带的 agent 面板在 Windows 上不提供 WSL 沙箱，因为它需要从 zed.dev 下载 Linux 版的 Zed。
+- Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 自带的 agent 面板在 Windows 上不提供 WSL 沙箱，因为它需要从 zed.dev 下载 Linux 版的 Zed。
 - 打开 ACP 智能体注册表，或使用从注册表配置的智能体：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
 - 在终端里运行的智能体（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
 

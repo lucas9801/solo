@@ -292,6 +292,9 @@ fn main() {
     }
     ztracing::init();
 
+    // SOLO: the user guide's pages, so help links open them offline.
+    zed::guide::write_local_guide();
+
     #[cfg(unix)]
     util::increase_open_file_limit().log_err();
 

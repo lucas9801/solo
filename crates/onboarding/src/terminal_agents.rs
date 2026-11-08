@@ -19,9 +19,6 @@ pub(crate) const TERMINAL_AGENTS: &[(&str, &str)] = &[
     ("Aider", "aider"),
 ];
 
-const GUIDE_URL: &str = "https://github.com/lucas9801/solo/blob/main/docs/guide/en.md";
-const GUIDE_URL_ZH: &str = "https://github.com/lucas9801/solo/blob/main/docs/guide/zh-CN.md";
-
 /// Which of the agents are installed: their command is on the `PATH`.
 pub(crate) fn detect_installed_agents() -> Vec<(&'static str, bool)> {
     TERMINAL_AGENTS
@@ -149,7 +146,7 @@ pub(crate) fn render_terminal_agents_section(
                         "安装、第一个 agent、按轮审阅和故障排查",
                     )))
                     .on_click(|_, _, cx| {
-                        cx.open_url(if is_chinese() { GUIDE_URL_ZH } else { GUIDE_URL })
+                        cx.open_url(util::i18n::guide_url())
                     }),
             ),
         )
