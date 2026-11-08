@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 
 use gpui::{
-    Action, AnyElement, App, ClickEvent, Entity, MouseButton, SharedString, WeakEntity, Window,
-    actions,
+    Action, AnyElement, App, ClickEvent, Entity, Focusable as _, MouseButton, SharedString,
+    WeakEntity, Window, actions,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -499,8 +499,17 @@ fn build_workspace_menu(
             menu = menu.entry(label, None, move |window, cx| {
                 activate_tab(&multi_workspace_handle, &entry_tab, window, cx);
                 let action = action.boxed_clone();
+                let multi_workspace = multi_workspace_handle.clone();
                 // Once the tab is active, so the task lands in its workspace.
-                window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
+                // The workspace takes focus first: with the menu gone nothing
+                // has it, and the action would reach no workspace.
+                window.defer(cx, move |window, cx| {
+                    if let Some(multi_workspace) = multi_workspace.upgrade() {
+                        let workspace = multi_workspace.read(cx).workspace().clone();
+                        window.focus(&workspace.focus_handle(cx), cx);
+                    }
+                    window.dispatch_action(action, cx);
+                });
             });
         }
     }

@@ -164,9 +164,13 @@ fn suggest_for_buffer(
             };
             show_suggestion(workspace, &extension_id, cx, |cx| {
                 MessageNotification::new(
-                    format!(
-                        "Do you want to install the recommended '{extension_id}' extension for '{file_name_or_extension}' files?"
-                    ),
+                    if util::i18n::is_chinese() {
+                        format!("要为 '{file_name_or_extension}' 文件安装推荐的扩展 '{extension_id}' 吗？")
+                    } else {
+                        format!(
+                            "Do you want to install the recommended '{extension_id}' extension for '{file_name_or_extension}' files?"
+                        )
+                    },
                     cx,
                 )
                 .primary_message("Yes, install extension")

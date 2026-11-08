@@ -13,6 +13,7 @@ use std::process::Output;
 
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
+use util::i18n::{is_chinese, tr};
 
 use super::git::{self, AgentTask};
 
@@ -63,7 +64,10 @@ where
         .env("GH_PROMPT_DISABLED", "1")
         .env("NO_COLOR", "1")
         .output()
-        .context("failed to run gh, GitHub's CLI; install it and run `gh auth login`")
+        .context(tr(
+            "failed to run gh, GitHub's CLI; install it and run `gh auth login`",
+            "无法运行 GitHub 的命令行工具 gh；请安装它并运行 `gh auth login`",
+        ))
 }
 
 fn stdout(output: &Output) -> String {
@@ -95,17 +99,26 @@ pub fn find_pull_request(worktree: &Path, branch: &str) -> Result<Option<PullReq
 /// Pushes the task's branch and opens a pull request into the branch it
 /// started from, titled and described from its commits.
 pub fn open_pull_request(task: &AgentTask) -> Result<PullRequest> {
-    let worktree = task
-        .worktree_path
-        .as_deref()
-        .context("the task's worktree is gone")?;
+    let worktree = task.worktree_path.as_deref().context(tr(
+        "the task's worktree is gone",
+        "任务的 worktree 已不存在",
+    ))?;
     if !git::uncommitted_changes(worktree)?.is_empty() {
+        if is_chinese() {
+            bail!(
+                "{} 有未提交的改动；请先提交（或让 agent 提交）",
+                task.branch
+            );
+        }
         bail!(
             "{} has uncommitted changes; commit them (or have the agent do it) first",
             task.branch
         );
     }
     if git::unmerged_commits(task)?.is_empty() {
+        if is_chinese() {
+            bail!("{} 没有 {} 之外的提交", task.branch, task.base_branch);
+        }
         bail!(
             "{} has no commits that {} doesn't have",
             task.branch,
@@ -120,7 +133,11 @@ pub fn open_pull_request(task: &AgentTask) -> Result<PullRequest> {
         .output()
         .context("failed to run git")?;
     if !push.status.success() {
-        bail!("git push failed: {}", stderr(&push));
+        bail!(
+            "{}: {}",
+            tr("git push failed", "git push 失败"),
+            stderr(&push)
+        );
     }
     let create = gh(
         worktree,
@@ -135,7 +152,11 @@ pub fn open_pull_request(task: &AgentTask) -> Result<PullRequest> {
         ],
     )?;
     if !create.status.success() {
-        bail!("gh pr create failed: {}", stderr(&create));
+        bail!(
+            "{}: {}",
+            tr("gh pr create failed", "gh pr create 失败"),
+            stderr(&create)
+        );
     }
     find_pull_request(worktree, &task.branch)?
         .context("the pull request was opened but isn't found")

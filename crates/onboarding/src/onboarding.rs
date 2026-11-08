@@ -374,8 +374,11 @@ impl Render for Onboarding {
                                             .child(
                                                 v_flex()
                                                     .child(
-                                                        Headline::new("Welcome to Solo")
-                                                            .size(HeadlineSize::Small),
+                                                        Headline::new(util::i18n::tr(
+                                                            "Welcome to Solo",
+                                                            "欢迎使用 Solo",
+                                                        ))
+                                                        .size(HeadlineSize::Small),
                                                     )
                                                     .child(
                                                         Label::new(util::i18n::tr(

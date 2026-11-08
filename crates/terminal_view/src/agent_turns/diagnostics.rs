@@ -11,12 +11,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use collections::HashMap;
-use gpui::{App, AsyncApp, Entity, WeakEntity};
+use gpui::{App, AsyncApp, Entity, TaskExt as _, WeakEntity};
 use language::{Buffer, DiagnosticSeverity, Point};
 use project::Project;
 
-/// How long the language servers get to check the changed files.
-const MAX_WAIT: Duration = Duration::from_secs(30);
+/// How long the language servers get to check the changed files (with
+/// rust-analyzer, a `cargo check`).
+const MAX_WAIT: Duration = Duration::from_secs(60);
 /// At least this long, for servers to see the files and start.
 const MIN_WAIT: Duration = Duration::from_secs(2);
 /// Diagnostics that haven't changed for this long, with no server busy, are
@@ -214,6 +215,40 @@ fn fingerprint(buffers: &[Entity<Buffer>], cx: &App) -> Vec<usize> {
         .collect()
 }
 
+/// Whether the language servers have the changed files: each file is open in
+/// a server, or has no server for its language, and at least one is open in
+/// one.
+fn servers_have_the_files(
+    project: &Entity<Project>,
+    buffers: &[Entity<Buffer>],
+    cx: &mut App,
+) -> bool {
+    let lsp_store = project.read(cx).lsp_store();
+    let mut any_open = false;
+    for buffer in buffers {
+        let buffer_id = buffer.read(cx).remote_id();
+        let open = lsp_store
+            .read(cx)
+            .language_server_ids_for_opened_buffer(buffer_id)
+            .is_some_and(|servers| !servers.is_empty());
+        if open {
+            any_open = true;
+            continue;
+        }
+        let expected = lsp_store.update(cx, |lsp_store, cx| {
+            buffer.update(cx, |buffer, cx| {
+                !lsp_store
+                    .language_servers_for_local_buffer(buffer, cx)
+                    .is_empty()
+            })
+        });
+        if expected {
+            return false;
+        }
+    }
+    any_open
+}
+
 /// Checks the files a turn changed once the language servers are done with
 /// them, and compares them with `before`.
 pub(crate) async fn check_turn(
@@ -252,20 +287,40 @@ pub(crate) async fn check_turn(
     let started = Instant::now();
     let mut last = cx.update(|cx| fingerprint(&entities, cx));
     let mut unchanged_since = started;
+    let mut checked_on_disk = false;
     loop {
         cx.background_executor().timer(POLL).await;
-        let (now_fingerprint, busy) = cx.update(|cx| {
+        let (now_fingerprint, busy, attached) = cx.update(|cx| {
             let busy = project
                 .read(cx)
                 .language_server_statuses(cx)
                 .any(|(_, status)| {
                     !status.pending_work.is_empty() || status.has_pending_diagnostic_updates
                 });
-            (fingerprint(&entities, cx), busy)
+            (
+                fingerprint(&entities, cx),
+                busy,
+                servers_have_the_files(&project, &entities, cx),
+            )
         });
         if now_fingerprint != last {
             last = now_fingerprint;
             unchanged_since = Instant::now();
+        }
+        // Until the servers have the files (one may still be starting, or
+        // downloading), no diagnostics only means none came yet.
+        if !attached {
+            unchanged_since = Instant::now();
+        } else if !checked_on_disk {
+            // rust-analyzer reports most errors from `cargo check`, which it
+            // runs when a file is saved in the editor; the agent wrote the
+            // files itself. Without rust-analyzer, this does nothing.
+            checked_on_disk = true;
+            unchanged_since = Instant::now();
+            cx.update(|cx| {
+                project::lsp_store::rust_analyzer_ext::run_flycheck(project.clone(), None, cx)
+                    .detach_and_log_err(cx)
+            });
         }
         let elapsed = started.elapsed();
         if elapsed >= MIN_WAIT && !busy && unchanged_since.elapsed() >= SETTLED_AFTER {
