@@ -93,10 +93,10 @@ jobs:
         run: cargo check --locked -p zed --bin solo
 
       - name: Build the tests
-        run: cargo test --locked --no-run -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_update_helper -p agent_sessions
+        run: cargo test --locked --no-run -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_update_helper -p agent_sessions -p agent_detection -p client -p context_server -p title_bar -p onboarding -p markdown_preview
 
       - name: Run the tests
-        run: cargo test --locked --no-fail-fast -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_update_helper -p agent_sessions
+        run: cargo test --locked --no-fail-fast -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_update_helper -p agent_sessions -p agent_detection -p client -p context_server -p title_bar -p onboarding -p markdown_preview
 
       - name: Show free disk space
         if: always()

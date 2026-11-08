@@ -10,7 +10,8 @@ workspace = true
 
 [lib]
 path = "src/onboarding.rs"
-test = false
+# SOLO: run its tests (terminal agents onboarding).
+test = true
 doctest = false
 
 [features]
