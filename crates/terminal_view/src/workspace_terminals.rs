@@ -1,19 +1,80 @@
 //! SOLO: lists each workspace's terminals and what their agents are doing, for
 //! the workspace tabs in the title bar (see `workspace::agent_activity`).
 
-use gpui::{App, Entity, EntityId, Window};
+use gpui::{App, AppContext as _, Entity, EntityId, Task, Window};
 use workspace::{
     Workspace,
-    agent_activity::{self, AgentState, WorkspaceTerminal},
+    agent_activity::{self, AgentState, WorkspaceTask, WorkspaceTerminal},
 };
 
 use crate::{
     agent_status::AgentStatus,
+    agent_tasks::{self, git},
     command_blocks::{activate_terminal_view, terminal_views},
 };
 
 pub(crate) fn init(cx: &mut App) {
     agent_activity::register(list, activate, cx);
+    agent_activity::register_tasks(list_tasks, open_task, cx);
+}
+
+/// The workspace's agent tasks, with what each changed so far.
+fn list_tasks(workspace: &Entity<Workspace>, cx: &mut App) -> Task<Vec<WorkspaceTask>> {
+    let entries = agent_tasks::agent_tasks(workspace, cx);
+    cx.spawn(async move |cx| {
+        let entries = match entries.await {
+            Ok(entries) => entries,
+            Err(error) => {
+                log::warn!("failed to list the agent tasks: {error:#}");
+                return Vec::new();
+            }
+        };
+        cx.background_spawn(async move {
+            entries
+                .into_iter()
+                .map(|entry| {
+                    let task = &entry.task;
+                    let changed_files = task
+                        .worktree_path
+                        .as_deref()
+                        .and_then(|worktree| git::uncommitted_changes(worktree).ok())
+                        .map_or(0, |changes| changes.len());
+                    let unmerged_commits =
+                        git::unmerged_commits(task).map_or(0, |commits| commits.len());
+                    WorkspaceTask {
+                        name: task.name.clone().into(),
+                        branch: task.branch.clone().into(),
+                        worktree: task.worktree_path.clone(),
+                        changed_files,
+                        unmerged_commits,
+                        terminals: entry
+                            .terminals
+                            .iter()
+                            .map(|view| view.entity_id())
+                            .collect(),
+                    }
+                })
+                .collect()
+        })
+        .await
+    })
+}
+
+fn open_task(
+    workspace: &Entity<Workspace>,
+    task: &WorkspaceTask,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if let Some(id) = task.terminals.first() {
+        activate(workspace, *id, window, cx);
+        return;
+    }
+    let Some(worktree) = task.worktree.clone() else {
+        return;
+    };
+    let name = task.name.to_string();
+    agent_tasks::open_task_terminal_in(workspace, worktree, name, window, cx);
 }
 
 fn list(workspace: &Entity<Workspace>, cx: &App) -> Vec<WorkspaceTerminal> {

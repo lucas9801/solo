@@ -259,6 +259,53 @@ pub fn agent_tasks(
     })
 }
 
+/// Opens a terminal named `title` in a task's `worktree`, with the task's
+/// environment from the repository's `.solo/tasks.json`.
+pub(crate) fn open_task_terminal_in(
+    workspace: &Entity<Workspace>,
+    worktree: PathBuf,
+    title: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let env = cx.background_spawn({
+        let worktree = worktree.clone();
+        async move { task_env_of_worktree(&worktree) }
+    });
+    let workspace = workspace.downgrade();
+    window
+        .spawn(cx, async move |cx| {
+            let env = env.await;
+            workspace.update_in(cx, |workspace, window, cx| {
+                open_task_terminal(workspace, worktree, title, env, None, window, cx)
+                    .detach_and_log_err(cx);
+            })
+        })
+        .detach_and_log_err(cx);
+}
+
+/// The environment `.solo/tasks.json` gives the task in `worktree`.
+fn task_env_of_worktree(worktree: &Path) -> collections::HashMap<String, String> {
+    let Ok(info) = git::repository_info(worktree) else {
+        return Default::default();
+    };
+    let port = git::list_tasks(&info.main_root).ok().and_then(|tasks| {
+        tasks
+            .into_iter()
+            .find(|task| {
+                task.worktree_path
+                    .as_deref()
+                    .is_some_and(|path| is_within(path, worktree) && is_within(worktree, path))
+            })?
+            .port
+    });
+    config::TasksConfig::load(&info.main_root)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .task_env(port)
+}
+
 /// Opens a terminal in `directory` named `title`, and types `command` in it
 /// once its shell is ready.
 pub(crate) fn open_task_terminal(

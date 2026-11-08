@@ -18,8 +18,9 @@ use ui::{ContextMenu, ContextMenuEntry, PopoverMenu, Tooltip, prelude::*, right_
 use util::i18n::tr;
 use workspace::{
     MultiWorkspace, OpenMode, ProjectGroupKey, RemovalIntent, Workspace,
-    agent_activity::{self, AgentCounts, AgentState},
+    agent_activity::{self, AgentCounts, AgentState, WorkspaceTask, WorkspaceTerminal},
 };
+use zed_actions::agent_task::{ManageAgentTasks, NewAgentTask};
 
 use crate::TitleBar;
 
@@ -332,81 +333,212 @@ fn workspace_menu(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<ContextMenu> {
+    // Tasks are listed as last seen, then again: the menu updates once they are.
+    if let Some(workspace) = &tab.workspace {
+        agent_activity::refresh_tasks(workspace, cx);
+    }
+    let builder_multi_workspace = multi_workspace.clone();
+    let builder_tab = tab.clone();
+    let menu = ContextMenu::build_persistent(window, cx, move |menu, _, cx| {
+        build_workspace_menu(menu, &builder_multi_workspace, &builder_tab, can_close, cx)
+    });
+    if tab.workspace.is_some() {
+        let activity = agent_activity::AgentActivity::global(cx);
+        menu.update(cx, |_, cx| {
+            cx.observe_in(
+                &activity,
+                window,
+                |menu: &mut ContextMenu, _, window, cx| menu.rebuild(window, cx),
+            )
+            .detach();
+        });
+    }
+    menu
+}
+
+fn terminal_entry(
+    terminal: &WorkspaceTerminal,
+    multi_workspace: &Entity<MultiWorkspace>,
+    tab: &WorkspaceTab,
+    indent: bool,
+) -> ContextMenuEntry {
+    let (icon, color) = match terminal.agent {
+        Some(AgentState::Working) => (IconName::LoadCircle, Color::Accent),
+        Some(AgentState::NeedsInput) => (IconName::Bell, Color::Warning),
+        Some(AgentState::Idle) => (IconName::Circle, Color::Muted),
+        Some(AgentState::Done) => (IconName::Check, Color::Success),
+        Some(AgentState::Failed) => (IconName::XCircle, Color::Error),
+        None => (IconName::Terminal, Color::Muted),
+    };
+    let multi_workspace = multi_workspace.downgrade();
+    let tab = tab.clone();
+    let id = terminal.id;
+    let title = if indent {
+        SharedString::from(format!("    {}", terminal.title))
+    } else {
+        terminal.title.clone()
+    };
+    ContextMenuEntry::new(title)
+        .icon(icon)
+        .icon_color(color)
+        .handler(move |window, cx| {
+            activate_tab(&multi_workspace, &tab, window, cx);
+            if let Some(workspace) = &tab.workspace {
+                agent_activity::activate_terminal(workspace, id, window, cx);
+            }
+        })
+}
+
+/// What the task changed so far, for its menu entry.
+fn task_label(task: &WorkspaceTask) -> SharedString {
+    let chinese = util::i18n::is_chinese();
+    let mut parts = Vec::new();
+    if task.worktree.is_none() {
+        parts.push(tr("worktree gone", "worktree 已不在").to_string());
+    }
+    if task.changed_files > 0 {
+        parts.push(if chinese {
+            format!("{} 个文件未提交", task.changed_files)
+        } else if task.changed_files == 1 {
+            "1 file uncommitted".to_string()
+        } else {
+            format!("{} files uncommitted", task.changed_files)
+        });
+    }
+    if task.unmerged_commits > 0 {
+        parts.push(if chinese {
+            format!("{} 个提交未合并", task.unmerged_commits)
+        } else if task.unmerged_commits == 1 {
+            "1 commit unmerged".to_string()
+        } else {
+            format!("{} commits unmerged", task.unmerged_commits)
+        });
+    }
+    if parts.is_empty() {
+        task.name.clone()
+    } else {
+        format!("{} · {}", task.name, parts.join(" · ")).into()
+    }
+}
+
+/// The workspace's terminals, its agent tasks with theirs, then what to do
+/// with the workspace.
+fn build_workspace_menu(
+    mut menu: ContextMenu,
+    multi_workspace: &Entity<MultiWorkspace>,
+    tab: &WorkspaceTab,
+    can_close: bool,
+    cx: &mut App,
+) -> ContextMenu {
+    menu = menu.keep_open_on_confirm(false);
     let terminals = tab
         .workspace
         .as_ref()
         .map(|workspace| agent_activity::terminals(workspace, cx))
         .unwrap_or_default();
-    ContextMenu::build(window, cx, move |mut menu, _, _| {
-        match &tab.workspace {
-            Some(_) if terminals.is_empty() => {
-                menu = menu.label(tr("No terminals", "没有终端"));
-            }
-            Some(_) => {}
-            None => {
-                menu = menu.label(tr("Opens when you switch to it", "切换过去时才会打开"));
-            }
+    let tasks = tab
+        .workspace
+        .as_ref()
+        .map(|workspace| agent_activity::tasks(workspace, cx))
+        .unwrap_or_default();
+    let in_a_task = |terminal: &WorkspaceTerminal| {
+        tasks
+            .iter()
+            .any(|task| task.terminals.contains(&terminal.id))
+    };
+    match &tab.workspace {
+        Some(_) if terminals.is_empty() => {
+            menu = menu.label(tr("No terminals", "没有终端"));
         }
-        for terminal in &terminals {
-            let (icon, color) = match terminal.agent {
-                Some(AgentState::Working) => (IconName::LoadCircle, Color::Accent),
-                Some(AgentState::NeedsInput) => (IconName::Bell, Color::Warning),
-                Some(AgentState::Idle) => (IconName::Circle, Color::Muted),
-                Some(AgentState::Done) => (IconName::Check, Color::Success),
-                Some(AgentState::Failed) => (IconName::XCircle, Color::Error),
-                None => (IconName::Terminal, Color::Muted),
-            };
-            let multi_workspace = multi_workspace.downgrade();
-            let tab = tab.clone();
-            let id = terminal.id;
+        Some(_) => {}
+        None => {
+            menu = menu.label(tr("Opens when you switch to it", "切换过去时才会打开"));
+        }
+    }
+    for terminal in terminals.iter().filter(|terminal| !in_a_task(terminal)) {
+        menu = menu.item(terminal_entry(terminal, multi_workspace, tab, false));
+    }
+    if let Some(workspace) = &tab.workspace {
+        if !tasks.is_empty() {
+            menu = menu.separator().header(tr("Agent Tasks", "agent 任务"));
+        }
+        for task in &tasks {
+            let multi_workspace_handle = multi_workspace.downgrade();
+            let entry_tab = tab.clone();
+            let workspace = workspace.clone();
+            let open = task.clone();
             menu = menu.item(
-                ContextMenuEntry::new(terminal.title.clone())
-                    .icon(icon)
-                    .icon_color(color)
+                ContextMenuEntry::new(task_label(task))
+                    .icon(IconName::GitBranch)
+                    .icon_color(Color::Muted)
+                    .disabled(task.worktree.is_none() && task.terminals.is_empty())
                     .handler(move |window, cx| {
-                        activate_tab(&multi_workspace, &tab, window, cx);
-                        if let Some(workspace) = &tab.workspace {
-                            agent_activity::activate_terminal(workspace, id, window, cx);
-                        }
+                        activate_tab(&multi_workspace_handle, &entry_tab, window, cx);
+                        agent_activity::open_task(&workspace, &open, window, cx);
                     }),
             );
+            for terminal in terminals
+                .iter()
+                .filter(|terminal| task.terminals.contains(&terminal.id))
+            {
+                menu = menu.item(terminal_entry(terminal, multi_workspace, tab, true));
+            }
         }
         menu = menu.separator();
-        if let Some(path) = tab.path.clone() {
-            menu = menu.entry(
-                tr("Reveal in File Manager", "在文件管理器中显示"),
-                None,
-                move |_, cx| cx.reveal_path(&path),
-            );
+        for (label, action) in [
+            (
+                tr("New Agent Task…", "新建 agent 任务…"),
+                NewAgentTask.boxed_clone(),
+            ),
+            (
+                tr("Manage Agent Tasks…", "管理 agent 任务…"),
+                ManageAgentTasks.boxed_clone(),
+            ),
+        ] {
+            let multi_workspace_handle = multi_workspace.downgrade();
+            let entry_tab = tab.clone();
+            menu = menu.entry(label, None, move |window, cx| {
+                activate_tab(&multi_workspace_handle, &entry_tab, window, cx);
+                let action = action.boxed_clone();
+                // Once the tab is active, so the task lands in its workspace.
+                window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
+            });
         }
-        if can_close {
-            let multi_workspace = multi_workspace.downgrade();
-            menu = menu.entry(
-                tr("Close Workspace", "关闭工作区"),
-                None,
-                move |window, cx| {
-                    multi_workspace
-                        .update(cx, |multi_workspace, cx| {
-                            let task = match (&tab.key, &tab.workspace) {
-                                (Some(key), _) => {
-                                    multi_workspace.remove_project_group(key, window, cx)
-                                }
-                                (None, Some(workspace)) => multi_workspace.remove(
-                                    [workspace.clone()],
-                                    RemovalIntent::CloseProject,
-                                    window,
-                                    cx,
-                                ),
-                                (None, None) => return,
-                            };
-                            task.detach_and_log_err(cx);
-                        })
-                        .ok();
-                },
-            );
-        }
-        menu
-    })
+    }
+    menu = menu.separator();
+    if let Some(path) = tab.path.clone() {
+        menu = menu.entry(
+            tr("Reveal in File Manager", "在文件管理器中显示"),
+            None,
+            move |_, cx| cx.reveal_path(&path),
+        );
+    }
+    if can_close {
+        let multi_workspace = multi_workspace.downgrade();
+        let tab = tab.clone();
+        menu = menu.entry(
+            tr("Close Workspace", "关闭工作区"),
+            None,
+            move |window, cx| {
+                multi_workspace
+                    .update(cx, |multi_workspace, cx| {
+                        let task = match (&tab.key, &tab.workspace) {
+                            (Some(key), _) => multi_workspace.remove_project_group(key, window, cx),
+                            (None, Some(workspace)) => multi_workspace.remove(
+                                [workspace.clone()],
+                                RemovalIntent::CloseProject,
+                                window,
+                                cx,
+                            ),
+                            (None, None) => return,
+                        };
+                        task.detach_and_log_err(cx);
+                    })
+                    .ok();
+            },
+        );
+    }
+    menu
 }
 
 fn tab_name(tab: &WorkspaceTab) -> SharedString {
@@ -415,4 +547,31 @@ fn tab_name(tab: &WorkspaceTab) -> SharedString {
         .and_then(|path| path.file_name())
         .map(|name| SharedString::from(name.to_string_lossy().into_owned()))
         .unwrap_or_else(|| tr("Empty", "空").into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_label() {
+        util::i18n::set_language(util::i18n::Language::English);
+        let task = |changed_files, unmerged_commits, worktree: Option<&str>| WorkspaceTask {
+            name: "fix-login".into(),
+            branch: "solo/fix-login".into(),
+            worktree: worktree.map(PathBuf::from),
+            changed_files,
+            unmerged_commits,
+            terminals: Vec::new(),
+        };
+        assert_eq!(task_label(&task(0, 0, Some("/w"))).as_ref(), "fix-login");
+        assert_eq!(
+            task_label(&task(3, 1, Some("/w"))).as_ref(),
+            "fix-login · 3 files uncommitted · 1 commit unmerged"
+        );
+        assert_eq!(
+            task_label(&task(0, 0, None)).as_ref(),
+            "fix-login · worktree gone"
+        );
+    }
 }
