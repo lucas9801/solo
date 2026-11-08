@@ -106,13 +106,9 @@ use workspace::{
 use workspace::{CloseProject, CloseWindow, RestoreBanner, with_active_or_new_workspace};
 use workspace::{Pane, notifications::DetachAndPromptErr};
 use zed_actions::{
-    About, GetMerch, OpenAccountSettings, OpenBrowser, OpenDocs, OpenProjectTasks,
-    OpenServerSettings, OpenSettingsFile, OpenStatusPage, OpenZedUrl, Quit,
+    About, OpenAccountSettings, OpenBrowser, OpenDocs, OpenProjectTasks, OpenServerSettings,
+    OpenSettingsFile, OpenZedUrl, Quit,
 };
-
-const DOCS_URL: &str = "https://zed.dev/docs/";
-const STATUS_URL: &str = "https://status.zed.dev";
-const MERCH_URL: &str = "https://merch.zed.dev/";
 
 pub struct CrashHandler(pub Arc<crashes::Client>);
 
@@ -671,7 +667,7 @@ fn initialize_file_watcher(fs: &dyn Fs, window: &mut Window, cx: &mut Context<Wo
             db::indoc! {r#"
             inotify_init returned {}
 
-            This may be due to system-wide limits on inotify instances. For troubleshooting see: https://zed.dev/docs/linux
+            This may be due to system-wide limits on inotify instances. See Solo's guide for troubleshooting.
             "#},
             e
         );
@@ -685,7 +681,7 @@ fn initialize_file_watcher(fs: &dyn Fs, window: &mut Window, cx: &mut Context<Wo
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://zed.dev/docs/linux#could-not-start-inotify");
+                    cx.open_url(util::i18n::guide_url());
                     cx.quit();
                 });
             }
@@ -702,7 +698,7 @@ fn initialize_file_watcher(fs: &dyn Fs, window: &mut Window, cx: &mut Context<Wo
             db::indoc! {r#"
             ReadDirectoryChangesW initialization failed: {}
 
-            This may occur on network filesystems and WSL paths. For troubleshooting see: https://zed.dev/docs/windows
+            This may occur on network filesystems and WSL paths. See Solo's guide for troubleshooting.
             "#},
             e
         );
@@ -716,7 +712,7 @@ fn initialize_file_watcher(fs: &dyn Fs, window: &mut Window, cx: &mut Context<Wo
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://zed.dev/docs/windows");
+                    cx.open_url(util::i18n::guide_url());
                     cx.quit()
                 });
             }
@@ -731,19 +727,12 @@ fn show_software_emulation_warning_if_needed(
     cx: &mut Context<Workspace>,
 ) {
     if specs.is_software_emulated && std::env::var("ZED_ALLOW_EMULATED_GPU").is_err() {
-        let (graphics_api, docs_url, open_url) = if cfg!(target_os = "windows") {
-            (
-                "DirectX",
-                "https://zed.dev/docs/windows",
-                "https://zed.dev/docs/windows",
-            )
+        let graphics_api = if cfg!(target_os = "windows") {
+            "DirectX"
         } else {
-            (
-                "Vulkan",
-                "https://zed.dev/docs/linux",
-                "https://zed.dev/docs/linux#zed-fails-to-open-windows",
-            )
+            "Vulkan"
         };
+        let docs_url = util::i18n::guide_url();
         let message = format!(
             db::indoc! {r#"
             Solo uses {} for rendering and requires a compatible GPU.
@@ -766,7 +755,7 @@ fn show_software_emulation_warning_if_needed(
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(1) {
                 cx.update(|cx| {
-                    cx.open_url(open_url);
+                    cx.open_url(docs_url);
                     cx.quit();
                 });
             }
@@ -921,9 +910,7 @@ fn register_actions(
     cx: &mut Context<Workspace>,
 ) {
     workspace
-        .register_action(|_, _: &OpenDocs, _, cx| cx.open_url(DOCS_URL))
-        .register_action(|_, _: &OpenStatusPage, _, cx| cx.open_url(STATUS_URL))
-        .register_action(|_, _: &GetMerch, _, cx| cx.open_url(MERCH_URL))
+        .register_action(|_, _: &OpenDocs, _, cx| cx.open_url(util::i18n::guide_url()))
         .register_action(
             |workspace: &mut Workspace,
              _: &input_latency_ui::DumpInputLatencyHistogram,

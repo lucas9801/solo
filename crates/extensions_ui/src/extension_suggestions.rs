@@ -138,8 +138,9 @@ fn suggest_for_buffer(
                         .into_any_element()
                 })
                 .with_title(suggestion.title)
+                // SOLO: Solo's guide, not Zed's docs.
                 .more_info_message("Learn more")
-                .more_info_url(suggestion.docs_url)
+                .more_info_url(util::i18n::guide_url())
                 .primary_message(suggestion.install_message)
                 .secondary_message("Don't show again")
             });

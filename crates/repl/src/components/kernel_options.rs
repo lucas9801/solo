@@ -1,4 +1,3 @@
-use crate::KERNEL_DOCS_URL;
 use crate::kernels::KernelSpecification;
 use crate::repl_store::ReplStore;
 
@@ -440,7 +439,7 @@ impl PickerDelegate for KernelPickerDelegate {
                                 .size(IconSize::Small)
                                 .color(Color::Muted),
                         )
-                        .on_click(move |_, _, cx| cx.open_url(KERNEL_DOCS_URL)),
+                        .on_click(move |_, _, cx| cx.open_url(util::i18n::guide_url())),
                 )
                 .into_any(),
         )

@@ -195,6 +195,10 @@ impl std::fmt::Display for WslSandboxUnavailable {
 
 impl std::error::Error for WslSandboxUnavailable {}
 
+/// SOLO: whether to download Zed's Linux build as the WSL sandbox's helper
+/// (see `ensure_wsl_zed_helper`). Never; kept so upstream changes still merge.
+const DOWNLOAD_ZED_HELPER: bool = false;
+
 /// Shorthand for an [`anyhow::Error`] wrapping a [`WslSandboxUnavailable`].
 fn unavailable(message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(WslSandboxUnavailable::new(message))
@@ -871,6 +875,15 @@ async fn ensure_wsl_zed_helper(
             "ZED_WSL_SANDBOX_HELPER must be an absolute path inside WSL"
         );
         return Ok(helper);
+    }
+
+    // SOLO: the helper is a Linux build of Zed, downloaded from zed.dev and
+    // run inside WSL. Solo has no Linux build and doesn't run Zed's, so the
+    // WSL sandbox is unavailable, as when bwrap is missing.
+    if !DOWNLOAD_ZED_HELPER {
+        return Err(unavailable(
+            "Solo has no Linux helper to run commands in a WSL sandbox",
+        ));
     }
 
     type HelperCache = HashMap<(Option<String>, String, String), String>;
