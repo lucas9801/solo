@@ -69,13 +69,26 @@ pub fn is_chinese() -> bool {
     }
 }
 
+static LOCAL_GUIDE: OnceLock<(String, String)> = OnceLock::new();
+
 /// SOLO: Solo's user guide, in the interface's language. Help links that
-/// pointed at Zed's documentation open it instead.
+/// pointed at Zed's documentation open it instead: the copy on this computer
+/// once Solo has written it (see [`set_local_guide`]), so it opens offline,
+/// and the one on GitHub until then.
 pub fn guide_url() -> &'static str {
+    if let Some((en, zh)) = LOCAL_GUIDE.get() {
+        return if is_chinese() { zh } else { en };
+    }
     tr(
         "https://github.com/lucas9801/solo/blob/main/docs/guide/en.md",
         "https://github.com/lucas9801/solo/blob/main/docs/guide/zh-CN.md",
     )
+}
+
+/// SOLO: the URLs of the user guide's copy on this computer, in English and
+/// in Chinese, for [`guide_url`] to return from now on.
+pub fn set_local_guide(en: String, zh: String) {
+    LOCAL_GUIDE.set((en, zh)).ok();
 }
 
 /// `zh` when Solo's interface is shown in Chinese, `en` otherwise.
