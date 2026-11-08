@@ -142,7 +142,14 @@ waiting in the background.
   `ctrl-alt-pagedown` / `ctrl-alt-pageup` go to the next / previous one;
 - the tab's menu (its arrow, or right click) lists its terminals to jump to;
 - after a restart only the active workspace loads; the others load when you
-  first switch to them.
+  first switch to them;
+- when you `cd` into a project another tab has (its folder, or the same git
+  repository), Solo offers to move the terminal to that tab; **Keep It Here**
+  stops it asking about that tab for that terminal;
+- the first time this version of Solo starts, terminals from before there
+  were tabs move to the tab of their git repository, which opens in the
+  background if needed. Agent task worktrees count as their repository.
+  Neither happens with `follow_working_directory` on.
 
 ### Sending things to an agent
 - From the editor: `ctrl-alt-k` sends the selection or the cursor position,

@@ -25,6 +25,7 @@ pub mod terminal_element;
 pub mod terminal_panel;
 mod terminal_path_like_target;
 pub mod terminal_scrollbar;
+mod workspace_grouping;
 mod workspace_terminals;
 
 pub use agent_status::AgentTurnEvent;
@@ -143,6 +144,7 @@ pub fn init(cx: &mut App) {
     agent_context::init(cx);
     agent_board::init(cx);
     workspace_terminals::init(cx);
+    workspace_grouping::init(cx);
 
     register_serializable_item::<TerminalView>(cx);
 
@@ -223,6 +225,10 @@ pub struct TerminalView {
     /// are deleted once this one's are saved.
     restored_from: Option<workspace::ItemId>,
     agent_activity: agent_status::AgentActivity,
+    /// SOLO: which workspace tab the terminal belongs in.
+    grouping: workspace_grouping::GroupingState,
+    /// SOLO: restored when Solo started, until its shell shows a prompt.
+    restored_at_startup: bool,
     /// SOLO: the agent session saved to offer continuing after a restart.
     agent_resume: agent_resume::AgentResumeState,
     /// SOLO: the session of the agent the terminal runs, from the agent's records.
@@ -406,6 +412,8 @@ impl TerminalView {
             save_contents_scheduled: false,
             restored_from: None,
             agent_activity: Default::default(),
+            grouping: Default::default(),
+            restored_at_startup: false,
             agent_resume: Default::default(),
             agent_session: Default::default(),
             shown_tab: None,
@@ -1381,6 +1389,21 @@ impl TerminalView {
         }
 
         dispatch_context
+    }
+
+    /// SOLO: the terminal moves to `workspace`, another tab of the window.
+    pub(crate) fn set_workspace(
+        &mut self,
+        workspace: &Entity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<TerminalView>,
+    ) {
+        self.workspace = workspace.downgrade();
+        self.project = workspace.read(cx).project().downgrade();
+        self._terminal_subscriptions =
+            subscribe_for_terminal_events(&self.terminal, self.workspace.clone(), window, cx);
+        // Saved again under the workspace it's in now.
+        self.schedule_save_contents(Duration::from_secs(1), cx);
     }
 
     fn set_terminal(
@@ -2488,6 +2511,7 @@ impl SerializableItem for TerminalView {
                     if custom_title.is_some() {
                         view.custom_title = custom_title;
                     }
+                    view.restored_at_startup = true;
                     // The workspace saves restored terminals under a new id.
                     if had_contents {
                         view.restored_from = Some(item_id);

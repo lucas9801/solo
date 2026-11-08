@@ -66,7 +66,9 @@ as Claude Code in the terminal while viewing and editing code beside it.
   workspace, and its menu (the arrow, or right click) lists its terminals to
   jump to one. `+` (or opening a folder) adds a workspace to the window;
   ctrl-alt-1…9 and ctrl-alt-pageup/pagedown switch between them. Workspaces
-  come back after a restart, each loading when you first switch to it.
+  come back after a restart, each loading when you first switch to it. A
+  terminal that `cd`s into another tab's project offers to move there, and
+  terminals from before there were tabs move to their repository's tab once.
 - With `follow_working_directory`, the file tree, file finder and project
   search follow the focused terminal's git repository instead (off by
   default).
