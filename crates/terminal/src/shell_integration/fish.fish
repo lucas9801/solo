@@ -61,8 +61,8 @@ function fish_prompt
     printf '\e]133;B\a'
 end
 
-# Agents' hooks (Claude Code's, Codex's) write to this terminal.
-if set -q SOLO_CLAUDE_SETTINGS; or set -q SOLO_CODEX_ARGS
+# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this terminal.
+if set -q SOLO_CLAUDE_SETTINGS; or set -q SOLO_CODEX_ARGS; or set -q SOLO_COPILOT_PLUGIN
     set -l solo_tty (tty 2>/dev/null)
     and set -gx SOLO_AGENT_TTY $solo_tty
 end
@@ -96,6 +96,21 @@ if set -q SOLO_CODEX_ARGS; and not functions -q codex
             command codex $argv
         else
             command codex (string split \n -- $SOLO_CODEX_ARGS) $argv
+        end
+    end
+end
+
+# GitHub Copilot CLI reports what it's doing through hooks in a plugin Solo
+# loads for the session (see SOLO_COPILOT_PLUGIN).
+# A copilot function of the user's own stays.
+if set -q SOLO_COPILOT_PLUGIN; and not functions -q copilot
+    function copilot
+        # Commands that don't run a session run as typed.
+        if contains -- "$argv[1]" app login help init config update version sessions memories plugin mcp skill instruction lsp sandbox completion
+            or not test -d "$SOLO_COPILOT_PLUGIN"
+            command copilot $argv
+        else
+            command copilot --plugin-dir "$SOLO_COPILOT_PLUGIN" $argv
         end
     end
 end

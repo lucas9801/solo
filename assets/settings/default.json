@@ -2298,6 +2298,11 @@
     // to trust them. Your own config and hooks still apply. Takes effect in
     // new terminals.
     "codex_hooks": true,
+    // Let GitHub Copilot CLI started in a terminal with shell integration
+    // report what it's doing through hooks in a plugin Solo loads for that
+    // session with `copilot --plugin-dir`, so its turns can be reviewed like
+    // Claude Code's. Takes effect in new terminals.
+    "copilot_hooks": true,
     // Narrow the project panel, file finder and project search to the git
     // repository the active terminal is in (or its directory, outside a
     // repository). They switch when another terminal becomes active or the

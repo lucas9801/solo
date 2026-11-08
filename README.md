@@ -50,9 +50,10 @@ as Claude Code in the terminal while viewing and editing code beside it.
   a rendered preview (Mermaid diagrams, images), images in the image viewer.
 - The tab of a terminal running an agent (claude, codex, gemini, aider, ...)
   shows what it's doing: working, idle, needs your input, done or failed.
-  Claude Code and Codex started in a Solo terminal report it through hooks
-  Solo adds for that session (`claude_code_hooks`, `codex_hooks`; nothing is
-  written to their settings, and Codex asks once whether to trust them);
+  Claude Code, Codex and Copilot CLI started in a Solo terminal report it
+  through hooks Solo adds for that session (`claude_code_hooks`,
+  `codex_hooks`, `copilot_hooks`; nothing is written to their settings, and
+  Codex asks once whether to trust them);
   other agents' status is read from their screen with per-agent
   rules (see the table below), so it can lag a moment behind. More programs
   can be added with `agent_commands`; any program can report its own status
@@ -116,7 +117,8 @@ terminal bell.
 |---|---|---|---|
 | Claude Code | hooks Solo adds per session, and its screen | yes | its session (`claude --resume <id>`) |
 | Codex | hooks Solo adds per session (`-c hooks...`), and its screen | yes | the most recent session |
-| Gemini CLI, Copilot CLI, Cursor CLI | its screen | yes, turns read from the screen | the most recent session |
+| Copilot CLI | hooks in a plugin Solo loads per session (`--plugin-dir`), and its screen | yes | the most recent session |
+| Gemini CLI, Cursor CLI | its screen | yes, turns read from the screen | the most recent session |
 | OpenCode, Amp, Qwen Code, Cline, Kimi, Kiro, Grok, Droid, Devin, Antigravity, Kilo, Letta, Hermes, Pi, Qoder, Maki, Muse | its screen | yes, turns read from the screen | no |
 | Aider and programs added with `agent_commands` | its output (working while it prints, needs input when it rings the bell) | no | no |
 | Anything that reports through [the status protocol](docs/agent-status-protocol.md) | its reports | yes | no |
@@ -134,7 +136,7 @@ terminal settings, under `"terminal"`: `shell_integration`, `input_editor`,
 `compact_prompt`, `completions_as_you_type`, `open_links_on_click`,
 `open_changed_files`, `notify_long_commands_after_seconds`,
 `program_notifications`, `restore_contents`, `agent_commands`,
-`claude_code_hooks`, `codex_hooks`, `follow_working_directory`, `confirm_close`,
+`claude_code_hooks`, `codex_hooks`, `copilot_hooks`, `follow_working_directory`, `confirm_close`,
 `agent_task_command`.
 
 Project settings, tasks and debug scenarios go in a `.solo` folder in the

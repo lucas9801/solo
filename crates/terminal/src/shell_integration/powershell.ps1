@@ -75,8 +75,8 @@ function Global:prompt {
     "$marks$userPrompt$esc]133;B$bel"
 }
 
-# Agents' hooks (Claude Code's, Codex's) write to this console.
-if ($env:SOLO_CLAUDE_SETTINGS -or $env:SOLO_CODEX_ARGS) {
+# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this console.
+if ($env:SOLO_CLAUDE_SETTINGS -or $env:SOLO_CODEX_ARGS -or $env:SOLO_COPILOT_PLUGIN) {
     $env:SOLO_AGENT_CONSOLE_PID = "$PID"
 }
 
@@ -133,6 +133,31 @@ if ($env:SOLO_CODEX_ARGS -and -not (Get-Command -Name codex -CommandType Functio
             $input | & $program @hooks @args
         } else {
             & $program @hooks @args
+        }
+        $Global:__SoloWrappedExitCode = $Global:LASTEXITCODE
+    }
+}
+
+# GitHub Copilot CLI reports what it's doing through hooks in a plugin Solo
+# loads for the session (see SOLO_COPILOT_PLUGIN).
+# A copilot function or alias of the user's own stays.
+if ($env:SOLO_COPILOT_PLUGIN -and -not (Get-Command -Name copilot -CommandType Function, Alias -ErrorAction SilentlyContinue)) {
+    function Global:copilot {
+        $program = Get-Command -Name copilot -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $program) {
+            Write-Error "copilot: command not found"
+            return
+        }
+        # Commands that don't run a session run as typed.
+        $plugin = @()
+        if (-not ($args.Count -gt 0 -and "$($args[0])" -in @('app', 'login', 'help', 'init', 'config', 'update', 'version', 'sessions', 'memories', 'plugin', 'mcp', 'skill', 'instruction', 'lsp', 'sandbox', 'completion')) -and (Test-Path -LiteralPath $env:SOLO_COPILOT_PLUGIN)) {
+            $plugin = @('--plugin-dir', $env:SOLO_COPILOT_PLUGIN)
+        }
+        $Global:LASTEXITCODE = 0
+        if ($MyInvocation.ExpectingInput) {
+            $input | & $program @plugin @args
+        } else {
+            & $program @plugin @args
         }
         $Global:__SoloWrappedExitCode = $Global:LASTEXITCODE
     }

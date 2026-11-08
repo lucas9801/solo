@@ -47,8 +47,8 @@ __solo_precmd_prompt() {
     fi
 }
 
-# Agents' hooks (Claude Code's, Codex's) write to this terminal.
-if [[ -n ${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-} && -n ${TTY-} ]]; then
+# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this terminal.
+if [[ -n ${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-} && -n ${TTY-} ]]; then
     export SOLO_AGENT_TTY=$TTY
 fi
 
@@ -94,6 +94,26 @@ if [[ -n ${SOLO_CODEX_ARGS-} ]] && (( ! ${+functions[codex]} )); then
                 ;;
         esac
         command codex "${(@f)SOLO_CODEX_ARGS}" "$@"
+    }
+fi
+
+# GitHub Copilot CLI reports what it's doing through hooks in a plugin Solo
+# loads for the session (see SOLO_COPILOT_PLUGIN).
+# A copilot function of the user's own stays.
+if [[ -n "${SOLO_COPILOT_PLUGIN-}" ]] && (( ! ${+functions[copilot]} )); then
+    copilot() {
+        # Commands that don't run a session run as typed.
+        case "${1-}" in
+            app|login|help|init|config|update|version|sessions|memories|plugin|mcp|skill|instruction|lsp|sandbox|completion)
+                command copilot "$@"
+                return
+                ;;
+        esac
+        if [[ -d "$SOLO_COPILOT_PLUGIN" ]]; then
+            command copilot --plugin-dir "$SOLO_COPILOT_PLUGIN" "$@"
+        else
+            command copilot "$@"
+        fi
     }
 fi
 

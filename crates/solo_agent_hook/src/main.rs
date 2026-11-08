@@ -145,17 +145,18 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
             .and_then(|event| event.get(name))
             .and_then(|value| value.as_str())
     };
-    let Some(event_name) = field("hook_event_name") else {
-        return match argument? {
-            "start" => Some("start"),
-            "prompt" => Some("prompt"),
-            "input" => Some("input"),
-            "stop" => Some("stop"),
-            "idle" => Some("idle"),
-            _ => None,
-        };
+    let from_argument = || match argument? {
+        "start" => Some("start"),
+        "prompt" => Some("prompt"),
+        "input" => Some("input"),
+        "stop" => Some("stop"),
+        "idle" => Some("idle"),
+        _ => None,
     };
-    match event_name {
+    let Some(event_name) = field("hook_event_name") else {
+        return from_argument();
+    };
+    let kind = match event_name {
         "SessionStart" => Some("start"),
         "UserPromptSubmit" => Some("prompt"),
         "PermissionRequest" => Some("input"),
@@ -170,7 +171,14 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
         // Codex's Interrupt: the user stopped the turn.
         "Stop" | "StopFailure" | "Interrupt" => Some("stop"),
         _ => None,
-    }
+    };
+    // An event this doesn't know, under a name another agent uses for it:
+    // the argument the hook was set up with says what it is.
+    let known = matches!(
+        event_name,
+        "SessionStart" | "UserPromptSubmit" | "PermissionRequest" | "PreToolUse" | "Notification"
+    );
+    kind.or_else(|| if known { None } else { from_argument() })
 }
 
 /// The session id from the hook's JSON input, if it looks like one: it goes
@@ -408,6 +416,16 @@ mod tests {
         assert_eq!(
             kind_of(r#"{"hook_event_name":"Stop"}"#, Some("prompt")),
             Some("stop")
+        );
+        // Unless it's an event under a name this doesn't know.
+        assert_eq!(
+            kind_of(r#"{"hook_event_name":"userPromptSubmitted"}"#, Some("prompt")),
+            Some("prompt")
+        );
+        // A known event this doesn't report stays unreported.
+        assert_eq!(
+            kind_of(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#, Some("input")),
+            None
         );
     }
 }

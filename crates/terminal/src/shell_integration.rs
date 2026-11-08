@@ -300,6 +300,73 @@ pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
 "));
 }
 
+/// SOLO: Lets GitHub Copilot CLI started from the integrated shell report
+/// what it's doing through hooks, so its turns are tracked like Claude Code's.
+///
+/// The hooks are in a plugin Solo writes (`copilot-plugin` beside the shell
+/// scripts), whose folder the shell scripts get in `SOLO_COPILOT_PLUGIN`;
+/// they wrap `copilot` to load it with `--plugin-dir`, for that session only.
+/// Nothing is installed into Copilot's own folder.
+///
+/// Each hook runs `solo-agent-hook` with the kind of report as its argument,
+/// so it works whether or not Copilot passes the event on stdin; Copilot runs
+/// hooks with PowerShell on Windows and bash elsewhere.
+pub fn integrate_copilot(is_windows: bool, env: &mut HashMap<String, String>) {
+    let Some(hook) = agent_hook_executable() else {
+        return;
+    };
+    match write_copilot_plugin(&hook.to_string_lossy(), is_windows) {
+        Ok(dir) => {
+            env.insert("SOLO_COPILOT_PLUGIN".to_string(), dir);
+        }
+        Err(error) => log::warn!("failed to write the Copilot hook plugin: {error}"),
+    }
+}
+
+fn write_copilot_plugin(hook: &str, is_windows: bool) -> std::io::Result<String> {
+    let manifest = serde_json::json!({
+        "name": "solo",
+        "version": "1.0.0",
+        "description": "Reports what Copilot is doing to the Solo terminal it runs in.",
+    });
+    let manifest = serde_json::to_string_pretty(&manifest).map_err(std::io::Error::other)?;
+    write_script("copilot-plugin/.claude-plugin/plugin.json", &manifest)?;
+    let hooks = serde_json::to_string_pretty(&copilot_hooks(hook)).map_err(std::io::Error::other)?;
+    let hooks_path = write_script("copilot-plugin/hooks/hooks.json", &hooks)?;
+    let dir = Path::new(&hooks_path)
+        .parent()
+        .and_then(Path::parent)
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(if is_windows { dir.replace('/', "\\") } else { dir })
+}
+
+/// Copilot hooks in Claude Code's format (PascalCase events), for each event
+/// Solo reports, with the kind of report each one is.
+fn copilot_hooks(hook: &str) -> serde_json::Value {
+    let powershell_path = hook.replace('\'', "''");
+    let sh_path = hook.replace('\'', r"'\''");
+    let group = |kind: AgentHookKind| {
+        let kind = kind.as_str();
+        serde_json::json!([{
+            "hooks": [{
+                "type": "command",
+                "powershell": format!("& '{powershell_path}' {kind} --agent copilot"),
+                "bash": format!("'{sh_path}' {kind} --agent copilot"),
+                "timeout": 5,
+            }]
+        }])
+    };
+    serde_json::json!({
+        "hooks": {
+            "SessionStart": group(AgentHookKind::SessionStarted),
+            "UserPromptSubmit": group(AgentHookKind::PromptSubmitted),
+            "PermissionRequest": group(AgentHookKind::NeedsInput),
+            "Stop": group(AgentHookKind::Stopped),
+        }
+    })
+}
+
 /// The Codex events Solo reports, as in its `hooks` config.
 const CODEX_HOOK_EVENTS: [&str; 5] = [
     "SessionStart",
@@ -1074,6 +1141,33 @@ mod tests {
                 Some(kind)
             );
         }
+    }
+
+    #[test]
+    fn copilot_hooks_report_each_event() {
+        let hooks = copilot_hooks(r"C:\Program Files\it's\solo-agent-hook.exe");
+        let command = |event: &str, shell: &str| {
+            hooks["hooks"][event][0]["hooks"][0][shell]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            command("UserPromptSubmit", "powershell"),
+            r"& 'C:\Program Files\it''s\solo-agent-hook.exe' prompt --agent copilot"
+        );
+        assert_eq!(
+            command("Stop", "bash"),
+            r"'C:\Program Files\it'\''s\solo-agent-hook.exe' stop --agent copilot"
+        );
+        assert_eq!(
+            command("PermissionRequest", "powershell"),
+            r"& 'C:\Program Files\it''s\solo-agent-hook.exe' input --agent copilot"
+        );
+        assert_eq!(
+            command("SessionStart", "bash"),
+            r"'C:\Program Files\it'\''s\solo-agent-hook.exe' start --agent copilot"
+        );
     }
 
     #[test]

@@ -89,8 +89,8 @@ __solo_shell_path=${__solo_shell_path//\\/\\\\}
 printf '\e]633;P;Shell=%s;%s\a' "${__solo_shell_path//;/\\x3b}" "$__solo_nonce"
 unset __solo_shell_path
 
-# Agents' hooks (Claude Code's, Codex's) write to this terminal.
-if [[ -n "${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}" ]]; then
+# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this terminal.
+if [[ -n "${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-}" ]]; then
     if [[ -r /proc/$$/winpid ]]; then
         # Git Bash: the hooks attach to this shell's Windows console.
         export SOLO_AGENT_CONSOLE_PID=$(</proc/$$/winpid)
@@ -144,6 +144,26 @@ if [[ -n "${SOLO_CODEX_ARGS-}" ]] && ! declare -F codex >/dev/null; then
         local -a hooks
         IFS=$'\n' read -r -d '' -a hooks <<<"$SOLO_CODEX_ARGS" || true
         command codex "${hooks[@]}" "$@"
+    }
+fi
+
+# GitHub Copilot CLI reports what it's doing through hooks in a plugin Solo
+# loads for the session (see SOLO_COPILOT_PLUGIN).
+# A copilot function of the user's own stays.
+if [[ -n "${SOLO_COPILOT_PLUGIN-}" ]] && ! declare -F copilot >/dev/null; then
+    copilot() {
+        # Commands that don't run a session run as typed.
+        case "${1-}" in
+            app|login|help|init|config|update|version|sessions|memories|plugin|mcp|skill|instruction|lsp|sandbox|completion)
+                command copilot "$@"
+                return
+                ;;
+        esac
+        if [[ -d "$SOLO_COPILOT_PLUGIN" ]]; then
+            command copilot --plugin-dir "$SOLO_COPILOT_PLUGIN" "$@"
+        else
+            command copilot "$@"
+        fi
     }
 fi
 
