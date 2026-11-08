@@ -83,7 +83,10 @@ Claude Code 每开始和结束一轮，Solo 都会给工作目录拍一个快照
 命令 `terminal: show agent timeline`（“显示智能体时间线”）会在终端旁边打开这次会话的时间线：每一轮的提示词、读过和改过的文件、跑过的命令和最后的回答。内容读自 Claude Code 自己的对话记录（`~/.claude/projects/...`），Solo 只读不写。如果 Solo 判断不出是哪个会话，用 `terminal: choose agent session` 手动选。
 
 ### 智能体任务（git worktree）
-命令面板里运行 **New Agent Task（新建智能体任务）** 并给任务起个名字。Solo 会新建一个分支和对应的 git worktree（位置由 `git.worktree_directory` 决定，默认是 `../worktrees`），然后在里面打开一个终端，运行 `terminal.agent_task_command`（默认是 `claude`）。在 **Manage Agent Tasks（管理智能体任务）** 里可以打开任务的终端、查看 diff、合并回原分支或删除任务。任务信息记在仓库的 git 配置里，重启后还在。只支持本地项目。
+命令面板里运行 **New Agent Task（新建智能体任务）** 并给任务起个名字。Solo 会新建一个分支和对应的 git worktree（位置由 `git.worktree_directory` 决定，默认是 `../worktrees`），然后在里面打开一个终端，运行 `terminal.agent_task_command`（默认是 `claude`）。在 **Manage Agent Tasks（管理智能体任务）** 里可以打开任务的终端、查看 diff、合并回原分支、开 PR 或删除任务。任务信息记在仓库的 git 配置里，重启后还在。只支持本地项目。
+
+- **跨仓库：** 工作区里有来自多个 git 仓库的文件夹时，新建任务时可以勾选同时在其他仓库里建。每个仓库都在同名的新分支上建一个 worktree，放在以任务命名的同一个文件夹里，智能体在这个文件夹里启动，能看到所有仓库。每个仓库的部分分别合并、开 PR 或删除，最后一个删除时文件夹也一起删掉。这类任务不运行 `.solo/tasks.json` 里的 setup 命令。
+- **提交：** 合并和开 PR 用的是任务的提交。任务有未提交的改动时，**让 agent 提交** 会把提交请求粘贴给任务的智能体，让它根据 diff 写提交信息再提交；在它的终端里按回车发送。
 
 ### 智能体看板
 左侧 dock 里的看板（`agent board: toggle focus`）列出所有跑过智能体的终端和所有智能体任务，显示每个的状态、分支、上一轮的改动、运行时长和最后一句话。需要你输入的排在最前面，点一下就跳到对应终端。
@@ -134,7 +137,7 @@ Claude Code 每开始和结束一轮，Solo 都会给工作目录拍一个快照
 - **shell 集成**：PowerShell、bash、zsh、fish 在没有自定义启动参数时会加载 Solo 的集成脚本，这些脚本写在 `%TEMP%\solo-shell-integration`。PowerShell 用 `-NoExit -Command` 读取并执行这个脚本文件，不用 `-ExecutionPolicy Bypass`，也不用 `-EncodedCommand`。脚本先加载你自己的 profile，再加载集成。关闭方法：`"terminal": {"shell_integration": false}`。
 - **hooks 跑的程序**是安装目录里的 `solo-agent-hook.exe`。它从 stdin 读事件，往终端写一个转义序列，然后退出；它不联网，也不写文件。
 - **轮次快照**存在 `%LOCALAPPDATA%\Solo\agent_turns`，不碰你仓库里的东西。
-- **智能体任务**会在你的仓库里新建分支和 worktree，并往仓库的 git 配置里写 `branch.<分支>.solotask` / `solobase`。这些只在你新建任务时才会发生。
+- **智能体任务**会在你的仓库里新建分支和 worktree，并往仓库的 git 配置里写 `branch.<分支>.solotask` / `solobase`（跨仓库任务还有 `sologroup`）。这些只在你新建任务时才会发生。
 - **更新**：只有你点了更新才会安装，由 `solo-update-helper.exe` 在 Solo 退出后静默运行安装包。
 - Solo 会读 Claude Code 的对话记录（`~/.claude/projects`），用来显示时间线和会话信息，只读不写。
 

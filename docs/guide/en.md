@@ -122,8 +122,21 @@ branch with its own git worktree (where it goes is set by
 `git.worktree_directory`, `../worktrees` by default) and opens a terminal there
 running `terminal.agent_task_command` (`claude` by default). **Manage Agent
 Tasks** lists the tasks: open a task's terminal, view its diff, merge it into
-the branch it started from, or delete it. Tasks are stored in the repository's
-git config, so they're still there after a restart. Local projects only.
+the branch it started from, open a pull request, or delete it. Tasks are
+stored in the repository's git config, so they're still there after a restart.
+Local projects only.
+
+- **Several repositories:** in a workspace with folders from more than one git
+  repository, New Agent Task can make the task in the others too. Each gets a
+  worktree on the same new branch, side by side in one folder named for the
+  task, and the agent starts in that folder, so it sees them all. Each
+  repository's part is merged, opened as a pull request or deleted on its own;
+  the folder goes with the last one. Setup commands from `.solo/tasks.json`
+  don't run for such tasks.
+- **Committing:** merging and pull requests take the task's commits. When it
+  has uncommitted changes, **Ask the Agent to Commit** pastes a request into
+  the task's agent to commit them, with a message it writes from the diff;
+  press Enter in its terminal to send it.
 
 ### Agent board
 The board in the left dock (`agent board: toggle focus`) lists every terminal
@@ -227,7 +240,8 @@ To treat another program as an agent:
 - **Turn snapshots** are kept in `%LOCALAPPDATA%\Solo\agent_turns`, apart from
   your repository.
 - **Agent tasks** create a branch and a worktree in your repository and record
-  the task in its git config (`branch.<branch>.solotask` / `solobase`). This
+  the task in its git config (`branch.<branch>.solotask` / `solobase`, and
+  `sologroup` for a task spanning repositories). This
   only happens when you create a task.
 - **Updates** are installed only when you choose to, by
   `solo-update-helper.exe` after Solo exits.

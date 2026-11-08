@@ -81,7 +81,10 @@ as Claude Code in the terminal while viewing and editing code beside it.
 - Send the selection, the cursor position or the file's diagnostics from the
   editor to an agent (ctrl-alt-k, ctrl-alt-shift-m).
 - New agent task: a git worktree with its own branch and an agent terminal,
-  to merge or discard when done ("agent task" in the command palette). A
+  to merge, open a pull request for or discard when done ("agent task" in the
+  command palette). In a workspace with several repositories, a task can span
+  them: a worktree of each, side by side in one folder where its agent works.
+  With uncommitted changes, the task's agent can be asked to commit them. A
   repository can set its tasks up in `.solo/tasks.json`:
 
   ```jsonc
