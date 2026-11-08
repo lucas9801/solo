@@ -32,6 +32,8 @@ const BASE_KEY: &str = "solobase";
 const NAME_KEY: &str = "solotask";
 /// The port the task got from `.solo/tasks.json`'s `port_range`.
 const PORT_KEY: &str = "soloport";
+/// The folder a task spanning several repositories keeps its worktrees in.
+const GROUP_KEY: &str = "sologroup";
 
 /// An agent task: a branch checked out in its own worktree.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +49,9 @@ pub struct AgentTask {
     pub repository_root: PathBuf,
     /// The port the task was given (`SOLO_TASK_PORT`), if any.
     pub port: Option<u16>,
+    /// For a task spanning several repositories: the folder with its
+    /// worktree in each, side by side, where its agent works.
+    pub group: Option<PathBuf>,
 }
 
 /// The repository around a directory.
@@ -67,6 +72,8 @@ pub struct TaskPlan {
     pub branch: String,
     pub base_branch: String,
     pub worktree_path: PathBuf,
+    /// The folder of a task spanning several repositories.
+    pub group: Option<PathBuf>,
 }
 
 /// Files with uncommitted changes, as `git status --short` lists them.
@@ -240,7 +247,69 @@ pub fn plan_task_in(
         branch: branch_for_slug(&slug),
         base_branch,
         worktree_path: directory.join(slug),
+        group: None,
     })
+}
+
+/// Plans a task spanning `repositories`, the first being the one it's made
+/// from: a folder named for the task in `directory`, with a worktree of each
+/// repository in it, named like the repository, all on the same new branch.
+pub fn plan_group_task(
+    repositories: &[RepositoryInfo],
+    name: &str,
+    directory: PathBuf,
+) -> Result<Vec<TaskPlan>> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!(tr("Give the task a name", "请输入任务名"));
+    }
+    let mut base_branches = Vec::with_capacity(repositories.len());
+    for repository in repositories {
+        let Some(base_branch) = repository.current_branch.clone() else {
+            if is_chinese() {
+                bail!(
+                    "{} 的 HEAD 处于分离状态，请先切换到任务要基于的分支",
+                    repository.main_root.display()
+                );
+            }
+            bail!(
+                "HEAD is detached in {}; check out the branch the task should start from",
+                repository.main_root.display()
+            );
+        };
+        base_branches.push(base_branch);
+    }
+    let slug = unique_slug(&task_slug(name), |candidate| {
+        let branch = branch_for_slug(candidate);
+        directory.join(candidate).exists()
+            || repositories
+                .iter()
+                .any(|repository| branch_exists(&repository.main_root, &branch))
+    });
+    let group = directory.join(&slug);
+    let mut folder_names: Vec<String> = Vec::new();
+    Ok(repositories
+        .iter()
+        .zip(base_branches)
+        .map(|(repository, base_branch)| {
+            let folder_name = repository
+                .main_root
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "repository".to_string());
+            let folder_name = unique_slug(&folder_name, |candidate| {
+                folder_names.iter().any(|taken| taken == candidate)
+            });
+            folder_names.push(folder_name.clone());
+            TaskPlan {
+                name: name.to_string(),
+                branch: branch_for_slug(&slug),
+                base_branch,
+                worktree_path: group.join(folder_name),
+                group: Some(group.clone()),
+            }
+        })
+        .collect())
 }
 
 /// Creates the task's branch from its base branch, checked out in a new
@@ -269,9 +338,13 @@ pub fn create_task(repository: &RepositoryInfo, plan: &TaskPlan) -> Result<Agent
             ["config", &format!("branch.{}.{key}", plan.branch), value],
         )
     };
-    if let Err(error) =
-        remember(BASE_KEY, &plan.base_branch).and_then(|_| remember(NAME_KEY, &plan.name))
-    {
+    let remembered = remember(BASE_KEY, &plan.base_branch)
+        .and_then(|_| remember(NAME_KEY, &plan.name))
+        .and_then(|_| match &plan.group {
+            Some(group) => remember(GROUP_KEY, &group.to_string_lossy()),
+            None => Ok(String::new()),
+        });
+    if let Err(error) = remembered {
         let task = AgentTask {
             name: plan.name.clone(),
             branch: plan.branch.clone(),
@@ -279,6 +352,7 @@ pub fn create_task(repository: &RepositoryInfo, plan: &TaskPlan) -> Result<Agent
             worktree_path: Some(plan.worktree_path.clone()),
             repository_root: repository.main_root.clone(),
             port: None,
+            group: plan.group.clone(),
         };
         if let Err(rollback_error) = delete_task(&task) {
             log::error!("failed to roll back the agent task worktree: {rollback_error:#}");
@@ -293,6 +367,7 @@ pub fn create_task(repository: &RepositoryInfo, plan: &TaskPlan) -> Result<Agent
         worktree_path: Some(plan.worktree_path.clone()),
         repository_root: repository.main_root.clone(),
         port: None,
+        group: plan.group.clone(),
     })
 }
 
@@ -360,7 +435,7 @@ pub fn list_tasks(repository_root: &Path) -> Result<Vec<AgentTask>> {
         [
             "config",
             "--get-regexp",
-            &format!(r"^branch\..*\.({BASE_KEY}|{NAME_KEY}|{PORT_KEY})$"),
+            &format!(r"^branch\..*\.({BASE_KEY}|{NAME_KEY}|{PORT_KEY}|{GROUP_KEY})$"),
         ],
     )?;
     // Exit code 1: no such keys.
@@ -398,6 +473,7 @@ pub fn list_tasks(repository_root: &Path) -> Result<Vec<AgentTask>> {
                 .map(|(path, _)| path.clone()),
             repository_root: repository_root.to_path_buf(),
             port: value_of(PORT_KEY).and_then(|port| port.parse().ok()),
+            group: value_of(GROUP_KEY).map(PathBuf::from),
         });
     }
     Ok(tasks)
@@ -589,6 +665,11 @@ pub fn delete_task(task: &AgentTask) -> Result<()> {
     git_ok(repository, ["worktree", "prune"])?;
     git_ok(repository, ["branch", "-D", &task.branch])
         .with_context(|| format!("failed to delete the branch {}", task.branch))?;
+    // The folder of a task spanning several repositories goes with the last
+    // of its worktrees. Only when empty: a terminal there may still hold it.
+    if let Some(group) = &task.group {
+        std::fs::remove_dir(group).ok();
+    }
     Ok(())
 }
 
@@ -732,6 +813,60 @@ mod tests {
 
     fn same_path(left: &Path, right: &Path) -> bool {
         fs::canonicalize(left).unwrap() == fs::canonicalize(right).unwrap()
+    }
+
+    #[test]
+    fn a_task_spans_repositories() {
+        let (temp, first_root) = new_repository();
+        let second_root = temp.path().join("projects").join("other");
+        fs::create_dir_all(&second_root).unwrap();
+        run_git(&second_root, &["init", "-q", "-b", "trunk"]);
+        run_git(&second_root, &["config", "user.name", "test"]);
+        run_git(&second_root, &["config", "user.email", "test@example.com"]);
+        fs::write(second_root.join("lib.txt"), "lib\n").unwrap();
+        commit_all(&second_root, "initial");
+        // The name is taken in the second repository only.
+        run_git(&second_root, &["branch", "agent/fix-api"]);
+
+        let repositories = [
+            repository_info(&first_root).unwrap(),
+            repository_info(&second_root).unwrap(),
+        ];
+        let directory = temp.path().join("worktrees");
+        let plans = plan_group_task(&repositories, "Fix API", directory.clone()).unwrap();
+        assert_eq!(plans.len(), 2);
+        let group = directory.join("fix-api-2");
+        for plan in &plans {
+            assert_eq!(plan.branch, "agent/fix-api-2");
+            assert_eq!(plan.group.as_deref(), Some(group.as_path()));
+        }
+        assert_eq!(plans[0].worktree_path, group.join("repo"));
+        assert_eq!(plans[1].worktree_path, group.join("other"));
+        assert_eq!(plans[0].base_branch, "main");
+        assert_eq!(plans[1].base_branch, "trunk");
+
+        let tasks: Vec<AgentTask> = repositories
+            .iter()
+            .zip(&plans)
+            .map(|(repository, plan)| create_task(repository, plan).unwrap())
+            .collect();
+        assert!(group.join("repo").join("shared.txt").exists());
+        assert!(group.join("other").join("lib.txt").exists());
+
+        // Each repository lists its part, with the folder.
+        let listed = list_tasks(&second_root).unwrap();
+        let listed = listed
+            .iter()
+            .find(|task| task.branch == "agent/fix-api-2")
+            .unwrap();
+        assert!(same_path(listed.group.as_ref().unwrap(), &group));
+        assert_eq!(listed.name, "Fix API");
+
+        // The folder goes with the last worktree.
+        delete_task(&tasks[0]).unwrap();
+        assert!(group.exists());
+        delete_task(&tasks[1]).unwrap();
+        assert!(!group.exists());
     }
 
     #[test]

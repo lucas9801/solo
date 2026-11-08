@@ -501,14 +501,19 @@ fn build_workspace_menu(
                 let action = action.boxed_clone();
                 let multi_workspace = multi_workspace_handle.clone();
                 // Once the tab is active, so the task lands in its workspace.
-                // The workspace takes focus first: with the menu gone nothing
-                // has it, and the action would reach no workspace.
-                window.defer(cx, move |window, cx| {
-                    if let Some(multi_workspace) = multi_workspace.upgrade() {
-                        let workspace = multi_workspace.read(cx).workspace().clone();
-                        window.focus(&workspace.focus_handle(cx), cx);
-                    }
-                    window.dispatch_action(action, cx);
+                // Dispatched from the workspace itself: with the menu gone
+                // nothing may have focus (nothing can while the window isn't
+                // the active one), and the action would reach no workspace.
+                // On the next frame, once the workspace is drawn there.
+                window.refresh();
+                window.on_next_frame(move |window, cx| {
+                    let Some(multi_workspace) = multi_workspace.upgrade() else {
+                        return;
+                    };
+                    let workspace = multi_workspace.read(cx).workspace().clone();
+                    let focus_handle = workspace.focus_handle(cx);
+                    window.focus(&focus_handle, cx);
+                    focus_handle.dispatch_action(action.as_ref(), window, cx);
                 });
             });
         }

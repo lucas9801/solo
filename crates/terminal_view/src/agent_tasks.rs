@@ -27,7 +27,7 @@ use gpui::{
 use project::project_settings::ProjectSettings;
 use settings::Settings as _;
 use terminal::{Event as TerminalEvent, Terminal, terminal_settings::TerminalSettings};
-use ui::{ButtonStyle, TintColor, prelude::*};
+use ui::{ButtonStyle, Checkbox, TintColor, ToggleState, prelude::*};
 use util::{
     ResultExt as _,
     i18n::{is_chinese, tr},
@@ -44,6 +44,9 @@ pub use git::{AgentTask, MergeOutcome};
 /// (see `config`), with what its terminal needs.
 pub(crate) struct NewTask {
     pub task: AgentTask,
+    /// Where its terminal opens: its worktree, or for a task spanning several
+    /// repositories the folder with all of them.
+    pub directory: PathBuf,
     /// For its terminal: the task's port and the config's variables.
     pub env: collections::HashMap<String, String>,
     /// Run in its terminal before the agent.
@@ -93,11 +96,140 @@ pub(crate) fn make_task(
         }
     }
     Ok(NewTask {
+        directory: task.worktree_path.clone().unwrap_or_default(),
         env: config.task_env(task.port),
         setup: config.setup.filter(|setup| !setup.trim().is_empty()),
         task,
         warnings,
     })
+}
+
+/// Makes a task spanning `repositories`, the first being the one it's made
+/// from: a worktree of each on the same new branch, side by side in a folder
+/// named for the task, where its agent works. The first repository's config
+/// gives the folder's place, the port and the variables; each copies its own
+/// files. Setup commands don't run, as each repository's would run in its own
+/// worktree. Blocks on git.
+pub(crate) fn make_group_task(
+    repositories: &[git::RepositoryInfo],
+    name: &str,
+    worktree_directory_setting: &str,
+) -> Result<NewTask> {
+    let Some(primary) = repositories.first() else {
+        return Err(anyhow!("no repositories"));
+    };
+    let config = config::TasksConfig::load(&primary.main_root)?.unwrap_or_default();
+    let directory = match config.worktrees_directory(&primary.main_root)? {
+        Some(directory) => directory,
+        None => git::worktrees_directory(&primary.main_root, worktree_directory_setting)?,
+    };
+    let plans = git::plan_group_task(repositories, name, directory)?;
+    let mut tasks: Vec<AgentTask> = Vec::with_capacity(plans.len());
+    for (repository, plan) in repositories.iter().zip(&plans) {
+        match git::create_task(repository, plan) {
+            Ok(task) => tasks.push(task),
+            Err(error) => {
+                // All or none.
+                for task in &tasks {
+                    if let Err(rollback_error) = git::delete_task(task) {
+                        log::error!("failed to roll back an agent task: {rollback_error:#}");
+                    }
+                }
+                return Err(error.context(format!(
+                    "{} {}",
+                    tr("in", "仓库"),
+                    repository.main_root.display()
+                )));
+            }
+        }
+    }
+    let mut warnings = Vec::new();
+    for task in &tasks {
+        let Ok(Some(repository_config)) = config::TasksConfig::load(&task.repository_root) else {
+            continue;
+        };
+        if let Some(worktree) = &task.worktree_path
+            && let Err(error) =
+                config::copy_files(&repository_config.copy, &task.repository_root, worktree)
+        {
+            warnings.push(format!("{error:#}"));
+        }
+        if repository_config
+            .setup
+            .as_deref()
+            .is_some_and(|setup| !setup.trim().is_empty())
+        {
+            warnings.push(if is_chinese() {
+                format!(
+                    "{} 的 setup 命令没有运行（跨仓库任务不运行 setup），需要的话请在它的文件夹里手动运行",
+                    task.repository_root.display()
+                )
+            } else {
+                format!(
+                    "the setup commands of {} didn't run (tasks spanning repositories don't run them); run them in its folder if needed",
+                    task.repository_root.display()
+                )
+            });
+        }
+    }
+    let mut task = tasks.swap_remove(0);
+    if let Some(range) = config.port_range {
+        let used: Vec<u16> = git::list_tasks(&primary.main_root)
+            .unwrap_or_default()
+            .iter()
+            .filter(|other| other.branch != task.branch)
+            .filter_map(|other| other.port)
+            .collect();
+        if let Some(port) = config::free_port(range, &used)
+            && let Err(error) = git::set_task_port(&mut task, port)
+        {
+            warnings.push(format!("{error:#}"));
+        }
+    }
+    Ok(NewTask {
+        directory: task.group.clone().unwrap_or_default(),
+        env: config.task_env(task.port),
+        setup: None,
+        task,
+        warnings,
+    })
+}
+
+/// The task's name; for a part of a task spanning repositories, with its
+/// repository's.
+pub(crate) fn display_name(task: &AgentTask) -> String {
+    match (&task.group, task.repository_root.file_name()) {
+        (Some(_), Some(repository)) => {
+            format!("{} ({})", task.name, repository.to_string_lossy())
+        }
+        _ => task.name.clone(),
+    }
+}
+
+/// Tells tasks apart: the parts of a task spanning repositories share their
+/// branch.
+fn task_key(task: &AgentTask) -> String {
+    format!("{}\n{}", task.repository_root.display(), task.branch)
+}
+
+/// What a task's agent is asked to commit its changes with.
+pub(crate) fn commit_request(task: &AgentTask) -> String {
+    let worktree = task
+        .worktree_path
+        .as_deref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    if is_chinese() {
+        format!(
+            "请提交 {worktree}（分支 {}）里所有未提交的改动。根据 git diff 写提交信息，说明改了什么、为什么改，风格和这个仓库的 git log 保持一致。",
+            task.branch
+        )
+    } else {
+        format!(
+            "Please commit all the uncommitted changes in {worktree} (branch {}). Write the commit message from the diff (git diff): what changed and why, in the style of this repository's git log.",
+            task.branch
+        )
+    }
 }
 
 /// The commands a new task's terminal runs: the setup, then the agent.
@@ -243,13 +375,21 @@ pub fn agent_tasks(
         Ok(tasks
             .into_iter()
             .map(|task| {
+                // A task spanning repositories has its agent in the folder
+                // around its worktrees.
                 let terminals = task
                     .worktree_path
                     .as_deref()
                     .map(|worktree| {
                         view_directories
                             .iter()
-                            .filter(|(_, directory)| is_within(directory, worktree))
+                            .filter(|(_, directory)| {
+                                is_within(directory, worktree)
+                                    || task
+                                        .group
+                                        .as_deref()
+                                        .is_some_and(|group| is_within(directory, group))
+                            })
                             .map(|(view, _)| view.clone())
                             .collect()
                     })
@@ -470,6 +610,9 @@ pub struct NewAgentTaskModal {
     workspace: WeakEntity<Workspace>,
     editor: Entity<Editor>,
     repository: RepositoryState,
+    /// The workspace's other repositories, which the task can span too.
+    other_repositories: Vec<git::RepositoryInfo>,
+    include_other_repositories: bool,
     worktree_directory_setting: String,
     creating: bool,
     error: Option<SharedString>,
@@ -491,15 +634,22 @@ impl NewAgentTaskModal {
             return;
         }
         let directory = start_directory(workspace, cx);
+        let roots: Vec<PathBuf> = workspace
+            .project()
+            .read(cx)
+            .visible_worktrees(cx)
+            .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+            .collect();
         let weak_workspace = workspace.weak_handle();
         workspace.toggle_modal(window, cx, move |window, cx| {
-            Self::new(weak_workspace, directory, window, cx)
+            Self::new(weak_workspace, directory, roots, window, cx)
         });
     }
 
     fn new(
         workspace: WeakEntity<Workspace>,
         directory: Option<PathBuf>,
+        roots: Vec<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -523,14 +673,35 @@ impl NewAgentTaskModal {
         })
         .detach();
         let load = cx.spawn(async move |this, cx| {
-            let info = match directory {
-                Some(directory) => {
-                    cx.background_spawn(async move { git::repository_info(&directory) })
-                        .await
-                }
-                None => Err(anyhow!("no directory")),
-            };
+            let (info, others) = cx
+                .background_spawn(async move {
+                    let info = match directory {
+                        Some(directory) => git::repository_info(&directory),
+                        None => Err(anyhow!("no directory")),
+                    };
+                    let mut others: Vec<git::RepositoryInfo> = Vec::new();
+                    if let Ok(info) = &info {
+                        for root in roots {
+                            let Ok(other) = git::repository_info(&root) else {
+                                continue;
+                            };
+                            let same = |left: &Path, right: &Path| {
+                                is_within(left, right) && is_within(right, left)
+                            };
+                            if !same(&other.main_root, &info.main_root)
+                                && !others
+                                    .iter()
+                                    .any(|known| same(&known.main_root, &other.main_root))
+                            {
+                                others.push(other);
+                            }
+                        }
+                    }
+                    (info, others)
+                })
+                .await;
             this.update(cx, |this, cx| {
+                this.other_repositories = others;
                 this.repository = match info {
                     Ok(info) => RepositoryState::Ready(info),
                     Err(error) => {
@@ -552,6 +723,8 @@ impl NewAgentTaskModal {
             workspace,
             editor,
             repository: RepositoryState::Loading,
+            other_repositories: Vec::new(),
+            include_other_repositories: false,
             worktree_directory_setting: ProjectSettings::get_global(cx)
                 .git
                 .worktree_directory
@@ -583,6 +756,11 @@ impl NewAgentTaskModal {
             return;
         };
         let info = info.clone();
+        let others = if self.include_other_repositories {
+            self.other_repositories.clone()
+        } else {
+            Vec::new()
+        };
         let setting = self.worktree_directory_setting.clone();
         let command = TerminalSettings::get_global(cx).agent_task_command.clone();
         self.creating = true;
@@ -594,11 +772,20 @@ impl NewAgentTaskModal {
             let created = cx
                 .background_spawn({
                     let name = name.clone();
-                    async move { make_task(&info, &name, &setting) }
+                    async move {
+                        if others.is_empty() {
+                            make_task(&info, &name, &setting)
+                        } else {
+                            let repositories: Vec<_> =
+                                std::iter::once(info).chain(others).collect();
+                            make_group_task(&repositories, &name, &setting)
+                        }
+                    }
                 })
                 .await;
             let NewTask {
                 task,
+                directory,
                 env,
                 setup,
                 warnings,
@@ -615,9 +802,6 @@ impl NewAgentTaskModal {
                 }
             };
             this.update(cx, |_, cx| cx.emit(DismissEvent)).ok();
-            let Some(directory) = task.worktree_path.clone() else {
-                return;
-            };
             let opened = workspace.update_in(cx, |workspace, window, cx| {
                 if !warnings.is_empty() {
                     // The workspace is being updated: not through `show_toast`.
@@ -701,7 +885,19 @@ impl Render for NewAgentTaskModal {
                     Color::Error,
                 )),
                 Some(branch) => self.preview(cx).map(|(new_branch, directory)| {
-                    let text = if is_chinese() {
+                    let spans = self.include_other_repositories
+                        && !self.other_repositories.is_empty();
+                    let text = if spans && is_chinese() {
+                        format!(
+                            "在每个仓库从当前分支新建分支 {new_branch}，工作区都放在 {}",
+                            directory.display()
+                        )
+                    } else if spans {
+                        format!(
+                            "New branch {new_branch} in each repository from its current branch, worktrees side by side in {}",
+                            directory.display()
+                        )
+                    } else if is_chinese() {
                         format!(
                             "从 {branch} 新建分支 {new_branch}，工作区 {}",
                             directory.display()
@@ -755,6 +951,40 @@ impl Render for NewAgentTaskModal {
                     .px_2()
                     .py_1()
                     .gap_0p5()
+                    .when(!self.other_repositories.is_empty(), |this| {
+                        let names: Vec<String> = self
+                            .other_repositories
+                            .iter()
+                            .filter_map(|other| other.main_root.file_name())
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .collect();
+                        let label = if is_chinese() {
+                            format!("同时在工作区的其他仓库里建：{}", names.join("、"))
+                        } else {
+                            format!(
+                                "Also in the workspace's other repositories: {}",
+                                names.join(", ")
+                            )
+                        };
+                        this.child(
+                            Checkbox::new(
+                                "agent-task-other-repositories",
+                                if self.include_other_repositories {
+                                    ToggleState::Selected
+                                } else {
+                                    ToggleState::Unselected
+                                },
+                            )
+                            .label(label)
+                            .label_size(LabelSize::Small)
+                            .on_click(cx.listener(
+                                |this, state: &ToggleState, _, cx| {
+                                    this.include_other_repositories = state.selected();
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                    })
                     .when_some(status, |this, (text, color)| {
                         this.child(Label::new(text).size(LabelSize::Small).color(color))
                     })
@@ -801,9 +1031,11 @@ enum Page {
     Outcome {
         message: SharedString,
         is_error: bool,
-        /// Offer to delete the task with this branch, e.g. once it's merged.
-        /// By branch, since the list is reloaded meanwhile.
+        /// Offer to delete this task (by [`task_key`], since the list is
+        /// reloaded meanwhile), e.g. once it's merged.
         offer_delete: Option<String>,
+        /// Offer to ask the agent of this task (by [`task_key`]) to commit.
+        offer_commit: Option<String>,
     },
 }
 
@@ -889,7 +1121,7 @@ impl AgentTasksModal {
                                     let pull_request =
                                         pull_request::find_pull_request(worktree, &task.branch)
                                             .ok()??;
-                                    Some((task.branch, pull_request))
+                                    Some((task_key(&task), pull_request))
                                 })
                                 .collect::<collections::HashMap<_, _>>()
                         })
@@ -916,6 +1148,42 @@ impl AgentTasksModal {
         cx.notify();
         let task = entry.task;
         self._task = cx.spawn_in(window, async move |this, cx| {
+            let uncommitted = cx
+                .background_spawn({
+                    let worktree = task.worktree_path.clone();
+                    async move {
+                        worktree
+                            .and_then(|worktree| git::uncommitted_changes(&worktree).ok())
+                            .unwrap_or_default()
+                    }
+                })
+                .await;
+            if !uncommitted.is_empty() {
+                let message = if is_chinese() {
+                    format!(
+                        "{} 有 {} 个文件的改动还没提交，PR 里不会有它们。可以让任务的 agent 根据 diff 写提交信息并提交，然后再开 PR。",
+                        task.branch,
+                        uncommitted.len()
+                    )
+                } else {
+                    format!(
+                        "{} has uncommitted changes in {} files, which a pull request wouldn't have. The task's agent can commit them with a message written from the diff; then open the pull request.",
+                        task.branch,
+                        uncommitted.len()
+                    )
+                };
+                this.update(cx, |this, cx| {
+                    this.page = Page::Outcome {
+                        message: message.into(),
+                        is_error: false,
+                        offer_delete: None,
+                        offer_commit: Some(task_key(&task)),
+                    };
+                    cx.notify();
+                })
+                .log_err();
+                return;
+            }
             let opened = cx
                 .background_spawn(async move { pull_request::open_pull_request(&task) })
                 .await;
@@ -938,6 +1206,7 @@ impl AgentTasksModal {
                     message: message.into(),
                     is_error,
                     offer_delete: None,
+                offer_commit: None,
                 };
                 this.reload(window, cx);
             })
@@ -956,7 +1225,7 @@ impl AgentTasksModal {
         let Some(entry) = self.entry(index).cloned() else {
             return;
         };
-        let Some(pull_request) = self.pull_requests.get(&entry.task.branch).cloned() else {
+        let Some(pull_request) = self.pull_requests.get(&task_key(&entry.task)).cloned() else {
             return;
         };
         let Some(worktree) = entry.task.worktree_path.clone() else {
@@ -1035,6 +1304,7 @@ impl AgentTasksModal {
                         message: message.into(),
                         is_error,
                         offer_delete: None,
+                    offer_commit: None,
                     };
                     cx.notify();
                 })
@@ -1043,17 +1313,105 @@ impl AgentTasksModal {
         });
     }
 
+    /// Asks the task's agent to commit its changes, with a message it writes
+    /// from the diff.
+    fn ask_agent_to_commit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.entry(index).cloned() else {
+            return;
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let message = commit_request(&entry.task);
+        let agent = entry
+            .terminals
+            .iter()
+            .find(|view| crate::agent_context::can_paste_to_agent(view.read(cx), &message, cx))
+            .cloned();
+        let (outcome, is_error) = match agent {
+            Some(agent) => {
+                agent.update(cx, |agent, cx| {
+                    agent
+                        .terminal
+                        .update(cx, |terminal, _| terminal.paste(&message))
+                });
+                window.defer(cx, move |window, cx| {
+                    activate_terminal_view(&workspace, &agent, window, cx)
+                });
+                (
+                    tr(
+                        "Asked the task's agent to commit; press Enter in its terminal to send it.",
+                        "已把提交请求粘贴给任务的 agent，在它的终端里按回车发送。",
+                    ),
+                    false,
+                )
+            }
+            None => (
+                tr(
+                    "No agent is taking pasted text in the task's terminals. Start one there, or commit yourself.",
+                    "任务的终端里没有能接收粘贴的 agent。请先在那里启动一个，或者自己提交。",
+                ),
+                true,
+            ),
+        };
+        self.page = Page::Outcome {
+            message: outcome.into(),
+            is_error,
+            offer_delete: None,
+            offer_commit: None,
+        };
+        cx.notify();
+    }
+
     fn entry(&self, index: usize) -> Option<&AgentTaskEntry> {
         self.entries.as_ref()?.as_ref().ok()?.get(index)
     }
 
-    fn index_of(&self, branch: &str) -> Option<usize> {
+    /// The terminals deleting the task closes: those in its worktree. A task
+    /// spanning repositories keeps its agent in the folder around them while
+    /// another repository's part is left.
+    fn terminals_closed_by_deleting(
+        &self,
+        entry: &AgentTaskEntry,
+        cx: &App,
+    ) -> Vec<Entity<TerminalView>> {
+        let Some(group) = &entry.task.group else {
+            return entry.terminals.clone();
+        };
+        let key = task_key(&entry.task);
+        let other_parts = self
+            .entries
+            .as_ref()
+            .and_then(|entries| entries.as_ref().ok())
+            .is_some_and(|entries| {
+                entries.iter().any(|other| {
+                    other.task.group.as_ref() == Some(group) && task_key(&other.task) != key
+                })
+            });
+        if !other_parts {
+            return entry.terminals.clone();
+        }
+        entry
+            .terminals
+            .iter()
+            .filter(|view| {
+                entry.task.worktree_path.as_deref().is_some_and(|worktree| {
+                    terminal_directory(view.read(cx).terminal.read(cx))
+                        .is_some_and(|directory| is_within(&directory, worktree))
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The index of the task with `key` (see [`task_key`]).
+    fn index_of(&self, key: &str) -> Option<usize> {
         self.entries
             .as_ref()?
             .as_ref()
             .ok()?
             .iter()
-            .position(|entry| entry.task.branch == branch)
+            .position(|entry| task_key(&entry.task) == key)
     }
 
     fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
@@ -1245,7 +1603,7 @@ impl AgentTasksModal {
                         format!("Merged {} into {}.", task.branch, task.base_branch)
                     },
                     false,
-                    Some(task.branch.clone()),
+                    Some(task_key(&task)),
                 ),
                 Ok(MergeOutcome::NothingToMerge) => (
                     if chinese {
@@ -1288,6 +1646,7 @@ impl AgentTasksModal {
                     message: message.into(),
                     is_error,
                     offer_delete,
+                offer_commit: None,
                 };
                 this.reload(window, cx);
             })
@@ -1304,7 +1663,8 @@ impl AgentTasksModal {
     ) {
         self.page = Page::Working(tr("Deleting…", "正在删除…").into());
         cx.notify();
-        let closing = close_terminals(&workspace, &entry.terminals, window, cx);
+        let closed = self.terminals_closed_by_deleting(&entry, cx);
+        let closing = close_terminals(&workspace, &closed, window, cx);
         if let Some(worktree) = &entry.task.worktree_path {
             follow_working_directory::release_directory(&workspace, worktree, cx);
         }
@@ -1365,6 +1725,7 @@ impl AgentTasksModal {
                     message: message.into(),
                     is_error,
                     offer_delete: None,
+                offer_commit: None,
                 };
                 this.reload(window, cx);
             })
@@ -1436,7 +1797,7 @@ impl AgentTasksModal {
                                 let (icon, color) = status.icon();
                                 this.child(Icon::new(icon).size(IconSize::Small).color(color))
                             })
-                            .child(Label::new(task.name.clone()))
+                            .child(Label::new(display_name(task)))
                             .child(
                                 Label::new(format!("{} → {}", task.branch, task.base_branch))
                                     .size(LabelSize::Small)
@@ -1488,7 +1849,7 @@ impl AgentTasksModal {
                                     },
                                 )),
                             )
-                            .map(|this| match self.pull_requests.get(&task.branch) {
+                            .map(|this| match self.pull_requests.get(&task_key(task)) {
                                 Some(pull_request) => {
                                     let url = pull_request.url.clone();
                                     this.child(
@@ -1569,11 +1930,16 @@ impl AgentTasksModal {
                 format!("Merge {} into {}?", task.branch, task.base_branch)
             }
             (FinishAction::Delete, true) => {
-                format!("删除任务“{}”的工作区和分支 {}？", task.name, task.branch)
+                format!(
+                    "删除任务“{}”的工作区和分支 {}？",
+                    display_name(task),
+                    task.branch
+                )
             }
             (FinishAction::Delete, false) => format!(
                 "Delete the worktree and branch {} of \"{}\"?",
-                task.branch, task.name
+                task.branch,
+                display_name(task)
             ),
         };
 
@@ -1636,16 +2002,37 @@ impl AgentTasksModal {
                             can_confirm = false;
                         }
                         if !details.uncommitted.is_empty() {
-                            body = body.child(lines_section(
-                                tr(
-                                    "Uncommitted changes in the task, which won't be merged:",
-                                    "任务里未提交的改动（不会被合并）：",
-                                )
-                                .to_string(),
-                                &details.uncommitted,
-                                MAX_LISTED_CHANGES,
-                                Color::Warning,
-                            ));
+                            body = body
+                                .child(lines_section(
+                                    tr(
+                                        "Uncommitted changes in the task, which won't be merged:",
+                                        "任务里未提交的改动（不会被合并）：",
+                                    )
+                                    .to_string(),
+                                    &details.uncommitted,
+                                    MAX_LISTED_CHANGES,
+                                    Color::Warning,
+                                ))
+                                .child(
+                                    h_flex().child(
+                                        Button::new(
+                                            "agent-task-commit-first",
+                                            tr(
+                                                "Ask the Agent to Commit Them First",
+                                                "先让 agent 提交它们",
+                                            ),
+                                        )
+                                        .style(ButtonStyle::Subtle)
+                                        .label_size(LabelSize::Small)
+                                        .tooltip(ui::Tooltip::text(tr(
+                                            "Paste a request into the task's agent to commit, with a message written from the diff",
+                                            "把提交请求粘贴给任务的 agent，让它根据 diff 写提交信息",
+                                        )))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.ask_agent_to_commit(index, window, cx)
+                                        })),
+                                    ),
+                                );
                         }
                         if !details.base_uncommitted.is_empty() {
                             body = body.child(lines_section(
@@ -1709,9 +2096,9 @@ impl AgentTasksModal {
                                 Color::Warning,
                             ));
                         }
-                        if !entry.terminals.is_empty() {
-                            let running: Vec<String> = entry
-                                .terminals
+                        let closed = self.terminals_closed_by_deleting(entry, cx);
+                        if !closed.is_empty() {
+                            let running: Vec<String> = closed
                                 .iter()
                                 .map(|view| {
                                     let view = view.read(cx);
@@ -1835,8 +2222,10 @@ impl Render for AgentTasksModal {
                 message,
                 is_error,
                 offer_delete,
+                offer_commit,
             } => {
                 let offer_delete = offer_delete.clone();
+                let offer_commit = offer_commit.clone();
                 v_flex()
                     .gap_2()
                     .child(
@@ -1862,6 +2251,22 @@ impl Render for AgentTasksModal {
                                         cx.notify();
                                     })),
                             )
+                            .when_some(offer_commit, |this, branch| {
+                                this.child(
+                                    Button::new(
+                                        "agent-task-ask-commit",
+                                        tr("Ask the Agent to Commit", "让 agent 提交"),
+                                    )
+                                    .style(ButtonStyle::Filled)
+                                    .on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            if let Some(index) = this.index_of(&branch) {
+                                                this.ask_agent_to_commit(index, window, cx)
+                                            }
+                                        },
+                                    )),
+                                )
+                            })
                             .when_some(offer_delete, |this, branch| {
                                 this.child(
                                     Button::new(

@@ -778,6 +778,7 @@ async fn new_task(
         .await;
     let crate::agent_tasks::NewTask {
         task,
+        directory: _,
         env,
         setup,
         warnings,

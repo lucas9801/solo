@@ -42,9 +42,14 @@ fn list_tasks(workspace: &Entity<Workspace>, cx: &mut App) -> Task<Vec<Workspace
                     let unmerged_commits =
                         git::unmerged_commits(task).map_or(0, |commits| commits.len());
                     WorkspaceTask {
-                        name: task.name.clone().into(),
+                        name: agent_tasks::display_name(task).into(),
                         branch: task.branch.clone().into(),
-                        worktree: task.worktree_path.clone(),
+                        // Where its terminal opens: for a task spanning
+                        // repositories, the folder with all of them.
+                        worktree: task
+                            .worktree_path
+                            .as_ref()
+                            .map(|worktree| task.group.clone().unwrap_or_else(|| worktree.clone())),
                         changed_files,
                         unmerged_commits,
                         terminals: entry

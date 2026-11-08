@@ -341,7 +341,7 @@ impl AgentBoard {
             let tasks = tasks
                 .into_iter()
                 .map(|entry| TaskSnapshot {
-                    name: entry.task.name,
+                    name: crate::agent_tasks::display_name(&entry.task),
                     branch: entry.task.branch,
                     worktree_path: entry.task.worktree_path,
                     terminals: entry.terminals.iter().map(Entity::entity_id).collect(),
