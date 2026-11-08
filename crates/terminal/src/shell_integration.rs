@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::ShellMark as AlacShellMark;
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use util::shell::Shell;
 
@@ -31,6 +30,36 @@ const ZSH_STARTUP_FILES: [(&str, &str); 3] = [
     ),
     (".zshrc", include_str!("shell_integration/zsh/zshrc.zsh")),
 ];
+
+/// The environment variable that gives an integrated shell its terminal's
+/// nonce, which it adds to `OSC 633` sequences. Anything else the terminal
+/// shows (`cat`ed files, web pages, remote output) can print those sequences
+/// too, but can't know the nonce.
+pub const SHELL_NONCE_ENV: &str = "SOLO_SHELL_NONCE";
+
+/// The environment variable with the terminal's id, which `solo-cli agent`
+/// names terminals by.
+pub const TERMINAL_ID_ENV: &str = "SOLO_TERMINAL_ID";
+/// The environment variable with the path of `solo-cli`, for agents to drive
+/// Solo with (`solo-cli agent ...`).
+pub const CLI_ENV: &str = "SOLO_CLI";
+
+/// SOLO: Gives a local terminal its id and the path of `solo-cli`.
+pub fn add_terminal_env(env: &mut HashMap<String, String>) {
+    env.insert(TERMINAL_ID_ENV.to_string(), new_nonce()[..8].to_string());
+    let cli = format!("solo-cli{}", std::env::consts::EXE_SUFFIX);
+    if let Some(cli) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join(cli)))
+        .filter(|cli| cli.is_file())
+    {
+        env.insert(CLI_ENV.to_string(), cli.to_string_lossy().into_owned());
+    }
+}
+
+/// The environment variable with the path of `solo-agent-hook`, which agents
+/// and scripts run in Solo's terminals report their status with.
+pub const AGENT_HOOK_ENV: &str = "SOLO_AGENT_HOOK";
 
 /// Upper bound on remembered blocks; older ones have scrolled out of history anyway.
 const MAX_BLOCKS: usize = 10_000;
@@ -53,16 +82,33 @@ pub fn integrate_shell(
         Shell::Program(program) => program.as_str(),
         Shell::WithArguments { .. } => return shell,
     };
+    // Unused by shells that aren't integrated below.
+    env.insert(SHELL_NONCE_ENV.to_string(), new_nonce());
+    // How agents and scripts report their status (docs/agent-status-protocol.md).
+    if let Some(hook) = agent_hook_executable() {
+        env.insert(
+            AGENT_HOOK_ENV.to_string(),
+            hook.to_string_lossy().into_owned(),
+        );
+    }
     let stem = Path::new(program)
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_lowercase());
     let args = match stem.as_deref() {
-        Some("powershell" | "pwsh") => vec![
-            "-NoLogo".to_string(),
-            "-NoExit".to_string(),
-            "-EncodedCommand".to_string(),
-            powershell_encoded_command(POWERSHELL_SCRIPT),
-        ],
+        Some("powershell" | "pwsh") => {
+            match powershell_script_command("powershell-integration", POWERSHELL_SCRIPT) {
+                Ok(command) => vec![
+                    "-NoLogo".to_string(),
+                    "-NoExit".to_string(),
+                    "-Command".to_string(),
+                    command,
+                ],
+                Err(error) => {
+                    log::warn!("failed to write the PowerShell shell integration script: {error}");
+                    return shell;
+                }
+            }
+        }
         // The bash.exe in System32 runs WSL, which can't read the script's path.
         Some("bash") if !(is_windows && program.to_lowercase().contains("system32")) => {
             match write_script("bash-integration.sh", BASH_SCRIPT) {
@@ -100,6 +146,17 @@ pub fn integrate_shell(
     }
 }
 
+/// 64 unpredictable bits: the hasher's keys are random.
+pub(crate) fn new_nonce() -> String {
+    use std::hash::{BuildHasher as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u32(std::process::id());
+    if let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        hasher.write_u128(elapsed.as_nanos());
+    }
+    format!("{:016x}", hasher.finish())
+}
+
 fn integrate_zsh(env: &mut HashMap<String, String>) -> std::io::Result<()> {
     let integration = write_script("zsh/integration.zsh", ZSH_SCRIPT)?;
     for (name, script) in ZSH_STARTUP_FILES {
@@ -121,25 +178,82 @@ fn integrate_zsh(env: &mut HashMap<String, String>) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Where the scripts go: a directory in the temp dir of this user's own.
+fn scripts_dir() -> std::io::Result<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+        // /tmp is shared between users, who mustn't be able to swap the
+        // scripts this user's shells and agents run.
+        // SAFETY: getuid has no preconditions and can't fail.
+        let uid = unsafe { libc::getuid() };
+        let dir = std::env::temp_dir().join(format!("solo-shell-integration-{uid}"));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        let metadata = std::fs::symlink_metadata(&dir)?;
+        if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+            return Err(std::io::Error::other(format!(
+                "{} isn't a private directory of this user",
+                dir.display()
+            )));
+        }
+        Ok(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows' temp dir is the user's own.
+        Ok(std::env::temp_dir().join("solo-shell-integration"))
+    }
+}
+
 /// Shells only load extra scripts from disk, so they go to the temp dir.
 fn write_script(name: &str, script: &str) -> std::io::Result<String> {
-    let path = std::env::temp_dir()
-        .join("solo-shell-integration")
-        .join(name);
+    let path = scripts_dir()?.join(name);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     if std::fs::read_to_string(&path).ok().as_deref() != Some(script) {
-        std::fs::write(&path, script)?;
+        // Written aside and renamed, so a shell starting meanwhile (in this
+        // Solo or another) never reads half a script.
+        let partial = path.with_extension(format!("{}.partial", std::process::id()));
+        std::fs::write(&partial, script)?;
+        if let Err(error) = std::fs::rename(&partial, &path) {
+            std::fs::remove_file(&partial).ok();
+            // Another Solo may have just written the same script.
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(script) {
+                return Err(error);
+            }
+        }
     }
     // Forward slashes work both natively and in Git Bash on Windows.
     Ok(path.to_string_lossy().replace('\\', "/"))
 }
 
-/// `-EncodedCommand` takes base64 of the script's UTF-16LE bytes.
-fn powershell_encoded_command(script: &str) -> String {
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    base64::engine::general_purpose::STANDARD.encode(bytes)
+/// A `-Command` for PowerShell that runs `script`, which is written to the
+/// temp dir as `<name>-<hash>.ps1` (by its contents, so Solo versions running
+/// side by side don't swap each other's scripts).
+///
+/// The script runs as a script block read from the file rather than with
+/// `-File` or `. '<path>'`: those fail under the `Restricted` execution policy,
+/// Windows PowerShell's default. It replaces `-EncodedCommand`, whose base64
+/// command lines security software tends to stop.
+pub fn powershell_script_command(name: &str, script: &str) -> std::io::Result<String> {
+    // FNV-1a, which doesn't change between Rust versions like `DefaultHasher` may.
+    let hash = script.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ byte as u64).wrapping_mul(0x100000001b3)
+    });
+    let path = write_script(&format!("{name}-{:08x}.ps1", hash as u32), script)?;
+    Ok(powershell_load_command(&path))
+}
+
+fn powershell_load_command(path: &str) -> String {
+    format!(
+        ". ([scriptblock]::Create([IO.File]::ReadAllText('{}', [Text.Encoding]::UTF8)))",
+        path.replace('\'', "''")
+    )
 }
 
 /// SOLO: Lets Claude Code started from the integrated shell report what it's
@@ -156,6 +270,129 @@ pub fn integrate_claude_code(is_windows: bool, env: &mut HashMap<String, String>
         }
         Err(error) => log::warn!("failed to write the Claude Code hook settings: {error}"),
     }
+}
+
+/// SOLO: Lets Codex started from the integrated shell report what it's doing
+/// through hooks, so its turns are tracked like Claude Code's.
+///
+/// The shell scripts wrap `codex` to pass the hooks as `-c hooks.<event>=...`
+/// config overrides, one per line in `SOLO_CODEX_ARGS`: Codex adds them to
+/// the user's own config and hooks for that session, without changing
+/// `config.toml`. Codex runs hooks it doesn't trust yet only after asking, so
+/// the first session shows its hook review once.
+///
+/// The hooks run `solo-agent-hook`, which reads the event from Codex's input
+/// (the same events as Claude Code's). On Windows Codex runs a hook with
+/// `cmd /C`, and Windows PowerShell can't pass double quotes on to Codex, so
+/// the program's quoted path is in `SOLO_AGENT_HOOK_COMMAND` rather than in the
+/// arguments.
+pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
+    let Some(hook) = agent_hook_executable() else {
+        return;
+    };
+    if is_windows {
+        env.insert(
+            "SOLO_AGENT_HOOK_COMMAND".to_string(),
+            format!("\"{}\"", hook.to_string_lossy()),
+        );
+    }
+    env.insert("SOLO_CODEX_ARGS".to_string(), codex_hook_args(is_windows).join("
+"));
+}
+
+/// SOLO: Lets GitHub Copilot CLI started from the integrated shell report
+/// what it's doing through hooks, so its turns are tracked like Claude Code's.
+///
+/// The hooks are in a plugin Solo writes (`copilot-plugin` beside the shell
+/// scripts), whose folder the shell scripts get in `SOLO_COPILOT_PLUGIN`;
+/// they wrap `copilot` to load it with `--plugin-dir`, for that session only.
+/// Nothing is installed into Copilot's own folder.
+///
+/// Each hook runs `solo-agent-hook` with the kind of report as its argument,
+/// so it works whether or not Copilot passes the event on stdin; Copilot runs
+/// hooks with PowerShell on Windows and bash elsewhere.
+pub fn integrate_copilot(is_windows: bool, env: &mut HashMap<String, String>) {
+    let Some(hook) = agent_hook_executable() else {
+        return;
+    };
+    match write_copilot_plugin(&hook.to_string_lossy(), is_windows) {
+        Ok(dir) => {
+            env.insert("SOLO_COPILOT_PLUGIN".to_string(), dir);
+        }
+        Err(error) => log::warn!("failed to write the Copilot hook plugin: {error}"),
+    }
+}
+
+fn write_copilot_plugin(hook: &str, is_windows: bool) -> std::io::Result<String> {
+    let manifest = serde_json::json!({
+        "name": "solo",
+        "version": "1.0.0",
+        "description": "Reports what Copilot is doing to the Solo terminal it runs in.",
+    });
+    let manifest = serde_json::to_string_pretty(&manifest).map_err(std::io::Error::other)?;
+    write_script("copilot-plugin/.claude-plugin/plugin.json", &manifest)?;
+    let hooks = serde_json::to_string_pretty(&copilot_hooks(hook)).map_err(std::io::Error::other)?;
+    let hooks_path = write_script("copilot-plugin/hooks/hooks.json", &hooks)?;
+    let dir = Path::new(&hooks_path)
+        .parent()
+        .and_then(Path::parent)
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(if is_windows { dir.replace('/', "\\") } else { dir })
+}
+
+/// Copilot hooks in Claude Code's format (PascalCase events), for each event
+/// Solo reports, with the kind of report each one is.
+fn copilot_hooks(hook: &str) -> serde_json::Value {
+    let powershell_path = hook.replace('\'', "''");
+    let sh_path = hook.replace('\'', r"'\''");
+    let group = |kind: AgentHookKind| {
+        let kind = kind.as_str();
+        serde_json::json!([{
+            "hooks": [{
+                "type": "command",
+                "powershell": format!("& '{powershell_path}' {kind} --agent copilot"),
+                "bash": format!("'{sh_path}' {kind} --agent copilot"),
+                "timeout": 5,
+            }]
+        }])
+    };
+    serde_json::json!({
+        "hooks": {
+            "SessionStart": group(AgentHookKind::SessionStarted),
+            "UserPromptSubmit": group(AgentHookKind::PromptSubmitted),
+            "PermissionRequest": group(AgentHookKind::NeedsInput),
+            "Stop": group(AgentHookKind::Stopped),
+        }
+    })
+}
+
+/// The Codex events Solo reports, as in its `hooks` config.
+const CODEX_HOOK_EVENTS: [&str; 5] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "Stop",
+    // Pressing Esc ends the turn without a Stop.
+    "Interrupt",
+];
+
+/// The `-c` arguments that add Solo's hooks to a Codex session. The values
+/// are TOML with literal (single-quoted) strings only: Codex reads a value
+/// that isn't valid TOML as a plain string, silently.
+fn codex_hook_args(is_windows: bool) -> Vec<String> {
+    let command = if is_windows {
+        "%SOLO_AGENT_HOOK_COMMAND% --agent codex"
+    } else {
+        "\"$SOLO_AGENT_HOOK\" --agent codex"
+    };
+    // Codex allows Interrupt hooks 3 seconds at most; the hook takes a few
+    // milliseconds.
+    let groups = format!("[{{hooks=[{{type='command',command='{command}',timeout=3}}]}}]");
+    CODEX_HOOK_EVENTS
+        .iter()
+        .flat_map(|event| ["-c".to_string(), format!("hooks.{event}={groups}")])
+        .collect()
 }
 
 fn write_claude_code_settings(is_windows: bool) -> std::io::Result<String> {
@@ -280,34 +517,63 @@ impl AgentHookKind {
             AgentHookKind::Idle => "idle",
         }
     }
+
+    /// A kind by its name, or by the state it leads to (`working`,
+    /// `blocked`), as other tools name them.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "working" => Some(AgentHookKind::PromptSubmitted),
+            "blocked" => Some(AgentHookKind::NeedsInput),
+            text => AgentHookKind::ALL
+                .into_iter()
+                .find(|candidate| candidate.as_str() == text),
+        }
+    }
 }
 
 /// SOLO: A report from an AI agent's hook, sent as
-/// `OSC 6973 ; agent ; <kind> [; <ms since the epoch> [; <session id>]]`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `OSC 6973 ; agent ; <kind> [; <order> [; <session id> [; <agent>]]]`
+/// (documented in docs/agent-status-protocol.md).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentHook {
     pub kind: AgentHookKind,
-    /// When the hook started. Hooks run in the background and can arrive out
-    /// of order.
+    /// When the hook started (ms since the epoch), or any number that grows
+    /// with each report. Hooks run in the background and can arrive out of
+    /// order.
     pub sent_at_ms: Option<u64>,
     /// The agent's session (Claude Code's `session_id`), which tells which
     /// transcript is this terminal's.
     pub session_id: Option<AgentSessionId>,
+    /// What the agent calls itself, for programs Solo doesn't know as agents.
+    pub agent: Option<String>,
 }
+
+/// Longest agent name a report can give.
+const MAX_AGENT_NAME_CHARS: usize = 40;
 
 impl AgentHook {
     /// Parses the parameters after `agent`.
     pub fn parse(params: &[String]) -> Option<Self> {
         let (kind, rest) = params.split_first()?;
-        let kind = AgentHookKind::ALL
-            .into_iter()
-            .find(|candidate| candidate.as_str() == kind.trim())?;
+        let kind = AgentHookKind::parse(kind)?;
         let sent_at_ms = rest.first().and_then(|sent_at| sent_at.trim().parse().ok());
         let session_id = rest.get(1).and_then(|id| AgentSessionId::parse(id));
+        let agent = rest
+            .get(2)
+            .map(|name| name.trim())
+            .filter(|name| {
+                !name.is_empty()
+                    && name.chars().count() <= MAX_AGENT_NAME_CHARS
+                    && name.chars().all(|character| {
+                        character.is_alphanumeric() || matches!(character, '-' | '_' | '.' | ' ')
+                    })
+            })
+            .map(str::to_string);
         Some(Self {
             kind,
             sent_at_ms,
             session_id,
+            agent,
         })
     }
 }
@@ -417,9 +683,36 @@ pub struct ShellIntegration {
     shell: Option<String>,
     blocks: Vec<CommandBlock>,
     working_directory: Option<PathBuf>,
+    /// The nonce the shell was started with ([`SHELL_NONCE_ENV`]), `None` if
+    /// Solo didn't integrate it.
+    nonce: Option<String>,
+    /// The terminal's id ([`TERMINAL_ID_ENV`]).
+    terminal_id: Option<String>,
 }
 
 impl ShellIntegration {
+    pub fn new(nonce: Option<String>) -> Self {
+        Self {
+            nonce,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_terminal_id(mut self, terminal_id: Option<String>) -> Self {
+        self.terminal_id = terminal_id;
+        self
+    }
+
+    /// The id the terminal's shell got in [`TERMINAL_ID_ENV`].
+    pub fn terminal_id(&self) -> Option<&str> {
+        self.terminal_id.as_deref()
+    }
+
+    /// Whether a sequence came from the shell Solo integrated.
+    fn from_integration(&self, nonce: Option<&str>) -> bool {
+        self.nonce.is_some() && self.nonce.as_deref() == nonce
+    }
+
     /// Whether the shell has sent any marks, i.e. integration is working.
     pub fn is_active(&self) -> bool {
         !self.blocks.is_empty()
@@ -538,13 +831,19 @@ impl ShellIntegration {
                     }
                 }
             }
-            AlacShellMark::CommandLine(command) => {
+            AlacShellMark::CommandLine { command, nonce } => {
+                // What re-running a block runs: only from Solo's integration
+                // when it has one, not from output that looks like it.
+                if self.nonce.is_some() && !self.from_integration(nonce.as_deref()) {
+                    return;
+                }
                 if let Some(block) = self.blocks.last_mut() {
                     block.command = Some(command);
                 }
             }
-            AlacShellMark::Property { key, value } => {
-                if key == "Shell" {
+            AlacShellMark::Property { key, value, nonce } => {
+                // Completions run this program: only from Solo's integration.
+                if key == "Shell" && self.from_integration(nonce.as_deref()) {
                     self.shell = Some(value);
                 }
             }
@@ -615,7 +914,13 @@ mod tests {
         let mut integration = ShellIntegration::default();
         for (prompt, output, end) in [(0, 1, 3), (4, 5, 6)] {
             integration.handle_mark(AlacShellMark::PromptStart, prompt);
-            integration.handle_mark(AlacShellMark::CommandLine("ls".into()), prompt);
+            integration.handle_mark(
+                AlacShellMark::CommandLine {
+                    command: "ls".into(),
+                    nonce: None,
+                },
+                prompt,
+            );
             integration.handle_mark(AlacShellMark::CommandExecuted, output);
             integration.handle_mark(AlacShellMark::CommandFinished { exit_code: Some(0) }, end);
         }
@@ -652,7 +957,13 @@ mod tests {
     fn integrates_supported_shells_without_user_args() {
         let env = &mut HashMap::default();
         let shell = integrate_shell(Shell::System, "powershell.exe", true, env);
-        assert!(matches!(shell, Shell::WithArguments { ref args, .. } if args.len() == 4));
+        assert!(matches!(
+            shell,
+            Shell::WithArguments { ref args, .. }
+                if args[..3] == ["-NoLogo", "-NoExit", "-Command"]
+                    && args[3].contains("/powershell-integration-")
+                    && !args.iter().any(|arg| arg.contains("Encoded"))
+        ));
 
         let shell = integrate_shell(Shell::Program("bash".into()), "bash", false, env);
         assert!(matches!(shell, Shell::WithArguments { ref args, .. } if args[0] == "--rcfile"));
@@ -661,7 +972,13 @@ mod tests {
         assert!(
             matches!(shell, Shell::WithArguments { ref args, .. } if args[0] == "--init-command")
         );
-        assert!(env.is_empty());
+        // Only the nonce (and the hook program, when it's next to Solo):
+        // these shells take their scripts as arguments.
+        assert!(
+            env.keys()
+                .all(|key| key == SHELL_NONCE_ENV || key == AGENT_HOOK_ENV),
+            "{env:?}"
+        );
 
         for unsupported in ["wsl.exe", r"C:\Windows\System32\bash.exe"] {
             let shell = Shell::Program(unsupported.into());
@@ -682,6 +999,79 @@ mod tests {
         );
     }
 
+    /// The load command runs the script whatever the execution policy, from a
+    /// path with quotes and non-ASCII characters in it.
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "test")]
+    fn powershell_loads_scripts_under_a_restricted_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("it's 终端");
+        std::fs::create_dir_all(&directory).unwrap();
+        let script = directory.join("script.ps1");
+        std::fs::write(
+            &script,
+            "$global:solo = '已加载'\nWrite-Output \"loaded $global:solo\"\n",
+        )
+        .unwrap();
+        let path = script.to_string_lossy().replace('\\', "/");
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive"])
+            .args(["-ExecutionPolicy", "Restricted", "-Command"])
+            .arg(format!(
+                "{}; if ($global:solo -eq '已加载') {{ 'script-loaded' }}",
+                powershell_load_command(&path)
+            ))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("script-loaded"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn only_trusts_sequences_with_the_nonce() {
+        let shell = |value: &str, nonce: Option<&str>| AlacShellMark::Property {
+            key: "Shell".into(),
+            value: value.into(),
+            nonce: nonce.map(str::to_string),
+        };
+        let command = |command: &str, nonce: Option<&str>| AlacShellMark::CommandLine {
+            command: command.into(),
+            nonce: nonce.map(str::to_string),
+        };
+
+        let mut integration = ShellIntegration::new(Some("abc123".into()));
+        integration.handle_mark(AlacShellMark::PromptStart, 0);
+        integration.handle_mark(shell(r"C:\evil.exe", None), 0);
+        integration.handle_mark(shell(r"C:\evil.exe", Some("guess")), 0);
+        assert_eq!(integration.shell(), None);
+        integration.handle_mark(shell("pwsh.exe", Some("abc123")), 0);
+        assert_eq!(integration.shell(), Some("pwsh.exe"));
+        integration.handle_mark(command("rm -rf ~", None), 1);
+        assert_eq!(integration.blocks()[0].command, None);
+        integration.handle_mark(command("ls", Some("abc123")), 1);
+        assert_eq!(integration.blocks()[0].command.as_deref(), Some("ls"));
+
+        // Without Solo's integration, no shell to run is trusted.
+        let mut integration = ShellIntegration::new(None);
+        integration.handle_mark(shell("pwsh.exe", Some("abc123")), 0);
+        assert_eq!(integration.shell(), None);
+    }
+
+    #[test]
+    fn integrated_shells_get_a_nonce() {
+        let env = &mut HashMap::default();
+        integrate_shell(Shell::Program("bash".into()), "bash", false, env);
+        let nonce = env.get(SHELL_NONCE_ENV).cloned().unwrap();
+        assert_eq!(nonce.len(), 16);
+        integrate_shell(Shell::Program("bash".into()), "bash", false, env);
+        assert_ne!(env.get(SHELL_NONCE_ENV), Some(&nonce));
+    }
+
     #[test]
     fn parses_agent_hooks() {
         let params = |params: &[&str]| -> Vec<String> {
@@ -693,6 +1083,7 @@ mod tests {
                 kind: AgentHookKind::PromptSubmitted,
                 sent_at_ms: Some(1793624689993),
                 session_id: None,
+                agent: None,
             })
         );
         // `date` without %N leaves the time out.
@@ -702,6 +1093,7 @@ mod tests {
                 kind: AgentHookKind::Stopped,
                 sent_at_ms: None,
                 session_id: None,
+                agent: None,
             })
         );
         // The session id, added at the end.
@@ -724,12 +1116,79 @@ mod tests {
             Some(AgentHookKind::NeedsInput)
         );
         assert_eq!(AgentHook::parse(&params(&["dance", "1"])), None);
+        // The public protocol: states by name, a sequence number, an agent's
+        // name for programs Solo doesn't know.
+        let hook = AgentHook::parse(&params(&["working", "3", "", "my agent"])).unwrap();
+        assert_eq!(hook.kind, AgentHookKind::PromptSubmitted);
+        assert_eq!(hook.sent_at_ms, Some(3));
+        assert_eq!(hook.session_id, None);
+        assert_eq!(hook.agent.as_deref(), Some("my agent"));
+        assert_eq!(
+            AgentHook::parse(&params(&["blocked"])).map(|hook| hook.kind),
+            Some(AgentHookKind::NeedsInput)
+        );
+        for name in ["", "a\u{7}b", "evil;x", &"x".repeat(41)] {
+            assert_eq!(
+                AgentHook::parse(&params(&["idle", "1", "", name])).and_then(|hook| hook.agent),
+                None,
+                "{name:?}"
+            );
+        }
         assert_eq!(AgentHook::parse(&[]), None);
         for kind in AgentHookKind::ALL {
             assert_eq!(
                 AgentHook::parse(&params(&[kind.as_str()])).map(|hook| hook.kind),
                 Some(kind)
             );
+        }
+    }
+
+    #[test]
+    fn copilot_hooks_report_each_event() {
+        let hooks = copilot_hooks(r"C:\Program Files\it's\solo-agent-hook.exe");
+        let command = |event: &str, shell: &str| {
+            hooks["hooks"][event][0]["hooks"][0][shell]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            command("UserPromptSubmit", "powershell"),
+            r"& 'C:\Program Files\it''s\solo-agent-hook.exe' prompt --agent copilot"
+        );
+        assert_eq!(
+            command("Stop", "bash"),
+            r"'C:\Program Files\it'\''s\solo-agent-hook.exe' stop --agent copilot"
+        );
+        assert_eq!(
+            command("PermissionRequest", "powershell"),
+            r"& 'C:\Program Files\it''s\solo-agent-hook.exe' input --agent copilot"
+        );
+        assert_eq!(
+            command("SessionStart", "bash"),
+            r"'C:\Program Files\it'\''s\solo-agent-hook.exe' start --agent copilot"
+        );
+    }
+
+    #[test]
+    fn codex_hook_args_are_valid_toml() {
+        for is_windows in [true, false] {
+            let args = codex_hook_args(is_windows);
+            assert_eq!(args.len(), 2 * CODEX_HOOK_EVENTS.len());
+            for (pair, event) in args.chunks(2).zip(CODEX_HOOK_EVENTS) {
+                assert_eq!(pair[0], "-c");
+                let (key, value) = pair[1].split_once('=').unwrap();
+                assert_eq!(key, format!("hooks.{event}"));
+                // What Codex does with a `-c` value.
+                let parsed: toml::Table = toml::from_str(&format!("value = {value}")).unwrap();
+                let hook = &parsed["value"][0]["hooks"][0];
+                assert_eq!(hook["type"].as_str(), Some("command"));
+                assert_eq!(hook["timeout"].as_integer(), Some(3));
+                let command = hook["command"].as_str().unwrap();
+                assert!(command.ends_with(" --agent codex"), "{command}");
+                // Windows PowerShell drops double quotes from arguments.
+                assert_eq!(pair[1].contains('"'), !is_windows, "{}", pair[1]);
+            }
         }
     }
 

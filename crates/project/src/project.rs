@@ -4025,8 +4025,8 @@ impl Project {
                     cx.emit(Event::Toast {
                         notification_id: format!("local-tasks-{path:?}").into(),
                         link: Some(ToastLink {
-                            label: "Open Tasks Documentation",
-                            url: "https://zed.dev/docs/tasks",
+                            label: "Open Solo's Guide",
+                            url: util::i18n::guide_url(),
                         }),
                         message,
                     });

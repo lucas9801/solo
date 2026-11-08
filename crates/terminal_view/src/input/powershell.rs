@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
-use base64::Engine as _;
 use futures::channel::oneshot;
 use serde::Deserialize;
 
@@ -24,6 +23,10 @@ const RESPONSE_PREFIX: &str = "SOLO:";
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(3);
 /// Generators may call slow tools (cloud CLIs), so they get longer.
 const EXEC_TIMEOUT: Duration = Duration::from_secs(5);
+/// Added to a new process's first request, which waits for PowerShell to
+/// start and load the script: seconds on a cold or busy machine. Without it,
+/// a slow start timed out, and the restarted process timed out again.
+const STARTUP_ALLOWANCE: Duration = Duration::from_secs(15);
 
 pub struct PowerShellCompleter {
     program: String,
@@ -218,15 +221,23 @@ struct Process {
     deadline: Arc<Mutex<Option<Instant>>>,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    /// Whether a request has been answered, so PowerShell has started.
+    started: bool,
 }
 
 impl Process {
     fn exchange(&mut self, line: &str, timeout: Duration) -> Result<String> {
         writeln!(self.stdin, "{line}")?;
         self.stdin.flush()?;
+        let timeout = if self.started {
+            timeout
+        } else {
+            timeout + STARTUP_ALLOWANCE
+        };
         *self.deadline.lock().unwrap() = Some(Instant::now() + timeout);
         let result = self.read_response();
         *self.deadline.lock().unwrap() = None;
+        self.started |= result.is_ok();
         result
     }
 
@@ -253,16 +264,13 @@ impl Process {
     reason = "completion helpers only run on background threads"
 )]
 fn start_process(program: &str) -> Result<Process> {
-    let script: Vec<u8> = SCRIPT.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let script =
+        terminal::shell_integration::powershell_script_command("powershell-completer", SCRIPT)
+            .context("writing the PowerShell completer script")?;
     let mut command = Command::new(program);
     command
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-EncodedCommand",
-        ])
-        .arg(base64::engine::general_purpose::STANDARD.encode(script))
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+        .arg(script)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -278,6 +286,7 @@ fn start_process(program: &str) -> Result<Process> {
         deadline,
         stdin,
         stdout,
+        started: false,
     })
 }
 

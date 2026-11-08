@@ -16,8 +16,6 @@ use util::ResultExt;
 
 use super::QuickActionBar;
 
-const ZED_REPL_DOCUMENTATION: &str = "https://zed.dev/docs/repl";
-
 struct ReplMenuState {
     tooltip: SharedString,
     icon: IconName,
@@ -386,9 +384,7 @@ impl QuickActionBar {
                         .icon_size(ui::IconSize::Small)
                         .icon_color(Color::Muted)
                         .tooltip(Tooltip::text(tooltip))
-                        .on_click(|_, _window, cx| {
-                            cx.open_url(&format!("{}#installation", ZED_REPL_DOCUMENTATION))
-                        }),
+                        .on_click(|_, _window, cx| cx.open_url(util::i18n::guide_url())),
                 )
                 .into_any_element(),
         )

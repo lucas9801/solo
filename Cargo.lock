@@ -370,6 +370,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent_detection"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "regex",
+ "serde",
+ "toml 0.9.8",
+]
+
+[[package]]
 name = "agent_servers"
 version = "0.1.0"
 dependencies = [
@@ -1402,7 +1412,6 @@ name = "auto_update"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "client",
  "clock",
  "ctor",
@@ -1419,6 +1428,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "sha2",
  "smol",
  "tempfile",
  "util",
@@ -9686,6 +9696,7 @@ dependencies = [
  "gpui",
  "project",
  "ui",
+ "util",
  "workspace",
 ]
 
@@ -10594,9 +10605,11 @@ dependencies = [
  "language",
  "log",
  "markdown",
+ "menu",
  "project",
  "serde_json",
  "settings",
+ "similar",
  "theme",
  "theme_settings",
  "ui",
@@ -12079,6 +12092,7 @@ dependencies = [
  "ui",
  "util",
  "vim_mode_setting",
+ "which",
  "workspace",
  "zed_actions",
  "zlog",
@@ -16906,6 +16920,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "solo_terminal_host"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "solo_update_helper"
+version = "0.1.0"
+dependencies = [
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "spdx"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17970,6 +18000,7 @@ dependencies = [
  "libc",
  "log",
  "parking_lot",
+ "paths",
  "percent-encoding",
  "rand 0.9.4",
  "regex",
@@ -17980,9 +18011,11 @@ dependencies = [
  "settings",
  "sysinfo 0.39.6",
  "task",
+ "tempfile",
  "theme",
  "theme_settings",
  "thiserror 2.0.17",
+ "toml 0.9.8",
  "unicode-width 0.2.2",
  "url",
  "urlencoding",
@@ -18006,6 +18039,7 @@ dependencies = [
 name = "terminal_view"
 version = "0.1.0"
 dependencies = [
+ "agent_detection",
  "agent_sessions",
  "anyhow",
  "async-recursion",
@@ -18021,6 +18055,7 @@ dependencies = [
  "itertools 0.14.0",
  "language",
  "log",
+ "lsp",
  "markdown",
  "menu",
  "mermaid_render",
@@ -22441,7 +22476,7 @@ dependencies = [
 
 [[package]]
 name = "zed"
-version = "1.28.3"
+version = "2.0.0"
 dependencies = [
  "acp_thread",
  "acp_tools",
@@ -22553,6 +22588,7 @@ dependencies = [
  "project_symbols",
  "prompt_store",
  "proto",
+ "pulldown-cmark 0.13.4",
  "rayon",
  "recent_projects",
  "release_channel",

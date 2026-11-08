@@ -476,12 +476,22 @@ impl TerminalPanel {
                     workspace.update(cx, |workspace, cx| {
                         item.added_to_pane(workspace, pane.clone(), window, cx)
                     });
-                    // SOLO: once the dock has opened for the new terminal.
+                    // SOLO: once the dock has opened for the new terminal; not
+                    // in a workspace tab in the background, as one a terminal
+                    // moved to.
                     let workspace = workspace.downgrade();
                     window.defer(cx, move |window, cx| {
                         workspace
                             .update(cx, |workspace, cx| {
-                                workspace.focus_terminal_if_unfocused(window, cx)
+                                let is_shown = workspace
+                                    .multi_workspace()
+                                    .and_then(|multi_workspace| multi_workspace.upgrade())
+                                    .is_none_or(|multi_workspace| {
+                                        multi_workspace.read(cx).workspace() == &cx.entity()
+                                    });
+                                if is_shown {
+                                    workspace.focus_terminal_if_unfocused(window, cx)
+                                }
                             })
                             .ok();
                     });

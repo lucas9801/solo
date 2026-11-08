@@ -21,7 +21,7 @@ const MAX_COMMAND_CHARS: usize = 40;
 /// The command running in the terminal, and whether it's known to be a
 /// command rather than the shell itself: without shell integration only the
 /// foreground process is known, which is the shell while it waits.
-fn running_command(terminal: &Terminal) -> Option<(Option<String>, bool)> {
+pub(crate) fn running_command(terminal: &Terminal) -> Option<(Option<String>, bool)> {
     if let Some(task) = terminal.task() {
         if task.status != TaskStatus::Running {
             return None;
@@ -81,7 +81,10 @@ impl TerminalView {
                 .filter(|(_, status)| {
                     matches!(
                         status,
-                        AgentStatus::Working | AgentStatus::NeedsInput | AgentStatus::Idle
+                        AgentStatus::Working
+                            | AgentStatus::NeedsInput
+                            | AgentStatus::Idle
+                            | AgentStatus::Finished
                     )
                 })
                 .map(|(_, status)| status.label().into());
@@ -156,13 +159,19 @@ mod tests {
         assert_eq!(program(cx), None);
 
         // Output right after input is the program answering it, not working.
+        // (An agent without screen rules, whose status comes from its output.)
         std::thread::sleep(std::time::Duration::from_millis(500));
-        write(&terminal, RUN_CLAUDE, cx);
+        write(
+            &terminal,
+            b"aider
+]633;E;aider]133;C",
+            cx,
+        );
         write(&terminal, b"spinner", cx);
         assert_eq!(
             program(cx),
             Some(RunningProgram {
-                name: "claude".into(),
+                name: "aider".into(),
                 status: Some("Working".into()),
             })
         );

@@ -44,15 +44,28 @@ pub(crate) fn init(cx: &mut App) {
         let Some(workspace) = terminal_view.workspace.upgrade() else {
             return;
         };
-        let follower = WorkingDirectoryFollower::for_workspace(&workspace, cx);
         let view = cx.entity();
         let terminal = terminal_view.terminal.clone();
         let focus_handle = terminal_view.focus_handle.clone();
-        follower.update(cx, |follower, cx| {
-            follower.watch(&view, terminal, &focus_handle, window, cx)
-        });
+        watch(&view, terminal, focus_handle, &workspace, window, cx);
     })
     .detach();
+}
+
+/// Lets `workspace`'s follower follow the terminal of `view`, as when it moved
+/// there from another workspace.
+pub(crate) fn watch(
+    view: &Entity<TerminalView>,
+    terminal: Entity<Terminal>,
+    focus_handle: FocusHandle,
+    workspace: &Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let follower = WorkingDirectoryFollower::for_workspace(workspace, cx);
+    follower.update(cx, |follower, cx| {
+        follower.watch(view, terminal, &focus_handle, window, cx)
+    });
 }
 
 #[derive(Default)]
@@ -89,7 +102,7 @@ fn directory_to_follow(
 
 /// The directory the shell last reported at its prompt; the process's own
 /// directory only for shells that don't report one.
-fn terminal_directory(terminal: &Terminal) -> Option<PathBuf> {
+pub(crate) fn terminal_directory(terminal: &Terminal) -> Option<PathBuf> {
     terminal
         .shell_integration()
         .working_directory()
@@ -646,10 +659,7 @@ mod tests {
 
         follow(path!("/repos/solo/crates"), cx);
         assert_eq!(scoped_paths(&project, cx), vec![solo.clone()]);
-        assert_eq!(
-            worktree_paths(&project, cx),
-            vec![solo.clone(), godot]
-        );
+        assert_eq!(worktree_paths(&project, cx), vec![solo.clone(), godot]);
 
         // Coming back reuses the kept worktree, so its language servers keep
         // running.

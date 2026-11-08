@@ -28,11 +28,17 @@ pub(crate) type TreeId = String;
 /// Directories that aren't repositories are only snapshotted up to this many
 /// files: a home directory or a drive isn't a project.
 const MAX_FILES_OUTSIDE_REPOSITORY: usize = 20_000;
-/// Snapshot objects older than this are dropped the first time a store is
-/// opened in a process.
+/// A store nobody snapshotted with for this long is emptied the first time a
+/// process opens it.
 const MAX_STORE_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Touched by every snapshot: when the store was last used, by any Solo.
+const LAST_USED_FILE: &str = "last-used";
+/// Locked around git commands on a store, which Solos running side by side
+/// (other channels, before and after an update) share.
+const LOCK_FILE: &str = "lock";
 
-/// Git commands that share a store's index run one at a time.
+/// Git commands that share a store's index run one at a time, also within
+/// this process (file locks don't exclude threads holding other handles).
 static GIT_LOCK: Mutex<()> = Mutex::new(());
 /// Stores opened by this process, which keep their objects.
 static OPENED_STORES: LazyLock<Mutex<HashSet<PathBuf>>> =
@@ -122,9 +128,9 @@ impl SnapshotStore {
             .lock()
             .map_err(|_| anyhow!("snapshot stores lock poisoned"))?
             .insert(store_dir.clone());
-        if first_open && is_older_than(&store_dir, MAX_STORE_AGE) {
-            std::fs::remove_dir_all(&store_dir)
-                .with_context(|| format!("removing old snapshots in {store_dir:?}"))?;
+        std::fs::create_dir_all(&store_dir).with_context(|| format!("creating {store_dir:?}"))?;
+        if first_open && is_older_than(&store_dir.join(LAST_USED_FILE), MAX_STORE_AGE) {
+            empty_unused_store(&store_dir)?;
         }
         std::fs::create_dir_all(store_dir.join("objects"))
             .with_context(|| format!("creating {store_dir:?}"))?;
@@ -168,10 +174,26 @@ impl SnapshotStore {
         let _lock = GIT_LOCK
             .lock()
             .map_err(|_| anyhow!("snapshot lock poisoned"))?;
+        let _store_lock = self.lock_store()?;
         self.snapshot_locked()
     }
 
+    /// Excludes other processes from the store until the file is dropped.
+    fn lock_store(&self) -> Result<std::fs::File> {
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.store_dir.join(LOCK_FILE))
+            .context("opening the snapshot store's lock")?;
+        lock.lock().context("locking the snapshot store")?;
+        Ok(lock)
+    }
+
     fn snapshot_locked(&self) -> Result<TreeId> {
+        if let Err(error) = std::fs::write(self.store_dir.join(LAST_USED_FILE), b"") {
+            log::warn!("failed to mark {:?} as used: {error}", self.store_dir);
+        }
         let index = self.index_path();
         if !index.exists() {
             if let Some(seed) = self.seed_index.as_ref().filter(|seed| seed.exists()) {
@@ -242,6 +264,7 @@ impl SnapshotStore {
         let _lock = GIT_LOCK
             .lock()
             .map_err(|_| anyhow!("snapshot lock poisoned"))?;
+        let _store_lock = self.lock_store()?;
         let current = self.snapshot_locked()?;
         let changed = self.changed_files(target, &current)?;
 
@@ -424,9 +447,37 @@ fn store_name(work_tree: &Path) -> String {
     format!("{readable}-{hash:016x}")
 }
 
-fn is_older_than(directory: &Path, age: Duration) -> bool {
-    std::fs::metadata(directory)
-        .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()))
+/// Removes what an unused store holds, unless another process is using it
+/// right now. The lock file stays: it may be open elsewhere.
+fn empty_unused_store(store_dir: &Path) -> Result<()> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(store_dir.join(LOCK_FILE))
+        .context("opening the snapshot store's lock")?;
+    if lock.try_lock().is_err() {
+        return Ok(());
+    }
+    for name in ["objects", "repository", "index", "restore-index"] {
+        let path = store_dir.join(name);
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(error) = removed
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(error).with_context(|| format!("removing old snapshots in {path:?}"));
+        }
+    }
+    Ok(())
+}
+
+fn is_older_than(path: &Path, age: Duration) -> bool {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
         .ok()
         .and_then(|created| SystemTime::now().duration_since(created).ok())
         .is_some_and(|elapsed| elapsed > age)
@@ -618,6 +669,151 @@ mod tests {
             fs::read(repository.join("crlf.txt")).unwrap(),
             b"one\r\ntwo\r\n"
         );
+    }
+
+    /// Everything about the user's repository a snapshot or a restore must not
+    /// change: branches, HEAD, index, stash and objects.
+    fn repository_state(repository: &Path) -> Vec<String> {
+        vec![
+            git(repository, &["symbolic-ref", "HEAD"]),
+            git(repository, &["for-each-ref"]),
+            git(repository, &["stash", "list"]),
+            git(repository, &["ls-files", "--stage"]),
+            git(repository, &["count-objects", "-v"]),
+            git(repository, &["worktree", "list", "--porcelain"]),
+        ]
+    }
+
+    #[test]
+    fn test_restore_leaves_branches_index_and_stash_alone() {
+        let (_temp, repository, storage) = repository();
+        git(&repository, &["branch", "other"]);
+        fs::write(repository.join("a.txt"), "stashed\n").unwrap();
+        git(
+            &repository,
+            &["stash", "push", "--quiet", "-m", "user stash"],
+        );
+        fs::write(repository.join("src/b.txt"), "b\nstaged\n").unwrap();
+        git(&repository, &["add", "src/b.txt"]);
+        let state = repository_state(&repository);
+        let index = fs::read(repository.join(".git/index")).unwrap();
+
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let before = store.snapshot().unwrap();
+        fs::write(repository.join("a.txt"), "agent\n").unwrap();
+        fs::write(repository.join("src/b.txt"), "b\nstaged\nagent\n").unwrap();
+        fs::write(repository.join("new.txt"), "new\n").unwrap();
+        store.snapshot().unwrap();
+        let restored = store.restore(&before).unwrap();
+        store.restore(&restored.undo).unwrap();
+        store.restore(&before).unwrap();
+
+        assert_eq!(repository_state(&repository), state);
+        assert_eq!(fs::read(repository.join(".git/index")).unwrap(), index);
+        assert_eq!(
+            fs::read_to_string(repository.join("src/b.txt")).unwrap(),
+            "b\nstaged\n"
+        );
+        assert_eq!(
+            git(&repository, &["status", "--porcelain"]),
+            "M  src/b.txt\n"
+        );
+    }
+
+    #[test]
+    fn test_restore_untracked_binary_and_large_files() {
+        let (_temp, repository, storage) = repository();
+        let binary: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        // Bigger than any buffer git or a pipe might use on the way.
+        let large: Vec<u8> = (0..8 * 1024 * 1024u32)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        fs::write(repository.join("untracked.txt"), "untracked\n").unwrap();
+        fs::write(repository.join("image.bin"), &binary).unwrap();
+        fs::write(repository.join("large.bin"), &large).unwrap();
+        fs::write(repository.join("lf-only.txt"), "no\r\nconversion\n").unwrap();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let before = store.snapshot().unwrap();
+
+        fs::write(repository.join("untracked.txt"), "changed\n").unwrap();
+        fs::write(repository.join("image.bin"), b"\0\0").unwrap();
+        fs::remove_file(repository.join("large.bin")).unwrap();
+        fs::write(repository.join("lf-only.txt"), "changed\n").unwrap();
+        let after = store.snapshot().unwrap();
+        assert_eq!(
+            sorted(store.changed_files(&before, &after).unwrap()),
+            vec![
+                ("image.bin".to_string(), FileChange::Modified),
+                ("large.bin".to_string(), FileChange::Deleted),
+                ("lf-only.txt".to_string(), FileChange::Modified),
+                ("untracked.txt".to_string(), FileChange::Modified),
+            ]
+        );
+
+        let restored = store.restore(&before).unwrap();
+        assert_eq!(
+            fs::read_to_string(repository.join("untracked.txt")).unwrap(),
+            "untracked\n"
+        );
+        assert_eq!(fs::read(repository.join("image.bin")).unwrap(), binary);
+        assert_eq!(fs::read(repository.join("large.bin")).unwrap(), large);
+        assert_eq!(
+            fs::read(repository.join("lf-only.txt")).unwrap(),
+            b"no\r\nconversion\n"
+        );
+        // Restored untracked files stay untracked.
+        assert!(git(&repository, &["status", "--porcelain"]).contains("?? untracked.txt"),);
+
+        store.restore(&restored.undo).unwrap();
+        assert_eq!(fs::read(repository.join("image.bin")).unwrap(), b"\0\0");
+        assert!(!repository.join("large.bin").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_restore_symlinks() {
+        let (_temp, repository, storage) = repository();
+        std::os::unix::fs::symlink("a.txt", repository.join("link")).unwrap();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let before = store.snapshot().unwrap();
+
+        // The agent writes through the link, then replaces it with a file.
+        fs::write(repository.join("link"), "through the link\n").unwrap();
+        fs::remove_file(repository.join("link")).unwrap();
+        fs::write(repository.join("link"), "a file now\n").unwrap();
+        store.restore(&before).unwrap();
+
+        let link = fs::symlink_metadata(repository.join("link")).unwrap();
+        assert!(link.file_type().is_symlink());
+        assert_eq!(
+            fs::read_link(repository.join("link")).unwrap(),
+            Path::new("a.txt")
+        );
+        assert_eq!(
+            fs::read_to_string(repository.join("a.txt")).unwrap(),
+            "one\ntwo\nthree\n"
+        );
+    }
+
+    #[test]
+    fn test_unused_stores_are_emptied_unless_in_use() {
+        let (_temp, repository, storage) = repository();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let tree = store.snapshot().unwrap();
+        assert!(store.store_dir.join(LAST_USED_FILE).exists());
+
+        // Another Solo is snapshotting right now: nothing goes.
+        let in_use = store.lock_store().unwrap();
+        empty_unused_store(&store.store_dir).unwrap();
+        assert!(store.store_dir.join("index").exists());
+        drop(in_use);
+
+        empty_unused_store(&store.store_dir).unwrap();
+        assert!(!store.store_dir.join("index").exists());
+        assert!(!store.store_dir.join("objects").exists());
+        // The store works again once reopened.
+        std::fs::create_dir_all(store.store_dir.join("objects")).unwrap();
+        assert_eq!(store.snapshot().unwrap(), tree);
     }
 
     #[test]

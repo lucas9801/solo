@@ -22,4 +22,5 @@ editor.workspace = true
 gpui.workspace = true
 project.workspace = true
 ui.workspace = true
+util.workspace = true
 workspace.workspace = true

@@ -26,7 +26,8 @@ use crate::tty::windows::blocking::{UnblockedReader, UnblockedWriter};
 use crate::tty::windows::child::ChildExitWatcher;
 use crate::tty::windows::{Pty, cmdline, win32_string};
 
-const PIPE_CAPACITY: usize = crate::event_loop::READ_BUFFER_SIZE;
+// SOLO: shared with hosted ptys (`new_hosted`).
+pub(super) const PIPE_CAPACITY: usize = crate::event_loop::READ_BUFFER_SIZE;
 
 /// Load the pseudoconsole API from conpty.dll if possible, otherwise use the
 /// standard Windows API.

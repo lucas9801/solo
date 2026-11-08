@@ -72,6 +72,13 @@ pub enum CliRequest {
     SetOpenBehavior {
         behavior: CliBehaviorSetting,
     },
+    /// SOLO: `solo-cli agent <args>`, from the terminal `caller`
+    /// (`SOLO_TERMINAL_ID`) if it runs in one.
+    Agent {
+        args: Vec<String>,
+        caller: Option<String>,
+        cwd: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

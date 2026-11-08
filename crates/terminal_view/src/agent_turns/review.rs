@@ -2,12 +2,14 @@
 //! diff against its snapshot from before the turn, with hunks to keep or
 //! reject, and the turns to roll back.
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunkStatus};
+use collections::HashSet;
+use editor::display_map::{BlockPlacement, BlockProperties, BlockStyle, CustomBlockId};
 use editor::{
     DiffHunkRenderer, Editor, EditorEvent, MultiBuffer, PathKey, multibuffer_context_lines,
 };
@@ -17,17 +19,21 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter, FocusHandle,
     Focusable, Pixels, Subscription, Task, WeakEntity, Window,
 };
-use language::{Buffer, Capability, OffsetRangeExt as _, Point};
-use project::{Project, RemoveOptions};
+use language::{
+    Buffer, BufferSnapshot, Capability, OffsetRangeExt as _, Point, ToOffset as _, ToPoint as _,
+};
+use project::{Project, ProjectPath, RemoveOptions};
 use ui::{Divider, Tooltip, prelude::*};
 use util::ResultExt as _;
 use util::i18n::{is_chinese, tr};
 use util::rel_path::RelPath;
 use workspace::{
-    Item, Workspace,
+    Item, ItemNavHistory, Workspace,
     item::{ItemEvent, TabContentParams},
+    searchable::SearchableItemHandle,
 };
 
+use super::diagnostics::{TurnDiagnostic, TurnDiagnostics};
 use super::snapshot::{ChangedFile, FileChange, SnapshotStore, TreeId};
 use super::{AgentTurn, AgentTurns};
 use crate::TerminalView;
@@ -54,6 +60,8 @@ pub(crate) struct LoadedFile {
     pub abs_path: PathBuf,
     /// The contents before, or `None` if it didn't exist.
     pub base: Option<String>,
+    /// The contents the turn left, or `None` if it left no file.
+    pub after: Option<String>,
     pub buffer: Entity<Buffer>,
 }
 
@@ -71,6 +79,10 @@ struct ReviewFile {
     /// What the file is compared with: its contents before the turn, with the
     /// hunks kept since. `None` if it didn't exist.
     base: Option<Arc<str>>,
+    /// The file as the turn left it, with the hunks rejected since (`None`
+    /// if it left no file). Anything else in it is someone else's edit, which
+    /// rejecting mustn't overwrite.
+    expected: Option<Arc<str>>,
     /// Updates to the diff run one after another.
     diff_update: Shared<Task<()>>,
     _subscriptions: [Subscription; 2],
@@ -92,6 +104,8 @@ pub(crate) struct AgentTurnReview {
     show_history: bool,
     /// Review comments written in the editor, not sent yet.
     comment_count: usize,
+    /// The lines above hunks naming the function or type they're in.
+    scope_blocks: HashSet<CustomBlockId>,
     load_task: Task<()>,
     action_task: Task<()>,
 }
@@ -141,12 +155,14 @@ impl AgentTurnReview {
             editor.set_read_only(true);
             editor.set_should_serialize(false, cx);
             editor.disable_code_lens(cx);
-            editor.disable_inline_diagnostics();
             // Comments go to the agent in the terminal, not to an agent panel.
             editor.set_show_diff_review_button(true, cx);
             editor.register_addon(editor::DiffReviewWithoutFlag);
             editor
         });
+        if let Some(turns) = AgentTurns::try_global(cx).cloned() {
+            cx.observe(&turns, |_, _, cx| cx.notify()).detach();
+        }
         let renderer: Arc<dyn DiffHunkRenderer> = Arc::new(TurnHunkRenderer {
             review: cx.weak_entity(),
         });
@@ -176,6 +192,7 @@ impl AgentTurnReview {
             status: None,
             show_history: false,
             comment_count: 0,
+            scope_blocks: HashSet::default(),
             load_task: Task::ready(()),
             action_task: Task::ready(()),
         };
@@ -225,13 +242,14 @@ impl AgentTurnReview {
                 .background_spawn(async move {
                     // Rolling back discards everything since the turn started,
                     // not only what the turn changed.
-                    let changed = if confirming {
+                    let (after, changed) = if confirming {
                         let now = store.snapshot()?;
-                        store.changed_files(&before, &now)?
+                        let changed = store.changed_files(&before, &now)?;
+                        (now, changed)
                     } else {
-                        turn.changed.clone()
+                        (turn.after.clone(), turn.changed.clone())
                     };
-                    anyhow::Ok(load_bases(&store, &before, changed))
+                    anyhow::Ok(load_bases(&store, &before, &after, changed))
                 })
                 .await;
             let (bases, mut skipped) = match loaded {
@@ -247,7 +265,7 @@ impl AgentTurnReview {
                 }
             };
             let mut files = Vec::new();
-            for (path, abs_path, base) in bases {
+            for (path, abs_path, base, after) in bases {
                 let buffer = project
                     .update(cx, |project, cx| project.open_local_buffer(&abs_path, cx))
                     .await;
@@ -256,6 +274,7 @@ impl AgentTurnReview {
                         path,
                         abs_path,
                         base,
+                        after,
                         buffer,
                     }),
                     Err(error) => {
@@ -299,6 +318,8 @@ impl AgentTurnReview {
                             this.update_diff(ix, cx);
                         }
                     }
+                    // The outline the scope labels come from may have changed.
+                    language::BufferEvent::Reparsed => this.update_scope_labels(cx),
                     _ => {}
                 }),
                 cx.subscribe(&diff, move |this, _, event, cx| {
@@ -319,6 +340,7 @@ impl AgentTurnReview {
                 buffer: file.buffer,
                 diff,
                 base: file.base.map(|base| base.into()),
+                expected: file.after.map(|after| normalized_text(after).into()),
                 diff_update: Task::ready(()).shared(),
                 _subscriptions: subscriptions,
             });
@@ -400,7 +422,57 @@ impl AgentTurnReview {
                 multibuffer.add_diff(diff, cx);
             }
         });
+        self.update_scope_labels(cx);
         cx.notify();
+    }
+
+    /// Puts a line above each hunk naming the functions or types it's in,
+    /// to tell what a change touches without scrolling up for it.
+    fn update_scope_labels(&mut self, cx: &mut Context<Self>) {
+        let context_lines = multibuffer_context_lines(cx);
+        let snapshot = self.multibuffer.read(cx).snapshot(cx);
+        let mut labels: Vec<(editor::Anchor, String)> = Vec::new();
+        for hunk in snapshot.diff_hunks() {
+            let Some(ix) = self.file_index(hunk.buffer_id, cx) else {
+                continue;
+            };
+            let buffer = self.files[ix].buffer.read(cx).snapshot();
+            let start = hunk.buffer_range.start.to_point(&buffer);
+            if let Some(scope) = hunk_scope(&buffer, start, context_lines) {
+                labels.push((hunk.multi_buffer_range.start, scope));
+            }
+        }
+        let old = std::mem::take(&mut self.scope_blocks);
+        self.scope_blocks = self.editor.update(cx, |editor, cx| {
+            editor.remove_blocks(old, None, cx);
+            let blocks = labels.into_iter().map(|(anchor, scope)| BlockProperties {
+                placement: BlockPlacement::Above(anchor),
+                height: Some(1),
+                style: BlockStyle::Flex,
+                render: Arc::new(move |cx| {
+                    let font_size = cx
+                        .editor_style
+                        .text
+                        .font_size
+                        .to_pixels(cx.window.rem_size());
+                    h_flex()
+                        .h(cx.line_height)
+                        .pl(cx.anchor_x)
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .font(cx.editor_style.text.font())
+                                .text_size(font_size * 0.9)
+                                .text_color(cx.app.theme().colors().text_muted)
+                                .truncate()
+                                .child(scope.clone()),
+                        )
+                        .into_any_element()
+                }),
+                priority: 0,
+            });
+            editor.insert_blocks(blocks, None, cx).into_iter().collect()
+        });
     }
 
     /// The hunks touching `ranges`, by file.
@@ -444,8 +516,13 @@ impl AgentTurnReview {
             return;
         }
         let mut deleted = Vec::new();
+        let mut changed_since = Vec::new();
         for (ix, hunks) in self.hunks_by_file(&ranges, cx) {
             let file = &self.files[ix];
+            if !file.is_as_the_turn_left_it(cx) {
+                changed_since.push(file.path_key.path.as_unix_str().to_string());
+                continue;
+            }
             if file.base.is_none() {
                 // The turn created the file.
                 deleted.push(ix);
@@ -475,11 +552,34 @@ impl AgentTurnReview {
                 })
                 .collect();
             let buffer = file.buffer.clone();
-            buffer.update(cx, |buffer, cx| buffer.edit(edits, None, cx));
+            let text = buffer.update(cx, |buffer, cx| {
+                buffer.edit(edits, None, cx);
+                buffer.text()
+            });
+            self.files[ix].expected = Some(text.into());
             self.project
                 .update(cx, |project, cx| project.save_buffer(buffer, cx))
                 .detach_and_log_err(cx);
         }
+        self.status = if changed_since.is_empty() {
+            None
+        } else if is_chinese() {
+            Some(
+                format!(
+                    "这一轮之后又有人改过 {}，为了不覆盖这些改动，没有拒绝其中的改动。请手动修改。",
+                    changed_since.join("、")
+                )
+                .into(),
+            )
+        } else {
+            Some(
+                format!(
+                    "{} changed after the turn, so its changes weren't rejected, not to overwrite those edits. Edit it by hand.",
+                    changed_since.join(", ")
+                )
+                .into(),
+            )
+        };
         for ix in deleted.into_iter().rev() {
             let file = self.files.remove(ix);
             self.multibuffer.update(cx, |multibuffer, cx| {
@@ -640,6 +740,48 @@ impl AgentTurnReview {
             return;
         }
         let message = review_message(&comments);
+        let count = comments.len();
+        let sent = if is_chinese() {
+            format!("已把 {count} 条批注发送给 agent。")
+        } else if count == 1 {
+            "Sent 1 comment to the agent.".to_string()
+        } else {
+            format!("Sent {count} comments to the agent.")
+        };
+        self.paste_to_agent(message, sent, window, cx);
+    }
+
+    /// Sends the problems the turn added to its agent, to fix them.
+    fn send_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Mode::Turn(number) = self.mode else {
+            return;
+        };
+        let Some(turn) = self.turn(number, cx) else {
+            return;
+        };
+        let TurnDiagnostics::Checked { added, .. } = &turn.diagnostics else {
+            return;
+        };
+        if added.is_empty() {
+            return;
+        }
+        let message = diagnostics_message(added, &turn.directory);
+        let sent = tr(
+            "Sent the new problems to the agent.",
+            "已把新增的问题发送给 agent。",
+        )
+        .to_string();
+        self.paste_to_agent(message, sent, window, cx);
+    }
+
+    /// Pastes `message` into the agent's prompt, or else copies it.
+    fn paste_to_agent(
+        &mut self,
+        message: String,
+        sent: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let terminal_view = self.terminal_view.upgrade();
         let workspace = terminal_view
             .as_ref()
@@ -648,31 +790,251 @@ impl AgentTurnReview {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
             self.status = Some(
                 tr(
-                    "The agent's terminal is gone; copied the comments instead.",
-                    "agent 终端已关闭，已改为复制批注。",
+                    "The agent's terminal is gone; copied the message instead.",
+                    "agent 终端已关闭，已改为复制。",
                 )
                 .into(),
             );
             cx.notify();
             return;
         };
+        if !crate::agent_context::can_paste_to_agent(terminal_view.read(cx), &message, cx) {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
+            self.status = Some(
+                tr(
+                    "The agent isn't running in its terminal, or isn't taking pasted text; copied the message instead.",
+                    "agent 已不在终端里运行，或现在不接受粘贴，已改为复制。",
+                )
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
         terminal_view.update(cx, |view, cx| {
             view.terminal
                 .update(cx, |terminal, _| terminal.paste(&message))
         });
-        let count = comments.len();
-        self.status = Some(if is_chinese() {
-            format!("已把 {count} 条批注发送给 agent。").into()
-        } else if count == 1 {
-            "Sent 1 comment to the agent.".into()
-        } else {
-            format!("Sent {count} comments to the agent.").into()
-        });
+        self.status = Some(sent.into());
         cx.notify();
         // Switching to the terminal deactivates this view, which is being updated.
         window.defer(cx, move |window, cx| {
             crate::agent_context::reveal_terminal_view(&workspace, &terminal_view, window, cx)
         });
+    }
+
+    /// Opens a diagnostic's file at its position.
+    fn open_diagnostic(
+        &self,
+        diagnostic: &TurnDiagnostic,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self
+            .terminal_view
+            .upgrade()
+            .and_then(|view| view.read(cx).workspace.upgrade())
+        else {
+            return;
+        };
+        let point = Point::new(
+            diagnostic.line.saturating_sub(1),
+            diagnostic.column.saturating_sub(1),
+        );
+        let opened = workspace.update(cx, |workspace, cx| {
+            workspace.open_abs_path(
+                diagnostic.path.clone(),
+                workspace::OpenOptions::default(),
+                window,
+                cx,
+            )
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(item) = opened.await else {
+                return;
+            };
+            if let Ok(Some(editor)) = cx.update(|_, cx| item.act_as::<Editor>(cx)) {
+                editor
+                    .update_in(cx, |editor, window, cx| {
+                        editor.go_to_singleton_buffer_point(point, window, cx)
+                    })
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// What the turn did to the language servers' diagnostics.
+    fn render_diagnostics(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let Mode::Turn(number) = self.mode else {
+            return None;
+        };
+        let turn = self.turn(number, cx)?;
+        let chinese = is_chinese();
+        let muted = |text: String| {
+            Some(
+                h_flex()
+                    .px_3()
+                    .py_1()
+                    .child(Label::new(text).size(LabelSize::Small).color(Color::Muted))
+                    .into_any_element(),
+            )
+        };
+        let (added, added_uncertain, fixed_errors) = match &turn.diagnostics {
+            TurnDiagnostics::Checking => {
+                return muted(tr("Checking diagnostics…", "正在检查诊断…").to_string());
+            }
+            TurnDiagnostics::Unchecked => {
+                return muted(
+                    tr(
+                        "Diagnostics: not checked (no language server, or it didn't finish)",
+                        "诊断：未检查（没有语言服务器，或它没有及时完成）",
+                    )
+                    .to_string(),
+                );
+            }
+            TurnDiagnostics::Checked {
+                added,
+                added_uncertain,
+                fixed_errors,
+            } => (added, *added_uncertain, *fixed_errors),
+        };
+        let errors = added
+            .iter()
+            .filter(|diagnostic| diagnostic.is_error)
+            .count();
+        let warnings = added.len() - errors;
+        if added.is_empty() && added_uncertain == 0 {
+            let text = match (fixed_errors, chinese) {
+                (0, true) => "诊断：没有新的错误或警告".to_string(),
+                (0, false) => "Diagnostics: no new errors or warnings".to_string(),
+                (fixed, true) => format!("诊断：没有新问题，修掉了 {fixed} 个错误"),
+                (fixed, false) => format!("Diagnostics: nothing new, {fixed} errors fixed"),
+            };
+            return muted(text);
+        }
+        let summary = if chinese {
+            format!(
+                "这一轮新增 {} 个错误、{warnings} 个警告，修掉了 {fixed_errors} 个错误",
+                errors + added_uncertain
+            )
+        } else {
+            format!(
+                "This turn added {} errors and {warnings} warnings, and fixed {fixed_errors} errors",
+                errors + added_uncertain
+            )
+        };
+        const MAX_SHOWN: usize = 20;
+        let rows = added
+            .iter()
+            .take(MAX_SHOWN)
+            .enumerate()
+            .map(|(ix, diagnostic)| {
+                let path = diagnostic
+                    .path
+                    .strip_prefix(&turn.directory)
+                    .unwrap_or(&diagnostic.path)
+                    .display()
+                    .to_string();
+                let location = format!("{path}:{}:{}", diagnostic.line, diagnostic.column);
+                let message = diagnostic
+                    .message
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                let target = diagnostic.clone();
+                h_flex()
+                    .id(("turn-diagnostic", ix))
+                    .gap_2()
+                    .px_3()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(cx.theme().colors().element_hover))
+                    .child(
+                        Icon::new(if diagnostic.is_error {
+                            IconName::XCircle
+                        } else {
+                            IconName::Warning
+                        })
+                        .size(IconSize::Small)
+                        .color(if diagnostic.is_error {
+                            Color::Error
+                        } else {
+                            Color::Warning
+                        }),
+                    )
+                    .child(
+                        Label::new(location)
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(Label::new(message).size(LabelSize::Small).truncate())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_diagnostic(&target, window, cx)
+                    }))
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let more = added.len().saturating_sub(MAX_SHOWN);
+        Some(
+            v_flex()
+                .py_1()
+                .gap_0p5()
+                .child(
+                    h_flex()
+                        .px_3()
+                        .gap_2()
+                        .child(Label::new(summary).size(LabelSize::Small))
+                        .when(!added.is_empty(), |this| {
+                            this.child(
+                                Button::new(
+                                    "send-diagnostics",
+                                    tr("Send to Agent", "发给 agent"),
+                                )
+                                .label_size(LabelSize::Small)
+                                .tooltip(Tooltip::text(tr(
+                                    "Paste the new problems into the agent's terminal to fix them",
+                                    "把新增的问题粘贴到 agent 终端，让它修复",
+                                )))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.send_diagnostics(window, cx)
+                                })),
+                            )
+                        }),
+                )
+                .children(rows)
+                .when(more > 0, |this| {
+                    this.child(
+                        h_flex().px_3().child(
+                            Label::new(if chinese {
+                                format!("还有 {more} 个")
+                            } else {
+                                format!("and {more} more")
+                            })
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                        ),
+                    )
+                })
+                .when(added_uncertain > 0, |this| {
+                    this.child(
+                        h_flex().px_3().child(
+                            Label::new(if chinese {
+                                format!(
+                                    "另有 {added_uncertain} 个新错误在改动前没有打开的文件里，分不出是哪几个"
+                                )
+                            } else {
+                                format!(
+                                    "and {added_uncertain} more errors in files that weren't open before the turn, which can't be told apart from the old ones"
+                                )
+                            })
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                        ),
+                    )
+                })
+                .child(Divider::horizontal())
+                .into_any_element(),
+        )
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -905,32 +1267,131 @@ impl AgentTurnReview {
     }
 }
 
-/// The text files among `changed`, with their contents before; and how many
-/// weren't text.
+impl ReviewFile {
+    /// Whether nothing but the review changed the file since the turn, and
+    /// its buffer has no unsaved edits.
+    fn is_as_the_turn_left_it(&self, cx: &App) -> bool {
+        let buffer = self.buffer.read(cx);
+        if buffer.is_dirty() || buffer.has_conflict() {
+            return false;
+        }
+        match &self.expected {
+            Some(expected) => buffer.text() == **expected,
+            None => buffer.len() == 0,
+        }
+    }
+}
+
+/// Text as a buffer holds it: without a byte order mark, with `\n` line
+/// endings.
+/// The functions or types a hunk starting at `start` is in, outermost first,
+/// unless the innermost one starts close enough above to show in the hunk's
+/// context lines anyway.
+fn hunk_scope(buffer: &BufferSnapshot, start: Point, context_lines: u32) -> Option<String> {
+    let offset = start.to_offset(buffer);
+    let mut scopes = buffer.outline_items_containing(offset..offset, false, None);
+    // Only what encloses the hunk, not what it begins.
+    scopes.retain(|item| {
+        item.range.start.to_point(buffer).row < start.row
+            && item.range.end.to_offset(buffer) > offset
+    });
+    scopes.sort_by_key(|item| item.depth);
+    let innermost = scopes.last()?;
+    if innermost.range.start.to_point(buffer).row + context_lines >= start.row {
+        return None;
+    }
+    Some(
+        scopes
+            .iter()
+            .map(|item| item.text.as_ref())
+            .collect::<Vec<_>>()
+            .join(" › "),
+    )
+}
+
+fn normalized_text(text: String) -> String {
+    let mut text = match text.strip_prefix('\u{feff}') {
+        Some(text) => text.to_string(),
+        None => text,
+    };
+    language::LineEnding::normalize(&mut text);
+    text
+}
+
+/// A changed file's path, absolute path, contents before and contents after.
+type FileContents = (String, PathBuf, Option<String>, Option<String>);
+
+/// The message that asks the agent to fix the problems its turn added.
+fn diagnostics_message(diagnostics: &[TurnDiagnostic], directory: &std::path::Path) -> String {
+    let mut message = String::from(tr(
+        "Your last turn added these problems; please fix them:\n",
+        "你上一轮的改动引入了下面这些问题，请修复：\n",
+    ));
+    for diagnostic in diagnostics {
+        let path = diagnostic
+            .path
+            .strip_prefix(directory)
+            .unwrap_or(&diagnostic.path)
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        let severity = if diagnostic.is_error {
+            "error"
+        } else {
+            "warning"
+        };
+        let source = diagnostic
+            .source
+            .as_deref()
+            .map(|source| format!(" [{source}]"))
+            .unwrap_or_default();
+        let text = diagnostic.message.trim_end().replace('\n', "\n  ");
+        message.push_str(&format!(
+            "- {path}:{}:{} {severity}{source}: {text}\n",
+            diagnostic.line, diagnostic.column
+        ));
+    }
+    message
+}
+
+/// The text files among `changed`, with their contents before `before` and
+/// in `after`; and how many weren't text.
 fn load_bases(
     store: &SnapshotStore,
     before: &str,
+    after: &str,
     changed: Vec<ChangedFile>,
-) -> (Vec<(String, PathBuf, Option<String>)>, usize) {
+) -> (Vec<FileContents>, usize) {
+    let text_in = |tree: &str, path: &str| {
+        store
+            .file_contents(tree, path)
+            .log_err()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|text| !text.contains('\0'))
+    };
     let mut skipped = 0;
     let mut files = Vec::new();
     for file in changed {
         let base = if file.change == FileChange::Added {
             None
         } else {
-            let text = store
-                .file_contents(before, &file.path)
-                .log_err()
-                .and_then(|bytes| String::from_utf8(bytes).ok())
-                .filter(|text| !text.contains('\0'));
-            let Some(text) = text else {
+            let Some(text) = text_in(before, &file.path) else {
+                skipped += 1;
+                continue;
+            };
+            Some(text)
+        };
+        let after = if file.change == FileChange::Deleted {
+            None
+        } else {
+            let Some(text) = text_in(after, &file.path) else {
                 skipped += 1;
                 continue;
             };
             Some(text)
         };
         let abs_path = store.abs_path(&file.path);
-        files.push((file.path, abs_path, base));
+        files.push((file.path, abs_path, base, after));
     }
     (files, skipped)
 }
@@ -1125,6 +1586,56 @@ impl Item for AgentTurnReview {
             .update(cx, |editor, cx| editor.deactivated(window, cx));
     }
 
+    // Go to definition, find references and the way back need the editor to
+    // know its workspace and history.
+    fn added_to_workspace(
+        &mut self,
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            editor.added_to_workspace(workspace, window, cx)
+        });
+    }
+
+    fn set_nav_history(
+        &mut self,
+        nav_history: ItemNavHistory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            Item::set_nav_history(editor, nav_history, window, cx)
+        });
+    }
+
+    fn navigate(
+        &mut self,
+        data: Arc<dyn Any + Send>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.editor
+            .update(cx, |editor, cx| editor.navigate(data, window, cx))
+    }
+
+    fn as_searchable(&self, _: &Entity<Self>, _: &App) -> Option<Box<dyn SearchableItemHandle>> {
+        Some(Box::new(self.editor.clone()))
+    }
+
+    fn for_each_project_item(
+        &self,
+        cx: &App,
+        f: &mut dyn FnMut(EntityId, &dyn project::ProjectItem),
+    ) {
+        self.editor.read(cx).for_each_project_item(cx, f)
+    }
+
+    fn active_project_path(&self, cx: &App) -> Option<ProjectPath> {
+        self.editor.read(cx).active_project_path(cx)
+    }
+
     fn act_as_type<'a>(
         &'a self,
         type_id: TypeId,
@@ -1149,6 +1660,7 @@ impl Render for AgentTurnReview {
             .track_focus(&self.focus_handle)
             .bg(cx.theme().colors().editor_background)
             .child(self.render_header(cx))
+            .children(self.render_diagnostics(cx))
             .child(if empty {
                 let message = if self.loading {
                     tr("Loading…", "正在加载…")
@@ -1176,6 +1688,8 @@ impl Render for AgentTurnReview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use editor::ToPoint as _;
+    use futures::StreamExt as _;
     use gpui::{TestAppContext, VisualTestContext};
     use project::{FakeFs, Fs as _};
     use serde_json::json;
@@ -1190,6 +1704,30 @@ mod tests {
             editor::init(cx);
             crate::init(cx);
         });
+    }
+
+    #[test]
+    fn test_diagnostics_message() {
+        let directory = PathBuf::from(path!("/project"));
+        let message = diagnostics_message(
+            &[TurnDiagnostic {
+                path: directory.join("src").join("main.rs"),
+                line: 3,
+                column: 9,
+                is_error: true,
+                message: "mismatched types\nexpected u32".into(),
+                source: Some("rustc".into()),
+            }],
+            &directory,
+        );
+        let heading = tr(
+            "Your last turn added these problems; please fix them:\n",
+            "你上一轮的改动引入了下面这些问题，请修复：\n",
+        );
+        assert_eq!(
+            message,
+            format!("{heading}- src/main.rs:3:9 error [rustc]: mismatched types\n  expected u32\n")
+        );
     }
 
     #[test]
@@ -1220,21 +1758,37 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    async fn test_turn_review_reject_and_keep(cx: &mut TestAppContext) {
+    /// A review of a turn that left `/project` as `tree`, changing the files
+    /// in `bases` from those contents (`None`: the turn created the file).
+    async fn open_review<'a>(
+        cx: &'a mut TestAppContext,
+        tree: serde_json::Value,
+        bases: &[(&str, Option<&str>)],
+    ) -> (
+        Arc<FakeFs>,
+        Entity<AgentTurnReview>,
+        &'a mut VisualTestContext,
+    ) {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
-        // As the agent left them; the bases are as they were before its turn.
-        fs.insert_tree(
-            path!("/project"),
-            json!({
-                "a.txt": "one\nTWO\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n",
-                "b.txt": "b changed\n",
-                "c.txt": "created\n",
-            }),
-        )
-        .await;
+        fs.insert_tree(path!("/project"), tree).await;
         let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        let (_, review, cx) = show_review(project, &fs, bases, cx).await;
+        (fs, review, cx)
+    }
+
+    /// Shows the turn that changed the files in `bases` of `project`, in a
+    /// workspace, as opening it does.
+    async fn show_review<'a>(
+        project: Entity<Project>,
+        fs: &Arc<FakeFs>,
+        bases: &[(&str, Option<&str>)],
+        cx: &'a mut TestAppContext,
+    ) -> (
+        Entity<Workspace>,
+        Entity<AgentTurnReview>,
+        &'a mut VisualTestContext,
+    ) {
         let (workspace, cx) =
             cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let terminal_view = workspace.update_in(cx, |workspace, window, cx| {
@@ -1262,15 +1816,9 @@ mod tests {
         });
 
         let mut files = Vec::new();
-        for (name, base) in [
-            (
-                "a.txt",
-                Some("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n"),
-            ),
-            ("b.txt", Some("b\n")),
-            ("c.txt", None),
-        ] {
+        for (name, base) in bases {
             let abs_path = PathBuf::from(path!("/project")).join(name);
+            let after = fs.load(&abs_path).await.ok();
             let buffer = project
                 .update(cx, |project, cx| project.open_local_buffer(&abs_path, cx))
                 .await
@@ -1279,14 +1827,143 @@ mod tests {
                 path: name.to_string(),
                 abs_path,
                 base: base.map(str::to_string),
+                after,
                 buffer,
             });
         }
         let review = cx.new_window_entity(|window, cx| {
             AgentTurnReview::new(terminal_view, project.clone(), None, window, cx)
         });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_item_to_active_pane(Box::new(review.clone()), None, true, window, cx)
+        });
         review.update(cx, |review, cx| review.set_files(files, 0, cx));
         cx.run_until_parked();
+        (workspace, review, cx)
+    }
+
+    #[gpui::test]
+    async fn test_hunk_scope(cx: &mut TestAppContext) {
+        let text = "struct A;\n\nimpl A {\n    fn one(&self) {\n        let a = 1;\n        let b = 2;\n        let c = 3;\n        let d = 4;\n        let e = 5;\n    }\n}\n";
+        let buffer = cx.new(|cx| Buffer::local(text, cx).with_language(language::rust_lang(), cx));
+        cx.run_until_parked();
+        let snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
+        // Far enough into `one` that its signature isn't in the context lines.
+        assert_eq!(
+            hunk_scope(&snapshot, Point::new(8, 8), 3).as_deref(),
+            Some("impl A › fn one")
+        );
+        // Close enough that it is.
+        assert_eq!(hunk_scope(&snapshot, Point::new(5, 8), 3), None);
+        // A hunk beginning a function is in what encloses that.
+        assert_eq!(
+            hunk_scope(&snapshot, Point::new(3, 0), 0).as_deref(),
+            Some("impl A")
+        );
+        // Nothing encloses it.
+        assert_eq!(hunk_scope(&snapshot, Point::new(0, 0), 0), None);
+    }
+
+    #[gpui::test]
+    async fn test_review_goes_to_definitions(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                "a.rs": "fn one() {\n    two();\n}\n",
+                "b.rs": "pub fn two() {}\n",
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        project.read_with(cx, |project, _| {
+            project.languages().add(language::rust_lang())
+        });
+        let mut servers = project.read_with(cx, |project, _| {
+            project.languages().register_fake_lsp(
+                "Rust",
+                language::FakeLspAdapter {
+                    capabilities: lsp::ServerCapabilities {
+                        definition_provider: Some(lsp::OneOf::Left(true)),
+                        ..lsp::ServerCapabilities::default()
+                    },
+                    ..language::FakeLspAdapter::default()
+                },
+            )
+        });
+        let (workspace, review, cx) =
+            show_review(project, &fs, &[("a.rs", Some("fn one() {\n}\n"))], cx).await;
+        let server = servers.next().await.expect("the review starts the server");
+        let b = lsp::Uri::from_file_path(path!("/project/b.rs")).unwrap();
+        let mut definitions =
+            server.set_request_handler::<lsp::request::GotoDefinition, _, _>(move |_, _| {
+                let b = b.clone();
+                async move {
+                    Ok(Some(lsp::GotoDefinitionResponse::Scalar(
+                        lsp::Location::new(
+                            b,
+                            lsp::Range::new(lsp::Position::new(0, 7), lsp::Position::new(0, 10)),
+                        ),
+                    )))
+                }
+            });
+
+        let editor = review.read_with(cx, |review, _| review.editor.clone());
+        let navigated = editor.update_in(cx, |editor, window, cx| {
+            let text = editor.buffer().read(cx).snapshot(cx).text();
+            let offset = text.find("two").expect("the call is shown");
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([
+                    editor::MultiBufferOffset(offset)..editor::MultiBufferOffset(offset)
+                ])
+            });
+            editor.go_to_definition(&editor::actions::GoToDefinition::default(), window, cx)
+        });
+        definitions.next().await.expect("asked the server");
+        let navigated = navigated.await.expect("went to the definition");
+        assert_eq!(navigated, editor::Navigated::Yes);
+        cx.run_until_parked();
+
+        // b.rs opened at the definition.
+        let (path, cursor) = workspace.update(cx, |workspace, cx| {
+            let editor = workspace
+                .active_item_as::<Editor>(cx)
+                .expect("an editor is active");
+            let editor = editor.read(cx);
+            let path = editor
+                .buffer()
+                .read(cx)
+                .as_singleton()
+                .and_then(|buffer| buffer.read(cx).file().map(|file| file.path().clone()));
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            let cursor = editor.selections.newest_anchor().head().to_point(&snapshot);
+            (path, cursor)
+        });
+        assert_eq!(path.as_deref().map(|path| path.as_unix_str()), Some("b.rs"));
+        assert_eq!(cursor.row, 0);
+    }
+
+    #[gpui::test]
+    async fn test_turn_review_reject_and_keep(cx: &mut TestAppContext) {
+        // As the agent left them; the bases are as they were before its turn.
+        let (fs, review, cx) = open_review(
+            cx,
+            json!({
+                "a.txt": "one\nTWO\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n",
+                "b.txt": "b changed\n",
+                "c.txt": "created\n",
+            }),
+            &[
+                (
+                    "a.txt",
+                    Some("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n"),
+                ),
+                ("b.txt", Some("b\n")),
+                ("c.txt", None),
+            ],
+        )
+        .await;
 
         let hunk_count = |review: &Entity<AgentTurnReview>, cx: &mut VisualTestContext| {
             review.update(cx, |review, cx| {
@@ -1355,11 +2032,104 @@ mod tests {
         fs.save(
             path!("/project/b.txt").as_ref(),
             &"b changed\nand more\n".into(),
-            Default::default(),
+            language::LineEnding::Unix,
         )
         .await
         .unwrap();
         cx.run_until_parked();
         assert_eq!(hunk_count(&review, cx), 2);
+
+        // Rejecting the rest puts a.txt back, after its first hunk was
+        // rejected; b.txt changed since the turn, so it's left alone.
+        review.update(cx, |review, cx| {
+            review.reject_hunks(AgentTurnReview::all_hunks(), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            fs.load(path!("/project/a.txt").as_ref()).await.unwrap(),
+            "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n"
+        );
+        assert_eq!(
+            fs.load(path!("/project/b.txt").as_ref()).await.unwrap(),
+            "b changed\nand more\n"
+        );
+        assert_eq!(hunk_count(&review, cx), 1);
+    }
+
+    #[gpui::test]
+    async fn test_rejecting_keeps_edits_made_after_the_turn(cx: &mut TestAppContext) {
+        let (fs, review, cx) = open_review(
+            cx,
+            json!({
+                "edited.txt": "one\nTWO\nthree\n",
+                "created.txt": "created\n",
+                "unsaved.txt": "agent\n",
+                "untouched.txt": "agent\n",
+            }),
+            &[
+                ("edited.txt", Some("one\ntwo\nthree\n")),
+                ("created.txt", None),
+                ("unsaved.txt", Some("before\n")),
+                ("untouched.txt", Some("before\n")),
+            ],
+        )
+        .await;
+
+        // After the turn, the user edits two files on disk and one in its
+        // buffer, without saving.
+        for (path, text) in [
+            (path!("/project/edited.txt"), "one\nTWO, mine\nthree\n"),
+            (path!("/project/created.txt"), "created\nmine\n"),
+        ] {
+            fs.save(path.as_ref(), &text.into(), language::LineEnding::Unix)
+                .await
+                .unwrap();
+        }
+        cx.run_until_parked();
+        review.update(cx, |review, cx| {
+            review.files[2]
+                .buffer
+                .update(cx, |buffer, cx| buffer.edit([(0..0, "mine ")], None, cx));
+        });
+        cx.run_until_parked();
+
+        review.update(cx, |review, cx| {
+            review.reject_hunks(AgentTurnReview::all_hunks(), cx)
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            fs.load(path!("/project/edited.txt").as_ref())
+                .await
+                .unwrap(),
+            "one\nTWO, mine\nthree\n"
+        );
+        assert_eq!(
+            fs.load(path!("/project/created.txt").as_ref())
+                .await
+                .unwrap(),
+            "created\nmine\n"
+        );
+        assert_eq!(
+            fs.load(path!("/project/unsaved.txt").as_ref())
+                .await
+                .unwrap(),
+            "agent\n"
+        );
+        review.update(cx, |review, cx| {
+            assert_eq!(review.files[2].buffer.read(cx).text(), "mine agent\n");
+            let status = review.status.clone().unwrap();
+            for name in ["edited.txt", "created.txt", "unsaved.txt"] {
+                assert!(status.contains(name), "{status}");
+            }
+            assert!(!status.contains("untouched.txt"), "{status}");
+        });
+        // The file nobody touched since is rejected.
+        assert_eq!(
+            fs.load(path!("/project/untouched.txt").as_ref())
+                .await
+                .unwrap(),
+            "before\n"
+        );
     }
 }

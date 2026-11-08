@@ -60,6 +60,8 @@ use crate::{
 };
 use crate::{ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, ScrollUp, ScrollUpByItem};
 
+mod doc_review;
+
 const REPARSE_DEBOUNCE: Duration = Duration::from_millis(200);
 
 fn reset_persisted_font_size(settings: &mut settings::SettingsContent) {
@@ -86,6 +88,8 @@ pub struct MarkdownPreviewView {
     /// background parse is in flight. Tracked so matches can be invalidated once it lands.
     markdown_parse_pending: bool,
     nav_history: Option<ItemNavHistory>,
+    /// SOLO: comments on the document and what changed since it was read.
+    doc_review: doc_review::DocReview,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -429,6 +433,7 @@ impl MarkdownPreviewView {
                 mode,
                 markdown_parse_pending: false,
                 nav_history: None,
+                doc_review: Default::default(),
             };
 
             this.set_editor(active_editor, window, cx);
@@ -707,9 +712,11 @@ impl MarkdownPreviewView {
             view.update(cx, move |view, cx| {
                 if let Some((contents, selection_start)) = update {
                     view.hovered_url = None;
+                    let source: SharedString = contents;
                     view.markdown.update(cx, |markdown, cx| {
-                        markdown.reset(contents, cx);
+                        markdown.reset(source.clone(), cx);
                     });
+                    view.doc_review_source_updated(&source, cx);
                     view.markdown_parse_pending = view.markdown.read(cx).is_parsing();
                     view.sync_preview_to_source_index(selection_start, should_reveal_selection, cx);
                     cx.emit(SearchEvent::MatchesInvalidated);
@@ -1676,12 +1683,15 @@ impl Item for MarkdownPreviewView {
         // full path for files outside the project. The directories needed to tell apart files
         // with the same name are shown in the description.
         let title = match editor {
-            Some(editor) if params.truncate_title_middle => format!("Preview {}", editor.title(cx)),
+            Some(editor) if params.truncate_title_middle => {
+                format!("{} {}", util::i18n::tr("Preview", "预览"), editor.title(cx))
+            }
             Some(editor) => format!(
-                "Preview {}",
+                "{} {}",
+                util::i18n::tr("Preview", "预览"),
                 util::truncate_and_trailoff(&editor.title(cx), max_title_len)
             ),
-            None => "Markdown Preview".to_string(),
+            None => util::i18n::tr("Markdown Preview", "Markdown 预览").to_string(),
         };
         let description = editor
             .zip(params.detail)
@@ -1728,9 +1738,11 @@ impl Item for MarkdownPreviewView {
             .as_ref()
             .map(|editor_state| {
                 let title = editor_state.editor.read(cx).tab_content_text(detail, cx);
-                format!("Preview {title}").into()
+                format!("{} {title}", util::i18n::tr("Preview", "预览")).into()
             })
-            .unwrap_or_else(|| SharedString::from("Markdown Preview"))
+            .unwrap_or_else(|| {
+                SharedString::from(util::i18n::tr("Markdown Preview", "Markdown 预览"))
+            })
     }
 
     // Save As writes the source file, so suggest its name rather than the tab text, which can be a
@@ -1943,39 +1955,71 @@ impl Render for MarkdownPreviewView {
             .flex_1()
             .min_h_0()
             .relative()
+            .flex()
+            .flex_col()
             .bg(bg_color)
+            .children(self.render_changes_bar(cx))
             .child(
-                WithRemSize::new(preview_font_size).size_full().child(
-                    div()
-                        .id("markdown-preview-scroll-container")
-                        .size_full()
-                        .overflow_y_scroll()
-                        .track_scroll(&self.scroll_handle)
-                        .restrict_scroll_to_axis()
-                        .p_4()
-                        .child({
-                            let markdown_element =
-                                self.render_markdown_element(&preview_theme, window, cx);
-                            let markdown = self.markdown.clone();
-                            let max_width = MarkdownPreviewSettings::get_global(cx).max_width;
-                            let content = right_click_menu("markdown-preview-context-menu")
-                                .trigger(move |_, _, _| markdown_element)
-                                .maybe_menu(move |window, cx| {
-                                    let focus = window.focused(cx);
-                                    let markdown = markdown.read(cx);
-                                    let context_menu_link = markdown.context_menu_link().cloned();
-                                    let selected_text =
-                                        markdown.context_menu_selected_text().cloned();
-                                    let selected_markdown =
-                                        markdown.context_menu_selected_markdown().cloned();
-                                    if context_menu_link.is_none()
-                                        && selected_text.is_none()
-                                        && selected_markdown.is_none()
-                                    {
-                                        return None;
-                                    }
-                                    Some(ContextMenu::build(window, cx, move |menu, _, _cx| {
-                                        menu.when_some(focus, |menu, focus| menu.context(focus))
+                WithRemSize::new(preview_font_size)
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        div()
+                            .id("markdown-preview-scroll-container")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll_handle)
+                            .restrict_scroll_to_axis()
+                            .p_4()
+                            .child({
+                                let markdown_element =
+                                    self.render_markdown_element(&preview_theme, window, cx);
+                                let markdown = self.markdown.clone();
+                                let max_width = MarkdownPreviewSettings::get_global(cx).max_width;
+                                let view = cx.entity().downgrade();
+                                let can_comment = self.active_editor.is_some();
+                                let content = right_click_menu("markdown-preview-context-menu")
+                                    .trigger(move |_, _, _| markdown_element)
+                                    .maybe_menu(move |window, cx| {
+                                        let focus = window.focused(cx);
+                                        let markdown = markdown.read(cx);
+                                        let context_menu_link =
+                                            markdown.context_menu_link().cloned();
+                                        let selected_text =
+                                            markdown.context_menu_selected_text().cloned();
+                                        let selected_markdown =
+                                            markdown.context_menu_selected_markdown().cloned();
+                                        let selected_range = markdown
+                                            .selected_source_range()
+                                            .filter(|_| can_comment);
+                                        if context_menu_link.is_none()
+                                            && selected_text.is_none()
+                                            && selected_markdown.is_none()
+                                            && selected_range.is_none()
+                                        {
+                                            return None;
+                                        }
+                                        let view = view.clone();
+                                        Some(ContextMenu::build(window, cx, move |menu, _, _cx| {
+                                            menu.when_some(selected_range, |menu, range| {
+                                                menu.entry(
+                                                    util::i18n::tr("Comment…", "批注…"),
+                                                    None,
+                                                    move |window, cx| {
+                                                        view.update(cx, |view, cx| {
+                                                            view.start_comment(
+                                                                range.clone(),
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        })
+                                                        .ok();
+                                                    },
+                                                )
+                                                .separator()
+                                            })
+                                            .when_some(focus, |menu, focus| menu.context(focus))
                                             .when_some(selected_text, |menu, text| {
                                                 menu.entry(
                                                     "Copy",
@@ -2009,17 +2053,18 @@ impl Render for MarkdownPreviewView {
                                                     );
                                                 })
                                             })
-                                    }))
-                                });
-                            div()
-                                .w_full()
-                                .when_some(max_width, |this, max_width| {
-                                    this.max_w(max_width).mx_auto()
-                                })
-                                .child(content)
-                        }),
-                ),
+                                        }))
+                                    });
+                                div()
+                                    .w_full()
+                                    .when_some(max_width, |this, max_width| {
+                                        this.max_w(max_width).mx_auto()
+                                    })
+                                    .child(content)
+                            }),
+                    ),
             )
+            .children(self.render_comments(cx))
             .custom_scrollbars(
                 Scrollbars::for_settings::<EditorSettingsScrollbarProxy>()
                     .show_along(ScrollAxes::Vertical)
@@ -2444,6 +2489,8 @@ mod tests {
     async fn preview_tabs_for_files_with_the_same_name_show_their_directory(
         cx: &mut TestAppContext,
     ) {
+        // SOLO: the titles are translated; this checks the English ones.
+        util::i18n::set_language(util::i18n::Language::English);
         let (project, _, multi_workspace) = markdown_workspace(
             cx,
             json!({
@@ -4138,7 +4185,7 @@ mod tests {
         );
     }
 
-    async fn open_markdown_file(
+    pub(super) async fn open_markdown_file(
         cx: &mut TestAppContext,
         file_name: &str,
         contents: &str,
@@ -4176,7 +4223,7 @@ mod tests {
         (multi_workspace, editor)
     }
 
-    fn open_preview_for_active_editor(
+    pub(super) fn open_preview_for_active_editor(
         cx: &mut TestAppContext,
         multi_workspace: &WindowHandle<MultiWorkspace>,
     ) -> Entity<MarkdownPreviewView> {

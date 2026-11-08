@@ -423,6 +423,12 @@ fn generator_run(
     let command = match &generator.process {
         GeneratorProcess::ShellCommand(builder) => builder.build(shell).into_owned(),
         GeneratorProcess::CommandFromTokens(command_from_tokens) => {
+            // These generators put the tokens into a shell command, not all of
+            // them quoted for every shell: completing mustn't run something the
+            // line only mentions.
+            if tokens.iter().any(|token| !is_inert_token(token)) {
+                return None;
+            }
             let trailing_whitespace = tokens.last().is_some_and(|token| token.is_empty());
             let tokens: Vec<&str> = tokens
                 .iter()
@@ -437,6 +443,35 @@ fn generator_run(
     Some(GeneratorRun {
         command,
         on_complete: generator.on_complete_callback,
+    })
+}
+
+/// Whether a token means the same, as plain text, to every shell.
+fn is_inert_token(token: &str) -> bool {
+    !token.chars().any(|character| {
+        character.is_control()
+            || matches!(
+                character,
+                '\'' | '"'
+                    | '`'
+                    | '$'
+                    | ';'
+                    | '&'
+                    | '|'
+                    | '<'
+                    | '>'
+                    | '('
+                    | ')'
+                    | '{'
+                    | '}'
+                    | '%'
+                    | '^'
+                    | '!'
+                    | '\u{2018}'
+                    | '\u{2019}'
+                    | '\u{201C}'
+                    | '\u{201D}'
+            )
     })
 }
 
@@ -468,6 +503,33 @@ fn sort_by_priority<T>(items: &mut [T], priority: impl Fn(&T) -> Priority) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_plain_tokens_go_into_generator_commands() {
+        for token in [
+            "up",
+            "docker-compose.yml",
+            "-f",
+            "./a b/c.yml",
+            "--name=x",
+            "",
+        ] {
+            assert!(is_inert_token(token), "{token:?}");
+        }
+        for token in [
+            "x';calc;'",
+            "\"x\"",
+            "$(id)",
+            "`id`",
+            "a|b",
+            "a&b",
+            "%PATH%",
+            "a\nb",
+            "it\u{2019}s",
+        ] {
+            assert!(!is_inert_token(token), "{token:?}");
+        }
+    }
 
     fn texts(plan: &Plan) -> Vec<&str> {
         plan.items.iter().map(|item| item.text.as_str()).collect()

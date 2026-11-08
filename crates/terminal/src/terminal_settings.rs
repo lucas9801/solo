@@ -3,7 +3,7 @@ use gpui::{FontFallbacks, FontFeatures, FontWeight, Pixels};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use settings::{AlternateScroll, TerminalConfirmClose};
+pub use settings::{AgentControl, AlternateScroll, TerminalConfirmClose};
 
 use settings::{
     IntoGpui, PathHyperlinkRegex, RegisterSetting, ShowScrollbar, TerminalBell, TerminalBlink,
@@ -63,9 +63,13 @@ pub struct TerminalSettings {
     pub restore_contents: bool,
     pub agent_commands: Vec<String>,
     pub claude_code_hooks: bool,
+    pub codex_hooks: bool,
+    pub copilot_hooks: bool,
+    pub keep_running_on_quit: bool,
     pub follow_working_directory: bool,
     pub confirm_close: TerminalConfirmClose,
     pub agent_task_command: String,
+    pub agent_control: AgentControl,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -151,9 +155,13 @@ impl settings::Settings for TerminalSettings {
             restore_contents: user_content.restore_contents.unwrap(),
             agent_commands: user_content.agent_commands.unwrap(),
             claude_code_hooks: user_content.claude_code_hooks.unwrap(),
+            codex_hooks: user_content.codex_hooks.unwrap(),
+            copilot_hooks: user_content.copilot_hooks.unwrap(),
+            keep_running_on_quit: user_content.keep_running_on_quit.unwrap(),
             follow_working_directory: user_content.follow_working_directory.unwrap(),
             confirm_close: user_content.confirm_close.unwrap(),
             agent_task_command: user_content.agent_task_command.unwrap(),
+            agent_control: user_content.agent_control.unwrap_or_default(),
             path_hyperlink_regexes: project_content
                 .path_hyperlink_regexes
                 .unwrap()

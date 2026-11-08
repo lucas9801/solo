@@ -202,6 +202,9 @@ impl ProjectEnvironment {
             log::debug!("using project environment variables from CLI");
             return Task::ready(Some(cli_environment)).shared();
         }
+        // SOLO: one shell for a whole repository rather than one per folder
+        // opened in it, which started PowerShell ten times on one launch.
+        let abs_path = environment_directory(abs_path);
 
         self.local_environments
             .entry((shell.clone(), abs_path.clone()))
@@ -288,6 +291,28 @@ impl ProjectEnvironment {
     pub fn pop_environment_error(&mut self) -> Option<String> {
         self.environment_error_messages.pop_front()
     }
+}
+
+/// Files that make a directory's environment differ from its parent's.
+const DIRECTORY_ENVIRONMENT_FILES: [&str; 4] =
+    [".envrc", ".tool-versions", ".mise.toml", "mise.toml"];
+
+/// SOLO: where to capture the environment of `directory` from: the root of
+/// the git repository it's in, unless a folder on the way there sets up its
+/// own environment (direnv, asdf, mise).
+fn environment_directory(directory: Arc<Path>) -> Arc<Path> {
+    for ancestor in directory.ancestors() {
+        if ancestor.join(".git").exists() {
+            return Arc::from(ancestor);
+        }
+        if DIRECTORY_ENVIRONMENT_FILES
+            .iter()
+            .any(|name| ancestor.join(name).exists())
+        {
+            break;
+        }
+    }
+    directory
 }
 
 fn set_origin_marker(env: &mut HashMap<String, String>, origin: EnvironmentOrigin) {
@@ -420,4 +445,31 @@ async fn load_direnv_environment(
     }
 
     serde_json::from_str(&output).context("parsing direnv json")
+}
+
+#[cfg(test)]
+mod solo_tests {
+    use super::*;
+
+    #[test]
+    fn environments_are_captured_once_per_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let nested = repository.join("Engine").join("Source");
+        let with_envrc = repository.join("tools");
+        std::fs::create_dir_all(repository.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(with_envrc.join("deep")).unwrap();
+        std::fs::write(with_envrc.join(".envrc"), "export A=1\n").unwrap();
+        let outside = temp.path().join("plain");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let resolve = |path: &Path| environment_directory(Arc::from(path)).to_path_buf();
+        assert_eq!(resolve(&nested), repository);
+        assert_eq!(resolve(&repository), repository);
+        // direnv and the like set up their own environment below the root.
+        assert_eq!(resolve(&with_envrc), with_envrc);
+        assert_eq!(resolve(&with_envrc.join("deep")), with_envrc.join("deep"));
+        assert_eq!(resolve(&outside), outside);
+    }
 }

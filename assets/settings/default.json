@@ -2292,6 +2292,23 @@
     // its output. Your own settings and hooks still apply. Takes effect in new
     // terminals.
     "claude_code_hooks": true,
+    // Let Codex started in a terminal with shell integration report what it's
+    // doing through hooks Solo adds for that session with `codex -c hooks...`,
+    // so its turns can be reviewed like Claude Code's. Codex asks once whether
+    // to trust them. Your own config and hooks still apply. Takes effect in
+    // new terminals.
+    "codex_hooks": true,
+    // Let GitHub Copilot CLI started in a terminal with shell integration
+    // report what it's doing through hooks in a plugin Solo loads for that
+    // session with `copilot --plugin-dir`, so its turns can be reviewed like
+    // Claude Code's. Takes effect in new terminals.
+    "copilot_hooks": true,
+    // On Windows, terminals run their shell in a small background process
+    // (solo-terminal-host). When Solo quits, or restarts for an update,
+    // terminals that are running a command or an agent keep running there,
+    // and Solo connects to them again when it reopens them. Takes effect in
+    // new terminals.
+    "keep_running_on_quit": true,
     // Narrow the project panel, file finder and project search to the git
     // repository the active terminal is in (or its directory, outside a
     // repository). They switch when another terminal becomes active or the
@@ -2306,6 +2323,12 @@
     //   tell a command from the shell, except for agents),
     // "never": never ask.
     "confirm_close": "agents",
+    // What agents in Solo's terminals can do with `solo-cli agent` (see
+    // docs/agent-cli.md): "full" lets them list terminals, wait for agents,
+    // read their answers, open files and reviews, send agents prompts and
+    // start agent tasks; "read_only" all but sending prompts and starting
+    // tasks; "off" nothing.
+    "agent_control": "full",
     // The command "New Agent Task" runs in the new task's terminal, in the
     // git worktree made for the task (see `git.worktree_directory`).
     "agent_task_command": "claude",
@@ -2425,13 +2448,10 @@
     "path": null,
     "npm_path": null,
   },
-  // The extensions that Solo should automatically install on startup.
-  //
-  // If you don't want any of these extensions, add this field to your settings
-  // and change the value to `false`.
-  "auto_install_extensions": {
-    "html": true,
-  },
+  // The extensions that Solo should automatically install on startup, e.g.
+  // `{ "html": true }`. None by default, so Solo doesn't contact the extension
+  // API until you browse or install extensions.
+  "auto_install_extensions": {},
   // Whether to suggest installing extensions based on the files you open.
   "suggest_extensions": true,
   // The capabilities granted to extensions.

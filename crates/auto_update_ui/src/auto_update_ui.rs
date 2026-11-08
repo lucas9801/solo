@@ -301,6 +301,10 @@ impl Render for AnnouncementToastNotification {
 
 struct UpdateNotification;
 
+/// SOLO: Zed's product announcements (such as Delta) after an update aren't
+/// Solo's; kept so upstream changes still merge.
+const SHOW_ZED_ANNOUNCEMENTS: bool = false;
+
 fn show_update_notification(cx: &mut App) {
     let Some(updater) = AutoUpdater::get(cx) else {
         return;
@@ -311,7 +315,10 @@ fn show_update_notification(cx: &mut App) {
     version.build = semver::BuildMetadata::EMPTY;
     let app_name = ReleaseChannel::global(cx).display_name();
 
-    if let Some(content) = announcement_for_version(&version, cx) {
+    if let Some(content) = SHOW_ZED_ANNOUNCEMENTS
+        .then(|| announcement_for_version(&version, cx))
+        .flatten()
+    {
         show_app_notification(
             NotificationId::unique::<UpdateNotification>(),
             cx,

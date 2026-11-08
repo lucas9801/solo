@@ -1534,8 +1534,9 @@ pub(super) struct Initialize {
 
 fn dap_client_capabilities(adapter_id: String) -> InitializeRequestArguments {
     InitializeRequestArguments {
+        // SOLO: the id stays Zed's, which adapters may know; the name is Solo's.
         client_id: Some("zed".to_owned()),
-        client_name: Some("Zed".to_owned()),
+        client_name: Some("Solo".to_owned()),
         adapter_id,
         locale: Some("en-US".to_owned()),
         path_format: Some(InitializeRequestArgumentsPathFormat::Path),

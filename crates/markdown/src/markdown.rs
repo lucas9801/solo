@@ -493,6 +493,9 @@ pub struct Markdown {
     pending_heading_scroll: Option<SharedString>,
     pending_autoscroll: Option<usize>,
     active_root_block: Option<usize>,
+    /// SOLO: source ranges whose root blocks get a colored gutter, such as
+    /// what changed or was commented on.
+    marked_ranges: Vec<(Range<usize>, Hsla)>,
     parsed_markdown: ParsedMarkdown,
     images_by_source_offset: HashMap<usize, Arc<Image>>,
     should_reparse: bool,
@@ -714,6 +717,7 @@ impl Markdown {
             pending_heading_scroll: None,
             pending_autoscroll: None,
             active_root_block: None,
+            marked_ranges: Vec::new(),
             should_reparse: false,
             images_by_source_offset: Default::default(),
             parsed_markdown: ParsedMarkdown::default(),
@@ -1108,6 +1112,24 @@ impl Markdown {
 
     pub fn has_selection(&self) -> bool {
         self.selection.end > self.selection.start
+    }
+
+    /// SOLO: the source the selection covers.
+    pub fn selected_source_range(&self) -> Option<Range<usize>> {
+        (self.selection.end > self.selection.start)
+            .then(|| self.selection.start..self.selection.end)
+    }
+
+    /// SOLO: colors the gutter of the root blocks touching each range.
+    pub fn set_marked_source_ranges(
+        &mut self,
+        ranges: Vec<(Range<usize>, Hsla)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.marked_ranges != ranges {
+            self.marked_ranges = ranges;
+            cx.notify();
+        }
     }
 
     pub fn selected_source(&self) -> Option<&str> {
@@ -2675,6 +2697,8 @@ impl Element for MarkdownElement {
                 markdown.mermaid_state.clone(),
             )
         };
+        let marked_ranges = self.markdown.read(cx).marked_ranges.clone();
+        let mut root_block_range = 0..0;
         let mut builder = MarkdownElementBuilder::new(
             &self.style.container_style,
             self.style.base_text_style.clone(),
@@ -2727,13 +2751,22 @@ impl Element for MarkdownElement {
             match event {
                 MarkdownEvent::RootStart => {
                     if self.show_root_block_markers {
+                        root_block_range = range.clone();
                         builder.push_root_block(range, markdown_end);
                     }
                 }
                 MarkdownEvent::RootEnd(root_block_index) => {
                     if self.show_root_block_markers {
+                        let marker = marked_ranges
+                            .iter()
+                            .find(|(marked, _)| {
+                                marked.start < root_block_range.end
+                                    && root_block_range.start < marked.end.max(marked.start + 1)
+                            })
+                            .map(|(_, color)| *color);
                         builder.pop_root_block(
                             active_root_block == Some(*root_block_index),
+                            marker,
                             cx.theme().colors().border,
                             cx.theme().colors().border_variant,
                         );
@@ -4100,6 +4133,7 @@ impl MarkdownElementBuilder {
     fn pop_root_block(
         &mut self,
         is_active: bool,
+        marker: Option<Hsla>,
         active_gutter_color: Hsla,
         hovered_gutter_color: Hsla,
     ) {
@@ -4109,6 +4143,7 @@ impl MarkdownElementBuilder {
                 div()
                     .h_full()
                     .w(px(4.0))
+                    .when_some(marker, |this, marker| this.bg(marker))
                     .when(is_active, |this| this.bg(active_gutter_color))
                     .group_hover("markdown-root-block", |this| {
                         if is_active {

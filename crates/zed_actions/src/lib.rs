@@ -1057,4 +1057,24 @@ pub mod agent_terminal {
         #[serde(default)]
         pub choose_terminal: bool,
     }
+
+    /// Pastes comments on a document, each with its lines and the text it's
+    /// on, into the terminal of the agent that last changed the document, or
+    /// else of the one used last.
+    #[derive(PartialEq, Clone, Debug, Action)]
+    #[action(namespace = terminal, no_json, no_register)]
+    pub struct SendDocumentCommentsToAgent {
+        pub path: std::path::PathBuf,
+        pub comments: Vec<DocumentComment>,
+    }
+
+    #[derive(PartialEq, Clone, Debug)]
+    pub struct DocumentComment {
+        /// 1-based, inclusive.
+        pub start_line: u32,
+        pub end_line: u32,
+        /// The text commented on, maybe shortened.
+        pub quote: String,
+        pub comment: String,
+    }
 }

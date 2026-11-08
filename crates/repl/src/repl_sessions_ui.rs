@@ -253,11 +253,7 @@ impl Render for ReplSessionsPage {
                             .size(ButtonSize::Large)
                             .layer(ElevationIndex::ModalSurface)
                             .child(Label::new("Install Kernels"))
-                            .on_click(move |_, _, cx| {
-                                cx.open_url(
-                                    "https://zed.dev/docs/repl#language-specific-instructions",
-                                )
-                            }),
+                            .on_click(move |_, _, cx| cx.open_url(util::i18n::guide_url())),
                     ),
                 );
         }

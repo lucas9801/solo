@@ -102,6 +102,7 @@ fn status_rank(status: Option<AgentStatus>) -> u8 {
     match status {
         Some(AgentStatus::NeedsInput) => 0,
         Some(AgentStatus::Working) => 1,
+        Some(AgentStatus::Finished) => 1,
         Some(AgentStatus::Idle) => 2,
         Some(AgentStatus::Done | AgentStatus::Failed) => 3,
         None => 4,
@@ -340,7 +341,7 @@ impl AgentBoard {
             let tasks = tasks
                 .into_iter()
                 .map(|entry| TaskSnapshot {
-                    name: entry.task.name,
+                    name: crate::agent_tasks::display_name(&entry.task),
                     branch: entry.task.branch,
                     worktree_path: entry.task.worktree_path,
                     terminals: entry.terminals.iter().map(Entity::entity_id).collect(),
@@ -407,7 +408,12 @@ impl AgentBoard {
         let running = self.rows.iter().any(|row| {
             matches!(
                 row.status,
-                Some(AgentStatus::Working | AgentStatus::NeedsInput | AgentStatus::Idle)
+                Some(
+                    AgentStatus::Working
+                        | AgentStatus::NeedsInput
+                        | AgentStatus::Idle
+                        | AgentStatus::Finished
+                )
             )
         });
         if !(self.active && running) {

@@ -187,10 +187,18 @@ impl TerminalView {
             .filter(|block| block.is_running())
             .and_then(|block| block.command.as_deref())
         {
-            details.push(format!("{}{}", util::i18n::tr("Command: ", "命令："), command.trim()));
+            details.push(format!(
+                "{}{}",
+                util::i18n::tr("Command: ", "命令："),
+                command.trim()
+            ));
         }
         if let Some(directory) = self.title_working_directory(cx) {
-            details.push(format!("{}{}", util::i18n::tr("Directory: ", "目录："), directory.display()));
+            details.push(format!(
+                "{}{}",
+                util::i18n::tr("Directory: ", "目录："),
+                directory.display()
+            ));
             if let Some((_, _, Some(branch))) = self
                 .tab_title
                 .git_branch
@@ -214,7 +222,10 @@ impl TerminalView {
 
     fn running_agent(&self) -> Option<&str> {
         self.agent_status().and_then(|(name, status)| match status {
-            AgentStatus::Working | AgentStatus::NeedsInput | AgentStatus::Idle => Some(name),
+            AgentStatus::Working
+            | AgentStatus::NeedsInput
+            | AgentStatus::Idle
+            | AgentStatus::Finished => Some(name),
             AgentStatus::Done | AgentStatus::Failed => None,
         })
     }

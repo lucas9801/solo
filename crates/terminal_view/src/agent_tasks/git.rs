@@ -30,6 +30,10 @@ const MAX_SLUG_CHARS: usize = 40;
 const MAX_UNTRACKED_FILES_IN_DIFF: usize = 200;
 const BASE_KEY: &str = "solobase";
 const NAME_KEY: &str = "solotask";
+/// The port the task got from `.solo/tasks.json`'s `port_range`.
+const PORT_KEY: &str = "soloport";
+/// The folder a task spanning several repositories keeps its worktrees in.
+const GROUP_KEY: &str = "sologroup";
 
 /// An agent task: a branch checked out in its own worktree.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +47,11 @@ pub struct AgentTask {
     pub worktree_path: Option<PathBuf>,
     /// The repository's main worktree.
     pub repository_root: PathBuf,
+    /// The port the task was given (`SOLO_TASK_PORT`), if any.
+    pub port: Option<u16>,
+    /// For a task spanning several repositories: the folder with its
+    /// worktree in each, side by side, where its agent works.
+    pub group: Option<PathBuf>,
 }
 
 /// The repository around a directory.
@@ -63,6 +72,8 @@ pub struct TaskPlan {
     pub branch: String,
     pub base_branch: String,
     pub worktree_path: PathBuf,
+    /// The folder of a task spanning several repositories.
+    pub group: Option<PathBuf>,
 }
 
 /// Files with uncommitted changes, as `git status --short` lists them.
@@ -133,6 +144,9 @@ where
     util::command::new_std_command("git")
         .arg("-C")
         .arg(directory)
+        // Paths as they are, not quoted with octal escapes (e.g. Chinese
+        // file names).
+        .args(["-c", "core.quotePath=false"])
         .args(arguments)
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
@@ -204,6 +218,16 @@ pub fn plan_task(
     name: &str,
     worktree_directory_setting: &str,
 ) -> Result<TaskPlan> {
+    let directory = worktrees_directory(&repository.main_root, worktree_directory_setting)?;
+    plan_task_in(repository, name, directory)
+}
+
+/// Like [`plan_task`], with the task's worktree in `directory`.
+pub fn plan_task_in(
+    repository: &RepositoryInfo,
+    name: &str,
+    directory: PathBuf,
+) -> Result<TaskPlan> {
     let name = name.trim();
     if name.is_empty() {
         bail!(tr("Give the task a name", "请输入任务名"));
@@ -214,7 +238,6 @@ pub fn plan_task(
             "HEAD 处于分离状态，请先切换到任务要基于的分支",
         ));
     };
-    let directory = worktrees_directory(&repository.main_root, worktree_directory_setting)?;
     let slug = unique_slug(&task_slug(name), |candidate| {
         branch_exists(&repository.main_root, &branch_for_slug(candidate))
             || directory.join(candidate).exists()
@@ -224,7 +247,69 @@ pub fn plan_task(
         branch: branch_for_slug(&slug),
         base_branch,
         worktree_path: directory.join(slug),
+        group: None,
     })
+}
+
+/// Plans a task spanning `repositories`, the first being the one it's made
+/// from: a folder named for the task in `directory`, with a worktree of each
+/// repository in it, named like the repository, all on the same new branch.
+pub fn plan_group_task(
+    repositories: &[RepositoryInfo],
+    name: &str,
+    directory: PathBuf,
+) -> Result<Vec<TaskPlan>> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!(tr("Give the task a name", "请输入任务名"));
+    }
+    let mut base_branches = Vec::with_capacity(repositories.len());
+    for repository in repositories {
+        let Some(base_branch) = repository.current_branch.clone() else {
+            if is_chinese() {
+                bail!(
+                    "{} 的 HEAD 处于分离状态，请先切换到任务要基于的分支",
+                    repository.main_root.display()
+                );
+            }
+            bail!(
+                "HEAD is detached in {}; check out the branch the task should start from",
+                repository.main_root.display()
+            );
+        };
+        base_branches.push(base_branch);
+    }
+    let slug = unique_slug(&task_slug(name), |candidate| {
+        let branch = branch_for_slug(candidate);
+        directory.join(candidate).exists()
+            || repositories
+                .iter()
+                .any(|repository| branch_exists(&repository.main_root, &branch))
+    });
+    let group = directory.join(&slug);
+    let mut folder_names: Vec<String> = Vec::new();
+    Ok(repositories
+        .iter()
+        .zip(base_branches)
+        .map(|(repository, base_branch)| {
+            let folder_name = repository
+                .main_root
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "repository".to_string());
+            let folder_name = unique_slug(&folder_name, |candidate| {
+                folder_names.iter().any(|taken| taken == candidate)
+            });
+            folder_names.push(folder_name.clone());
+            TaskPlan {
+                name: name.to_string(),
+                branch: branch_for_slug(&slug),
+                base_branch,
+                worktree_path: group.join(folder_name),
+                group: Some(group.clone()),
+            }
+        })
+        .collect())
 }
 
 /// Creates the task's branch from its base branch, checked out in a new
@@ -253,15 +338,21 @@ pub fn create_task(repository: &RepositoryInfo, plan: &TaskPlan) -> Result<Agent
             ["config", &format!("branch.{}.{key}", plan.branch), value],
         )
     };
-    if let Err(error) =
-        remember(BASE_KEY, &plan.base_branch).and_then(|_| remember(NAME_KEY, &plan.name))
-    {
+    let remembered = remember(BASE_KEY, &plan.base_branch)
+        .and_then(|_| remember(NAME_KEY, &plan.name))
+        .and_then(|_| match &plan.group {
+            Some(group) => remember(GROUP_KEY, &group.to_string_lossy()),
+            None => Ok(String::new()),
+        });
+    if let Err(error) = remembered {
         let task = AgentTask {
             name: plan.name.clone(),
             branch: plan.branch.clone(),
             base_branch: plan.base_branch.clone(),
             worktree_path: Some(plan.worktree_path.clone()),
             repository_root: repository.main_root.clone(),
+            port: None,
+            group: plan.group.clone(),
         };
         if let Err(rollback_error) = delete_task(&task) {
             log::error!("failed to roll back the agent task worktree: {rollback_error:#}");
@@ -275,7 +366,23 @@ pub fn create_task(repository: &RepositoryInfo, plan: &TaskPlan) -> Result<Agent
         base_branch: plan.base_branch.clone(),
         worktree_path: Some(plan.worktree_path.clone()),
         repository_root: repository.main_root.clone(),
+        port: None,
+        group: plan.group.clone(),
     })
+}
+
+/// Remembers the port the task was given, for it and the other tasks.
+pub fn set_task_port(task: &mut AgentTask, port: u16) -> Result<()> {
+    git_ok(
+        &task.repository_root,
+        [
+            "config",
+            &format!("branch.{}.{PORT_KEY}", task.branch),
+            &port.to_string(),
+        ],
+    )?;
+    task.port = Some(port);
+    Ok(())
 }
 
 /// The worktrees of the repository with the branch checked out in each.
@@ -328,7 +435,7 @@ pub fn list_tasks(repository_root: &Path) -> Result<Vec<AgentTask>> {
         [
             "config",
             "--get-regexp",
-            &format!(r"^branch\..*\.({BASE_KEY}|{NAME_KEY})$"),
+            &format!(r"^branch\..*\.({BASE_KEY}|{NAME_KEY}|{PORT_KEY}|{GROUP_KEY})$"),
         ],
     )?;
     // Exit code 1: no such keys.
@@ -365,6 +472,8 @@ pub fn list_tasks(repository_root: &Path) -> Result<Vec<AgentTask>> {
                 .find(|(_, worktree_branch)| worktree_branch.as_deref() == Some(branch))
                 .map(|(path, _)| path.clone()),
             repository_root: repository_root.to_path_buf(),
+            port: value_of(PORT_KEY).and_then(|port| port.parse().ok()),
+            group: value_of(GROUP_KEY).map(PathBuf::from),
         });
     }
     Ok(tasks)
@@ -414,8 +523,15 @@ pub fn diff_against_base(task: &AgentTask) -> Result<String> {
         worktree,
         ["diff", "--no-color", "--no-ext-diff", &merge_base],
     )?;
-    let untracked = git_ok(worktree, ["ls-files", "--others", "--exclude-standard"])?;
-    for file in untracked.lines().take(MAX_UNTRACKED_FILES_IN_DIFF) {
+    let untracked = git_ok(
+        worktree,
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
+    for file in untracked
+        .split(' ')
+        .filter(|file| !file.is_empty())
+        .take(MAX_UNTRACKED_FILES_IN_DIFF)
+    {
         // `--no-index` exits with 1 when the files differ, which they do.
         let output = git(
             worktree,
@@ -451,6 +567,20 @@ pub fn merge_task(task: &AgentTask) -> Result<MergeOutcome> {
             task.base_branch
         );
     };
+    // Aborting below would take the user's own merge, or the conflicts
+    // they're resolving, with it.
+    if merge_in_progress(&target) {
+        bail!(tr(
+            "A merge is in progress where the base branch is checked out; finish or abort it first",
+            "基础分支所在的工作区里有一个未完成的合并，请先完成或中止它",
+        ));
+    }
+    if !git_ok(&target, ["diff", "--name-only", "--diff-filter=U"])?.is_empty() {
+        bail!(tr(
+            "The base branch's worktree has unresolved conflicts; resolve them first",
+            "基础分支所在的工作区里有未解决的冲突，请先解决",
+        ));
+    }
     let message = format!("Merge agent task \"{}\" ({})", task.name, task.branch);
     let output = git(
         &target,
@@ -468,7 +598,7 @@ pub fn merge_task(task: &AgentTask) -> Result<MergeOutcome> {
     }
     let conflicts = git_ok(&target, ["diff", "--name-only", "--diff-filter=U"])?;
     let conflicts: Vec<String> = conflicts.lines().map(str::to_string).collect();
-    if conflicts.is_empty() {
+    if conflicts.is_empty() || !merge_in_progress(&target) {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         bail!("git merge failed: {}", format!("{stderr}\n{stdout}").trim());
@@ -477,12 +607,45 @@ pub fn merge_task(task: &AgentTask) -> Result<MergeOutcome> {
     Ok(MergeOutcome::Conflicts(conflicts))
 }
 
+fn merge_in_progress(worktree: &Path) -> bool {
+    git(worktree, ["rev-parse", "--quiet", "--verify", "MERGE_HEAD"])
+        .is_ok_and(|output| output.status.success())
+}
+
+fn same_directory(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 /// Removes the task's worktree, uncommitted changes and all, and its branch.
+/// Only ever a linked worktree: never the repository's main one, where the
+/// user may have checked out the task's branch.
 pub fn delete_task(task: &AgentTask) -> Result<()> {
     let repository = &task.repository_root;
     if let Some(worktree) = &task.worktree_path
         && worktree.exists()
     {
+        let is_main = same_directory(worktree, repository)
+            || worktrees(repository)?
+                .first()
+                .is_some_and(|(main, _)| same_directory(worktree, main));
+        // A linked worktree has a `.git` file pointing at the repository.
+        if is_main || !worktree.join(".git").is_file() {
+            if is_chinese() {
+                bail!(
+                    "{} 检出在 {}，它不是任务自己的工作区，所以没有删除。请先在那里切换到别的分支。",
+                    task.branch,
+                    worktree.display()
+                );
+            }
+            bail!(
+                "{} is checked out in {}, which isn't the task's own worktree, so nothing was deleted. Check out another branch there first.",
+                task.branch,
+                worktree.display()
+            );
+        }
         let removed = git_ok(
             repository,
             [
@@ -502,6 +665,11 @@ pub fn delete_task(task: &AgentTask) -> Result<()> {
     git_ok(repository, ["worktree", "prune"])?;
     git_ok(repository, ["branch", "-D", &task.branch])
         .with_context(|| format!("failed to delete the branch {}", task.branch))?;
+    // The folder of a task spanning several repositories goes with the last
+    // of its worktrees. Only when empty: a terminal there may still hold it.
+    if let Some(group) = &task.group {
+        std::fs::remove_dir(group).ok();
+    }
     Ok(())
 }
 
@@ -648,6 +816,60 @@ mod tests {
     }
 
     #[test]
+    fn a_task_spans_repositories() {
+        let (temp, first_root) = new_repository();
+        let second_root = temp.path().join("projects").join("other");
+        fs::create_dir_all(&second_root).unwrap();
+        run_git(&second_root, &["init", "-q", "-b", "trunk"]);
+        run_git(&second_root, &["config", "user.name", "test"]);
+        run_git(&second_root, &["config", "user.email", "test@example.com"]);
+        fs::write(second_root.join("lib.txt"), "lib\n").unwrap();
+        commit_all(&second_root, "initial");
+        // The name is taken in the second repository only.
+        run_git(&second_root, &["branch", "agent/fix-api"]);
+
+        let repositories = [
+            repository_info(&first_root).unwrap(),
+            repository_info(&second_root).unwrap(),
+        ];
+        let directory = temp.path().join("worktrees");
+        let plans = plan_group_task(&repositories, "Fix API", directory.clone()).unwrap();
+        assert_eq!(plans.len(), 2);
+        let group = directory.join("fix-api-2");
+        for plan in &plans {
+            assert_eq!(plan.branch, "agent/fix-api-2");
+            assert_eq!(plan.group.as_deref(), Some(group.as_path()));
+        }
+        assert_eq!(plans[0].worktree_path, group.join("repo"));
+        assert_eq!(plans[1].worktree_path, group.join("other"));
+        assert_eq!(plans[0].base_branch, "main");
+        assert_eq!(plans[1].base_branch, "trunk");
+
+        let tasks: Vec<AgentTask> = repositories
+            .iter()
+            .zip(&plans)
+            .map(|(repository, plan)| create_task(repository, plan).unwrap())
+            .collect();
+        assert!(group.join("repo").join("shared.txt").exists());
+        assert!(group.join("other").join("lib.txt").exists());
+
+        // Each repository lists its part, with the folder.
+        let listed = list_tasks(&second_root).unwrap();
+        let listed = listed
+            .iter()
+            .find(|task| task.branch == "agent/fix-api-2")
+            .unwrap();
+        assert!(same_path(listed.group.as_ref().unwrap(), &group));
+        assert_eq!(listed.name, "Fix API");
+
+        // The folder goes with the last worktree.
+        delete_task(&tasks[0]).unwrap();
+        assert!(group.exists());
+        delete_task(&tasks[1]).unwrap();
+        assert!(!group.exists());
+    }
+
+    #[test]
     fn two_tasks_merge_one_discard_the_other() {
         let (_temp, root) = new_repository();
         let info = repository_info(&root).unwrap();
@@ -696,7 +918,18 @@ mod tests {
             &first_dir
         ));
 
-        // The diff covers new files that aren't committed yet.
+        // The diff covers new files that aren't committed yet, whatever their
+        // names.
+        fs::write(
+            first_dir.join("问候 it's.txt"),
+            "你好
+",
+        )
+        .unwrap();
+        let diff = diff_against_base(&first).unwrap();
+        assert!(diff.contains("问候 it's.txt"), "{diff}");
+        assert!(diff.contains("+你好"), "{diff}");
+        fs::remove_file(first_dir.join("问候 it's.txt")).unwrap();
         let diff = diff_against_base(&first).unwrap();
         assert!(diff.contains("greeting.txt"), "{diff}");
         assert!(diff.contains("+hello"), "{diff}");
@@ -749,6 +982,177 @@ mod tests {
             "one\nmain\nthree\n"
         );
         assert!(uncommitted_changes(&root).unwrap().is_empty());
+        delete_task(&task).unwrap();
+    }
+
+    /// What a task must never change in the main worktree: its branch, HEAD,
+    /// index, stash, files and other branches.
+    fn main_state(root: &Path) -> Vec<String> {
+        vec![
+            run_git(root, &["symbolic-ref", "HEAD"]),
+            run_git(root, &["rev-parse", "HEAD"]),
+            run_git(root, &["status", "--porcelain", "--untracked-files=all"]),
+            run_git(root, &["diff", "--cached"]),
+            run_git(root, &["diff"]),
+            run_git(root, &["stash", "list"]),
+            run_git(
+                root,
+                &["for-each-ref", "refs/heads/main", "refs/heads/other"],
+            ),
+            fs::read_to_string(root.join("shared.txt")).unwrap(),
+            fs::read_to_string(root.join("untracked.txt")).unwrap(),
+        ]
+    }
+
+    /// Staged, unstaged and untracked changes, a stash and another branch in
+    /// the main worktree.
+    fn busy_main_worktree(root: &Path) {
+        run_git(root, &["branch", "other"]);
+        fs::write(root.join("stashed.txt"), "stashed\n").unwrap();
+        run_git(root, &["stash", "push", "-q", "-u", "-m", "user stash"]);
+        fs::write(root.join("staged.txt"), "staged\n").unwrap();
+        run_git(root, &["add", "staged.txt"]);
+        fs::write(root.join("shared.txt"), "one\ntwo\nthree\nunstaged\n").unwrap();
+        fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+    }
+
+    #[test]
+    fn tasks_leave_the_main_worktree_alone() {
+        let (_temp, root) = new_repository();
+        busy_main_worktree(&root);
+        let before = main_state(&root);
+
+        let info = repository_info(&root).unwrap();
+        let keep = create_task(&info, &plan_task(&info, "Keep", "../worktrees").unwrap()).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Edit", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        fs::write(worktree.join("task.txt"), "task\n").unwrap();
+        commit_all(&worktree, "task");
+        fs::write(worktree.join("uncommitted.txt"), "uncommitted\n").unwrap();
+        assert_eq!(main_state(&root), before);
+
+        delete_task(&task).unwrap();
+        assert!(!worktree.exists());
+        assert!(!branch_exists(&root, &task.branch));
+        assert_eq!(main_state(&root), before);
+        // The other task is untouched.
+        let keep_worktree = keep.worktree_path.clone().unwrap();
+        assert!(keep_worktree.join("shared.txt").exists());
+        assert!(branch_exists(&root, &keep.branch));
+        assert_eq!(list_tasks(&root).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleting_a_task_checked_out_in_the_main_worktree_keeps_it() {
+        let (_temp, root) = new_repository();
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Try", "../worktrees").unwrap()).unwrap();
+        // The user removes the task's worktree and tries the branch in the
+        // main worktree instead.
+        let worktree = task.worktree_path.clone().unwrap();
+        run_git(&root, &["worktree", "remove", worktree.to_str().unwrap()]);
+        run_git(&root, &["checkout", "-q", &task.branch]);
+        fs::write(root.join("work.txt"), "the user's work\n").unwrap();
+
+        let task = list_tasks(&root).unwrap().pop().unwrap();
+        assert!(delete_task(&task).is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("work.txt")).unwrap(),
+            "the user's work\n"
+        );
+        assert!(root.join(".git").is_dir());
+        assert!(branch_exists(&root, &task.branch));
+    }
+
+    #[test]
+    fn merging_doesnt_abort_the_users_own_merge() {
+        let (_temp, root) = new_repository();
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Edit", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        fs::write(worktree.join("task.txt"), "task\n").unwrap();
+        commit_all(&worktree, "task");
+
+        // The user is in the middle of merging another branch, with a conflict
+        // they've half resolved.
+        run_git(&root, &["checkout", "-q", "-b", "feature"]);
+        fs::write(root.join("shared.txt"), "one\nfeature\nthree\n").unwrap();
+        commit_all(&root, "feature");
+        run_git(&root, &["checkout", "-q", "main"]);
+        fs::write(root.join("shared.txt"), "one\nmain\nthree\n").unwrap();
+        commit_all(&root, "main");
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["merge", "feature"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        fs::write(root.join("resolving.txt"), "notes\n").unwrap();
+        let conflicted = fs::read_to_string(root.join("shared.txt")).unwrap();
+        assert!(conflicted.contains("<<<<<<<"));
+
+        assert!(merge_task(&task).is_err());
+        assert!(root.join(".git").join("MERGE_HEAD").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("shared.txt")).unwrap(),
+            conflicted
+        );
+        assert_eq!(
+            run_git(&root, &["diff", "--name-only", "--diff-filter=U"]),
+            "shared.txt"
+        );
+        delete_task(&task).unwrap();
+    }
+
+    #[test]
+    fn conflicting_merges_keep_uncommitted_changes() {
+        let (_temp, root) = new_repository();
+        fs::write(root.join("other.txt"), "other\n").unwrap();
+        commit_all(&root, "other");
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Edit", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        fs::write(worktree.join("shared.txt"), "one\ntask\nthree\n").unwrap();
+        commit_all(&worktree, "task edit");
+        fs::write(root.join("shared.txt"), "one\nmain\nthree\n").unwrap();
+        commit_all(&root, "main edit");
+
+        // Uncommitted work in files the merge doesn't touch.
+        fs::write(root.join("other.txt"), "other\nunstaged\n").unwrap();
+        fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+        let status = run_git(&root, &["status", "--porcelain"]);
+
+        assert_eq!(
+            merge_task(&task).unwrap(),
+            MergeOutcome::Conflicts(vec!["shared.txt".to_string()])
+        );
+        assert_eq!(run_git(&root, &["status", "--porcelain"]), status);
+        assert_eq!(
+            fs::read_to_string(root.join("other.txt")).unwrap(),
+            "other\nunstaged\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("shared.txt")).unwrap(),
+            "one\nmain\nthree\n"
+        );
+        assert!(!root.join(".git").join("MERGE_HEAD").exists());
+
+        // Staged changes stop the merge before it starts, and stay staged.
+        fs::write(root.join("staged.txt"), "staged\n").unwrap();
+        run_git(&root, &["add", "staged.txt"]);
+        let status = run_git(&root, &["status", "--porcelain"]);
+        assert!(merge_task(&task).is_err());
+        assert_eq!(run_git(&root, &["status", "--porcelain"]), status);
+        run_git(&root, &["reset", "-q", "staged.txt"]);
+
+        // So do uncommitted changes to a file the merge changes.
+        fs::write(root.join("shared.txt"), "one\nmine\nthree\n").unwrap();
+        assert!(merge_task(&task).is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("shared.txt")).unwrap(),
+            "one\nmine\nthree\n"
+        );
         delete_task(&task).unwrap();
     }
 

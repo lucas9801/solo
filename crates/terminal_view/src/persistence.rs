@@ -454,6 +454,11 @@ impl Domain for TerminalDb {
         sql! (
             ALTER TABLE terminals ADD COLUMN agent_session TEXT;
         ),
+        // SOLO: the pipe of the terminal host holding the terminal's console,
+        // to connect to it again after a restart.
+        sql! (
+            ALTER TABLE terminals ADD COLUMN terminal_host TEXT;
+        ),
     ];
 }
 
@@ -573,6 +578,35 @@ impl TerminalDb {
             statement.exec()
         })
         .await
+    }
+
+    /// SOLO: saves (or, with `None`, clears) the terminal host's pipe.
+    pub async fn save_terminal_host(
+        &self,
+        item_id: ItemId,
+        workspace_id: WorkspaceId,
+        terminal_host: Option<String>,
+    ) -> Result<()> {
+        self.write(move |conn| {
+            let query = "INSERT INTO terminals (item_id, workspace_id, terminal_host)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT (workspace_id, item_id) DO UPDATE SET
+                    terminal_host = excluded.terminal_host";
+            let mut statement = Statement::prepare(conn, query)?;
+            let mut next_index = statement.bind(&item_id, 1)?;
+            next_index = statement.bind(&workspace_id, next_index)?;
+            statement.bind(&terminal_host, next_index)?;
+            statement.exec()
+        })
+        .await
+    }
+
+    query! {
+        pub fn get_terminal_host(item_id: ItemId, workspace_id: WorkspaceId) -> Result<Option<String>> {
+            SELECT terminal_host
+            FROM terminals
+            WHERE item_id = ? AND workspace_id = ?
+        }
     }
 
     query! {

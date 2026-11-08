@@ -1,5 +1,9 @@
 # Solo
 
+**User guide / 用户指南:** [中文](docs/guide/zh-CN.md) · [English](docs/guide/en.md)
+
+**About Solo / 介绍:** [English](docs/site/en/index.md) · [中文](docs/site/zh/index.md)
+
 Solo is a terminal-first editor: a fork of [Zed](https://github.com/zed-industries/zed)
 that puts a Warp-style terminal at the center, for working with AI agents such
 as Claude Code in the terminal while viewing and editing code beside it.
@@ -48,10 +52,14 @@ as Claude Code in the terminal while viewing and editing code beside it.
   a rendered preview (Mermaid diagrams, images), images in the image viewer.
 - The tab of a terminal running an agent (claude, codex, gemini, aider, ...)
   shows what it's doing: working, idle, needs your input, done or failed.
-  Claude Code started in a Solo terminal reports it through hooks Solo adds
-  for that session (`claude_code_hooks`, nothing is written to your Claude
-  settings); other agents' status is read from the terminal, so it can lag a
-  moment behind. More programs can be added with `agent_commands`.
+  Claude Code, Codex and Copilot CLI started in a Solo terminal report it
+  through hooks Solo adds for that session (`claude_code_hooks`,
+  `codex_hooks`, `copilot_hooks`; nothing is written to their settings, and
+  Codex asks once whether to trust them);
+  other agents' status is read from their screen with per-agent
+  rules (see the table below), so it can lag a moment behind. More programs
+  can be added with `agent_commands`; any program can report its own status
+  ([docs/agent-status-protocol.md](docs/agent-status-protocol.md)).
 - Tab titles say what a terminal is doing: the agent and its session title,
   the running command, or the directory and git branch.
 - Each project folder is a workspace with a tab in the title bar, holding its
@@ -60,20 +68,47 @@ as Claude Code in the terminal while viewing and editing code beside it.
   workspace, and its menu (the arrow, or right click) lists its terminals to
   jump to one. `+` (or opening a folder) adds a workspace to the window;
   ctrl-alt-1…9 and ctrl-alt-pageup/pagedown switch between them. Workspaces
-  come back after a restart, each loading when you first switch to it.
+  come back after a restart, each loading when you first switch to it. A
+  terminal that `cd`s into another tab's project offers to move there, and
+  terminals from before there were tabs move to their repository's tab once.
 - With `follow_working_directory`, the file tree, file finder and project
   search follow the focused terminal's git repository instead (off by
   default).
-- Closing a terminal, a window or Solo while an agent runs asks first
-  (`confirm_close`). After a restart, a terminal that was running one offers
-  to continue its session.
+- Terminals running something (an agent, a build) keep running when Solo
+  quits, restarts for an update or crashes: each terminal's shell runs in a
+  small background process (`solo-terminal-host.exe`), and Solo connects to
+  them again when it opens (`keep_running_on_quit`, Windows). Idle shells end
+  with Solo. Closing a terminal or a window while an agent runs asks first
+  (`confirm_close`); a terminal whose agent couldn't be kept offers to
+  continue its session after a restart.
 - Each agent turn's changes can be reviewed (the "N files changed" button on
   the tab): reject or keep hunks, comment on lines and send the comments to
   the agent, or roll back to before a turn.
 - Send the selection, the cursor position or the file's diagnostics from the
   editor to an agent (ctrl-alt-k, ctrl-alt-shift-m).
 - New agent task: a git worktree with its own branch and an agent terminal,
-  to merge or discard when done ("agent task" in the command palette).
+  to merge, open a pull request for or discard when done ("agent task" in the
+  command palette). In a workspace with several repositories, a task can span
+  them: a worktree of each, side by side in one folder where its agent works.
+  With uncommitted changes, the task's agent can be asked to commit them. A
+  repository can set its tasks up in `.solo/tasks.json`:
+
+  ```jsonc
+  {
+    // Where task worktrees go, relative to the repository ({repo}: its folder name).
+    "worktree_directory": "../{repo}-worktrees",
+    // Ignored files each task gets a copy of (wildcards in file names only).
+    "copy": [".env", ".env.*", "config/local.*"],
+    // Run in the task's terminal before the agent starts.
+    "setup": "npm install",
+    // Run in the task's worktree before it's deleted.
+    "teardown": "docker compose down",
+    // Each task gets a port of its own, in SOLO_TASK_PORT.
+    "port_range": [4100, 4199],
+    // More environment variables for tasks' terminals.
+    "env": { "NODE_ENV": "development" }
+  }
+  ```
 - Click a `mermaid` line in an agent's output to see the diagram, taken from
   Claude Code's transcript when the screen only shows part of it. The tab's
   tooltip shows the session's token use and context.
@@ -87,6 +122,24 @@ To get Claude Code's turn notifications, run
 `claude config set --global preferredNotifChannel iterm2` (OSC 9) or keep its
 terminal bell.
 
+### Supported agents
+
+| Agent | Status from | Per-turn review | Resume after a restart |
+|---|---|---|---|
+| Claude Code | hooks Solo adds per session, and its screen | yes | its session (`claude --resume <id>`) |
+| Codex | hooks Solo adds per session (`-c hooks...`), and its screen | yes | the most recent session |
+| Copilot CLI | hooks in a plugin Solo loads per session (`--plugin-dir`), and its screen | yes | the most recent session |
+| Gemini CLI, Cursor CLI | its screen | yes, turns read from the screen | the most recent session |
+| OpenCode, Amp, Qwen Code, Cline, Kimi, Kiro, Grok, Droid, Devin, Antigravity, Kilo, Letta, Hermes, Pi, Qoder, Maki, Muse | its screen | yes, turns read from the screen | no |
+| Aider and programs added with `agent_commands` | its output (working while it prints, needs input when it rings the bell) | no | no |
+| Anything that reports through [the status protocol](docs/agent-status-protocol.md) | its reports | yes | no |
+
+The screen rules are Herdr's ([vendor/herdr_agent_detection](vendor/herdr_agent_detection)).
+To change an agent's rules, put a file of the same format named after the
+agent's id (for example `codex.toml`) in an `agent-detection` folder in Solo's
+settings directory (`%APPDATA%\Solo\agent-detection`); it replaces the bundled
+rules for that agent. Solo reads them when it starts.
+
 ## Settings
 
 Solo's settings live in `%APPDATA%\Solo` (Windows), apart from Zed's. Its own
@@ -94,7 +147,7 @@ terminal settings, under `"terminal"`: `shell_integration`, `input_editor`,
 `compact_prompt`, `completions_as_you_type`, `open_links_on_click`,
 `open_changed_files`, `notify_long_commands_after_seconds`,
 `program_notifications`, `restore_contents`, `agent_commands`,
-`claude_code_hooks`, `follow_working_directory`, `confirm_close`,
+`claude_code_hooks`, `codex_hooks`, `copilot_hooks`, `follow_working_directory`, `confirm_close`,
 `agent_task_command`.
 
 Project settings, tasks and debug scenarios go in a `.solo` folder in the
@@ -104,10 +157,13 @@ keeps being edited there.
 The interface language is the `ui_language` setting: `"system"` (the
 default), `"en"` or `"zh"` (`SOLO_LANGUAGE=en` or `zh` overrides it).
 
-Solo doesn't use Zed Industries' services: Zed accounts, Zed's hosted
-models, edit predictions, collaboration, auto-update and telemetry are off
-or hidden. AI comes from your own API keys (Anthropic, OpenAI, Ollama, ...)
-and external agents such as Claude Code and Codex.
+Solo doesn't use Zed Industries' services by default: Zed accounts, Zed's
+hosted models, edit predictions, collaboration, auto-update and telemetry
+are off or hidden. On its own it only asks GitHub for Solo's updates. Zed's
+extension API is used when you browse or install extensions (and to update
+installed ones), and the ACP agent registry when you look at it or use an
+agent from it. AI comes from your own API keys (Anthropic, OpenAI, Ollama,
+...) and external agents such as Claude Code and Codex.
 
 ## Building
 
@@ -149,7 +205,7 @@ commits and tags the version, pushes, and creates the GitHub release with them.
 ## Credits and licensing
 
 Solo is based on [Zed](https://github.com/zed-industries/zed) by Zed
-Industries, Inc. ([original README](./README-zed.md)). Like Zed, it is
+Industries, Inc. Like Zed, it is
 licensed under the GPL-3.0-or-later (see `LICENSE-GPL`); some Zed crates are
 Apache-2.0 (see `LICENSE-APACHE` and each crate's license file).
 

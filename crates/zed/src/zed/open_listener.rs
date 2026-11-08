@@ -675,6 +675,29 @@ pub async fn handle_cli_connection(
                 // resolve_open_behavior
                 debug_panic!("unexpected SetOpenBehavior message");
             }
+            // SOLO: `solo-cli agent ...`.
+            CliRequest::Agent { args, caller, cwd } => {
+                let output = terminal_view::agent_cli::run(args, caller, cwd, cx).await;
+                if !output.stdout.is_empty() {
+                    responses
+                        .send(CliResponse::Stdout {
+                            message: output.stdout,
+                        })
+                        .log_err();
+                }
+                if !output.stderr.is_empty() {
+                    responses
+                        .send(CliResponse::Stderr {
+                            message: output.stderr,
+                        })
+                        .log_err();
+                }
+                responses
+                    .send(CliResponse::Exit {
+                        status: output.status,
+                    })
+                    .log_err();
+            }
         }
     }
 }

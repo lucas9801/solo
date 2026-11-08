@@ -1,10 +1,11 @@
-//! SOLO: A Claude Code hook that tells the Solo terminal Claude runs in what
-//! it's doing, with `OSC 6973 ; agent ; <kind> ; <ms since the epoch> ; <session id>`
+//! SOLO: A Claude Code and Codex hook that tells the Solo terminal the agent
+//! runs in what it's doing, with
+//! `OSC 6973 ; agent ; <kind> ; <ms since the epoch> ; <session id> [; <agent>]`
 //! (parsed by `terminal::shell_integration::AgentHook`).
 //!
-//! Claude Code starts it for every hook event Solo asks for, so it does as
+//! The agent starts it for every hook event Solo asks for, so it does as
 //! little as possible: read the event from stdin, write one escape sequence to
-//! the terminal, exit.
+//! the terminal, exit. `--agent <name>` names the agent in the report.
 
 // No console of its own: it attaches to the terminal's below, and allocating
 // one would only slow down every hook.
@@ -20,19 +21,116 @@ fn main() {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis().to_string())
         .unwrap_or_default();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("report") {
+        match report_sequence(&args[1..], &sent_at_ms) {
+            Ok(sequence) => {
+                if let Err(error) = write_to_terminal(sequence.as_bytes()) {
+                    eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
+                    std::process::exit(1);
+                }
+            }
+            Err(error) => {
+                eprintln!("solo-agent-hook: {error}\n{REPORT_USAGE}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
     let mut input = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut input) {
         eprintln!("solo-agent-hook: failed to read the hook input: {error}");
     }
-    let argument = std::env::args().nth(1);
-    let Some(kind) = kind_of(&input, argument.as_deref()) else {
+    let (argument, agent) = hook_arguments(&args);
+    let Some(kind) = kind_of(&input, argument) else {
         return;
     };
     let session_id = session_id_of(&input).unwrap_or_default();
-    let sequence = format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id}\x07");
+    let sequence = match agent.filter(|agent| is_agent_name(agent)) {
+        Some(agent) => format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id};{agent}\x07"),
+        None => format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id}\x07"),
+    };
     if let Err(error) = write_to_terminal(sequence.as_bytes()) {
         eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
     }
+}
+
+const REPORT_USAGE: &str = "usage: solo-agent-hook report --state <working|blocked|idle> \
+[--agent <name>] [--session <id>] [--seq <n>]";
+
+/// The escape sequence for `solo-agent-hook report ...`: the public form of
+/// the protocol (docs/agent-status-protocol.md), for agents and scripts.
+fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> {
+    let mut state = None;
+    let mut agent = String::new();
+    let mut session = String::new();
+    let mut order = sent_at_ms.to_string();
+    let mut args = args.iter();
+    while let Some(flag) = args.next() {
+        let mut value = || {
+            args.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value"))
+        };
+        match flag.as_str() {
+            "--state" => state = Some(value()?),
+            "--agent" => agent = value()?,
+            "--session" => session = value()?,
+            "--seq" => order = value()?,
+            other => return Err(format!("unknown argument {other:?}")),
+        }
+    }
+    let kind = match state.as_deref() {
+        Some("working" | "prompt") => "prompt",
+        Some("blocked" | "input") => "input",
+        Some("idle" | "stop") => "stop",
+        Some("start") => "start",
+        Some(other) => return Err(format!("unknown state {other:?}")),
+        None => return Err("--state is required".to_string()),
+    };
+    if order.parse::<u64>().is_err() {
+        return Err(format!("--seq {order:?} isn't a number"));
+    }
+    // Everything goes into an escape sequence: nothing that could end it.
+    if !session
+        .chars()
+        .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
+        return Err(format!("--session {session:?} isn't a UUID"));
+    }
+    if !is_agent_name(&agent) {
+        return Err(format!(
+            "--agent {agent:?} must be up to 40 letters, digits, spaces, '-', '_' or '.'"
+        ));
+    }
+    Ok(format!(
+        "\x1b]6973;agent;{kind};{order};{session};{agent}\x07"
+    ))
+}
+
+/// The arguments a hook is run with: the kind of report to fall back on, and
+/// the agent's name after `--agent`.
+fn hook_arguments(args: &[String]) -> (Option<&str>, Option<&str>) {
+    let mut kind = None;
+    let mut agent = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--agent" {
+            agent = args.next().map(String::as_str);
+        } else if kind.is_none() {
+            kind = Some(arg.as_str());
+        }
+    }
+    (kind, agent)
+}
+
+/// Whether `agent` can go into the escape sequence as an agent's name: up to
+/// 40 letters, digits, spaces, '-', '_' or '.'.
+fn is_agent_name(agent: &str) -> bool {
+    agent.chars().count() <= 40
+        && agent.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '-' | '_' | '.' | ' ')
+        })
 }
 
 /// The kind of report for a hook event, from the hook's JSON input, or else
@@ -47,17 +145,18 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
             .and_then(|event| event.get(name))
             .and_then(|value| value.as_str())
     };
-    let Some(event_name) = field("hook_event_name") else {
-        return match argument? {
-            "start" => Some("start"),
-            "prompt" => Some("prompt"),
-            "input" => Some("input"),
-            "stop" => Some("stop"),
-            "idle" => Some("idle"),
-            _ => None,
-        };
+    let from_argument = || match argument? {
+        "start" => Some("start"),
+        "prompt" => Some("prompt"),
+        "input" => Some("input"),
+        "stop" => Some("stop"),
+        "idle" => Some("idle"),
+        _ => None,
     };
-    match event_name {
+    let Some(event_name) = field("hook_event_name") else {
+        return from_argument();
+    };
+    let kind = match event_name {
         "SessionStart" => Some("start"),
         "UserPromptSubmit" => Some("prompt"),
         "PermissionRequest" => Some("input"),
@@ -69,9 +168,17 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
             "idle_prompt" => Some("idle"),
             _ => None,
         },
-        "Stop" | "StopFailure" => Some("stop"),
+        // Codex's Interrupt: the user stopped the turn.
+        "Stop" | "StopFailure" | "Interrupt" => Some("stop"),
         _ => None,
-    }
+    };
+    // An event this doesn't know, under a name another agent uses for it:
+    // the argument the hook was set up with says what it is.
+    let known = matches!(
+        event_name,
+        "SessionStart" | "UserPromptSubmit" | "PermissionRequest" | "PreToolUse" | "Notification"
+    );
+    kind.or_else(|| if known { None } else { from_argument() })
 }
 
 /// The session id from the hook's JSON input, if it looks like one: it goes
@@ -188,6 +295,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reports_from_the_command_line() {
+        let args =
+            |args: &[&str]| -> Vec<String> { args.iter().map(|arg| arg.to_string()).collect() };
+        assert_eq!(
+            report_sequence(
+                &args(&["--state", "working", "--agent", "my agent", "--seq", "7"]),
+                "123"
+            ),
+            Ok("\x1b]6973;agent;prompt;7;;my agent\x07".to_string())
+        );
+        assert_eq!(
+            report_sequence(
+                &args(&[
+                    "--state",
+                    "blocked",
+                    "--session",
+                    "0f6ed4b2-755b-4e18-8bd1-f60252548036"
+                ]),
+                "123"
+            ),
+            Ok("\x1b]6973;agent;input;123;0f6ed4b2-755b-4e18-8bd1-f60252548036;\x07".to_string())
+        );
+        assert_eq!(
+            report_sequence(&args(&["--state", "idle"]), "5"),
+            Ok("\x1b]6973;agent;stop;5;;\x07".to_string())
+        );
+        for bad in [
+            &["--state", "dancing"][..],
+            &[][..],
+            &["--state"][..],
+            &["--state", "idle", "--seq", "x"][..],
+            &["--state", "idle", "--agent", "a\x07b"][..],
+            &["--state", "idle", "--session", "x;y"][..],
+            &["--state", "idle", "--what", "x"][..],
+        ] {
+            assert!(report_sequence(&args(bad), "1").is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn session_ids_from_hook_input() {
         assert_eq!(
             session_id_of(r#"{"session_id":"0f6ed4b2-755b-4e18-8bd1-f60252548036"}"#).as_deref(),
@@ -238,6 +385,28 @@ mod tests {
     }
 
     #[test]
+    fn hook_arguments_name_the_agent() {
+        let args =
+            |args: &[&str]| -> Vec<String> { args.iter().map(|arg| arg.to_string()).collect() };
+        assert_eq!(hook_arguments(&args(&["stop"])), (Some("stop"), None));
+        assert_eq!(
+            hook_arguments(&args(&["--agent", "codex"])),
+            (None, Some("codex"))
+        );
+        assert_eq!(
+            hook_arguments(&args(&["prompt", "--agent", "codex"])),
+            (Some("prompt"), Some("codex"))
+        );
+        assert_eq!(hook_arguments(&args(&["--agent"])), (None, None));
+        assert!(is_agent_name("codex"));
+        assert!(!is_agent_name("a;b"));
+        assert_eq!(
+            kind_of(r#"{"hook_event_name":"Interrupt","turn_id":"t"}"#, None),
+            Some("stop")
+        );
+    }
+
+    #[test]
     fn the_argument_decides_without_input() {
         assert_eq!(kind_of("", Some("stop")), Some("stop"));
         assert_eq!(kind_of("not json", Some("prompt")), Some("prompt"));
@@ -247,6 +416,16 @@ mod tests {
         assert_eq!(
             kind_of(r#"{"hook_event_name":"Stop"}"#, Some("prompt")),
             Some("stop")
+        );
+        // Unless it's an event under a name this doesn't know.
+        assert_eq!(
+            kind_of(r#"{"hook_event_name":"userPromptSubmitted"}"#, Some("prompt")),
+            Some("prompt")
+        );
+        // A known event this doesn't report stays unreported.
+        assert_eq!(
+            kind_of(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#, Some("input")),
+            None
         );
     }
 }

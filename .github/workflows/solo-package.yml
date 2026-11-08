@@ -1,0 +1,125 @@
+# SOLO: builds Solo's release packages on GitHub-hosted runners when a version
+# tag (v*) is pushed, or by hand, with script/package-solo.ps1 (the solo-dist
+# profile, the licenses, the zip and the Inno Setup installer), and uploads
+# them as workflow artifacts.
+#
+# It doesn't create or change GitHub releases: script/release-solo.ps1 still
+# does that from a local build. Nothing is signed yet; once Solo has a signing
+# service, package-solo.ps1 signs when SOLO_SIGN_COMMAND is set (see there),
+# or the unsigned artifacts below can be submitted to SignPath.
+#
+# See solo-ci.yml for why WebRTC is downloaded separately.
+
+name: Solo package
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: solo-package-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  WEBRTC_TAG: webrtc-0001d84-4
+  WEBRTC_SHA256: b16f68e1fef8bd8089b9c7fc46c3c9b43ad5257c84460794a3668ec5accc1f13
+
+jobs:
+  package:
+    name: Build and package Solo (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 350
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that the tag matches Solo's version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} doesn't match crates/zed version $version" }
+
+      - name: Show free disk space
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
+
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+
+      - name: Cache the prebuilt WebRTC
+        id: webrtc-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/webrtc
+          key: webrtc-${{ env.WEBRTC_TAG }}-win-x64-release
+
+      - name: Download the prebuilt WebRTC
+        if: steps.webrtc-cache.outputs.cache-hit != 'true'
+        run: ./script/solo-ci-webrtc.ps1 -Tag $env:WEBRTC_TAG -Sha256 $env:WEBRTC_SHA256 -Dir "${{ runner.temp }}/webrtc"
+
+      - name: Use the prebuilt WebRTC
+        run: |
+          $dir = Join-Path "${{ runner.temp }}" "webrtc/win-x64-release"
+          if (-not (Test-Path (Join-Path $dir "webrtc.ninja"))) { throw "No WebRTC in $dir" }
+          "LK_CUSTOM_WEBRTC=$dir" >> $env:GITHUB_ENV
+
+      # Only the registry, git checkouts and cargo-about: a cached solo-dist
+      # target wouldn't fit next to solo-ci's cache, and release builds should
+      # start from scratch anyway.
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: solo-package-windows
+          cache-targets: false
+
+      - name: Install Inno Setup
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "Installing Inno Setup failed" }
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          "ISCC_PATH=$iscc" >> $env:GITHUB_ENV
+
+      - name: Build and package
+        run: ./script/package-solo.ps1 -OutDir dist -Iscc $env:ISCC_PATH
+
+      - name: Show free disk space
+        if: always()
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solo-windows-x64-zip
+          path: dist/Solo-*-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solo-windows-x64-setup
+          path: dist/Solo-Setup-*.exe
+          if-no-files-found: error
+
+      # What would go to a signing service (SignPath signs files inside the
+      # artifact it is given): the staged folder before zipping.
+      - name: Upload the unpacked files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solo-windows-x64-files
+          path: dist/Solo/
+          if-no-files-found: error

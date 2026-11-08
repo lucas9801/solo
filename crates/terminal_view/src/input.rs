@@ -824,6 +824,7 @@ impl Render for TerminalInput {
                         )
                     })
                     .when_some(last_exit_code.filter(|code| *code != 0), |this, code| {
+                        let editor_focus = self.editor.focus_handle(cx);
                         this.child(
                             Label::new(if util::i18n::is_chinese() {
                                 format!("退出码 {code}")
@@ -832,6 +833,27 @@ impl Render for TerminalInput {
                             })
                             .size(LabelSize::XSmall)
                             .color(Color::Error),
+                        )
+                        // SOLO: what failed, to the agent working on the code.
+                        .child(
+                            Button::new(
+                                "send-failures-to-agent",
+                                util::i18n::tr("Send to Agent", "发给 agent"),
+                            )
+                            .label_size(LabelSize::XSmall)
+                            .style(ButtonStyle::Subtle)
+                            .tooltip(Tooltip::text(util::i18n::tr(
+                                "Paste the errors or failed tests into the agent working here",
+                                "把错误或失败的测试粘贴给在这里工作的 agent",
+                            )))
+                            .on_click(move |_, window, cx| {
+                                // The terminal handles it, from its input.
+                                window.focus(&editor_focus, cx);
+                                window.dispatch_action(
+                                    Box::new(crate::command_blocks::SendFailuresToAgent),
+                                    cx,
+                                );
+                            }),
                         )
                     })
                     .when(self.generating.is_some(), |this| {
@@ -1303,7 +1325,7 @@ mod tests {
 
     /// A shell with no history file, so the user's own history stays out.
     const SHELL_PROMPT: &[u8] =
-        b"\x1b]633;P;Shell=solo-test-shell\x07\x1b]133;A\x07$ \x1b]133;B\x07";
+        b"\x1b]633;P;Shell=solo-test-shell;test-nonce\x07\x1b]133;A\x07$ \x1b]133;B\x07";
 
     async fn terminal_with_view(
         cx: &mut TestAppContext,
@@ -1333,6 +1355,7 @@ mod tests {
             )
             .subscribe(cx)
         });
+        terminal.update(cx, |terminal, _| terminal.set_shell_nonce("test-nonce"));
         let (view, cx) = cx.add_window_view(|window, cx| {
             TerminalView::new(
                 terminal.clone(),
@@ -1413,7 +1436,7 @@ mod tests {
         // A full screen program takes the whole terminal.
         write(
             &terminal,
-            b"vim\r\n\x1b]633;E;vim\x07\x1b]133;C\x07\x1b[?1049h",
+            b"vim\r\n\x1b]633;E;vim;test-nonce\x07\x1b]133;C\x07\x1b[?1049h",
             cx,
         );
         assert!(!input_focused(&view, cx));
@@ -1431,7 +1454,7 @@ mod tests {
 
         write(
             &terminal,
-            b"python\r\n\x1b]633;E;python\x07\x1b]133;C\x07>>> ",
+            b"python\r\n\x1b]633;E;python;test-nonce\x07\x1b]133;C\x07>>> ",
             cx,
         );
         assert!(!input_focused(&view, cx));
