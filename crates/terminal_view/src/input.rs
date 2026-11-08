@@ -824,6 +824,7 @@ impl Render for TerminalInput {
                         )
                     })
                     .when_some(last_exit_code.filter(|code| *code != 0), |this, code| {
+                        let editor_focus = self.editor.focus_handle(cx);
                         this.child(
                             Label::new(if util::i18n::is_chinese() {
                                 format!("退出码 {code}")
@@ -832,6 +833,27 @@ impl Render for TerminalInput {
                             })
                             .size(LabelSize::XSmall)
                             .color(Color::Error),
+                        )
+                        // SOLO: what failed, to the agent working on the code.
+                        .child(
+                            Button::new(
+                                "send-failures-to-agent",
+                                util::i18n::tr("Send to Agent", "发给 agent"),
+                            )
+                            .label_size(LabelSize::XSmall)
+                            .style(ButtonStyle::Subtle)
+                            .tooltip(Tooltip::text(util::i18n::tr(
+                                "Paste the errors or failed tests into the agent working here",
+                                "把错误或失败的测试粘贴给在这里工作的 agent",
+                            )))
+                            .on_click(move |_, window, cx| {
+                                // The terminal handles it, from its input.
+                                window.focus(&editor_focus, cx);
+                                window.dispatch_action(
+                                    Box::new(crate::command_blocks::SendFailuresToAgent),
+                                    cx,
+                                );
+                            }),
                         )
                     })
                     .when(self.generating.is_some(), |this| {

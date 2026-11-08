@@ -10,6 +10,7 @@ mod agent_timeline;
 mod agent_turns;
 pub mod command_blocks;
 mod command_notifications;
+mod failures;
 mod follow_working_directory;
 pub mod input;
 mod mermaid_preview;
@@ -29,7 +30,7 @@ mod workspace_terminals;
 pub use agent_status::AgentTurnEvent;
 use command_blocks::{
     CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput, SaveCommandBlockAsWorkflow,
-    SendCommandBlockToAgent,
+    SendCommandBlockToAgent, SendFailuresToAgent,
 };
 use editor::{
     Editor, EditorSettings, actions::SelectAll, blink_manager::BlinkManager,
@@ -759,6 +760,7 @@ impl TerminalView {
         let shell_integration_active = self.terminal.read(cx).shell_integration().is_active();
         let has_mermaid_diagram = self.terminal.read(cx).mermaid_diagram(None).is_some();
         let has_agent_turns = agent_turns::has_turns(self, cx);
+        let has_failed_command = self.failed_command_block(cx).is_some();
         let offers_remote_control = self.offers_remote_control();
         let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
             menu.context(self.focus_handle.clone())
@@ -797,6 +799,15 @@ impl TerminalView {
                             util::i18n::tr("Send to AI Agent", "发送给 AI agent"),
                             Box::new(SendCommandBlockToAgent),
                         )
+                        .when(has_failed_command, |menu| {
+                            menu.action(
+                                util::i18n::tr(
+                                    "Send What Failed to AI Agent",
+                                    "把失败内容发给 AI agent",
+                                ),
+                                Box::new(SendFailuresToAgent),
+                            )
+                        })
                         .action(
                             util::i18n::tr("Save Command as Workflow", "把命令存为 Workflow"),
                             Box::new(SaveCommandBlockAsWorkflow),
@@ -1782,6 +1793,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::copy_command_block))
             .on_action(cx.listener(TerminalView::rerun_command_block))
             .on_action(cx.listener(TerminalView::send_command_block_to_agent))
+            .on_action(cx.listener(TerminalView::send_failures_to_agent))
             .on_action(cx.listener(TerminalView::preview_mermaid_diagram))
             .on_action(cx.listener(TerminalView::choose_agent_session))
             .on_action(cx.listener(TerminalView::show_agent_timeline))

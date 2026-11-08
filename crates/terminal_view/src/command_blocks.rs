@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use gpui::{ClipboardItem, Context, Entity, Window, actions};
+use gpui::{App, ClipboardItem, Context, Entity, Window, actions};
 use settings::Settings as _;
 use terminal::shell_integration::CommandBlock;
 use terminal::terminal_settings::TerminalSettings;
@@ -31,6 +31,11 @@ actions!(
         /// Pastes the selected (or last) command block into the terminal
         /// running an AI agent, such as Claude Code.
         SendCommandBlockToAgent,
+        /// Pastes what failed in the selected (or last failed) command, such
+        /// as a build's errors or the failed tests, into the terminal of the
+        /// AI agent working in the same directory, or else of the one used
+        /// last.
+        SendFailuresToAgent,
         /// Saves the command of the selected (or last) command block as a
         /// workflow.
         SaveCommandBlockAsWorkflow,
@@ -268,6 +273,45 @@ impl TerminalView {
         let Some(markdown) = self.target_command_block_markdown(cx) else {
             return;
         };
+        self.paste_to_agent(markdown, window, cx);
+    }
+
+    /// The selected block if it failed, else the last one that failed.
+    pub(crate) fn failed_command_block(&self, cx: &App) -> Option<usize> {
+        let blocks = self.terminal.read(cx).shell_integration().blocks();
+        let failed = |block: &CommandBlock| {
+            block.end_line.is_some() && block.exit_code.is_some_and(|code| code != 0)
+        };
+        self.selected_command_block
+            .filter(|ix| blocks.get(*ix).is_some_and(failed))
+            .or_else(|| blocks.iter().rposition(failed))
+    }
+
+    pub(crate) fn send_failures_to_agent(
+        &mut self,
+        _: &SendFailuresToAgent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.failed_command_block(cx) else {
+            return;
+        };
+        let terminal = self.terminal.read(cx);
+        let message = crate::failures::failure_message(
+            &terminal.command_block_command(ix).unwrap_or_default(),
+            &terminal.command_block_output(ix).unwrap_or_default(),
+            terminal
+                .shell_integration()
+                .blocks()
+                .get(ix)
+                .and_then(|block| block.exit_code),
+        );
+        self.paste_to_agent(message, window, cx);
+    }
+
+    /// Pastes `markdown` into the prompt of an agent in another terminal and
+    /// switches to it; without one, copies it.
+    fn paste_to_agent(&mut self, markdown: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
@@ -411,6 +455,30 @@ fn find_agent_terminal(
     let extra = &TerminalSettings::get_global(cx).agent_commands;
     let mut views = terminal_views(workspace, cx);
     crate::agent_context::most_recently_focused_first(&mut views, cx);
+    // An agent in the same directory, such as a task's worktree, works on the
+    // code this terminal builds and tests.
+    let here = this.read(cx).terminal.read(cx).working_directory();
+    let agents: Vec<&Entity<TerminalView>> = views
+        .iter()
+        .filter(|view| *view != this && view.read(cx).runs_agent(cx))
+        .collect();
+    if let Some(here) = &here
+        && let Some(agent) = agents.iter().find(|agent| {
+            agent
+                .read(cx)
+                .terminal
+                .read(cx)
+                .working_directory()
+                .is_some_and(|directory| {
+                    here.starts_with(&directory) || directory.starts_with(here)
+                })
+        })
+    {
+        return Some((*agent).clone());
+    }
+    if let Some(agent) = agents.first() {
+        return Some((*agent).clone());
+    }
     let running_commands: Vec<(Entity<TerminalView>, String)> = views
         .into_iter()
         .filter(|view| view != this)
