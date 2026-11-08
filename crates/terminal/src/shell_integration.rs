@@ -147,7 +147,7 @@ pub fn integrate_shell(
 }
 
 /// 64 unpredictable bits: the hasher's keys are random.
-fn new_nonce() -> String {
+pub(crate) fn new_nonce() -> String {
     use std::hash::{BuildHasher as _, Hasher as _};
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u32(std::process::id());

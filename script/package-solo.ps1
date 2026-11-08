@@ -44,7 +44,7 @@ $env:CARGO_INCREMENTAL = "0"
 & (Join-Path $PSScriptRoot "generate-licenses.ps1") (Join-Path $root "assets\licenses.md")
 if (-not (Test-Path (Join-Path $root "assets\licenses.md"))) { throw "Generating the licenses failed" }
 
-cargo build --profile solo-dist -p zed -p solo_agent_hook -p solo_update_helper -p cli --bin solo --bin solo-agent-hook --bin solo-update-helper --bin cli
+cargo build --profile solo-dist -p zed -p solo_agent_hook -p solo_update_helper -p solo_terminal_host -p cli --bin solo --bin solo-agent-hook --bin solo-update-helper --bin solo-terminal-host --bin cli
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 $built = Join-Path $TargetDir "solo-dist"
@@ -56,6 +56,8 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item (Join-Path $built "solo.exe") $stage
 Copy-Item (Join-Path $built "solo-agent-hook.exe") $stage
 Copy-Item (Join-Path $built "solo-update-helper.exe") $stage
+# Holds terminals' consoles, so they can outlive Solo (terminal.keep_running_on_quit).
+Copy-Item (Join-Path $built "solo-terminal-host.exe") $stage
 # The command line, which agents in Solo's terminals use (solo-cli agent ...).
 Copy-Item (Join-Path $built "cli.exe") (Join-Path $stage "solo-cli.exe")
 foreach ($runtime in "conpty.dll", "OpenConsole.exe") {
@@ -80,7 +82,7 @@ function Invoke-Sign([string]$file) {
     if ($process.ExitCode -ne 0) { throw "Signing $file failed (exit code $($process.ExitCode))" }
 }
 if ($SignCommand) {
-    foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-cli.exe") {
+    foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-terminal-host.exe", "solo-cli.exe") {
         Invoke-Sign (Resolve-Path (Join-Path $stage $exe)).Path
     }
 }

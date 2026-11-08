@@ -1,6 +1,10 @@
 mod mappings;
 
 mod alacritty;
+#[cfg(windows)]
+mod host;
+#[cfg(windows)]
+pub use host::HostLink;
 mod mermaid;
 pub use mermaid::is_complete as mermaid_diagram_is_complete;
 mod pty_info;
@@ -66,6 +70,8 @@ use gpui::{
 
 #[cfg(not(windows))]
 use crate::alacritty::current_child_signal_mask;
+#[cfg(windows)]
+use crate::alacritty::window_size_from_terminal_bounds;
 use crate::alacritty::{
     AlacrittyCell, AlacrittyGridIterator, AlacrittyHyperlink, AlacrittySearch, AlacrittyTerm,
     AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
@@ -1014,6 +1020,16 @@ impl TerminalMode {
     }
 }
 
+/// SOLO: the environment variable that has a terminal connect to the terminal
+/// host on this pipe (see [`Terminal::host_pipe`]) instead of starting a
+/// shell; Solo sets it when it restores a terminal. It isn't passed on.
+pub const HOST_RECONNECT_ENV: &str = "SOLO_TERMINAL_HOST_RECONNECT";
+
+#[cfg(windows)]
+type HostLinkField = Option<host::HostLink>;
+#[cfg(not(windows))]
+type HostLinkField = Option<std::convert::Infallible>;
+
 pub struct TerminalBuilder {
     terminal: Terminal,
     events_rx: UnboundedReceiver<PtyEvent>,
@@ -1119,6 +1135,8 @@ impl TerminalBuilder {
             background_executor: background_executor.clone(),
             path_style,
             shell_integration: ShellIntegration::default(),
+            host: None,
+            reconnected_to_host: false,
             cwd_history: Vec::new(),
             pending_cwd_boundary: None,
             #[cfg(any(test, feature = "test-support"))]
@@ -1157,6 +1175,10 @@ impl TerminalBuilder {
         // allocation / acquiring a controlling terminal fails with `ENOTTY`.
         // When set, run the command as a plain subprocess instead.
         let no_pty = HeadlessTerminal::is_enabled(cx);
+        // SOLO: shells run in a terminal host, to outlive Solo when needed.
+        #[cfg(windows)]
+        let use_host = cx.has_global::<settings::SettingsStore>()
+            && TerminalSettings::get_global(cx).keep_running_on_quit;
         #[cfg(not(windows))]
         let child_signal_mask = match current_child_signal_mask()
             .context("failed to capture terminal child signal mask")
@@ -1179,9 +1201,19 @@ impl TerminalBuilder {
             // Remove SHLVL so the spawned shell initializes it to 1, matching
             // the behavior of standalone terminal emulators like iTerm2/Kitty/Alacritty.
             env.remove("SHLVL");
+            // SOLO: the host a restored terminal ran in.
+            let host_reconnect = env.remove(HOST_RECONNECT_ENV);
+            #[cfg(not(windows))]
+            drop(host_reconnect);
             // SOLO: what tells the shell's integration from output posing as it.
-            let shell_nonce = env.get(shell_integration::SHELL_NONCE_ENV).cloned();
-            let terminal_id = env.get(shell_integration::TERMINAL_ID_ENV).cloned();
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut shell_nonce = env.get(shell_integration::SHELL_NONCE_ENV).cloned();
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut terminal_id = env.get(shell_integration::TERMINAL_ID_ENV).cloned();
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut host_link: HostLinkField = None;
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut reconnected_to_host = false;
 
             // If the parent environment doesn't have a locale set
             // (As is the case when launched from a .app on MacOS),
@@ -1332,7 +1364,37 @@ impl TerminalBuilder {
                 );
 
                 //Setup the pty...
-                let pty = match open_pty(&pty_options, TerminalBounds::default(), window_id) {
+                // SOLO: in a terminal host when the shell is to outlive Solo,
+                // reconnecting to the one a restored terminal ran in.
+                #[cfg(windows)]
+                let hosted = if use_host && task.is_none() && !is_remote_terminal {
+                    host::open(
+                        host_reconnect.as_deref(),
+                        &pty_options,
+                        window_size_from_terminal_bounds(TerminalBounds::default()),
+                        shell_nonce.as_deref(),
+                        terminal_id.as_deref(),
+                    )
+                } else {
+                    None
+                };
+                #[cfg(windows)]
+                let pty = match hosted {
+                    Some((connected, reconnected)) => {
+                        if reconnected {
+                            // The shell was started by an earlier Solo.
+                            shell_nonce = connected.nonce;
+                            terminal_id = connected.terminal_id;
+                        }
+                        host_link = Some(connected.link);
+                        reconnected_to_host = reconnected;
+                        Ok(connected.pty)
+                    }
+                    None => open_pty(&pty_options, TerminalBounds::default(), window_id),
+                };
+                #[cfg(not(windows))]
+                let pty = open_pty(&pty_options, TerminalBounds::default(), window_id);
+                let pty = match pty {
                     Ok(pty) => pty,
                     Err(error) => {
                         bail!(TerminalError {
@@ -1414,6 +1476,8 @@ impl TerminalBuilder {
                 init_command_startup_tx: None,
                 event_loop_task: Task::ready(Ok(())),
                 shell_integration: ShellIntegration::new(shell_nonce).with_terminal_id(terminal_id),
+                host: host_link,
+                reconnected_to_host,
                 background_executor,
                 path_style,
                 cwd_history: if is_remote_terminal {
@@ -1621,6 +1685,10 @@ pub struct Terminal {
     background_executor: BackgroundExecutor,
     path_style: PathStyle,
     shell_integration: ShellIntegration,
+    /// SOLO: the terminal host holding the console, see `host`.
+    host: HostLinkField,
+    /// SOLO: whether the console is one an earlier Solo left running.
+    reconnected_to_host: bool,
     cwd_history: Vec<CwdHistoryEntry>,
     pending_cwd_boundary: Option<i32>,
     #[cfg(any(test, feature = "test-support"))]
@@ -1855,6 +1923,32 @@ impl Terminal {
     /// Solo's shell integration.
     pub fn shell_integration(&self) -> &ShellIntegration {
         &self.shell_integration
+    }
+
+    /// SOLO: the pipe of the terminal host holding this terminal's console,
+    /// to connect to it again after a restart.
+    pub fn host_pipe(&self) -> Option<&str> {
+        #[cfg(windows)]
+        return self.host.as_ref().map(|host| host.pipe());
+        #[cfg(not(windows))]
+        return None;
+    }
+
+    /// SOLO: whether this terminal's console is one an earlier Solo left
+    /// running, so its shell and output are already there.
+    pub fn reconnected_to_host(&self) -> bool {
+        self.reconnected_to_host
+    }
+
+    /// SOLO: whether the terminal's host (and what runs in it) keeps running
+    /// when Solo goes, for the next Solo: while it runs something.
+    pub fn keep_running_after_quit(&self, keep: bool) {
+        #[cfg(windows)]
+        if let Some(host) = &self.host {
+            host.set_keep_running(keep);
+        }
+        #[cfg(not(windows))]
+        let _ = keep;
     }
 
     /// Trusts shell integration sequences that carry `nonce`, as if the shell

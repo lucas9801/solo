@@ -9,7 +9,6 @@
 ## Where Paseo is ahead
 
 - **Keep going from anywhere.** A full phone app and a web client let you follow and answer agents away from your computer.
-- **Agents survive closing the window**, kept by the daemon.
 - **Very open.** A CLI, an SDK, MCP and skills make it easy to fit into your own tooling.
 - **Several platforms**, with x64 and ARM64 builds for Windows.
 - No telemetry.

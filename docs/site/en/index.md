@@ -38,6 +38,6 @@ Command blocks, an input editor at the bottom, Warp-style completions, and a fai
 ## Where it stands
 
 - **Windows only**, not yet code-signed: Windows may say it protected your PC on first run; choose "More info → Run anyway".
-- **Closing Solo ends the agents in it.** After a restart a terminal offers to continue its session, but the turn that was running starts over. Keeping agents running in the background has been prototyped and is being built.
+- **Agents keep running when Solo closes.** Each terminal's shell runs in a small background process; quitting Solo, an update's restart or even a crash of Solo leaves terminals that are running something (an agent, a build) running, and Solo connects to them again when it opens. Idle shells end with Solo as usual.
 - No account, no telemetry. By default Solo only contacts GitHub to check for updates (which can be turned off); everything else happens when you use a feature. See [privacy](../../guide/en.md#9-privacy-and-network).
 - Open source, GPL-3.0.

@@ -376,6 +376,7 @@ impl TerminalView {
             cx.observe(&blink_manager, |_, _, cx| cx.notify()),
             cx.observe_global::<SettingsStore>(Self::settings_changed),
             cx.on_app_quit(|terminal_view, cx| {
+                terminal_view.update_keep_running(cx);
                 let contents = terminal_view.contents_to_save(cx);
                 cx.background_spawn(async move {
                     if let Some(contents) = contents {
@@ -1391,6 +1392,19 @@ impl TerminalView {
         dispatch_context
     }
 
+    /// SOLO: tells the terminal's host whether to outlive Solo (quitting,
+    /// closing the window or crashing): while the terminal runs an agent or a
+    /// command, so the next Solo finds it still running.
+    fn update_keep_running(&self, cx: &App) {
+        let terminal = self.terminal.read(cx);
+        let keep = self.agent_status().is_some()
+            || matches!(
+                running_program::running_command(terminal),
+                Some((_, true))
+            );
+        terminal.keep_running_after_quit(keep);
+    }
+
     /// SOLO: the terminal moves to `workspace`, another tab of the window.
     pub(crate) fn set_workspace(
         &mut self,
@@ -1472,6 +1486,7 @@ fn subscribe_for_terminal_events(
                         terminal_view.schedule_save_contents(Duration::from_secs(5), cx);
                     }
                     terminal_view.agent_output(window, cx);
+                    terminal_view.update_keep_running(cx);
                     terminal_view.update_title_git_branch(cx);
                     cx.notify();
                     window.invalidate_character_coordinates();
@@ -2324,6 +2339,10 @@ impl Item for TerminalView {
         }
     }
 
+    fn keeps_running_after_quit(&self, cx: &App) -> bool {
+        self.terminal.read(cx).host_pipe().is_some()
+    }
+
     fn running_program(&self, cx: &App) -> Option<workspace::item::RunningProgram> {
         self.program_ending_on_close(cx)
     }
@@ -2426,6 +2445,7 @@ impl SerializableItem for TerminalView {
         let workspace_id = self.workspace_id?;
         let cwd = terminal.working_directory();
         let custom_title = self.custom_title.clone();
+        let host = terminal.host_pipe().map(str::to_string);
         self.needs_serialize = false;
 
         let db = TerminalDb::global(cx);
@@ -2436,6 +2456,7 @@ impl SerializableItem for TerminalView {
             }
             db.save_custom_title(item_id, workspace_id, custom_title)
                 .await?;
+            db.save_terminal_host(item_id, workspace_id, host).await?;
             Ok(())
         }))
     }
@@ -2453,7 +2474,7 @@ impl SerializableItem for TerminalView {
         cx: &mut App,
     ) -> Task<anyhow::Result<Entity<Self>>> {
         window.spawn(cx, async move |cx| {
-            let (cwd, custom_title, agent_session) = cx
+            let (cwd, custom_title, mut agent_session, host) = cx
                 .update(|_window, cx| {
                     let db = TerminalDb::global(cx);
                     let from_db = db
@@ -2477,10 +2498,15 @@ impl SerializableItem for TerminalView {
                         .filter(|title| !title.trim().is_empty());
                     let agent_session =
                         agent_resume::saved_agent_session(&db, item_id, workspace_id);
-                    (cwd, custom_title, agent_session)
+                    let host = db
+                        .get_terminal_host(item_id, workspace_id)
+                        .log_err()
+                        .flatten()
+                        .filter(|host| !host.is_empty());
+                    (cwd, custom_title, agent_session, host)
                 })
                 .ok()
-                .unwrap_or((None, None, None));
+                .unwrap_or((None, None, None, None));
 
             let contents = if cx
                 .update(|_, cx| TerminalSettings::get_global(cx).restore_contents)?
@@ -2490,9 +2516,23 @@ impl SerializableItem for TerminalView {
             } else {
                 None
             };
+            // SOLO: the host it ran in, if that's still running.
+            let env = host
+                .map(|host| (terminal::HOST_RECONNECT_ENV.to_string(), host))
+                .into_iter()
+                .collect();
             let terminal = project
-                .update(cx, |project, cx| project.create_terminal_shell(cwd, cx))
+                .update(cx, |project, cx| {
+                    project.create_terminal_shell_with_env(cwd, env, cx)
+                })
                 .await?;
+            // SOLO: reconnected, the shell and what ran in it are still there,
+            // with their output: nothing to restore or resume.
+            let mut contents = contents;
+            if terminal.read_with(cx, |terminal, _| terminal.reconnected_to_host()) {
+                contents = None;
+                agent_session = None;
+            }
             // SOLO: written before the shell prints, which it does below them.
             let had_contents = contents.is_some();
             if let Some(contents) = contents {

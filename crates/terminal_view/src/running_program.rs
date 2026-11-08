@@ -21,7 +21,7 @@ const MAX_COMMAND_CHARS: usize = 40;
 /// The command running in the terminal, and whether it's known to be a
 /// command rather than the shell itself: without shell integration only the
 /// foreground process is known, which is the shell while it waits.
-fn running_command(terminal: &Terminal) -> Option<(Option<String>, bool)> {
+pub(crate) fn running_command(terminal: &Terminal) -> Option<(Option<String>, bool)> {
     if let Some(task) = terminal.task() {
         if task.status != TaskStatus::Running {
             return None;

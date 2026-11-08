@@ -640,7 +640,7 @@ fn update_download_dir() -> PathBuf {
 }
 
 /// The programs running in Solo's windows that quitting would end, e.g.
-/// agents in terminals.
+/// agents in terminals (not those that keep running in a terminal host).
 fn running_programs(cx: &App) -> Vec<RunningProgram> {
     cx.windows()
         .into_iter()
@@ -652,6 +652,7 @@ fn running_programs(cx: &App) -> Vec<RunningProgram> {
                 .read(cx)
                 .items_with_panels(cx)
                 .iter()
+                .filter(|item| !item.keeps_running_after_quit(cx))
                 .filter_map(|item| item.running_program(cx))
                 .collect::<Vec<_>>()
         })

@@ -16920,6 +16920,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "solo_terminal_host"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "solo_update_helper"
 version = "0.1.0"
 dependencies = [
@@ -17991,6 +18000,7 @@ dependencies = [
  "libc",
  "log",
  "parking_lot",
+ "paths",
  "percent-encoding",
  "rand 0.9.4",
  "regex",

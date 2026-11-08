@@ -11,7 +11,7 @@
 ## Where Herdr is ahead
 
 - **Light and fast.** One program that works in any terminal, including on remote machines over SSH.
-- **Agents survive closing the window.** Its background service keeps running, and after the service restarts it restores the layout and continues sessions.
+- **Sessions survive even the background service restarting:** it restores the layout and continues them. Solo keeps agents running through quitting and updates too, but if a terminal's background process itself fails, its session ends (Solo then offers to continue it).
 - **Interfaces:** a CLI and a socket API, plus a protocol for agents to report their own status.
 - **Several platforms** (the Windows version is in beta).
 

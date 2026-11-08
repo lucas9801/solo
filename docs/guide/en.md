@@ -30,7 +30,9 @@ Both ways install Solo for the current user only (no administrator rights) into
 
 The install folder holds `solo.exe`, `solo-agent-hook.exe` (which Claude Code
 runs to report its status), `solo-update-helper.exe` (which installs updates),
-`OpenConsole.exe` and `conpty.dll` (the terminal runtime), and license files.
+`solo-terminal-host.exe` (which runs a terminal's shell, so it can outlive
+Solo), `OpenConsole.exe` and `conpty.dll` (the terminal runtime), and license
+files.
 
 ## 3. Updating
 
@@ -56,9 +58,10 @@ runs to report its status), `solo-update-helper.exe` (which installs updates),
   ```
 
 **Neither one removes your settings and data.** To remove everything, quit Solo
-and run:
+and run (the first line ends terminals still running in the background):
 
 ```powershell
+Get-Process solo-terminal-host -ErrorAction SilentlyContinue | Stop-Process
 Remove-Item -Recurse -Force "$env:APPDATA\Solo", "$env:LOCALAPPDATA\Solo", `
   "$env:TEMP\solo-shell-integration", "$env:TEMP\solo-update" -ErrorAction SilentlyContinue
 ```
@@ -78,7 +81,7 @@ nothing to clean up there.
 | Location | What's there |
 | --- | --- |
 | `%APPDATA%\Solo` | Settings: `settings.json`, `keymap.json`, `tasks.json`, `debug.json`, `AGENTS.md`, `workflows.json` (saved commands) |
-| `%LOCALAPPDATA%\Solo` | Data: `logs\`, `db\` (workspace and session state), `extensions\`, `languages\` (downloaded language servers), `node\`, `external_agents\`, `terminal_sessions\` (restored terminal contents, removed after 30 days), `agent_turns\` (agent turn snapshots), `hang_traces\` |
+| `%LOCALAPPDATA%\Solo` | Data: `logs\`, `db\` (workspace and session state), `extensions\`, `languages\` (downloaded language servers), `node\`, `external_agents\`, `terminal_sessions\` (restored terminal contents, removed after 30 days), `agent_turns\` (agent turn snapshots), `terminal-host\` (the terminal host's copy), `hang_traces\` |
 | `%TEMP%\solo-shell-integration` | Shell integration scripts and Claude Code hook settings |
 | `%TEMP%\solo-update` | Downloaded update installers and their logs |
 | `.solo\` in a project | Project settings, tasks and debug scenarios (Zed's `.zed\` is read too) |
@@ -195,11 +198,26 @@ waiting in the background.
   `/remote-control` into Claude Code, so you can carry on from the Claude app
   on your phone.
 
+### Agents keep running when Solo closes
+Each terminal's shell runs in a small background process,
+`solo-terminal-host.exe`. When Solo quits, restarts for an update, or even
+crashes, terminals that are running something (an agent, or a command such as
+a build) keep running there; when Solo opens their workspace again, it
+connects to them, with the output they printed meanwhile. Idle shells end
+with Solo as before, and closing a terminal's tab ends what runs in it.
+
+- So quitting and updating don't ask about agents in terminals; closing a tab
+  or a window still does.
+- To turn it off: `"terminal": {"keep_running_on_quit": false}` (new
+  terminals then run inside Solo and end with it).
+- If a background process itself fails, its terminal ends; after a restart
+  the terminal offers to continue the agent's session as below.
+
 ### Also
-- Closing a terminal, window or Solo while an agent runs asks first
+- Closing a terminal or a window while an agent runs asks first
   (`terminal.confirm_close`, `"agents"` by default).
-- After a restart, a terminal that was running an agent offers to continue its
-  session (for example `claude --continue`).
+- After a restart, a terminal that was running an agent and couldn't be kept
+  offers to continue its session (for example `claude --continue`).
 
 ## 7. Supported agents
 
@@ -265,6 +283,12 @@ To treat another program as an agent:
   only happens when you create a task.
 - **Updates** are installed only when you choose to, by
   `solo-update-helper.exe` after Solo exits.
+- **Terminal hosts:** each terminal's shell runs in its own
+  `solo-terminal-host.exe`, started from a copy in
+  `%LOCALAPPDATA%\Solo	erminal-host` (so updates can replace Solo's files
+  while one runs). It talks to Solo over named pipes only your user can open,
+  and ends with its shell, with its tab, or with Solo unless something is
+  running in it (see section 6).
 - Solo reads Claude Code's transcripts (`~/.claude/projects`) for the timeline
   and session details. It never writes to them.
 
@@ -374,6 +398,7 @@ Solo's own settings, under `"terminal"`:
 | `claude_code_hooks` | `true` | add status hooks to Claude Code with `--settings` |
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
+| `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
 | `agent_commands` | `[]` | more programs to treat as agents |
 | `agent_task_command` | `"claude"` | what a new agent task runs |
 | `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |
