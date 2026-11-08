@@ -2,12 +2,14 @@
 //! diff against its snapshot from before the turn, with hunks to keep or
 //! reject, and the turns to roll back.
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunkStatus};
+use collections::HashSet;
+use editor::display_map::{BlockPlacement, BlockProperties, BlockStyle, CustomBlockId};
 use editor::{
     DiffHunkRenderer, Editor, EditorEvent, MultiBuffer, PathKey, multibuffer_context_lines,
 };
@@ -17,15 +19,18 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter, FocusHandle,
     Focusable, Pixels, Subscription, Task, WeakEntity, Window,
 };
-use language::{Buffer, Capability, OffsetRangeExt as _, Point};
-use project::{Project, RemoveOptions};
+use language::{
+    Buffer, BufferSnapshot, Capability, OffsetRangeExt as _, Point, ToOffset as _, ToPoint as _,
+};
+use project::{Project, ProjectPath, RemoveOptions};
 use ui::{Divider, Tooltip, prelude::*};
 use util::ResultExt as _;
 use util::i18n::{is_chinese, tr};
 use util::rel_path::RelPath;
 use workspace::{
-    Item, Workspace,
+    Item, ItemNavHistory, Workspace,
     item::{ItemEvent, TabContentParams},
+    searchable::SearchableItemHandle,
 };
 
 use super::diagnostics::{TurnDiagnostic, TurnDiagnostics};
@@ -99,6 +104,8 @@ pub(crate) struct AgentTurnReview {
     show_history: bool,
     /// Review comments written in the editor, not sent yet.
     comment_count: usize,
+    /// The lines above hunks naming the function or type they're in.
+    scope_blocks: HashSet<CustomBlockId>,
     load_task: Task<()>,
     action_task: Task<()>,
 }
@@ -185,6 +192,7 @@ impl AgentTurnReview {
             status: None,
             show_history: false,
             comment_count: 0,
+            scope_blocks: HashSet::default(),
             load_task: Task::ready(()),
             action_task: Task::ready(()),
         };
@@ -310,6 +318,8 @@ impl AgentTurnReview {
                             this.update_diff(ix, cx);
                         }
                     }
+                    // The outline the scope labels come from may have changed.
+                    language::BufferEvent::Reparsed => this.update_scope_labels(cx),
                     _ => {}
                 }),
                 cx.subscribe(&diff, move |this, _, event, cx| {
@@ -412,7 +422,57 @@ impl AgentTurnReview {
                 multibuffer.add_diff(diff, cx);
             }
         });
+        self.update_scope_labels(cx);
         cx.notify();
+    }
+
+    /// Puts a line above each hunk naming the functions or types it's in,
+    /// to tell what a change touches without scrolling up for it.
+    fn update_scope_labels(&mut self, cx: &mut Context<Self>) {
+        let context_lines = multibuffer_context_lines(cx);
+        let snapshot = self.multibuffer.read(cx).snapshot(cx);
+        let mut labels: Vec<(editor::Anchor, String)> = Vec::new();
+        for hunk in snapshot.diff_hunks() {
+            let Some(ix) = self.file_index(hunk.buffer_id, cx) else {
+                continue;
+            };
+            let buffer = self.files[ix].buffer.read(cx).snapshot();
+            let start = hunk.buffer_range.start.to_point(&buffer);
+            if let Some(scope) = hunk_scope(&buffer, start, context_lines) {
+                labels.push((hunk.multi_buffer_range.start, scope));
+            }
+        }
+        let old = std::mem::take(&mut self.scope_blocks);
+        self.scope_blocks = self.editor.update(cx, |editor, cx| {
+            editor.remove_blocks(old, None, cx);
+            let blocks = labels.into_iter().map(|(anchor, scope)| BlockProperties {
+                placement: BlockPlacement::Above(anchor),
+                height: Some(1),
+                style: BlockStyle::Flex,
+                render: Arc::new(move |cx| {
+                    let font_size = cx
+                        .editor_style
+                        .text
+                        .font_size
+                        .to_pixels(cx.window.rem_size());
+                    h_flex()
+                        .h(cx.line_height)
+                        .pl(cx.anchor_x)
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .font(cx.editor_style.text.font())
+                                .text_size(font_size * 0.9)
+                                .text_color(cx.app.theme().colors().text_muted)
+                                .truncate()
+                                .child(scope.clone()),
+                        )
+                        .into_any_element()
+                }),
+                priority: 0,
+            });
+            editor.insert_blocks(blocks, None, cx).into_iter().collect()
+        });
     }
 
     /// The hunks touching `ranges`, by file.
@@ -1224,6 +1284,31 @@ impl ReviewFile {
 
 /// Text as a buffer holds it: without a byte order mark, with `\n` line
 /// endings.
+/// The functions or types a hunk starting at `start` is in, outermost first,
+/// unless the innermost one starts close enough above to show in the hunk's
+/// context lines anyway.
+fn hunk_scope(buffer: &BufferSnapshot, start: Point, context_lines: u32) -> Option<String> {
+    let offset = start.to_offset(buffer);
+    let mut scopes = buffer.outline_items_containing(offset..offset, false, None);
+    // Only what encloses the hunk, not what it begins.
+    scopes.retain(|item| {
+        item.range.start.to_point(buffer).row < start.row
+            && item.range.end.to_offset(buffer) > offset
+    });
+    scopes.sort_by_key(|item| item.depth);
+    let innermost = scopes.last()?;
+    if innermost.range.start.to_point(buffer).row + context_lines >= start.row {
+        return None;
+    }
+    Some(
+        scopes
+            .iter()
+            .map(|item| item.text.as_ref())
+            .collect::<Vec<_>>()
+            .join(" › "),
+    )
+}
+
 fn normalized_text(text: String) -> String {
     let mut text = match text.strip_prefix('\u{feff}') {
         Some(text) => text.to_string(),
@@ -1501,6 +1586,56 @@ impl Item for AgentTurnReview {
             .update(cx, |editor, cx| editor.deactivated(window, cx));
     }
 
+    // Go to definition, find references and the way back need the editor to
+    // know its workspace and history.
+    fn added_to_workspace(
+        &mut self,
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            editor.added_to_workspace(workspace, window, cx)
+        });
+    }
+
+    fn set_nav_history(
+        &mut self,
+        nav_history: ItemNavHistory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            Item::set_nav_history(editor, nav_history, window, cx)
+        });
+    }
+
+    fn navigate(
+        &mut self,
+        data: Arc<dyn Any + Send>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.editor
+            .update(cx, |editor, cx| editor.navigate(data, window, cx))
+    }
+
+    fn as_searchable(&self, _: &Entity<Self>, _: &App) -> Option<Box<dyn SearchableItemHandle>> {
+        Some(Box::new(self.editor.clone()))
+    }
+
+    fn for_each_project_item(
+        &self,
+        cx: &App,
+        f: &mut dyn FnMut(EntityId, &dyn project::ProjectItem),
+    ) {
+        self.editor.read(cx).for_each_project_item(cx, f)
+    }
+
+    fn active_project_path(&self, cx: &App) -> Option<ProjectPath> {
+        self.editor.read(cx).active_project_path(cx)
+    }
+
     fn act_as_type<'a>(
         &'a self,
         type_id: TypeId,
@@ -1553,6 +1688,8 @@ impl Render for AgentTurnReview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use editor::ToPoint as _;
+    use futures::StreamExt as _;
     use gpui::{TestAppContext, VisualTestContext};
     use project::{FakeFs, Fs as _};
     use serde_json::json;
@@ -1636,6 +1773,22 @@ mod tests {
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(path!("/project"), tree).await;
         let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        let (_, review, cx) = show_review(project, &fs, bases, cx).await;
+        (fs, review, cx)
+    }
+
+    /// Shows the turn that changed the files in `bases` of `project`, in a
+    /// workspace, as opening it does.
+    async fn show_review<'a>(
+        project: Entity<Project>,
+        fs: &Arc<FakeFs>,
+        bases: &[(&str, Option<&str>)],
+        cx: &'a mut TestAppContext,
+    ) -> (
+        Entity<Workspace>,
+        Entity<AgentTurnReview>,
+        &'a mut VisualTestContext,
+    ) {
         let (workspace, cx) =
             cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
         let terminal_view = workspace.update_in(cx, |workspace, window, cx| {
@@ -1681,9 +1834,114 @@ mod tests {
         let review = cx.new_window_entity(|window, cx| {
             AgentTurnReview::new(terminal_view, project.clone(), None, window, cx)
         });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_item_to_active_pane(Box::new(review.clone()), None, true, window, cx)
+        });
         review.update(cx, |review, cx| review.set_files(files, 0, cx));
         cx.run_until_parked();
-        (fs, review, cx)
+        (workspace, review, cx)
+    }
+
+    #[gpui::test]
+    async fn test_hunk_scope(cx: &mut TestAppContext) {
+        let text = "struct A;\n\nimpl A {\n    fn one(&self) {\n        let a = 1;\n        let b = 2;\n        let c = 3;\n        let d = 4;\n        let e = 5;\n    }\n}\n";
+        let buffer = cx.new(|cx| Buffer::local(text, cx).with_language(language::rust_lang(), cx));
+        cx.run_until_parked();
+        let snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
+        // Far enough into `one` that its signature isn't in the context lines.
+        assert_eq!(
+            hunk_scope(&snapshot, Point::new(8, 8), 3).as_deref(),
+            Some("impl A › fn one")
+        );
+        // Close enough that it is.
+        assert_eq!(hunk_scope(&snapshot, Point::new(5, 8), 3), None);
+        // A hunk beginning a function is in what encloses that.
+        assert_eq!(
+            hunk_scope(&snapshot, Point::new(3, 0), 0).as_deref(),
+            Some("impl A")
+        );
+        // Nothing encloses it.
+        assert_eq!(hunk_scope(&snapshot, Point::new(0, 0), 0), None);
+    }
+
+    #[gpui::test]
+    async fn test_review_goes_to_definitions(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                "a.rs": "fn one() {\n    two();\n}\n",
+                "b.rs": "pub fn two() {}\n",
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        project.read_with(cx, |project, _| {
+            project.languages().add(language::rust_lang())
+        });
+        let mut servers = project.read_with(cx, |project, _| {
+            project.languages().register_fake_lsp(
+                "Rust",
+                language::FakeLspAdapter {
+                    capabilities: lsp::ServerCapabilities {
+                        definition_provider: Some(lsp::OneOf::Left(true)),
+                        ..lsp::ServerCapabilities::default()
+                    },
+                    ..language::FakeLspAdapter::default()
+                },
+            )
+        });
+        let (workspace, review, cx) =
+            show_review(project, &fs, &[("a.rs", Some("fn one() {\n}\n"))], cx).await;
+        let server = servers.next().await.expect("the review starts the server");
+        let b = lsp::Uri::from_file_path(path!("/project/b.rs")).unwrap();
+        let mut definitions =
+            server.set_request_handler::<lsp::request::GotoDefinition, _, _>(move |_, _| {
+                let b = b.clone();
+                async move {
+                    Ok(Some(lsp::GotoDefinitionResponse::Scalar(
+                        lsp::Location::new(
+                            b,
+                            lsp::Range::new(lsp::Position::new(0, 7), lsp::Position::new(0, 10)),
+                        ),
+                    )))
+                }
+            });
+
+        let editor = review.read_with(cx, |review, _| review.editor.clone());
+        let navigated = editor.update_in(cx, |editor, window, cx| {
+            let text = editor.buffer().read(cx).snapshot(cx).text();
+            let offset = text.find("two").expect("the call is shown");
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([
+                    editor::MultiBufferOffset(offset)..editor::MultiBufferOffset(offset)
+                ])
+            });
+            editor.go_to_definition(&editor::actions::GoToDefinition::default(), window, cx)
+        });
+        definitions.next().await.expect("asked the server");
+        let navigated = navigated.await.expect("went to the definition");
+        assert_eq!(navigated, editor::Navigated::Yes);
+        cx.run_until_parked();
+
+        // b.rs opened at the definition.
+        let (path, cursor) = workspace.update(cx, |workspace, cx| {
+            let editor = workspace
+                .active_item_as::<Editor>(cx)
+                .expect("an editor is active");
+            let editor = editor.read(cx);
+            let path = editor
+                .buffer()
+                .read(cx)
+                .as_singleton()
+                .and_then(|buffer| buffer.read(cx).file().map(|file| file.path().clone()));
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            let cursor = editor.selections.newest_anchor().head().to_point(&snapshot);
+            (path, cursor)
+        });
+        assert_eq!(path.as_deref().map(|path| path.as_unix_str()), Some("b.rs"));
+        assert_eq!(cursor.row, 0);
     }
 
     #[gpui::test]
