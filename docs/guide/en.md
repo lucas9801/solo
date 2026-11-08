@@ -97,14 +97,20 @@ session title. Hovering over the tab shows token use and context. While Solo is
 in the background, you get a desktop notification when an agent needs you or
 stops after working for a while.
 
-### Per-turn review (Claude Code)
-Solo takes a snapshot of the working directory when each Claude Code turn
-starts and ends. After a turn, the tab shows **"N files changed"** (command:
-`terminal: review agent turn`). In the review you can:
+### Per-turn review
+Solo takes a snapshot of the working directory when each agent turn starts
+and ends (for which agents, see section 7). After a turn, the tab shows
+**"N files changed"** (command: `terminal: review agent turn`). In the review
+you can:
 
 - **Keep** or **Reject** each hunk, or **Keep All** / **Reject All**;
 - comment on lines and send the comments to the agent;
-- **Roll Back** the work tree to before any recorded turn.
+- **Roll Back** the work tree to before any recorded turn;
+- see what the turn did to the language servers' diagnostics: the errors and
+  warnings it added in the files it changed, and the errors it fixed (click
+  one to go there);
+- read the code as in the editor: go to definition, find references and
+  search work, and a line above each hunk names the function or type it's in.
 
 Snapshots are kept in Solo's data folder. They never touch your branch, HEAD,
 index, stash list or git object database, and ignored files aren't included.
@@ -171,6 +177,20 @@ waiting in the background.
 - In a terminal, select a command block (`ctrl-up/down` or click its gutter)
   and press `alt-enter` to send the command and its output to an agent in
   another terminal.
+- When a command fails, **Send to Agent** next to its exit code (also in the
+  context menu) pastes what failed into the agent working in the same
+  directory: compiler errors with their locations and failed tests with their
+  assertions (cargo, tsc, gcc/clang, MSVC, pytest, go, jest), or the output's
+  end otherwise.
+- In a Markdown preview, select text and choose **Comment…** in the context
+  menu. The comments are listed under the document; **Send to Agent** pastes
+  them all, each with its lines and text, into the agent that last changed
+  the document (or the last one used). When the document changes after you
+  read it, a bar above it counts the added and removed lines; **Show
+  Changes** marks the changed blocks, **Mark as Read** takes it as read again.
+- An agent can drive the other terminals with `solo-cli agent` (list them,
+  send to one, wait for it, read its answer, start a new task); see
+  [agent-cli.md](../agent-cli.md). The `agent_control` setting limits this.
 - **Enable Remote Control** in a Claude Code terminal's menu types
   `/remote-control` into Claude Code, so you can carry on from the Claude app
   on your phone.

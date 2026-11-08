@@ -223,12 +223,24 @@ fn heading_id(text: &str) -> String {
 
 /// A link to another of the guide's pages (`en.md`, `zh-CN.md#...`) points
 /// at its HTML; any other link is left as it is.
+/// Where the documents next to the guide's are, for links to them.
+const REPOSITORY_DOCS: &str = "https://github.com/lucas9801/solo/blob/main/docs";
+
 fn local_link(url: &str) -> String {
     let (path, fragment) = url.split_once('#').map_or((url, None), |(p, f)| (p, Some(f)));
     let is_guide_page = GUIDES
         .iter()
         .any(|(name, _, _)| path == format!("{name}.md"));
     if !is_guide_page {
+        // Other documents of the repository aren't copied with the guide:
+        // they open on GitHub.
+        let is_relative = !url.contains("://") && !url.starts_with('#');
+        if is_relative && let Some(document) = path.strip_prefix("../") {
+            return match fragment {
+                Some(fragment) => format!("{REPOSITORY_DOCS}/{document}#{fragment}"),
+                None => format!("{REPOSITORY_DOCS}/{document}"),
+            };
+        }
         return url.to_string();
     }
     let page = path.replace(".md", ".html");
@@ -280,6 +292,10 @@ mod tests {
     fn test_links_between_pages() {
         assert_eq!(local_link("zh-CN.md#3-终端"), "zh-CN.html#3-终端");
         assert_eq!(local_link("https://github.com/a.md"), "https://github.com/a.md");
+        assert_eq!(
+            local_link("../agent-cli.md"),
+            "https://github.com/lucas9801/solo/blob/main/docs/agent-cli.md"
+        );
     }
 
     #[test]
