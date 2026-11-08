@@ -470,6 +470,18 @@ impl Project {
                                         &mut env,
                                     );
                                 }
+                                if settings.codex_hooks {
+                                    terminal::shell_integration::integrate_codex(
+                                        path_style.is_windows(),
+                                        &mut env,
+                                    );
+                                }
+                                if settings.copilot_hooks {
+                                    terminal::shell_integration::integrate_copilot(
+                                        path_style.is_windows(),
+                                        &mut env,
+                                    );
+                                }
                                 (shell, env)
                             }
                             None => {

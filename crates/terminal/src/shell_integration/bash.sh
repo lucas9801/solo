@@ -89,10 +89,8 @@ __solo_shell_path=${__solo_shell_path//\\/\\\\}
 printf '\e]633;P;Shell=%s;%s\a' "${__solo_shell_path//;/\\x3b}" "$__solo_nonce"
 unset __solo_shell_path
 
-# Claude Code reports what it's doing through hooks in the settings file Solo
-# passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this terminal.
-# A claude function of the user's own stays.
-if [[ -n "${SOLO_CLAUDE_SETTINGS-}" ]] && ! declare -F claude >/dev/null; then
+# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this terminal.
+if [[ -n "${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-}" ]]; then
     if [[ -r /proc/$$/winpid ]]; then
         # Git Bash: the hooks attach to this shell's Windows console.
         export SOLO_AGENT_CONSOLE_PID=$(</proc/$$/winpid)
@@ -100,6 +98,12 @@ if [[ -n "${SOLO_CLAUDE_SETTINGS-}" ]] && ! declare -F claude >/dev/null; then
         export SOLO_AGENT_TTY=$__solo_tty
     fi
     unset __solo_tty
+fi
+
+# Claude Code reports what it's doing through hooks in the settings file Solo
+# passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this terminal.
+# A claude function of the user's own stays.
+if [[ -n "${SOLO_CLAUDE_SETTINGS-}" ]] && ! declare -F claude >/dev/null; then
     claude() {
         local arg
         # Subcommands, background sessions and the user's own --settings run as typed.
@@ -121,6 +125,44 @@ if [[ -n "${SOLO_CLAUDE_SETTINGS-}" ]] && ! declare -F claude >/dev/null; then
             command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
         else
             command claude "$@"
+        fi
+    }
+fi
+
+# Codex reports what it's doing through hooks Solo adds to the session as
+# config overrides, one argument per line in SOLO_CODEX_ARGS.
+# A codex function of the user's own stays.
+if [[ -n "${SOLO_CODEX_ARGS-}" ]] && ! declare -F codex >/dev/null; then
+    codex() {
+        # Commands that don't run a session run as typed.
+        case "${1-}" in
+            login|logout|mcp|mcp-server|plugin|completion|update|doctor|sandbox|debug|apply|app|app-server|remote-control|exec-server|cloud|features|help|agents|archive|delete|unarchive|migrate-rollouts|queue)
+                command codex "$@"
+                return
+                ;;
+        esac
+        local -a hooks
+        IFS=$'\n' read -r -d '' -a hooks <<<"$SOLO_CODEX_ARGS" || true
+        command codex "${hooks[@]}" "$@"
+    }
+fi
+
+# GitHub Copilot CLI reports what it's doing through hooks in a plugin Solo
+# loads for the session (see SOLO_COPILOT_PLUGIN).
+# A copilot function of the user's own stays.
+if [[ -n "${SOLO_COPILOT_PLUGIN-}" ]] && ! declare -F copilot >/dev/null; then
+    copilot() {
+        # Commands that don't run a session run as typed.
+        case "${1-}" in
+            app|login|help|init|config|update|version|sessions|memories|plugin|mcp|skill|instruction|lsp|sandbox|completion)
+                command copilot "$@"
+                return
+                ;;
+        esac
+        if [[ -d "$SOLO_COPILOT_PLUGIN" ]]; then
+            command copilot --plugin-dir "$SOLO_COPILOT_PLUGIN" "$@"
+        else
+            command copilot "$@"
         fi
     }
 fi

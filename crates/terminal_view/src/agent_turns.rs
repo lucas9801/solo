@@ -1,11 +1,12 @@
 //! SOLO: what an AI agent in a terminal changed, turn by turn.
 //!
-//! When an agent that reports through hooks starts a turn, its working
-//! directory is snapshotted (see [`snapshot`]); when the turn ends, it's
-//! snapshotted again and the files that changed are recorded. The terminal's
-//! tab then offers to review them (see [`review`]), where hunks can be kept or
-//! rejected, commented on for the agent, or the work tree rolled back to
-//! before any recorded turn. Terminals without hooks have no turns.
+//! When an agent starts a turn (its hooks report a prompt, or else its screen
+//! shows it at work), its working directory is snapshotted (see
+//! [`snapshot`]); when the turn ends, it's snapshotted again and the files
+//! that changed are recorded. The terminal's tab then offers to review them
+//! (see [`review`]), where hunks can be kept or rejected, commented on for the
+//! agent, or the work tree rolled back to before any recorded turn. Agents
+//! whose status is only guessed from their output have no turns.
 
 mod diagnostics;
 mod review;

@@ -272,6 +272,129 @@ pub fn integrate_claude_code(is_windows: bool, env: &mut HashMap<String, String>
     }
 }
 
+/// SOLO: Lets Codex started from the integrated shell report what it's doing
+/// through hooks, so its turns are tracked like Claude Code's.
+///
+/// The shell scripts wrap `codex` to pass the hooks as `-c hooks.<event>=...`
+/// config overrides, one per line in `SOLO_CODEX_ARGS`: Codex adds them to
+/// the user's own config and hooks for that session, without changing
+/// `config.toml`. Codex runs hooks it doesn't trust yet only after asking, so
+/// the first session shows its hook review once.
+///
+/// The hooks run `solo-agent-hook`, which reads the event from Codex's input
+/// (the same events as Claude Code's). On Windows Codex runs a hook with
+/// `cmd /C`, and Windows PowerShell can't pass double quotes on to Codex, so
+/// the program's quoted path is in `SOLO_AGENT_HOOK_COMMAND` rather than in the
+/// arguments.
+pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
+    let Some(hook) = agent_hook_executable() else {
+        return;
+    };
+    if is_windows {
+        env.insert(
+            "SOLO_AGENT_HOOK_COMMAND".to_string(),
+            format!("\"{}\"", hook.to_string_lossy()),
+        );
+    }
+    env.insert("SOLO_CODEX_ARGS".to_string(), codex_hook_args(is_windows).join("
+"));
+}
+
+/// SOLO: Lets GitHub Copilot CLI started from the integrated shell report
+/// what it's doing through hooks, so its turns are tracked like Claude Code's.
+///
+/// The hooks are in a plugin Solo writes (`copilot-plugin` beside the shell
+/// scripts), whose folder the shell scripts get in `SOLO_COPILOT_PLUGIN`;
+/// they wrap `copilot` to load it with `--plugin-dir`, for that session only.
+/// Nothing is installed into Copilot's own folder.
+///
+/// Each hook runs `solo-agent-hook` with the kind of report as its argument,
+/// so it works whether or not Copilot passes the event on stdin; Copilot runs
+/// hooks with PowerShell on Windows and bash elsewhere.
+pub fn integrate_copilot(is_windows: bool, env: &mut HashMap<String, String>) {
+    let Some(hook) = agent_hook_executable() else {
+        return;
+    };
+    match write_copilot_plugin(&hook.to_string_lossy(), is_windows) {
+        Ok(dir) => {
+            env.insert("SOLO_COPILOT_PLUGIN".to_string(), dir);
+        }
+        Err(error) => log::warn!("failed to write the Copilot hook plugin: {error}"),
+    }
+}
+
+fn write_copilot_plugin(hook: &str, is_windows: bool) -> std::io::Result<String> {
+    let manifest = serde_json::json!({
+        "name": "solo",
+        "version": "1.0.0",
+        "description": "Reports what Copilot is doing to the Solo terminal it runs in.",
+    });
+    let manifest = serde_json::to_string_pretty(&manifest).map_err(std::io::Error::other)?;
+    write_script("copilot-plugin/.claude-plugin/plugin.json", &manifest)?;
+    let hooks = serde_json::to_string_pretty(&copilot_hooks(hook)).map_err(std::io::Error::other)?;
+    let hooks_path = write_script("copilot-plugin/hooks/hooks.json", &hooks)?;
+    let dir = Path::new(&hooks_path)
+        .parent()
+        .and_then(Path::parent)
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(if is_windows { dir.replace('/', "\\") } else { dir })
+}
+
+/// Copilot hooks in Claude Code's format (PascalCase events), for each event
+/// Solo reports, with the kind of report each one is.
+fn copilot_hooks(hook: &str) -> serde_json::Value {
+    let powershell_path = hook.replace('\'', "''");
+    let sh_path = hook.replace('\'', r"'\''");
+    let group = |kind: AgentHookKind| {
+        let kind = kind.as_str();
+        serde_json::json!([{
+            "hooks": [{
+                "type": "command",
+                "powershell": format!("& '{powershell_path}' {kind} --agent copilot"),
+                "bash": format!("'{sh_path}' {kind} --agent copilot"),
+                "timeout": 5,
+            }]
+        }])
+    };
+    serde_json::json!({
+        "hooks": {
+            "SessionStart": group(AgentHookKind::SessionStarted),
+            "UserPromptSubmit": group(AgentHookKind::PromptSubmitted),
+            "PermissionRequest": group(AgentHookKind::NeedsInput),
+            "Stop": group(AgentHookKind::Stopped),
+        }
+    })
+}
+
+/// The Codex events Solo reports, as in its `hooks` config.
+const CODEX_HOOK_EVENTS: [&str; 5] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "Stop",
+    // Pressing Esc ends the turn without a Stop.
+    "Interrupt",
+];
+
+/// The `-c` arguments that add Solo's hooks to a Codex session. The values
+/// are TOML with literal (single-quoted) strings only: Codex reads a value
+/// that isn't valid TOML as a plain string, silently.
+fn codex_hook_args(is_windows: bool) -> Vec<String> {
+    let command = if is_windows {
+        "%SOLO_AGENT_HOOK_COMMAND% --agent codex"
+    } else {
+        "\"$SOLO_AGENT_HOOK\" --agent codex"
+    };
+    // Codex allows Interrupt hooks 3 seconds at most; the hook takes a few
+    // milliseconds.
+    let groups = format!("[{{hooks=[{{type='command',command='{command}',timeout=3}}]}}]");
+    CODEX_HOOK_EVENTS
+        .iter()
+        .flat_map(|event| ["-c".to_string(), format!("hooks.{event}={groups}")])
+        .collect()
+}
+
 fn write_claude_code_settings(is_windows: bool) -> std::io::Result<String> {
     let hook = match agent_hook_executable() {
         Some(executable) => ClaudeHook::Executable(executable.to_string_lossy().into_owned()),
@@ -1017,6 +1140,55 @@ mod tests {
                 AgentHook::parse(&params(&[kind.as_str()])).map(|hook| hook.kind),
                 Some(kind)
             );
+        }
+    }
+
+    #[test]
+    fn copilot_hooks_report_each_event() {
+        let hooks = copilot_hooks(r"C:\Program Files\it's\solo-agent-hook.exe");
+        let command = |event: &str, shell: &str| {
+            hooks["hooks"][event][0]["hooks"][0][shell]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            command("UserPromptSubmit", "powershell"),
+            r"& 'C:\Program Files\it''s\solo-agent-hook.exe' prompt --agent copilot"
+        );
+        assert_eq!(
+            command("Stop", "bash"),
+            r"'C:\Program Files\it'\''s\solo-agent-hook.exe' stop --agent copilot"
+        );
+        assert_eq!(
+            command("PermissionRequest", "powershell"),
+            r"& 'C:\Program Files\it''s\solo-agent-hook.exe' input --agent copilot"
+        );
+        assert_eq!(
+            command("SessionStart", "bash"),
+            r"'C:\Program Files\it'\''s\solo-agent-hook.exe' start --agent copilot"
+        );
+    }
+
+    #[test]
+    fn codex_hook_args_are_valid_toml() {
+        for is_windows in [true, false] {
+            let args = codex_hook_args(is_windows);
+            assert_eq!(args.len(), 2 * CODEX_HOOK_EVENTS.len());
+            for (pair, event) in args.chunks(2).zip(CODEX_HOOK_EVENTS) {
+                assert_eq!(pair[0], "-c");
+                let (key, value) = pair[1].split_once('=').unwrap();
+                assert_eq!(key, format!("hooks.{event}"));
+                // What Codex does with a `-c` value.
+                let parsed: toml::Table = toml::from_str(&format!("value = {value}")).unwrap();
+                let hook = &parsed["value"][0]["hooks"][0];
+                assert_eq!(hook["type"].as_str(), Some("command"));
+                assert_eq!(hook["timeout"].as_integer(), Some(3));
+                let command = hook["command"].as_str().unwrap();
+                assert!(command.ends_with(" --agent codex"), "{command}");
+                // Windows PowerShell drops double quotes from arguments.
+                assert_eq!(pair[1].contains('"'), !is_windows, "{}", pair[1]);
+            }
         }
     }
 

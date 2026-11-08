@@ -75,11 +75,15 @@ function Global:prompt {
     "$marks$userPrompt$esc]133;B$bel"
 }
 
+# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this console.
+if ($env:SOLO_CLAUDE_SETTINGS -or $env:SOLO_CODEX_ARGS -or $env:SOLO_COPILOT_PLUGIN) {
+    $env:SOLO_AGENT_CONSOLE_PID = "$PID"
+}
+
 # Claude Code reports what it's doing through hooks in the settings file Solo
 # passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this console.
 # A claude function or alias of the user's own stays.
 if ($env:SOLO_CLAUDE_SETTINGS -and -not (Get-Command -Name claude -CommandType Function, Alias -ErrorAction SilentlyContinue)) {
-    $env:SOLO_AGENT_CONSOLE_PID = "$PID"
     function Global:claude {
         $program = Get-Command -Name claude -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $program) {
@@ -98,6 +102,62 @@ if ($env:SOLO_CLAUDE_SETTINGS -and -not (Get-Command -Name claude -CommandType F
             $input | & $program @settings @args
         } else {
             & $program @settings @args
+        }
+        $Global:__SoloWrappedExitCode = $Global:LASTEXITCODE
+    }
+}
+
+# Codex reports what it's doing through hooks Solo adds to the session as
+# config overrides, one argument per line in SOLO_CODEX_ARGS.
+# A codex function or alias of the user's own stays.
+if ($env:SOLO_CODEX_ARGS -and -not (Get-Command -Name codex -CommandType Function, Alias -ErrorAction SilentlyContinue)) {
+    function Global:codex {
+        $programs = @(Get-Command -Name codex -CommandType Application, ExternalScript -All -ErrorAction SilentlyContinue)
+        if ($programs.Count -eq 0) {
+            Write-Error "codex: command not found"
+            return
+        }
+        # cmd.exe would expand the %SOLO_AGENT_HOOK_COMMAND% in the hooks'
+        # command, so a .cmd shim (npm installs a .ps1 beside it) runs as typed.
+        $program = $programs | Where-Object { $_.Extension -notin @('.cmd', '.bat') } | Select-Object -First 1
+        # Commands that don't run a session run as typed too.
+        $hooks = @()
+        if ($program -and -not ($args.Count -gt 0 -and "$($args[0])" -in @('login', 'logout', 'mcp', 'mcp-server', 'plugin', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'app', 'app-server', 'remote-control', 'exec-server', 'cloud', 'features', 'help', 'agents', 'archive', 'delete', 'unarchive', 'migrate-rollouts', 'queue'))) {
+            $hooks = @($env:SOLO_CODEX_ARGS -split "`n")
+        }
+        if (-not $program) {
+            $program = $programs[0]
+        }
+        $Global:LASTEXITCODE = 0
+        if ($MyInvocation.ExpectingInput) {
+            $input | & $program @hooks @args
+        } else {
+            & $program @hooks @args
+        }
+        $Global:__SoloWrappedExitCode = $Global:LASTEXITCODE
+    }
+}
+
+# GitHub Copilot CLI reports what it's doing through hooks in a plugin Solo
+# loads for the session (see SOLO_COPILOT_PLUGIN).
+# A copilot function or alias of the user's own stays.
+if ($env:SOLO_COPILOT_PLUGIN -and -not (Get-Command -Name copilot -CommandType Function, Alias -ErrorAction SilentlyContinue)) {
+    function Global:copilot {
+        $program = Get-Command -Name copilot -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $program) {
+            Write-Error "copilot: command not found"
+            return
+        }
+        # Commands that don't run a session run as typed.
+        $plugin = @()
+        if (-not ($args.Count -gt 0 -and "$($args[0])" -in @('app', 'login', 'help', 'init', 'config', 'update', 'version', 'sessions', 'memories', 'plugin', 'mcp', 'skill', 'instruction', 'lsp', 'sandbox', 'completion')) -and (Test-Path -LiteralPath $env:SOLO_COPILOT_PLUGIN)) {
+            $plugin = @('--plugin-dir', $env:SOLO_COPILOT_PLUGIN)
+        }
+        $Global:LASTEXITCODE = 0
+        if ($MyInvocation.ExpectingInput) {
+            $input | & $program @plugin @args
+        } else {
+            & $program @plugin @args
         }
         $Global:__SoloWrappedExitCode = $Global:LASTEXITCODE
     }

@@ -47,11 +47,15 @@ __solo_precmd_prompt() {
     fi
 }
 
+# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this terminal.
+if [[ -n ${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-} && -n ${TTY-} ]]; then
+    export SOLO_AGENT_TTY=$TTY
+fi
+
 # Claude Code reports what it's doing through hooks in the settings file Solo
 # passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this terminal.
 # A claude function of the user's own stays.
 if [[ -n ${SOLO_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} )); then
-    [[ -n ${TTY-} ]] && export SOLO_AGENT_TTY=$TTY
     claude() {
         local arg
         # Subcommands, background sessions and the user's own --settings run as typed.
@@ -73,6 +77,42 @@ if [[ -n ${SOLO_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} )); then
             command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
         else
             command claude "$@"
+        fi
+    }
+fi
+
+# Codex reports what it's doing through hooks Solo adds to the session as
+# config overrides, one argument per line in SOLO_CODEX_ARGS.
+# A codex function of the user's own stays.
+if [[ -n ${SOLO_CODEX_ARGS-} ]] && (( ! ${+functions[codex]} )); then
+    codex() {
+        # Commands that don't run a session run as typed.
+        case ${1-} in
+            login|logout|mcp|mcp-server|plugin|completion|update|doctor|sandbox|debug|apply|app|app-server|remote-control|exec-server|cloud|features|help|agents|archive|delete|unarchive|migrate-rollouts|queue)
+                command codex "$@"
+                return
+                ;;
+        esac
+        command codex "${(@f)SOLO_CODEX_ARGS}" "$@"
+    }
+fi
+
+# GitHub Copilot CLI reports what it's doing through hooks in a plugin Solo
+# loads for the session (see SOLO_COPILOT_PLUGIN).
+# A copilot function of the user's own stays.
+if [[ -n "${SOLO_COPILOT_PLUGIN-}" ]] && (( ! ${+functions[copilot]} )); then
+    copilot() {
+        # Commands that don't run a session run as typed.
+        case "${1-}" in
+            app|login|help|init|config|update|version|sessions|memories|plugin|mcp|skill|instruction|lsp|sandbox|completion)
+                command copilot "$@"
+                return
+                ;;
+        esac
+        if [[ -d "$SOLO_COPILOT_PLUGIN" ]]; then
+            command copilot --plugin-dir "$SOLO_COPILOT_PLUGIN" "$@"
+        else
+            command copilot "$@"
         fi
     }
 fi

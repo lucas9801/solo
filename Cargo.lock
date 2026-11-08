@@ -18005,6 +18005,7 @@ dependencies = [
  "theme",
  "theme_settings",
  "thiserror 2.0.17",
+ "toml 0.9.8",
  "unicode-width 0.2.2",
  "url",
  "urlencoding",
