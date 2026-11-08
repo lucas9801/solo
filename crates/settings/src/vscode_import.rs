@@ -987,6 +987,7 @@ impl VsCodeSettings {
             restore_contents: None,
             agent_commands: None,
             claude_code_hooks: None,
+            codex_hooks: None,
             follow_working_directory: None,
             agent_task_command: None,
             agent_control: None,

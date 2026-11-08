@@ -301,6 +301,14 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub claude_code_hooks: Option<bool>,
+    /// Whether Codex started in a terminal with shell integration reports
+    /// what it's doing through hooks Solo adds for that session with
+    /// `codex -c hooks...`, so its turns can be reviewed like Claude Code's.
+    /// Codex asks once whether to trust them. Your own config and hooks still
+    /// apply. Takes effect in new terminals.
+    ///
+    /// Default: true
+    pub codex_hooks: Option<bool>,
     /// When to ask before closing a terminal (its tab, its window or Solo)
     /// would end the program running in it.
     ///
@@ -337,7 +345,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
         input_editor, compact_prompt, completions_as_you_type, open_links_on_click,
         notify_long_commands_after_seconds, program_notifications, restore_contents,
-        agent_commands, claude_code_hooks, follow_working_directory, confirm_close,
+        agent_commands, claude_code_hooks, codex_hooks, follow_working_directory, confirm_close,
         agent_task_command, agent_control,
     },
     defaults: {},

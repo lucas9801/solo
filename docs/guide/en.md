@@ -163,14 +163,14 @@ waiting in the background.
 
 ## 7. Supported agents
 
-| | Claude Code | codex, gemini, aider, opencode, qwen, amp, cursor-agent, copilot | programs in `agent_commands` |
-| --- | --- | --- | --- |
-| Recognized as an agent (status, close confirmation, sending command blocks) | yes | yes | yes |
-| Where the status comes from | hooks; exact | read from the terminal; may lag a moment | read from the terminal |
-| Per-turn review and roll back | yes | no | no |
-| Timeline, session title, token use | yes | no | no |
-| Continue the session after a restart | yes (`--continue`) | yes, with each one's resume option (not qwen or amp) | no |
-| Agent tasks | the default command | set `agent_task_command` to it | same |
+| | Claude Code | Codex | gemini, opencode, qwen, amp, cursor-agent, copilot and others | aider, programs in `agent_commands` |
+| --- | --- | --- | --- | --- |
+| Recognized as an agent (status, close confirmation, sending command blocks) | yes | yes | yes | yes |
+| Where the status comes from | hooks; exact | hooks; exact (after you trust them once in Codex) | its screen, with per-agent rules; may lag a moment | its output |
+| Per-turn review and roll back | yes | yes | yes, turns read from the screen | no |
+| Timeline, session title, token use | yes | no | no | no |
+| Continue the session after a restart | yes (`--continue`) | yes (`resume --last`) | yes, with each one's resume option (not qwen or amp) | no |
+| Agent tasks | the default command | set `agent_task_command` to it | same | same |
 
 For agents without hooks, Solo reads the status from the terminal: a spinner
 means working, about 3 seconds without output means stopped, and a bell or
@@ -193,6 +193,15 @@ To treat another program as an agent:
   `claude update`, and commands where you pass `--settings` yourself, run as
   typed. To turn the hooks off: `"terminal": {"claude_code_hooks": false}`
   (takes effect in new terminals).
+- **Codex hooks apply to one session only, too.** Solo's `codex` wrapper adds
+  `-c hooks.<event>=...` options, which Codex adds to your own config for that
+  session; **your `~/.codex/config.toml` and `hooks.json` are not changed by
+  Solo**. Codex runs hooks only once you trust them, so the first time it asks:
+  trust them and Codex remembers it (Codex writes that to its own config). The
+  hooks run `solo-agent-hook.exe`. Subcommands that don't start a session
+  (`codex login`, `codex mcp`, ...) run as typed, and so does a `codex.cmd`
+  without a `codex.ps1` or `codex.exe` beside it. To turn them off:
+  `"terminal": {"codex_hooks": false}` (takes effect in new terminals).
 - **Shell integration**: PowerShell, bash, zsh and fish started without custom
   arguments load Solo's integration script from `%TEMP%\solo-shell-integration`,
   after your own profile. PowerShell runs it with `-NoExit -Command`, which
@@ -283,7 +292,10 @@ Some security software treats these as suspicious.
   System32 (WSL) isn't supported.
 - If you have your own `claude` function or alias, Solo's wrapper isn't used,
   and the status is read from the output.
-- Changing `claude_code_hooks` only affects new terminals.
+- Changing `claude_code_hooks` or `codex_hooks` only affects new terminals.
+- Codex shows no status from hooks until you trust Solo's hooks in the review
+  Codex shows when it starts; until then its status is read
+  from the screen.
 - If `solo-agent-hook.exe` is blocked or missing, Solo falls back to a
   PowerShell script, and every report is slower.
 - If Solo picked the wrong session, use `terminal: choose agent session`.
@@ -311,6 +323,7 @@ Solo's own settings, under `"terminal"`:
 | --- | --- | --- |
 | `shell_integration` | `true` | load the shell integration (command blocks, input editor and hooks need it) |
 | `claude_code_hooks` | `true` | add status hooks to Claude Code with `--settings` |
+| `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
 | `agent_commands` | `[]` | more programs to treat as agents |
 | `agent_task_command` | `"claude"` | what a new agent task runs |
 | `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |

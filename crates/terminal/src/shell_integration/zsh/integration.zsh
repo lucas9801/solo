@@ -47,11 +47,15 @@ __solo_precmd_prompt() {
     fi
 }
 
+# Agents' hooks (Claude Code's, Codex's) write to this terminal.
+if [[ -n ${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-} && -n ${TTY-} ]]; then
+    export SOLO_AGENT_TTY=$TTY
+fi
+
 # Claude Code reports what it's doing through hooks in the settings file Solo
 # passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this terminal.
 # A claude function of the user's own stays.
 if [[ -n ${SOLO_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} )); then
-    [[ -n ${TTY-} ]] && export SOLO_AGENT_TTY=$TTY
     claude() {
         local arg
         # Subcommands, background sessions and the user's own --settings run as typed.
@@ -74,6 +78,22 @@ if [[ -n ${SOLO_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} )); then
         else
             command claude "$@"
         fi
+    }
+fi
+
+# Codex reports what it's doing through hooks Solo adds to the session as
+# config overrides, one argument per line in SOLO_CODEX_ARGS.
+# A codex function of the user's own stays.
+if [[ -n ${SOLO_CODEX_ARGS-} ]] && (( ! ${+functions[codex]} )); then
+    codex() {
+        # Commands that don't run a session run as typed.
+        case ${1-} in
+            login|logout|mcp|mcp-server|plugin|completion|update|doctor|sandbox|debug|apply|app|app-server|remote-control|exec-server|cloud|features|help|agents|archive|delete|unarchive|migrate-rollouts|queue)
+                command codex "$@"
+                return
+                ;;
+        esac
+        command codex "${(@f)SOLO_CODEX_ARGS}" "$@"
     }
 fi
 

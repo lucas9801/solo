@@ -272,6 +272,62 @@ pub fn integrate_claude_code(is_windows: bool, env: &mut HashMap<String, String>
     }
 }
 
+/// SOLO: Lets Codex started from the integrated shell report what it's doing
+/// through hooks, so its turns are tracked like Claude Code's.
+///
+/// The shell scripts wrap `codex` to pass the hooks as `-c hooks.<event>=...`
+/// config overrides, one per line in `SOLO_CODEX_ARGS`: Codex adds them to
+/// the user's own config and hooks for that session, without changing
+/// `config.toml`. Codex runs hooks it doesn't trust yet only after asking, so
+/// the first session shows its hook review once.
+///
+/// The hooks run `solo-agent-hook`, which reads the event from Codex's input
+/// (the same events as Claude Code's). On Windows Codex runs a hook with
+/// `cmd /C`, and Windows PowerShell can't pass double quotes on to Codex, so
+/// the program's quoted path is in `SOLO_AGENT_HOOK_COMMAND` rather than in the
+/// arguments.
+pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
+    let Some(hook) = agent_hook_executable() else {
+        return;
+    };
+    if is_windows {
+        env.insert(
+            "SOLO_AGENT_HOOK_COMMAND".to_string(),
+            format!("\"{}\"", hook.to_string_lossy()),
+        );
+    }
+    env.insert("SOLO_CODEX_ARGS".to_string(), codex_hook_args(is_windows).join("
+"));
+}
+
+/// The Codex events Solo reports, as in its `hooks` config.
+const CODEX_HOOK_EVENTS: [&str; 5] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "Stop",
+    // Pressing Esc ends the turn without a Stop.
+    "Interrupt",
+];
+
+/// The `-c` arguments that add Solo's hooks to a Codex session. The values
+/// are TOML with literal (single-quoted) strings only: Codex reads a value
+/// that isn't valid TOML as a plain string, silently.
+fn codex_hook_args(is_windows: bool) -> Vec<String> {
+    let command = if is_windows {
+        "%SOLO_AGENT_HOOK_COMMAND% --agent codex"
+    } else {
+        "\"$SOLO_AGENT_HOOK\" --agent codex"
+    };
+    // Codex allows Interrupt hooks 3 seconds at most; the hook takes a few
+    // milliseconds.
+    let groups = format!("[{{hooks=[{{type='command',command='{command}',timeout=3}}]}}]");
+    CODEX_HOOK_EVENTS
+        .iter()
+        .flat_map(|event| ["-c".to_string(), format!("hooks.{event}={groups}")])
+        .collect()
+}
+
 fn write_claude_code_settings(is_windows: bool) -> std::io::Result<String> {
     let hook = match agent_hook_executable() {
         Some(executable) => ClaudeHook::Executable(executable.to_string_lossy().into_owned()),
@@ -1017,6 +1073,28 @@ mod tests {
                 AgentHook::parse(&params(&[kind.as_str()])).map(|hook| hook.kind),
                 Some(kind)
             );
+        }
+    }
+
+    #[test]
+    fn codex_hook_args_are_valid_toml() {
+        for is_windows in [true, false] {
+            let args = codex_hook_args(is_windows);
+            assert_eq!(args.len(), 2 * CODEX_HOOK_EVENTS.len());
+            for (pair, event) in args.chunks(2).zip(CODEX_HOOK_EVENTS) {
+                assert_eq!(pair[0], "-c");
+                let (key, value) = pair[1].split_once('=').unwrap();
+                assert_eq!(key, format!("hooks.{event}"));
+                // What Codex does with a `-c` value.
+                let parsed: toml::Table = toml::from_str(&format!("value = {value}")).unwrap();
+                let hook = &parsed["value"][0]["hooks"][0];
+                assert_eq!(hook["type"].as_str(), Some("command"));
+                assert_eq!(hook["timeout"].as_integer(), Some(3));
+                let command = hook["command"].as_str().unwrap();
+                assert!(command.ends_with(" --agent codex"), "{command}");
+                // Windows PowerShell drops double quotes from arguments.
+                assert_eq!(pair[1].contains('"'), !is_windows, "{}", pair[1]);
+            }
         }
     }
 

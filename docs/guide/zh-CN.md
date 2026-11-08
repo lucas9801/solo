@@ -107,14 +107,14 @@ Claude Code 每开始和结束一轮，Solo 都会给工作目录拍一个快照
 
 ## 7. 支持哪些智能体、支持到什么程度
 
-| 功能 | Claude Code | codex、gemini、aider、opencode、qwen、amp、cursor-agent、copilot | `agent_commands` 里加的程序 |
-| --- | --- | --- | --- |
-| 被识别为智能体（状态、关闭确认、发送命令块） | 是 | 是 | 是 |
-| 状态来源 | hooks 上报，准确 | 从终端输出推断，可能会慢一点 | 从终端输出推断 |
-| 按轮审阅、回滚 | 是 | 否 | 否 |
-| 时间线、会话标题、token 用量 | 是 | 否 | 否 |
-| 重启后继续会话 | 是（`--continue`） | 是（各自的 resume 参数；qwen 和 amp 不支持） | 否 |
-| 智能体任务 | 默认命令就是 `claude` | 把 `agent_task_command` 改成对应程序即可 | 同左 |
+| 功能 | Claude Code | Codex | gemini、opencode、qwen、amp、cursor-agent、copilot 等 | aider、`agent_commands` 里加的程序 |
+| --- | --- | --- | --- | --- |
+| 被识别为智能体（状态、关闭确认、发送命令块） | 是 | 是 | 是 | 是 |
+| 状态来源 | hooks 上报，准确 | hooks 上报，准确（需要先在 Codex 里信任一次） | 按各自的规则读屏幕，可能会慢一点 | 从终端输出推断 |
+| 按轮审阅、回滚 | 是 | 是 | 是，按屏幕状态划分轮次 | 否 |
+| 时间线、会话标题、token 用量 | 是 | 否 | 否 | 否 |
+| 重启后继续会话 | 是（`--continue`） | 是（`resume --last`） | 是（各自的 resume 参数；qwen 和 amp 不支持） | 否 |
+| 智能体任务 | 默认命令就是 `claude` | 把 `agent_task_command` 改成对应程序即可 | 同左 | 同左 |
 
 没有 hooks 的智能体，Solo 是这样判断状态的：输出里有转圈动画就是在工作，安静 3 秒左右算停止，响铃或发通知（OSC 9/777）就当作需要你输入。
 
@@ -127,6 +127,7 @@ Claude Code 每开始和结束一轮，Solo 都会给工作目录拍一个快照
 ## 8. Solo 对你的系统做了什么
 
 - **Claude Code hooks 只对单次会话生效。** 在接入了 shell 集成的终端里，Solo 会定义一个 `claude` 包装函数，启动时给 claude 加上 `--settings %TEMP%\solo-shell-integration\claude-settings.json`。Claude Code 会把这份设置叠加在你自己的设置上，**你的 `~/.claude/settings.json` 和你自己的 hooks 都不会被修改**。如果你已经有自己的 `claude` 函数或别名，Solo 不会覆盖它。运行 `claude mcp`、`claude update` 这类子命令，或者你自己传了 `--settings` 时，命令会原样执行。关闭方法：`"terminal": {"claude_code_hooks": false}`，对新开的终端生效。
+- **Codex hooks 也只对单次会话生效。** Solo 的 `codex` 包装函数会加上 `-c hooks.<事件>=...` 参数，Codex 把它们叠加在你自己的配置上，只对这次会话有效；**Solo 不会修改你的 `~/.codex/config.toml` 和 `hooks.json`**。Codex 只运行你信任过的 hooks，所以第一次启动时它会问你：选择信任后 Codex 会记住（由 Codex 写进它自己的配置）。这些 hooks 运行的是 `solo-agent-hook.exe`。`codex login`、`codex mcp` 这类不启动会话的子命令原样执行；只有 `codex.cmd`、旁边没有 `codex.ps1` 或 `codex.exe` 时也原样执行。关闭方法：`"terminal": {"codex_hooks": false}`，对新开的终端生效。
 - **shell 集成**：PowerShell、bash、zsh、fish 在没有自定义启动参数时会加载 Solo 的集成脚本，这些脚本写在 `%TEMP%\solo-shell-integration`。PowerShell 用 `-NoExit -Command` 读取并执行这个脚本文件，不用 `-ExecutionPolicy Bypass`，也不用 `-EncodedCommand`。脚本先加载你自己的 profile，再加载集成。关闭方法：`"terminal": {"shell_integration": false}`。
 - **hooks 跑的程序**是安装目录里的 `solo-agent-hook.exe`。它从 stdin 读事件，往终端写一个转义序列，然后退出；它不联网，也不写文件。
 - **轮次快照**存在 `%LOCALAPPDATA%\Solo\agent_turns`，不碰你仓库里的东西。
@@ -176,7 +177,8 @@ Claude Code 每开始和结束一轮，Solo 都会给工作目录拍一个快照
 ### 智能体状态不对
 - 确认终端用的是 PowerShell、bash、zsh 或 fish，并且没有自定义启动参数；System32 下的 `bash.exe`（WSL）不支持。
 - 如果你有自己的 `claude` 函数或别名，Solo 的包装函数不会生效，这时状态只能靠输出推断。
-- 改了 `claude_code_hooks` 以后要新开终端才生效。
+- 改了 `claude_code_hooks` 或 `codex_hooks` 以后要新开终端才生效。
+- 在 Codex 启动时的 hooks 确认里信任 Solo 的 hooks 之前，Codex 的状态仍然是读屏幕得来的。
 - `solo-agent-hook.exe` 被拦截或丢失时，Solo 会改用 PowerShell 脚本，每次上报都会变慢。
 - 会话认错了：运行 `terminal: choose agent session` 手动选。
 - 其他智能体的状态本来就是推断出来的，可能会慢一两秒。
@@ -196,6 +198,7 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | --- | --- | --- |
 | `shell_integration` | `true` | 加载 shell 集成（命令块、输入编辑器、hooks 都依赖它） |
 | `claude_code_hooks` | `true` | 通过 `--settings` 给 Claude Code 加状态 hooks |
+| `codex_hooks` | `true` | 通过 `-c hooks...` 给 Codex 加状态 hooks |
 | `agent_commands` | `[]` | 把其他程序也当作智能体 |
 | `agent_task_command` | `"claude"` | 新建智能体任务时运行的命令 |
 | `confirm_close` | `"agents"` | 关闭前确认：`agents` / `commands` / `never` |

@@ -470,6 +470,12 @@ impl Project {
                                         &mut env,
                                     );
                                 }
+                                if settings.codex_hooks {
+                                    terminal::shell_integration::integrate_codex(
+                                        path_style.is_windows(),
+                                        &mut env,
+                                    );
+                                }
                                 (shell, env)
                             }
                             None => {
