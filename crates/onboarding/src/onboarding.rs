@@ -33,6 +33,7 @@ use zed_actions::OpenOnboarding;
 mod base_keymap_picker;
 mod basics_page;
 pub mod multibuffer_hint;
+mod terminal_agents;
 mod theme_preview;
 
 /// Imports settings from Visual Studio Code.
@@ -209,6 +210,8 @@ struct Onboarding {
     workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
     user_store: Entity<UserStore>,
+    /// SOLO: the agent CLIs installed, once looked for.
+    terminal_agents: Option<Vec<(&'static str, bool)>>,
     scroll_handle: ScrollHandle,
     _settings_subscription: Subscription,
 }
@@ -262,11 +265,24 @@ impl Onboarding {
             })
             .detach();
 
+            // SOLO: looking on the PATH reads directories; off the main thread.
+            cx.spawn(async move |this, cx| {
+                let agents = cx
+                    .background_spawn(async { terminal_agents::detect_installed_agents() })
+                    .await;
+                this.update(cx, |this: &mut Self, cx| {
+                    this.terminal_agents = Some(agents);
+                    cx.notify();
+                })
+            })
+            .detach();
+
             Self {
                 workspace: workspace.weak_handle(),
                 focus_handle: cx.focus_handle(),
                 scroll_handle: ScrollHandle::new(),
                 user_store: workspace.user_store().clone(),
+                terminal_agents: None,
                 _settings_subscription: cx
                     .observe_global::<SettingsStore>(move |_, cx| cx.notify()),
             }
@@ -297,7 +313,14 @@ impl Onboarding {
     }
 
     fn render_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        crate::basics_page::render_basics_page(&self.user_store, cx).into_any_element()
+        v_flex()
+            .gap_6()
+            .child(terminal_agents::render_terminal_agents_section(
+                self.terminal_agents.as_deref(),
+                cx,
+            ))
+            .child(crate::basics_page::render_basics_page(&self.user_store, cx))
+            .into_any_element()
     }
 }
 
@@ -355,10 +378,13 @@ impl Render for Onboarding {
                                                             .size(HeadlineSize::Small),
                                                     )
                                                     .child(
-                                                        Label::new("The editor for what's next")
-                                                            .color(Color::Muted)
-                                                            .size(LabelSize::Small)
-                                                            .italic(),
+                                                        Label::new(util::i18n::tr(
+                                                            "An IDE for working with AI agents",
+                                                            "和 AI agent 一起工作的 IDE",
+                                                        ))
+                                                        .color(Color::Muted)
+                                                        .size(LabelSize::Small)
+                                                        .italic(),
                                                     ),
                                             ),
                                     )
@@ -421,6 +447,7 @@ impl Item for Onboarding {
         Task::ready(Some(cx.new(|cx| Onboarding {
             workspace: self.workspace.clone(),
             user_store: self.user_store.clone(),
+            terminal_agents: self.terminal_agents.clone(),
             scroll_handle: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             _settings_subscription: cx.observe_global::<SettingsStore>(move |_, cx| cx.notify()),

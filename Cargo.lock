@@ -12091,6 +12091,7 @@ dependencies = [
  "ui",
  "util",
  "vim_mode_setting",
+ "which",
  "workspace",
  "zed_actions",
  "zlog",
