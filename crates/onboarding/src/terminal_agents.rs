@@ -124,12 +124,15 @@ pub(crate) fn render_terminal_agents_section(
                         .color(Color::Muted),
                 )
                 .child(
-                    Label::new(tr(
-                        "Solo adds its hooks only to the sessions started in its terminal, through their environment, and doesn't change your agents' own settings files. Agents run on your own CLIs and subscriptions.",
-                        "Solo 只给在它的终端里启动的会话加 hooks（通过这些会话的环境变量），不改动 agent 自己的配置文件。agent 用的是你自己的命令行工具和订阅。",
-                    ))
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
+                    // Shrinks so the note wraps instead of running off the page.
+                    div().flex_1().min_w_0().child(
+                        Label::new(tr(
+                            "Solo adds its hooks only to the sessions started in its terminal, through their environment, and doesn't change your agents' own settings files. Agents run on your own CLIs and subscriptions.",
+                            "Solo 只给在它的终端里启动的会话加 hooks（通过这些会话的环境变量），不改动 agent 自己的配置文件。agent 用的是你自己的命令行工具和订阅。",
+                        ))
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                    ),
                 ),
         )
         .child(

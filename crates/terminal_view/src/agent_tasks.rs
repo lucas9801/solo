@@ -829,7 +829,7 @@ impl AgentTasksModal {
             .active_item_as::<TerminalView>(cx)
             .and_then(|view| terminal_directory(view.read(cx).terminal.read(cx)));
         workspace.toggle_modal(window, cx, move |window, cx| {
-            let mut modal = Self {
+            let modal = Self {
                 workspace: weak_workspace,
                 focus_handle: cx.focus_handle(),
                 entries: None,
@@ -839,7 +839,11 @@ impl AgentTasksModal {
                 page: Page::List,
                 _task: Task::ready(()),
             };
-            modal.reload(window, cx);
+            // Loading reads the workspace's terminals, and the workspace is
+            // being updated while the modal is made: load once it isn't.
+            cx.defer_in(window, |modal: &mut Self, window, cx| {
+                modal.reload(window, cx)
+            });
             modal
         });
     }
@@ -1900,5 +1904,42 @@ impl Render for AgentTasksModal {
                     .color(Color::Muted),
             )
             .child(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use project::{FakeFs, Project};
+    use settings::SettingsStore;
+    use util::path;
+
+    /// Opening the task list from a workspace action reads the workspace's
+    /// terminals; that panicked while the workspace was being updated.
+    #[gpui::test]
+    async fn test_manage_agent_tasks_opens(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            crate::init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), serde_json::json!({ "a.txt": "a" }))
+            .await;
+        let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            AgentTasksModal::toggle(workspace, window, cx);
+        });
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, cx| {
+            assert!(workspace.active_modal::<AgentTasksModal>(cx).is_some());
+        });
     }
 }

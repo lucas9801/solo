@@ -1683,12 +1683,15 @@ impl Item for MarkdownPreviewView {
         // full path for files outside the project. The directories needed to tell apart files
         // with the same name are shown in the description.
         let title = match editor {
-            Some(editor) if params.truncate_title_middle => format!("Preview {}", editor.title(cx)),
+            Some(editor) if params.truncate_title_middle => {
+                format!("{} {}", util::i18n::tr("Preview", "预览"), editor.title(cx))
+            }
             Some(editor) => format!(
-                "Preview {}",
+                "{} {}",
+                util::i18n::tr("Preview", "预览"),
                 util::truncate_and_trailoff(&editor.title(cx), max_title_len)
             ),
-            None => "Markdown Preview".to_string(),
+            None => util::i18n::tr("Markdown Preview", "Markdown 预览").to_string(),
         };
         let description = editor
             .zip(params.detail)
@@ -1735,9 +1738,11 @@ impl Item for MarkdownPreviewView {
             .as_ref()
             .map(|editor_state| {
                 let title = editor_state.editor.read(cx).tab_content_text(detail, cx);
-                format!("Preview {title}").into()
+                format!("{} {title}", util::i18n::tr("Preview", "预览")).into()
             })
-            .unwrap_or_else(|| SharedString::from("Markdown Preview"))
+            .unwrap_or_else(|| {
+                SharedString::from(util::i18n::tr("Markdown Preview", "Markdown 预览"))
+            })
     }
 
     // Save As writes the source file, so suggest its name rather than the tab text, which can be a
@@ -2484,6 +2489,8 @@ mod tests {
     async fn preview_tabs_for_files_with_the_same_name_show_their_directory(
         cx: &mut TestAppContext,
     ) {
+        // SOLO: the titles are translated; this checks the English ones.
+        util::i18n::set_language(util::i18n::Language::English);
         let (project, _, multi_workspace) = markdown_workspace(
             cx,
             json!({
