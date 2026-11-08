@@ -339,7 +339,7 @@ impl PickerDelegate for IconThemeSelectorDelegate {
                                 .color(Color::Muted),
                         )
                         .on_click(|_event, _window, cx| {
-                            cx.open_url("https://zed.dev/docs/icon-themes");
+                            cx.open_url(util::i18n::guide_url());
                         }),
                 )
                 .child(

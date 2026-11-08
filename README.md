@@ -190,7 +190,7 @@ commits and tags the version, pushes, and creates the GitHub release with them.
 ## Credits and licensing
 
 Solo is based on [Zed](https://github.com/zed-industries/zed) by Zed
-Industries, Inc. ([original README](./README-zed.md)). Like Zed, it is
+Industries, Inc. Like Zed, it is
 licensed under the GPL-3.0-or-later (see `LICENSE-GPL`); some Zed crates are
 Apache-2.0 (see `LICENSE-APACHE` and each crate's license file).
 

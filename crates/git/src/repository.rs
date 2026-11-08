@@ -4089,10 +4089,14 @@ fn parse_upstream_track(upstream_track: &str) -> Result<UpstreamTracking> {
 
 fn checkpoint_author_envs() -> HashMap<String, String> {
     HashMap::from_iter([
-        ("GIT_AUTHOR_NAME".to_string(), "Zed".to_string()),
-        ("GIT_AUTHOR_EMAIL".to_string(), "hi@zed.dev".to_string()),
-        ("GIT_COMMITTER_NAME".to_string(), "Zed".to_string()),
-        ("GIT_COMMITTER_EMAIL".to_string(), "hi@zed.dev".to_string()),
+        // SOLO: checkpoint commits are Solo's.
+        ("GIT_AUTHOR_NAME".to_string(), "Solo".to_string()),
+        ("GIT_AUTHOR_EMAIL".to_string(), "solo@localhost".to_string()),
+        ("GIT_COMMITTER_NAME".to_string(), "Solo".to_string()),
+        (
+            "GIT_COMMITTER_EMAIL".to_string(),
+            "solo@localhost".to_string(),
+        ),
     ])
 }
 

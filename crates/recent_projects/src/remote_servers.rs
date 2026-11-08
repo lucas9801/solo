@@ -2538,9 +2538,7 @@ impl RemoteServerProjects {
                                                     .size(IconSize::XSmall),
                                             )
                                             .on_click(|_, _, cx| {
-                                                cx.open_url(
-                                                    "https://zed.dev/docs/remote-development",
-                                                );
+                                                cx.open_url(util::i18n::guide_url());
                                             }),
                                     ),
                             )

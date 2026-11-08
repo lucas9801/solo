@@ -237,6 +237,11 @@ collaboration and Zed's own auto-update are off or hidden.
 - browsing or installing extensions, and update checks for installed ones
   (none when no extension is installed): `api.zed.dev`, Zed's extension
   service; the remote server for SSH remote development: `cloud.zed.dev`;
+- no other Zed service: help links open this guide; signing in to an MCP server
+  with OAuth uses dynamic client registration only, never Zed's client
+  identity (servers that only take a client metadata document can't be
+  signed in to); the agent panel has no WSL sandbox on Windows, which would
+  download a Linux build of Zed from zed.dev;
 - looking at the ACP agent registry, or using an agent configured from it:
   `cdn.agentclientprotocol.com` and the icon URLs the registry lists;
 - the agents you run in the terminal (Claude Code, Codex, ...) make their own

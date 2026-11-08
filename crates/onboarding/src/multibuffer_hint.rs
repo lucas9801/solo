@@ -165,9 +165,7 @@ impl Render for MultibufferHint {
                                     .size(IconSize::Small)
                                     .color(Color::Muted),
                             )
-                            .on_click(move |_event, _, cx| {
-                                cx.open_url("https://zed.dev/docs/multibuffers")
-                            }),
+                            .on_click(move |_event, _, cx| cx.open_url(util::i18n::guide_url())),
                     ),
             )
             .child(

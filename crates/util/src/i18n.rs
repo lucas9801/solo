@@ -69,6 +69,15 @@ pub fn is_chinese() -> bool {
     }
 }
 
+/// SOLO: Solo's user guide, in the interface's language. Help links that
+/// pointed at Zed's documentation open it instead.
+pub fn guide_url() -> &'static str {
+    tr(
+        "https://github.com/lucas9801/solo/blob/main/docs/guide/en.md",
+        "https://github.com/lucas9801/solo/blob/main/docs/guide/zh-CN.md",
+    )
+}
+
 /// `zh` when Solo's interface is shown in Chinese, `en` otherwise.
 pub fn tr(en: &'static str, zh: &'static str) -> &'static str {
     if is_chinese() { zh } else { en }

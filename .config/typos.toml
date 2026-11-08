@@ -52,9 +52,7 @@ extend-exclude = [
     # Automatically generated JS.
     "docs/theme/c15t@*.js",
     # Spellcheck triggers on `|Fixe[sd]|` regex part.
-    "script/danger/dangerfile.ts",
     # File type extensions are not typos
-    "crates/zed/resources/windows/zed.iss",
     # typos-cli doesn't understand our `vˇariable` markup
     "crates/editor/src/hover_links.rs",
     # typos-cli doesn't understand `setis` is intentional test case
@@ -112,7 +110,6 @@ extend-ignore-re = [
     "GHIzJ",
     # Intentionally non-matching query in project search tests
     "NOTHINGmATCHEStHIS",
-    # Ordinal suffix for spelled-out dates in script/github-pr-cleanup.py
     '2: "nd"',
 ]
 check-filename = true
