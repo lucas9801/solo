@@ -6,7 +6,7 @@ Solo 是一个给 AI agent 用的编辑器，基于 [Zed](https://github.com/zed
 
 它是给还要自己读代码、读文档的人做的：agent 每做完一轮，你能马上看清它改了什么、有没有引入新错误，留下或者撤回，再把意见发回给它。
 
-[下载（Windows）](https://github.com/lucas9801/solo/releases) · [用户指南](../../guide/zh-CN.md) · [和其他工具比较](compare/index.md)
+[下载（Windows）](https://github.com/lucas9801/solo/releases) · [用户指南](../../guide/zh-CN.md) · [和其他工具比较](compare/index.md) · [English](../en/index.md)
 
 ---
 

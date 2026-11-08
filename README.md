@@ -2,7 +2,7 @@
 
 **User guide / 用户指南:** [中文](docs/guide/zh-CN.md) · [English](docs/guide/en.md)
 
-**介绍（中文）:** [Solo 能做什么、和同类工具比较](docs/site/zh/index.md)
+**About Solo / 介绍:** [English](docs/site/en/index.md) · [中文](docs/site/zh/index.md)
 
 Solo is a terminal-first editor: a fork of [Zed](https://github.com/zed-industries/zed)
 that puts a Warp-style terminal at the center, for working with AI agents such
