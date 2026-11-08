@@ -23,12 +23,13 @@ use terminal::terminal_settings::TerminalSettings;
 use ui::{ListItem, ListItemSpacing, prelude::*};
 use workspace::{ModalView, Toast, Workspace, item::Item as _, notifications::NotificationId};
 use zed_actions::agent_terminal::{
-    SendDiagnosticsToAgent, SendPositionToAgent, SendSelectionToAgent,
+    DocumentComment, SendDiagnosticsToAgent, SendDocumentCommentsToAgent, SendPositionToAgent,
+    SendSelectionToAgent,
 };
 
 use crate::{
-    TerminalView, agent_status::AgentStatus, command_blocks, default_working_directory,
-    terminal_panel::TerminalPanel,
+    TerminalView, agent_status::AgentStatus, agent_turns::AgentTurns, command_blocks,
+    default_working_directory, terminal_panel::TerminalPanel,
 };
 
 actions!(
@@ -97,6 +98,16 @@ pub(crate) fn init(cx: &mut App) {
         workspace.register_action(|workspace, _: &EnableRemoteControl, window, cx| {
             start_claude_with_remote_control(workspace, window, cx)
         });
+        // From a document's preview.
+        workspace.register_action(
+            |_, action: &SendDocumentCommentsToAgent, window, cx: &mut Context<Workspace>| {
+                let workspace = cx.entity();
+                let action = action.clone();
+                window.defer(cx, move |window, cx| {
+                    send_document_comments(&workspace, action, window, cx)
+                });
+            },
+        );
     })
     .detach();
 }
@@ -237,6 +248,10 @@ pub(crate) enum AgentContext {
         path: PathBuf,
         diagnostics: Vec<DiagnosticLine>,
     },
+    DocumentComments {
+        path: PathBuf,
+        comments: Vec<DocumentComment>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -343,6 +358,20 @@ impl AgentContext {
                     message.push_str(&format!(
                         "- {path}:{}:{} {severity}{source}: {text}\n",
                         diagnostic.line, diagnostic.column
+                    ));
+                }
+                message
+            }
+            AgentContext::DocumentComments { path, comments } => {
+                let path = display_path(path, agent_directory);
+                let mut message = format!("Comments on {path}:\n");
+                for comment in comments {
+                    // Continuation lines are indented to keep each comment one item.
+                    let text = comment.comment.trim().replace('\n', "\n  ");
+                    let quote = comment.quote.replace('"', "'");
+                    message.push_str(&format!(
+                        "- {path}:{} — \"{quote}\" — {text}\n",
+                        line_range(comment.start_line, comment.end_line)
                     ));
                 }
                 message
@@ -495,6 +524,47 @@ fn send_from_editor(
             AgentTerminalPicker::new(weak_workspace, agents, context, window, cx)
         })
     });
+}
+
+/// Sends comments written on a document to the agent that last changed it,
+/// or else to the one used last.
+fn send_document_comments(
+    workspace: &Entity<Workspace>,
+    action: SendDocumentCommentsToAgent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if action.comments.is_empty() {
+        return;
+    }
+    let author =
+        AgentTurns::try_global(cx).and_then(|turns| turns.read(cx).last_to_change(&action.path));
+    let mut agents = agent_terminals(workspace, cx);
+    if let Some(author) = author
+        && let Some(ix) = agents.iter().position(|agent| agent.entity_id() == author)
+    {
+        let author = agents.remove(ix);
+        agents.insert(0, author);
+    }
+    let context = AgentContext::DocumentComments {
+        path: action.path,
+        comments: action.comments,
+    };
+    let Some(agent) = agents.first() else {
+        cx.write_to_clipboard(ClipboardItem::new_string(context.message(None)));
+        struct NoAgentForCommentsToast;
+        show_toast::<NoAgentForCommentsToast>(
+            workspace,
+            util::i18n::tr(
+                "No terminal is running an AI agent; copied the comments to the clipboard instead",
+                "没有终端在运行 AI agent，批注已改为复制到剪贴板",
+            ),
+            cx,
+        );
+        return;
+    };
+    let agent = agent.clone();
+    send_to_agent_terminal(workspace, &agent, &context, window, cx);
 }
 
 /// Pastes `context` into the agent's prompt and switches to its terminal.
@@ -872,6 +942,35 @@ mod tests {
             "Errors and warnings in src/main.rs:\n\
              - src/main.rs:3:5 error [rustc]: mismatched types\n  expected `u32`\n\
              - src/main.rs:9:1 warning: unused variable\n"
+        );
+    }
+
+    #[test]
+    fn test_document_comments_message() {
+        let context = AgentContext::DocumentComments {
+            path: path("docs/plan.md"),
+            comments: vec![
+                DocumentComment {
+                    start_line: 4,
+                    end_line: 4,
+                    quote: "Use a \"cache\" here".into(),
+                    comment: "Why not keep it simple?".into(),
+                },
+                DocumentComment {
+                    start_line: 10,
+                    end_line: 12,
+                    quote: "Step three".into(),
+                    comment: "Split this step.\nAnd test it.".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            context.message(None),
+            concat!(
+                "Comments on docs/plan.md:\n",
+                "- docs/plan.md:4 — \"Use a 'cache' here\" — Why not keep it simple?\n",
+                "- docs/plan.md:10-12 — \"Step three\" — Split this step.\n  And test it.\n",
+            )
         );
     }
 

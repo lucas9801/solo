@@ -27,8 +27,8 @@ use util::ResultExt as _;
 use workspace::{Workspace, item::ItemEvent};
 
 use crate::{AgentTurnEvent, TerminalView, terminal_panel::TerminalPanel};
-pub(crate) use review::AgentTurnReview;
 use diagnostics::{DiagnosticsBefore, TurnDiagnostics};
+pub(crate) use review::AgentTurnReview;
 use snapshot::{ChangedFile, FileChange, SnapshotStore, TreeId};
 
 actions!(
@@ -173,6 +173,20 @@ impl AgentTurns {
 
     pub(crate) fn turn(&self, terminal: EntityId, number: usize) -> Option<&AgentTurn> {
         self.turns(terminal).find(|turn| turn.number == number)
+    }
+
+    /// The terminal whose agent last changed the file at `abs_path`.
+    pub(crate) fn last_to_change(&self, abs_path: &std::path::Path) -> Option<EntityId> {
+        self.terminals
+            .iter()
+            .flat_map(|(terminal, turns)| turns.turns.iter().map(move |turn| (*terminal, turn)))
+            .filter(|(_, turn)| {
+                turn.changed
+                    .iter()
+                    .any(|file| turn.store.abs_path(&file.path) == abs_path)
+            })
+            .max_by_key(|(_, turn)| turn.started_at)
+            .map(|(terminal, _)| terminal)
     }
 
     /// How many files the terminal's last finished turn changed; `None`
@@ -343,12 +357,9 @@ impl AgentTurns {
                 let result =
                     diagnostics::check_turn(project, diagnostics_before, changed_paths, cx).await;
                 this.update(cx, |this, cx| {
-                    let turn = this
-                        .terminals
-                        .get_mut(&terminal_id)
-                        .and_then(|terminal| {
-                            terminal.turns.iter_mut().find(|turn| turn.number == number)
-                        });
+                    let turn = this.terminals.get_mut(&terminal_id).and_then(|terminal| {
+                        terminal.turns.iter_mut().find(|turn| turn.number == number)
+                    });
                     if let Some(turn) = turn {
                         turn.diagnostics = result;
                         cx.notify();
