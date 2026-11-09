@@ -283,9 +283,14 @@ To treat another program as an agent:
   only happens when you create a task.
 - **Updates** are installed only when you choose to, by
   `solo-update-helper.exe` after Solo exits.
+- **`solo://` links:** the installer registers Solo for `solo://` links,
+  for your user only (`HKCU\Software\Classes\solo`), so a link copied from
+  the settings window opens in Solo. Uninstalling removes it. Solo doesn't
+  register `zed://`, which stays Zed's, but still opens such links passed to
+  it.
 - **Terminal hosts:** each terminal's shell runs in its own
   `solo-terminal-host.exe`, started from a copy in
-  `%LOCALAPPDATA%\Solo	erminal-host` (so updates can replace Solo's files
+  `%LOCALAPPDATA%\Solo\terminal-host` (so updates can replace Solo's files
   while one runs). It talks to Solo over named pipes only your user can open,
   and ends with its shell, with its tab, or with Solo unless something is
   running in it (see section 6).
