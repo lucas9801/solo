@@ -1900,6 +1900,8 @@ impl Render for TerminalView {
                                         self.mode.clone(),
                                     )),
                             )
+                            // SOLO: the agent's usage, when it's running.
+                            .children(self.render_agent_usage_bar(cx))
                             .children(input),
                     )
                     .when(content_mode.is_scrollable(), |div| {
@@ -2110,6 +2112,22 @@ impl Item for TerminalView {
                                 }),
                         )
                     }),
+            )
+            // SOLO: how full the running agent's context is.
+            .when_some(
+                self.agent_context_percent(cx),
+                |this, (percent, nearly_full)| {
+                    this.child(
+                        Label::new(format!("{percent}%"))
+                            .untranslated()
+                            .size(LabelSize::XSmall)
+                            .color(if nearly_full {
+                                Color::Warning
+                            } else {
+                                Color::Muted
+                            }),
+                    )
+                },
             )
             // SOLO: a terminal that won't outlive Solo though it should.
             .when(terminal.host_failed(), |this| {

@@ -224,6 +224,7 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `codex_hooks` | `true` | 通过 `-c hooks...` 给 Codex 加状态 hooks |
 | `copilot_hooks` | `true` | 通过 `--plugin-dir` 给 Copilot CLI 加状态 hooks |
 | `keep_running_on_quit` | `true` | Solo 退出、更新或崩溃时，正在运行东西的终端继续运行，之后自动连回去 |
+| `agent_usage_display` | `"always"` | 运行中的 agent 的上下文和 token 显示在终端底部的细栏里，标签上显示上下文百分比；`"tooltip"` 只在标签提示里显示 |
 | `agent_commands` | `[]` | 把其他程序也当作智能体 |
 | `agent_task_command` | `"claude"` | 新建智能体任务时运行的命令 |
 | `confirm_close` | `"agents"` | 关闭前确认：`agents` / `commands` / `never` |

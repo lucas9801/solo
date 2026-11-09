@@ -348,6 +348,12 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: "full"
     pub agent_control: Option<AgentControl>,
+    /// Where an agent's token and context usage shows: "always", in a thin
+    /// bar at the bottom of its terminal and as a context percentage on its
+    /// tab, or "tooltip", only in its tab's tooltip.
+    ///
+    /// Default: "always"
+    pub agent_usage_display: Option<AgentUsageDisplay>,
 }
 
 crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
@@ -361,7 +367,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         input_editor, compact_prompt, completions_as_you_type, open_links_on_click,
         notify_long_commands_after_seconds, program_notifications, restore_contents,
         agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
-        agent_task_command, agent_control,
+        agent_task_command, agent_control, agent_usage_display,
     },
     defaults: {},
 });
@@ -651,6 +657,30 @@ pub enum TerminalConfirmClose {
     Commands,
     /// Never ask.
     Never,
+}
+
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentUsageDisplay {
+    /// A bar at the bottom of the agent's terminal, and the context used on
+    /// its tab.
+    #[default]
+    Always,
+    /// Only in the tab's tooltip.
+    Tooltip,
 }
 
 #[derive(

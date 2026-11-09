@@ -410,6 +410,7 @@ Solo's own settings, under `"terminal"`:
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
 | `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
+| `agent_usage_display` | `"always"` | a running agent's context and tokens in a bar at the bottom of its terminal and its context percentage on the tab; `"tooltip"` shows them only in the tab's tooltip |
 | `agent_commands` | `[]` | more programs to treat as agents |
 | `agent_task_command` | `"claude"` | what a new agent task runs |
 | `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |
