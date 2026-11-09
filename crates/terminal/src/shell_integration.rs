@@ -296,8 +296,10 @@ pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
             format!("\"{}\"", hook.to_string_lossy()),
         );
     }
-    env.insert("SOLO_CODEX_ARGS".to_string(), codex_hook_args(is_windows).join("
-"));
+    env.insert(
+        "SOLO_CODEX_ARGS".to_string(),
+        codex_hook_args(is_windows).join("\n"),
+    );
 }
 
 /// SOLO: Lets GitHub Copilot CLI started from the integrated shell report
@@ -331,14 +333,19 @@ fn write_copilot_plugin(hook: &str, is_windows: bool) -> std::io::Result<String>
     });
     let manifest = serde_json::to_string_pretty(&manifest).map_err(std::io::Error::other)?;
     write_script("copilot-plugin/.claude-plugin/plugin.json", &manifest)?;
-    let hooks = serde_json::to_string_pretty(&copilot_hooks(hook)).map_err(std::io::Error::other)?;
+    let hooks =
+        serde_json::to_string_pretty(&copilot_hooks(hook)).map_err(std::io::Error::other)?;
     let hooks_path = write_script("copilot-plugin/hooks/hooks.json", &hooks)?;
     let dir = Path::new(&hooks_path)
         .parent()
         .and_then(Path::parent)
         .map(|dir| dir.to_string_lossy().into_owned())
         .unwrap_or_default();
-    Ok(if is_windows { dir.replace('/', "\\") } else { dir })
+    Ok(if is_windows {
+        dir.replace('/', "\\")
+    } else {
+        dir
+    })
 }
 
 /// Copilot hooks in Claude Code's format (PascalCase events), for each event
@@ -1182,12 +1189,15 @@ mod tests {
             Some(PathBuf::from("C:\\Git\\\u{9f99};x"))
         );
         // Split at a `;` the encoding missed: joined back.
-        let hook = AgentHook::parse(&params(&["prompt", "1", "", "codex", r"C:%5Ca", "b"])).unwrap();
+        let hook =
+            AgentHook::parse(&params(&["prompt", "1", "", "codex", r"C:%5Ca", "b"])).unwrap();
         assert_eq!(hook.working_directory, Some(PathBuf::from("C:\\a;b")));
         // Not a path, or not valid: none.
         for bad in ["relative", "%ZZ", "%C3", "C:%5C%07"] {
             assert_eq!(
-                AgentHook::parse(&params(&["prompt", "1", "", "", bad])).unwrap().working_directory,
+                AgentHook::parse(&params(&["prompt", "1", "", "", bad]))
+                    .unwrap()
+                    .working_directory,
                 None,
                 "{bad}"
             );

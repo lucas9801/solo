@@ -67,10 +67,7 @@ pub(crate) fn mermaid_blocks(answer: &str) -> Vec<String> {
             block.push(&line[strip..]);
         }
         if block.iter().any(|line| !line.trim().is_empty()) {
-            blocks.push(block.join(
-                "
-",
-            ));
+            blocks.push(block.join("\n"));
         }
     }
     blocks
@@ -240,10 +237,7 @@ mod tests {
             ));
         }
         lines.push("    end".to_string());
-        lines.join(
-            "
-",
-        )
+        lines.join("\n")
     }
 
     #[test]
@@ -320,10 +314,7 @@ sequenceDiagram
                 format!("  {}", line.trim_start())
             })
             .collect();
-        let on_screen = on_screen.join(
-            "
-",
-        );
+        let on_screen = on_screen.join("\n");
         assert_eq!(
             diagram_in_answers(answers, Some(&on_screen)).as_deref(),
             Some(long.as_str())

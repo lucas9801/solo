@@ -209,13 +209,10 @@ impl TerminalView {
             }
         }
         // SOLO: an agent working somewhere other than its shell.
-        if let Some(agent_directory) = self
-            .agent_reported_directory()
-            .filter(|agent_directory| {
-                self.title_working_directory(cx)
-                    .is_none_or(|directory| !same_directory(&directory, agent_directory))
-            })
-        {
+        if let Some(agent_directory) = self.agent_reported_directory().filter(|agent_directory| {
+            self.title_working_directory(cx)
+                .is_none_or(|directory| !same_directory(&directory, agent_directory))
+        }) {
             details.push(format!(
                 "{}{}",
                 util::i18n::tr("The agent works in: ", "agent 的工作目录："),
