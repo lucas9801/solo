@@ -101,7 +101,13 @@ impl TerminalView {
         };
         let adapter = agent_sessions::adapter_for_command(&command)?;
         let probe = TerminalProbe {
-            working_directory: working_directory.or_else(|| terminal.working_directory()),
+            // SOLO: the agent's own, when it said (a resumed session can work
+            // elsewhere), where its sessions are kept.
+            working_directory: self
+                .agent_reported_directory()
+                .cloned()
+                .or(working_directory)
+                .or_else(|| terminal.working_directory()),
             command: Some(command),
             started_at: started_at
                 .and_then(|started_at| SystemTime::now().checked_sub(started_at.elapsed())),

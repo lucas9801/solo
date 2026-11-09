@@ -22,6 +22,7 @@
 //! Read from the screen, working starts a turn and stopping ends it, as hooks
 //! do.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{Context, EventEmitter, Task, Window};
@@ -134,6 +135,8 @@ pub(crate) struct AgentActivity {
     in_turn: bool,
     /// The name the agent gave in its reports.
     reported_agent: Option<String>,
+    /// Where the agent said it works, in its reports.
+    reported_directory: Option<PathBuf>,
     /// Whether the agent finished a turn you haven't looked at since.
     unseen_finish: bool,
     /// What the agent's screen last said, for agents with screen rules.
@@ -295,6 +298,13 @@ impl AgentActivity {
 }
 
 impl TerminalView {
+    /// Where the agent running in this terminal said it works, which can
+    /// differ from where its shell is (a session resumed from another
+    /// folder, say).
+    pub(crate) fn agent_reported_directory(&self) -> Option<&PathBuf> {
+        self.agent_activity.reported_directory.as_ref()
+    }
+
     /// The agent this terminal runs or last ran, with what it's doing.
     pub(crate) fn agent_status(&self) -> Option<(&str, AgentStatus)> {
         self.agent_activity
@@ -351,6 +361,9 @@ impl TerminalView {
         if hook.agent.is_some() {
             activity.reported_agent = hook.agent.clone();
         }
+        if hook.working_directory.is_some() {
+            activity.reported_directory = hook.working_directory.clone();
+        }
         let needs_input = hook.kind == AgentHookKind::NeedsInput;
         activity.hook = Some(HookReport {
             kind: hook.kind,
@@ -395,6 +408,7 @@ impl TerminalView {
             // Reports are about the agent that sent them; the next one starts afresh.
             self.agent_activity.hook = None;
             self.agent_activity.reported_agent = None;
+            self.agent_activity.reported_directory = None;
         }
         let previous = self
             .agent_activity
@@ -579,6 +593,7 @@ impl TerminalView {
                         {
                             activity.hook = None;
                             activity.reported_agent = None;
+                            activity.reported_directory = None;
                         }
                         activity.screen = ScreenReading::default();
                         activity.screen_read = false;

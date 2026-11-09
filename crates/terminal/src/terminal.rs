@@ -7416,18 +7416,21 @@ mod tests {
                     sent_at_ms: Some(1793624689993),
                     session_id: None,
                     agent: None,
+                    working_directory: None,
                 },
                 AgentHook {
                     kind: AgentHookKind::NeedsInput,
                     sent_at_ms: Some(1793624690000),
                     session_id: None,
                     agent: None,
+                    working_directory: None,
                 },
                 AgentHook {
                     kind: AgentHookKind::Stopped,
                     sent_at_ms: None,
                     session_id: None,
                     agent: None,
+                    working_directory: None,
                 },
             ]
         );
