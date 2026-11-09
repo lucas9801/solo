@@ -35,11 +35,18 @@ pub fn main() {
     if spec.protocol != PROTOCOL {
         std::process::exit(2);
     }
+    // The pipes first, so Solo can open them while the program starts (which
+    // can take seconds with many terminals starting at once, or security
+    // software scanning). Solo then waits for the header, which follows once
+    // the program runs, or for the pipes to break if it can't start.
+    let Some(first) = Pipes::make(&spec.pipe, true) else {
+        std::process::exit(4);
+    };
     let console = match Console::spawn(&spec) {
         Ok(console) => Arc::new(console),
         Err(_) => std::process::exit(3),
     };
-    serve(spec, console);
+    serve(spec, console, first);
 }
 
 fn wide(text: impl AsRef<OsStr>) -> Vec<u16> {
@@ -236,9 +243,9 @@ fn environment_block(env: &[(String, String)]) -> Vec<u16> {
     block
 }
 
-/// Makes one instance of a one-way pipe and waits for the client. The first
+/// Makes one instance of a one-way pipe, for a client to open. The first
 /// instance of a name must be new, so nobody else's pipe is served.
-fn serve_pipe(name: &str, outbound: bool, first: bool) -> io::Result<File> {
+fn make_pipe(name: &str, outbound: bool, first: bool) -> io::Result<HANDLE> {
     unsafe {
         let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
         if ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -279,12 +286,68 @@ fn serve_pipe(name: &str, outbound: bool, first: bool) -> io::Result<File> {
         if handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
+        Ok(handle)
+    }
+}
+
+/// Waits for the client of a pipe instance (which may have opened it
+/// already).
+fn connect_pipe(handle: HANDLE) -> io::Result<File> {
+    unsafe {
         if ConnectNamedPipe(handle, null_mut()) == 0 && GetLastError() != ERROR_PIPE_CONNECTED {
             let error = io::Error::last_os_error();
             CloseHandle(handle);
             return Err(error);
         }
         Ok(file(handle))
+    }
+}
+
+/// One instance of each of the three pipes, made but not yet connected.
+struct Pipes {
+    out: HANDLE,
+    input: HANDLE,
+    control: HANDLE,
+}
+
+impl Pipes {
+    fn make(name: &str, first: bool) -> Option<Pipes> {
+        let out = make_retrying(&format!("{name}-out"), true, first)?;
+        let Some(input) = make_retrying(&format!("{name}-in"), false, first) else {
+            unsafe { CloseHandle(out) };
+            return None;
+        };
+        let Some(control) = make_retrying(&format!("{name}-ctl"), false, first) else {
+            unsafe {
+                CloseHandle(out);
+                CloseHandle(input);
+            }
+            return None;
+        };
+        Some(Pipes {
+            out,
+            input,
+            control,
+        })
+    }
+
+    /// Waits for the client to open all three, in the order Solo opens them.
+    fn connect(self) -> Option<(File, File, File)> {
+        let close = |handles: &[HANDLE]| {
+            for handle in handles {
+                unsafe { CloseHandle(*handle) };
+            }
+        };
+        let Ok(out) = connect_pipe(self.out) else {
+            close(&[self.input, self.control]);
+            return None;
+        };
+        let Ok(input) = connect_pipe(self.input) else {
+            close(&[self.control]);
+            return None;
+        };
+        let control = connect_pipe(self.control).ok()?;
+        Some((out, input, control))
     }
 }
 
@@ -312,10 +375,10 @@ impl Shared {
     }
 }
 
-/// [`serve_pipe`], trying again for a few seconds if the pipe can't be made.
-fn serve_retrying(name: &str, outbound: bool, first: bool) -> Option<File> {
+/// [`make_pipe`], trying again for a few seconds if the pipe can't be made.
+fn make_retrying(name: &str, outbound: bool, first: bool) -> Option<HANDLE> {
     for _ in 0..50 {
-        match serve_pipe(name, outbound, first) {
+        match make_pipe(name, outbound, first) {
             Ok(pipe) => return Some(pipe),
             // Someone else holds the name: nobody can be served under it.
             Err(_) if first => return None,
@@ -325,7 +388,7 @@ fn serve_retrying(name: &str, outbound: bool, first: bool) -> Option<File> {
     None
 }
 
-fn serve(spec: Spec, console: Arc<Console>) {
+fn serve(spec: Spec, console: Arc<Console>, first: Pipes) {
     let shared = Arc::new(Mutex::new(Shared {
         ring: VecDeque::new(),
         truncated: false,
@@ -385,18 +448,17 @@ fn serve(spec: Spec, console: Arc<Console>) {
         spec.nonce.as_deref().unwrap_or("-"),
         spec.terminal_id.as_deref().unwrap_or("-"),
     );
-    let mut first = true;
-    loop {
-        let Some(mut out) = serve_retrying(&format!("{}-out", spec.pipe), true, first) else {
+    let mut pipes = Some(first);
+    // Whether a client said to keep running: then the host waits for the
+    // next client, even past one that opened the pipes and went.
+    let mut kept = false;
+    while let Some(next) = pipes.take().or_else(|| Pipes::make(&spec.pipe, false)) {
+        let Some((mut out, input, control)) = next.connect() else {
+            if kept {
+                continue;
+            }
             break;
         };
-        let Some(input) = serve_retrying(&format!("{}-in", spec.pipe), false, first) else {
-            break;
-        };
-        let Some(control) = serve_retrying(&format!("{}-ctl", spec.pipe), false, first) else {
-            break;
-        };
-        first = false;
         // Whether to keep running when the client goes: a new client starts
         // from "end with me", and says otherwise.
         let mut keep = false;
@@ -452,12 +514,14 @@ fn serve(spec: Spec, console: Arc<Console>) {
             thread::sleep(Duration::from_millis(200));
             std::process::exit(0);
         }
+        kept = true;
         drop(control);
         shared.lock().unwrap_or_else(|e| e.into_inner()).client = None;
         forward_input.join().ok();
     }
-    // The pipes can't be made (someone else holds the name): nobody can
-    // connect again, so end rather than run on unreachable.
+    // The pipes can't be made (someone else holds the name), or a client
+    // failed before saying to keep running: end rather than run on
+    // unreachable.
     console.kill();
     std::process::exit(4);
 }
