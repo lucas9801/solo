@@ -106,6 +106,7 @@ impl TitleBar {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tabs = workspace_tabs(&multi_workspace, cx);
+        let names = tab_names(&tabs);
         let can_close = tabs.len() > 1;
         let colors = cx.theme().colors();
         let (selected, hover) = (colors.element_selected, colors.element_hover);
@@ -113,10 +114,10 @@ impl TitleBar {
         let mut row = h_flex().h_full().gap_0p5();
         for (ix, tab) in tabs.into_iter().enumerate() {
             let is_active = tab.is_active;
-            let name = active_name
-                .clone()
-                .filter(|_| is_active)
-                .unwrap_or_else(|| tab_name(&tab));
+            // SOLO: the workspace's own name, whichever of its folders is
+            // active; that one is in the tooltip.
+            let name = names[ix].clone();
+            let active_folder = active_name.clone().filter(|_| is_active);
             let name: SharedString =
                 util::truncate_and_trailoff(&name, MAX_WORKSPACE_NAME_LENGTH).into();
             let counts = tab
@@ -156,7 +157,24 @@ impl TitleBar {
                     can_close,
                 )))
                 .when_some(tab.path.clone(), |element, path| {
-                    element.tooltip(Tooltip::text(path.to_string_lossy().into_owned()))
+                    let mut meta = String::new();
+                    if let Some(folder) = active_folder.as_ref().filter(|folder| {
+                        path.file_name()
+                            .is_none_or(|name| name.to_string_lossy() != folder.as_ref())
+                    }) {
+                        meta.push_str(&format!(
+                            "{}{folder}\n",
+                            tr("Active folder: ", "当前目录：")
+                        ));
+                    }
+                    meta.push_str(tr(
+                        "🔔 waiting for you · ⟳ working · ✓ finished, not seen yet · ✗ failed",
+                        "🔔 等你回复 · ⟳ 工作中 · ✓ 已完成、还没看 · ✗ 失败",
+                    ));
+                    let path = path.to_string_lossy().into_owned();
+                    element.tooltip(move |_, cx| {
+                        Tooltip::with_meta(path.clone(), None, meta.clone(), cx)
+                    })
                 })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click({
@@ -307,6 +325,9 @@ fn render_counts(counts: AgentCounts) -> impl Iterator<Item = AnyElement> {
     [
         (counts.needs_input, IconName::Bell, Color::Warning),
         (counts.working, IconName::LoadCircle, Color::Accent),
+        // SOLO: turns that finished while you weren't looking; gone once you
+        // look at the terminal.
+        (counts.finished, IconName::Check, Color::Success),
         (counts.failed, IconName::XCircle, Color::Error),
     ]
     .into_iter()
@@ -365,7 +386,7 @@ fn terminal_entry(
         Some(AgentState::Working) => (IconName::LoadCircle, Color::Accent),
         Some(AgentState::NeedsInput) => (IconName::Bell, Color::Warning),
         Some(AgentState::Idle) => (IconName::Circle, Color::Muted),
-        Some(AgentState::Done) => (IconName::Check, Color::Success),
+        Some(AgentState::Finished | AgentState::Done) => (IconName::Check, Color::Success),
         Some(AgentState::Failed) => (IconName::XCircle, Color::Error),
         None => (IconName::Terminal, Color::Muted),
     };
@@ -554,6 +575,28 @@ fn build_workspace_menu(
     menu
 }
 
+/// SOLO: each tab's name, its folder's; folders of the same name get their
+/// parent folder's too.
+fn tab_names(tabs: &[WorkspaceTab]) -> Vec<SharedString> {
+    let names: Vec<SharedString> = tabs.iter().map(tab_name).collect();
+    tabs.iter()
+        .zip(&names)
+        .map(|(tab, name)| {
+            let shared = names.iter().filter(|other| *other == name).count() > 1;
+            let parent = tab
+                .path
+                .as_ref()
+                .and_then(|path| path.parent())
+                .and_then(|parent| parent.file_name())
+                .map(|parent| parent.to_string_lossy().into_owned());
+            match parent.filter(|_| shared) {
+                Some(parent) => format!("{name} ({parent})").into(),
+                None => name.clone(),
+            }
+        })
+        .collect()
+}
+
 fn tab_name(tab: &WorkspaceTab) -> SharedString {
     tab.path
         .as_ref()
@@ -565,6 +608,32 @@ fn tab_name(tab: &WorkspaceTab) -> SharedString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_tab_names() {
+        let tab = |path: Option<&str>| WorkspaceTab {
+            key: None,
+            workspace: None,
+            path: path.map(PathBuf::from),
+            is_active: false,
+        };
+        util::i18n::set_language(util::i18n::Language::English);
+        let names = tab_names(&[
+            tab(Some(r"G:\Godot\godot_engine")),
+            tab(Some(r"G:\Dragon_Art")),
+            tab(Some(r"D:\Engine\godot_engine")),
+            tab(None),
+        ]);
+        assert_eq!(
+            names,
+            [
+                "godot_engine (Godot)",
+                "Dragon_Art",
+                "godot_engine (Engine)",
+                "Empty"
+            ]
+        );
+    }
 
     #[test]
     fn test_task_label() {
