@@ -118,10 +118,11 @@ you can:
 Snapshots are kept in Solo's data folder. They never touch your branch, HEAD,
 index, stash list or git object database, and ignored files aren't included.
 
-### Timeline (Claude Code)
+### Timeline (Claude Code, Codex)
 `terminal: show agent timeline` opens the session's timeline beside the
 terminal: each turn's prompt, the files read and changed, the commands run and
-the answer. It's read from Claude Code's own transcript (`~/.claude/projects/...`),
+the answer. It's read from the agent's own records (Claude Code's
+`~/.claude/projects/...`, Codex's `~/.codex/sessions/...`),
 which Solo only reads. If Solo picks the wrong session, use
 `terminal: choose agent session`.
 
@@ -226,7 +227,7 @@ with Solo as before, and closing a terminal's tab ends what runs in it.
 | Recognized as an agent (status, close confirmation, sending command blocks) | yes | yes | yes | yes |
 | Where the status comes from | hooks; exact | hooks; exact (Codex: after you trust them once) | its screen, with per-agent rules; may lag a moment | its output |
 | Per-turn review and roll back | yes | yes | yes, turns read from the screen | no |
-| Timeline, session title, token use | yes | no | no | no |
+| Timeline, session title, token use | yes | Codex: yes (its first prompt as the title); Copilot CLI: no | no | no |
 | Continue the session after a restart | yes (`--continue`) | yes (`codex resume --last`, `copilot --continue`) | yes, with each one's resume option (not qwen or amp) | no |
 | Agent tasks | the default command | set `agent_task_command` to it | same | same |
 
@@ -294,8 +295,9 @@ To treat another program as an agent:
   while one runs). It talks to Solo over named pipes only your user can open,
   and ends with its shell, with its tab, or with Solo unless something is
   running in it (see section 6).
-- Solo reads Claude Code's transcripts (`~/.claude/projects`) for the timeline
-  and session details. It never writes to them.
+- Solo reads Claude Code's transcripts (`~/.claude/projects`) and Codex's
+  sessions (`~/.codex/sessions`) for the timeline and session details. It
+  never writes to them.
 
 ## 9. Privacy and network
 

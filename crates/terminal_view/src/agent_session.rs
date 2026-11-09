@@ -336,7 +336,9 @@ impl TerminalView {
         let agent = agent_kind.name();
         let model = usage.model.clone().unwrap_or_default();
         let compact_hint = match agent_kind {
-            agent_sessions::AgentKind::ClaudeCode => " (/compact)",
+            agent_sessions::AgentKind::ClaudeCode | agent_sessions::AgentKind::Codex => {
+                " (/compact)"
+            }
         };
         let message = if util::i18n::is_chinese() {
             format!("{agent} 的上下文已用 {percent}%（{model}），建议压缩{compact_hint}或开新会话")
