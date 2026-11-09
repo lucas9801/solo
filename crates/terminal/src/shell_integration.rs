@@ -296,8 +296,10 @@ pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
             format!("\"{}\"", hook.to_string_lossy()),
         );
     }
-    env.insert("SOLO_CODEX_ARGS".to_string(), codex_hook_args(is_windows).join("
-"));
+    env.insert(
+        "SOLO_CODEX_ARGS".to_string(),
+        codex_hook_args(is_windows).join("\n"),
+    );
 }
 
 /// SOLO: Lets GitHub Copilot CLI started from the integrated shell report
@@ -331,14 +333,19 @@ fn write_copilot_plugin(hook: &str, is_windows: bool) -> std::io::Result<String>
     });
     let manifest = serde_json::to_string_pretty(&manifest).map_err(std::io::Error::other)?;
     write_script("copilot-plugin/.claude-plugin/plugin.json", &manifest)?;
-    let hooks = serde_json::to_string_pretty(&copilot_hooks(hook)).map_err(std::io::Error::other)?;
+    let hooks =
+        serde_json::to_string_pretty(&copilot_hooks(hook)).map_err(std::io::Error::other)?;
     let hooks_path = write_script("copilot-plugin/hooks/hooks.json", &hooks)?;
     let dir = Path::new(&hooks_path)
         .parent()
         .and_then(Path::parent)
         .map(|dir| dir.to_string_lossy().into_owned())
         .unwrap_or_default();
-    Ok(if is_windows { dir.replace('/', "\\") } else { dir })
+    Ok(if is_windows {
+        dir.replace('/', "\\")
+    } else {
+        dir
+    })
 }
 
 /// Copilot hooks in Claude Code's format (PascalCase events), for each event
@@ -546,6 +553,9 @@ pub struct AgentHook {
     pub session_id: Option<AgentSessionId>,
     /// What the agent calls itself, for programs Solo doesn't know as agents.
     pub agent: Option<String>,
+    /// Where the agent works, which can differ from where the shell is (a
+    /// session resumed from another folder, say).
+    pub working_directory: Option<PathBuf>,
 }
 
 /// Longest agent name a report can give.
@@ -569,13 +579,39 @@ impl AgentHook {
                     })
             })
             .map(str::to_string);
+        // Percent-encoded, and last, so a `;` in it can't move the others.
+        let working_directory = (rest.len() > 3)
+            .then(|| rest[3..].join(";"))
+            .and_then(|encoded| percent_decode(&encoded))
+            .map(PathBuf::from)
+            .filter(|directory| directory.is_absolute());
         Some(Self {
             kind,
             sent_at_ms,
             session_id,
             agent,
+            working_directory,
         })
     }
+}
+
+/// SOLO: `%XX` bytes back, as UTF-8; `None` if it isn't valid.
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut ix = 0;
+    while ix < bytes.len() {
+        if bytes[ix] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(ix + 1..ix + 3)?).ok()?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            ix += 3;
+        } else {
+            decoded.push(bytes[ix]);
+            ix += 1;
+        }
+    }
+    let decoded = String::from_utf8(decoded).ok()?;
+    (!decoded.trim().is_empty() && !decoded.chars().any(char::is_control)).then_some(decoded)
 }
 
 /// SOLO: An agent session id, a UUID such as
@@ -1084,6 +1120,7 @@ mod tests {
                 sent_at_ms: Some(1793624689993),
                 session_id: None,
                 agent: None,
+                working_directory: None,
             })
         );
         // `date` without %N leaves the time out.
@@ -1094,6 +1131,7 @@ mod tests {
                 sent_at_ms: None,
                 session_id: None,
                 agent: None,
+                working_directory: None,
             })
         );
         // The session id, added at the end.
@@ -1135,6 +1173,35 @@ mod tests {
             );
         }
         assert_eq!(AgentHook::parse(&[]), None);
+
+        // Where the agent works, percent-encoded, after the agent's name.
+        let hook = AgentHook::parse(&params(&[
+            "prompt",
+            "1",
+            "",
+            "",
+            r"C:%5CGit%5C%E9%BE%99%3Bx",
+        ]))
+        .unwrap();
+        assert_eq!(hook.agent, None);
+        assert_eq!(
+            hook.working_directory,
+            Some(PathBuf::from("C:\\Git\\\u{9f99};x"))
+        );
+        // Split at a `;` the encoding missed: joined back.
+        let hook =
+            AgentHook::parse(&params(&["prompt", "1", "", "codex", r"C:%5Ca", "b"])).unwrap();
+        assert_eq!(hook.working_directory, Some(PathBuf::from("C:\\a;b")));
+        // Not a path, or not valid: none.
+        for bad in ["relative", "%ZZ", "%C3", "C:%5C%07"] {
+            assert_eq!(
+                AgentHook::parse(&params(&["prompt", "1", "", "", bad]))
+                    .unwrap()
+                    .working_directory,
+                None,
+                "{bad}"
+            );
+        }
         for kind in AgentHookKind::ALL {
             assert_eq!(
                 AgentHook::parse(&params(&[kind.as_str()])).map(|hook| hook.kind),

@@ -82,8 +82,8 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 
 快照存在 Solo 自己的目录里，不会改动你的分支、HEAD、暂存区、stash，也不会往你的 git 对象库里写东西。被 `.gitignore` 忽略的文件不在快照里。
 
-### 时间线（仅 Claude Code）
-命令 `terminal: show agent timeline`（“显示智能体时间线”）会在终端旁边打开这次会话的时间线：每一轮的提示词、读过和改过的文件、跑过的命令和最后的回答。内容读自 Claude Code 自己的对话记录（`~/.claude/projects/...`），Solo 只读不写。如果 Solo 判断不出是哪个会话，用 `terminal: choose agent session` 手动选。
+### 时间线（Claude Code、Codex）
+命令 `terminal: show agent timeline`（“显示智能体时间线”）会在终端旁边打开这次会话的时间线：每一轮的提示词、读过和改过的文件、跑过的命令和最后的回答。内容读自 agent 自己的会话记录（Claude Code 的 `~/.claude/projects/...`，Codex 的 `~/.codex/sessions/...`），Solo 只读不写。如果 Solo 判断不出是哪个会话，用 `terminal: choose agent session` 手动选。
 
 ### 智能体任务（git worktree）
 命令面板里运行 **New Agent Task（新建智能体任务）** 并给任务起个名字。Solo 会新建一个分支和对应的 git worktree（位置由 `git.worktree_directory` 决定，默认是 `../worktrees`），然后在里面打开一个终端，运行 `terminal.agent_task_command`（默认是 `claude`）。在 **Manage Agent Tasks（管理智能体任务）** 里可以打开任务的终端、查看 diff、合并回原分支、开 PR 或删除任务。任务信息记在仓库的 git 配置里，重启后还在。只支持本地项目。
@@ -130,7 +130,7 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 | 被识别为智能体（状态、关闭确认、发送命令块） | 是 | 是 | 是 | 是 |
 | 状态来源 | hooks 上报，准确 | hooks 上报，准确（Codex 需要先信任一次） | 按各自的规则读屏幕，可能会慢一点 | 从终端输出推断 |
 | 按轮审阅、回滚 | 是 | 是 | 是，按屏幕状态划分轮次 | 否 |
-| 时间线、会话标题、token 用量 | 是 | 否 | 否 | 否 |
+| 时间线、会话标题、token 用量 | 是 | Codex 是（标题取第一条提示词）；Copilot CLI 否 | 否 | 否 |
 | 重启后继续会话 | 是（`--continue`） | 是（`codex resume --last`、`copilot --continue`） | 是（各自的 resume 参数；qwen 和 amp 不支持） | 否 |
 | 智能体任务 | 默认命令就是 `claude` | 把 `agent_task_command` 改成对应程序即可 | 同左 | 同左 |
 
@@ -152,8 +152,9 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 - **轮次快照**存在 `%LOCALAPPDATA%\Solo\agent_turns`，不碰你仓库里的东西。
 - **智能体任务**会在你的仓库里新建分支和 worktree，并往仓库的 git 配置里写 `branch.<分支>.solotask` / `solobase`（跨仓库任务还有 `sologroup`）。这些只在你新建任务时才会发生。
 - **更新**：只有你点了更新才会安装，由 `solo-update-helper.exe` 在 Solo 退出后静默运行安装包。
-- **终端宿主进程**：每个终端的 shell 跑在各自的 `solo-terminal-host.exe` 里，它从 `%LOCALAPPDATA%\Solo	erminal-host` 里的副本启动（这样更新时可以替换 Solo 的文件）。它和 Solo 之间用只有你这个用户能打开的命名管道通信；shell 结束、关掉标签，或者 Solo 结束而终端里没在运行东西时，它就结束（见第 6 节）。
-- Solo 会读 Claude Code 的对话记录（`~/.claude/projects`），用来显示时间线和会话信息，只读不写。
+- **`solo://` 链接**：安装程序为当前用户（`HKCU\Software\Classes\solo`）注册 `solo://` 链接，从设置页复制的链接因此会在 Solo 里打开，卸载时删除。Solo 不注册 `zed://`，那是 Zed 的，但传给 Solo 的 `zed://` 链接照样能打开。
+- **终端宿主进程**：每个终端的 shell 跑在各自的 `solo-terminal-host.exe` 里，它从 `%LOCALAPPDATA%\Solo\terminal-host` 里的副本启动（这样更新时可以替换 Solo 的文件）。它和 Solo 之间用只有你这个用户能打开的命名管道通信；shell 结束、关掉标签，或者 Solo 结束而终端里没在运行东西时，它就结束（见第 6 节）。
+- Solo 会读 Claude Code 的对话记录（`~/.claude/projects`）和 Codex 的会话记录（`~/.codex/sessions`），用来显示时间线和会话信息，只读不写。
 
 ## 9. 隐私与网络
 
@@ -171,10 +172,12 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 - 打开某种语言的文件时自动下载语言服务器：GitHub Releases、npm 源；系统里没有合适的 Node.js 时还会访问 `nodejs.org`；
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
-- 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；SSH 远程开发时下载远程服务端：`cloud.zed.dev`；
+- 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；
 - Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 自带的 agent 面板在 Windows 上不提供 WSL 沙箱，因为它需要从 zed.dev 下载 Linux 版的 Zed。
 - 打开 ACP 智能体注册表，或使用从注册表配置的智能体：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
 - 在终端里运行的智能体（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
+
+**暂不支持远程开发：** SSH、WSL、Docker（开发容器）远程开发要在远端运行一个服务端，Solo 还没有自己构建的版本，Zed 的服务器上也没有和 Solo 对应的版本，所以这些入口已经隐藏，触发时会提示暂不支持，不会访问 Zed 的服务器。在终端里用 `ssh`、`wsl` 照常可以。
 
 ## 10. 故障排查
 
@@ -221,6 +224,7 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `codex_hooks` | `true` | 通过 `-c hooks...` 给 Codex 加状态 hooks |
 | `copilot_hooks` | `true` | 通过 `--plugin-dir` 给 Copilot CLI 加状态 hooks |
 | `keep_running_on_quit` | `true` | Solo 退出、更新或崩溃时，正在运行东西的终端继续运行，之后自动连回去 |
+| `agent_usage_display` | `"always"` | 运行中的 agent 的上下文和 token 显示在终端底部的细栏里，标签上显示上下文百分比；`"tooltip"` 只在标签提示里显示 |
 | `agent_commands` | `[]` | 把其他程序也当作智能体 |
 | `agent_task_command` | `"claude"` | 新建智能体任务时运行的命令 |
 | `confirm_close` | `"agents"` | 关闭前确认：`agents` / `commands` / `never` |

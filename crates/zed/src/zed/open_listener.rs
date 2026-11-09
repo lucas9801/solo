@@ -155,6 +155,10 @@ impl OpenRequest {
         }
 
         for url in request.urls {
+            // SOLO: Solo's own links, `solo://`, are read as the `zed://`
+            // links they stand for; `zed://` links are still taken when
+            // passed to Solo.
+            let url = solo_url_as_zed(url);
             if let Some(server_name) = url.strip_prefix("zed-cli://") {
                 this.kind = Some(OpenRequestKind::CliConnection(connect_to_cli(server_name)?));
             } else if let Some(action_index) = url.strip_prefix("zed-dock-action://") {
@@ -172,7 +176,8 @@ impl OpenRequest {
                 this.kind = Some(OpenRequestKind::Extension {
                     extension_id: extension_id.to_string(),
                 });
-            } else if url.starts_with(agent_skills::SKILL_SHARE_LINK_PREFIX) {
+            // SOLO: `solo://skill` links are `zed://skill` ones by now.
+            } else if url.starts_with("zed://skill") {
                 this.parse_skill_install_url(&url)?
             } else if let Some(agent_path) = url.strip_prefix("zed://agent") {
                 this.parse_agent_url(agent_path)
@@ -318,6 +323,14 @@ impl OpenRequest {
         self.remote_connection = Some(connection_options);
         self.parse_file_path(url.path());
         Ok(())
+    }
+}
+
+/// SOLO: a `solo://` link as the `zed://` one it stands for.
+pub fn solo_url_as_zed(url: String) -> String {
+    match url.strip_prefix("solo://") {
+        Some(rest) => format!("zed://{rest}"),
+        None => url,
     }
 }
 
@@ -1541,6 +1554,33 @@ mod tests {
                 assert_eq!(parsed_content, content);
             }
             _ => panic!("Expected InstallSkill kind"),
+        }
+    }
+
+    #[gpui::test]
+    fn test_parse_solo_settings_url(cx: &mut TestAppContext) {
+        let _app_state = init_test(cx);
+        for (url, expected) in [
+            ("solo://settings/terminal.font_size", Some("terminal.font_size")),
+            ("zed://settings/terminal.font_size", Some("terminal.font_size")),
+            ("solo://settings", None),
+        ] {
+            let request = cx.update(|cx| {
+                OpenRequest::parse(
+                    RawOpenRequest {
+                        urls: vec![url.into()],
+                        ..Default::default()
+                    },
+                    cx,
+                )
+                .unwrap()
+            });
+            match request.kind {
+                Some(OpenRequestKind::Setting { setting_path }) => {
+                    assert_eq!(setting_path.as_deref(), expected, "{url}")
+                }
+                _ => panic!("Expected Setting kind for {url}"),
+            }
         }
     }
 

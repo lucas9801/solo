@@ -70,6 +70,69 @@ impl TerminalView {
         self.agent_session.session.as_ref()
     }
 
+    /// SOLO: the usage of the agent running in this terminal, when it's to
+    /// be shown outside the tooltip (`agent_usage_display`).
+    fn shown_agent_usage(&self, cx: &App) -> Option<agent_sessions::UsageSummary> {
+        use settings::Settings as _;
+        let display =
+            terminal::terminal_settings::TerminalSettings::get_global(cx).agent_usage_display;
+        if display != terminal::terminal_settings::AgentUsageDisplay::Always {
+            return None;
+        }
+        let (_, status) = self.agent_status()?;
+        if !status.is_running() {
+            return None;
+        }
+        Some(self.agent_session()?.read(cx).state().usage.clone())
+    }
+
+    /// SOLO: the thin bar at the bottom of an agent's terminal with its
+    /// context and token usage. When narrow, it's cut from the end: the
+    /// turn's tokens first, then the session's.
+    pub(crate) fn render_agent_usage_bar(&self, cx: &App) -> Option<AnyElement> {
+        let usage = self.shown_agent_usage(cx)?;
+        let parts = usage_bar_parts(&usage, util::i18n::is_chinese());
+        if parts.is_empty() {
+            return None;
+        }
+        Some(
+            h_flex()
+                .id("agent-usage-bar")
+                .w_full()
+                .px_2()
+                .gap_3()
+                .overflow_hidden()
+                .border_t_1()
+                .border_color(cx.theme().colors().border_variant)
+                .bg(cx.theme().colors().terminal_background)
+                .children(parts.into_iter().map(|(text, nearly_full)| {
+                    div().flex_none().child(
+                        Label::new(text)
+                            .untranslated()
+                            .single_line()
+                            .size(LabelSize::XSmall)
+                            .color(if nearly_full {
+                                Color::Warning
+                            } else {
+                                Color::Muted
+                            }),
+                    )
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// SOLO: how full the running agent's context is, for its tab: the
+    /// percentage, and whether it's nearly full.
+    pub(crate) fn agent_context_percent(&self, cx: &App) -> Option<(u32, bool)> {
+        let usage = self.shown_agent_usage(cx)?;
+        let fraction = usage.context_fraction()?;
+        Some((
+            (fraction * 100.).round() as u32,
+            usage.context_nearly_full(),
+        ))
+    }
+
     /// Whether an AI agent runs or ran in this terminal, so it may have a
     /// session.
     pub(crate) fn has_run_agent(&self, cx: &App) -> bool {
@@ -101,7 +164,13 @@ impl TerminalView {
         };
         let adapter = agent_sessions::adapter_for_command(&command)?;
         let probe = TerminalProbe {
-            working_directory: working_directory.or_else(|| terminal.working_directory()),
+            // SOLO: the agent's own, when it said (a resumed session can work
+            // elsewhere), where its sessions are kept.
+            working_directory: self
+                .agent_reported_directory()
+                .cloned()
+                .or(working_directory)
+                .or_else(|| terminal.working_directory()),
             command: Some(command),
             started_at: started_at
                 .and_then(|started_at| SystemTime::now().checked_sub(started_at.elapsed())),
@@ -267,7 +336,9 @@ impl TerminalView {
         let agent = agent_kind.name();
         let model = usage.model.clone().unwrap_or_default();
         let compact_hint = match agent_kind {
-            agent_sessions::AgentKind::ClaudeCode => " (/compact)",
+            agent_sessions::AgentKind::ClaudeCode | agent_sessions::AgentKind::Codex => {
+                " (/compact)"
+            }
         };
         let message = if util::i18n::is_chinese() {
             format!("{agent} 的上下文已用 {percent}%（{model}），建议压缩{compact_hint}或开新会话")
@@ -415,6 +486,73 @@ fn format_tokens(tokens: u64) -> String {
         1_000..1_000_000 => format!("{:.1}k", tokens as f64 / 1_000.),
         _ => format!("{:.1}M", tokens as f64 / 1_000_000.),
     }
+}
+
+/// SOLO: the parts of an agent's usage bar, most important first, each with
+/// whether to warn: the context (and model), the session's tokens, the
+/// turn's tokens. Cache details stay in the tooltip.
+pub(crate) fn usage_bar_parts(
+    usage: &agent_sessions::UsageSummary,
+    chinese: bool,
+) -> Vec<(String, bool)> {
+    let mut parts = Vec::new();
+    if let Some(context_tokens) = usage.context_tokens {
+        let context = match (usage.context_window, usage.context_fraction()) {
+            (Some(window), Some(fraction)) => format!(
+                "{} / {} ({:.0}%)",
+                format_tokens(context_tokens),
+                format_tokens(window),
+                fraction * 100.
+            ),
+            _ => format_tokens(context_tokens),
+        };
+        let mut text = if chinese {
+            format!("上下文 {context}")
+        } else {
+            format!("Context {context}")
+        };
+        if let Some(model) = usage.model.as_deref().filter(|model| !model.is_empty()) {
+            text.push_str(&format!(" · {model}"));
+        }
+        parts.push((text, usage.context_nearly_full()));
+    }
+    if !usage.session.is_empty() {
+        let session = &usage.session;
+        parts.push((
+            if chinese {
+                format!(
+                    "本会话 输入 {} · 输出 {}",
+                    format_tokens(session.total_input()),
+                    format_tokens(session.output)
+                )
+            } else {
+                format!(
+                    "Session {} in · {} out",
+                    format_tokens(session.total_input()),
+                    format_tokens(session.output)
+                )
+            },
+            false,
+        ));
+        let turn = &usage.turn;
+        parts.push((
+            if chinese {
+                format!(
+                    "本轮 输入 {} · 输出 {}",
+                    format_tokens(turn.total_input()),
+                    format_tokens(turn.output)
+                )
+            } else {
+                format!(
+                    "Turn {} in · {} out",
+                    format_tokens(turn.total_input()),
+                    format_tokens(turn.output)
+                )
+            },
+            false,
+        ));
+    }
+    parts
 }
 
 /// The lines about a session in its terminal's tab tooltip: its title, token
@@ -665,6 +803,46 @@ mod tests {
         assert_eq!(format_tokens(950), "950");
         assert_eq!(format_tokens(12_345), "12.3k");
         assert_eq!(format_tokens(4_520_000), "4.5M");
+    }
+
+    #[test]
+    fn test_usage_bar_parts() {
+        use agent_sessions::{TokenUsage, UsageSummary};
+        // Nothing known: no bar.
+        assert!(usage_bar_parts(&UsageSummary::default(), false).is_empty());
+        let usage = UsageSummary {
+            session: TokenUsage {
+                input: 1_000,
+                output: 30_000,
+                cache_read: 1_200_000,
+                cache_creation: 0,
+            },
+            turn: TokenUsage {
+                input: 500,
+                output: 2_000,
+                cache_read: 50_000,
+                cache_creation: 0,
+            },
+            context_tokens: Some(170_000),
+            model: Some("claude-opus".into()),
+            context_window: Some(200_000),
+        };
+        // Context first (cut last when narrow), warned of past 80%.
+        assert_eq!(
+            usage_bar_parts(&usage, false),
+            vec![
+                (
+                    "Context 170.0k / 200.0k (85%) · claude-opus".to_string(),
+                    true
+                ),
+                ("Session 1.2M in · 30.0k out".to_string(), false),
+                ("Turn 50.5k in · 2.0k out".to_string(), false),
+            ]
+        );
+        assert_eq!(
+            usage_bar_parts(&usage, true)[1].0,
+            "本会话 输入 1.2M · 输出 30.0k"
+        );
     }
 
     #[test]

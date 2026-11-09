@@ -5,7 +5,8 @@
 //! open:
 //!
 //! - `<pipe>-out`: a header line ([`HEADER`]), the output kept while no one
-//!   was connected (the last [`RING_CAPACITY`] bytes), then live output;
+//!   was connected (the last [`RING_CAPACITY`] bytes), [`REPLAY_END`], then
+//!   live output;
 //! - `<pipe>-in`: input for the terminal, as typed;
 //! - `<pipe>-ctl`: `R` with columns and rows (two little-endian `u16`s)
 //!   resizes; `P` says to keep running when the client goes (the program is
@@ -27,6 +28,11 @@ pub const PROTOCOL: u32 = 1;
 /// The first line on `<pipe>-out`: `SOLO-TERMINAL-HOST <protocol> <child pid>
 /// <nonce or -> <terminal id or ->`.
 pub const HEADER: &str = "SOLO-TERMINAL-HOST";
+
+/// After the output kept for a client: queries in it (for the terminal's
+/// type, the cursor's position) were answered when they were made, and Solo
+/// mustn't answer them again, or the answers reach the program as typed.
+pub const REPLAY_END: &[u8] = b"\x1b]6974;replay-end\x07";
 
 /// How much output is kept for a client that connects later.
 pub const RING_CAPACITY: usize = 2 * 1024 * 1024;

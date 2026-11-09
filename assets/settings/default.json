@@ -2309,6 +2309,10 @@
     // and Solo connects to them again when it reopens them. Takes effect in
     // new terminals.
     "keep_running_on_quit": true,
+    // Where an agent's token and context usage shows: "always", in a thin
+    // bar at the bottom of its terminal and as a context percentage on its
+    // tab, or "tooltip", only in its tab's tooltip.
+    "agent_usage_display": "always",
     // Narrow the project panel, file finder and project search to the git
     // repository the active terminal is in (or its directory, outside a
     // repository). They switch when another terminal becomes active or the

@@ -65,6 +65,11 @@ pub enum Event {
     /// `OSC 6973 ; agent ; ...`; the parameters after `agent`.
     AgentHook(Vec<String>),
 
+    /// SOLO: A terminal host finished replaying the output kept while no one
+    /// was connected, with `OSC 6974 ; replay-end`: the queries in it were
+    /// answered long ago.
+    ReplayEnd,
+
     /// SOLO: The shell reported a shell integration mark.
     ShellMark {
         mark: ShellMark,
@@ -115,6 +120,7 @@ impl Debug for Event {
             Event::ChildExit(status) => write!(f, "ChildExit({status:?})"),
             Event::ShellMark { mark, line } => write!(f, "ShellMark({mark:?}, {line})"),
             Event::AgentHook(params) => write!(f, "AgentHook({params:?})"),
+            Event::ReplayEnd => write!(f, "ReplayEnd"),
             Event::Notification { title, body } => write!(f, "Notification({title:?}, {body:?})"),
         }
     }

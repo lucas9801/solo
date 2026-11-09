@@ -1241,6 +1241,7 @@
   "End": "末尾",
   "End Icon": "末尾图标",
   "Ended": "已结束",
+  "Ends when Solo quits: its background process couldn't be started": "退出 Solo 时会结束：没能启动它的后台进程",
   "Enforce CRLF": "强制 CRLF",
   "Enforce Crlf": "强制 CRLF",
   "Enforce LF": "强制 LF",

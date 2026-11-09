@@ -1,7 +1,9 @@
 //! SOLO: A Claude Code and Codex hook that tells the Solo terminal the agent
 //! runs in what it's doing, with
-//! `OSC 6973 ; agent ; <kind> ; <ms since the epoch> ; <session id> [; <agent>]`
-//! (parsed by `terminal::shell_integration::AgentHook`).
+//! `OSC 6973 ; agent ; <kind> ; <ms since the epoch> ; <session id> [; <agent>
+//! [; <working directory>]]` (parsed by `terminal::shell_integration::AgentHook`).
+//! The working directory, where the agent works (which can differ from the
+//! shell's, say for a resumed session), is percent-encoded UTF-8.
 //!
 //! The agent starts it for every hook event Solo asks for, so it does as
 //! little as possible: read the event from stdin, write one escape sequence to
@@ -46,9 +48,16 @@ fn main() {
         return;
     };
     let session_id = session_id_of(&input).unwrap_or_default();
-    let sequence = match agent.filter(|agent| is_agent_name(agent)) {
-        Some(agent) => format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id};{agent}\x07"),
-        None => format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id}\x07"),
+    let agent = agent.filter(|agent| is_agent_name(agent));
+    let sequence = match (agent, working_directory_of(&input)) {
+        (agent, Some(directory)) => format!(
+            "\x1b]6973;agent;{kind};{sent_at_ms};{session_id};{};{directory}\x07",
+            agent.unwrap_or_default()
+        ),
+        (Some(agent), None) => {
+            format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id};{agent}\x07")
+        }
+        (None, None) => format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id}\x07"),
     };
     if let Err(error) = write_to_terminal(sequence.as_bytes()) {
         eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
@@ -56,7 +65,7 @@ fn main() {
 }
 
 const REPORT_USAGE: &str = "usage: solo-agent-hook report --state <working|blocked|idle> \
-[--agent <name>] [--session <id>] [--seq <n>]";
+[--agent <name>] [--session <id>] [--seq <n>] [--directory <path>]";
 
 /// The escape sequence for `solo-agent-hook report ...`: the public form of
 /// the protocol (docs/agent-status-protocol.md), for agents and scripts.
@@ -65,6 +74,7 @@ fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> 
     let mut agent = String::new();
     let mut session = String::new();
     let mut order = sent_at_ms.to_string();
+    let mut directory = None;
     let mut args = args.iter();
     while let Some(flag) = args.next() {
         let mut value = || {
@@ -77,6 +87,7 @@ fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> 
             "--agent" => agent = value()?,
             "--session" => session = value()?,
             "--seq" => order = value()?,
+            "--directory" => directory = Some(value()?),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -103,8 +114,13 @@ fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> 
             "--agent {agent:?} must be up to 40 letters, digits, spaces, '-', '_' or '.'"
         ));
     }
+    let directory = directory
+        .map(|directory| directory.trim().to_string())
+        .filter(|directory| !directory.is_empty())
+        .map(|directory| format!(";{}", percent_encode(&directory)))
+        .unwrap_or_default();
     Ok(format!(
-        "\x1b]6973;agent;{kind};{order};{session};{agent}\x07"
+        "\x1b]6973;agent;{kind};{order};{session};{agent}{directory}\x07"
     ))
 }
 
@@ -157,6 +173,9 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
         return from_argument();
     };
     let kind = match event_name {
+        // Claude Code starts its session again after compacting it, often
+        // in the middle of a turn that goes on: nothing to report.
+        "SessionStart" if field("source") == Some("compact") => None,
         "SessionStart" => Some("start"),
         "UserPromptSubmit" => Some("prompt"),
         "PermissionRequest" => Some("input"),
@@ -190,6 +209,29 @@ fn session_id_of(input: &str) -> Option<String> {
         .chars()
         .all(|character| character.is_ascii_hexdigit() || character == '-')
         .then(|| session_id.to_string())
+}
+
+/// Where the agent works, from the hook's `cwd` (Claude Code, Codex and
+/// Copilot CLI give it), percent-encoded for the escape sequence.
+fn working_directory_of(input: &str) -> Option<String> {
+    let event = serde_json::from_str::<serde_json::Value>(input).ok()?;
+    let directory = event.get("cwd")?.as_str()?.trim();
+    (!directory.is_empty()).then(|| percent_encode(directory))
+}
+
+/// Everything but printable ASCII, `;` and `%` as `%XX` bytes of UTF-8, so
+/// nothing can end the sequence or split its fields, whatever the console's
+/// code page.
+fn percent_encode(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if (byte.is_ascii_graphic() && byte != b';' && byte != b'%') || byte == b' ' {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 /// Claude Code may start hooks without a console, or in a hidden one of their
@@ -295,6 +337,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn working_directory_is_encoded() {
+        let input = r#"{"hook_event_name":"UserPromptSubmit","cwd":"G:\\Git\\龙 x;%"}"#;
+        assert_eq!(
+            working_directory_of(input).as_deref(),
+            Some(r"G:\Git\%E9%BE%99 x%3B%25")
+        );
+        assert_eq!(working_directory_of(r#"{"cwd":"  "}"#), None);
+        assert_eq!(working_directory_of("{}"), None);
+    }
+
+    #[test]
     fn reports_from_the_command_line() {
         let args =
             |args: &[&str]| -> Vec<String> { args.iter().map(|arg| arg.to_string()).collect() };
@@ -350,6 +403,11 @@ mod tests {
         assert_eq!(
             kind(r#"{"hook_event_name":"SessionStart","source":"startup"}"#),
             Some("start")
+        );
+        // After compacting, mid-turn.
+        assert_eq!(
+            kind(r#"{"hook_event_name":"SessionStart","source":"compact"}"#),
+            None
         );
         assert_eq!(
             kind(r#"{"session_id":"s","hook_event_name": "UserPromptSubmit","prompt":"hi"}"#),

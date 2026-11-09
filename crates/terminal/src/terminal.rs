@@ -778,6 +778,8 @@ pub(crate) enum TerminalBackendEvent {
     Notification(Option<String>, String),
     /// The parameters of an agent hook report.
     AgentHook(Vec<String>),
+    /// SOLO: a terminal host's replay ended.
+    ReplayEnd,
 }
 
 impl fmt::Debug for TerminalBackendEvent {
@@ -799,6 +801,7 @@ impl fmt::Debug for TerminalBackendEvent {
             Self::ShellMark(mark, line) => write!(f, "ShellMark({mark:?}, {line})"),
             Self::Notification(title, body) => write!(f, "Notification({title:?}, {body:?})"),
             Self::AgentHook(params) => write!(f, "AgentHook({params:?})"),
+            Self::ReplayEnd => write!(f, "ReplayEnd"),
         }
     }
 }
@@ -1023,6 +1026,28 @@ impl TerminalMode {
 /// SOLO: the environment variable that has a terminal connect to the terminal
 /// host on this pipe (see [`Terminal::host_pipe`]) instead of starting a
 /// shell; Solo sets it when it restores a terminal. It isn't passed on.
+/// SOLO: what the user last did to the program running in the terminal, as
+/// opposed to what Solo sends on its own (focus reports, a new size), so an
+/// agent's status can tell an answer or an interruption from the user
+/// scrolling or switching windows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UserInput {
+    /// Keys, a paste or a click.
+    pub typed_at: Option<Instant>,
+    /// Esc or Ctrl+C, which interrupt agents.
+    pub interrupted_at: Option<Instant>,
+    /// The wheel, scrolling the program's own screen.
+    pub scrolled_at: Option<Instant>,
+}
+
+/// SOLO: whether `input` is Esc or Ctrl+C on its own, as keys send them.
+fn is_interrupt(input: &[u8]) -> bool {
+    matches!(input, b"\x1b" | b"\x03")
+}
+
+/// SOLO: how long a reconnected terminal host's replay may take at most.
+const REPLAY_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub const HOST_RECONNECT_ENV: &str = "SOLO_TERMINAL_HOST_RECONNECT";
 
 #[cfg(windows)]
@@ -1129,6 +1154,7 @@ impl TerminalBuilder {
             child_exited: None,
             keyboard_input_sent: false,
             last_sent_to_pty: StdCell::new(None),
+            user_input: StdCell::new(UserInput::default()),
             init_command_startup_marker: None,
             init_command_startup_tx: None,
             event_loop_task: Task::ready(Ok(())),
@@ -1137,6 +1163,8 @@ impl TerminalBuilder {
             shell_integration: ShellIntegration::default(),
             host: None,
             reconnected_to_host: false,
+            host_failed: false,
+            replaying_until: None,
             cwd_history: Vec::new(),
             pending_cwd_boundary: None,
             #[cfg(any(test, feature = "test-support"))]
@@ -1214,6 +1242,8 @@ impl TerminalBuilder {
             let mut host_link: HostLinkField = None;
             #[cfg_attr(not(windows), allow(unused_mut))]
             let mut reconnected_to_host = false;
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut host_failed = false;
 
             // If the parent environment doesn't have a locale set
             // (As is the case when launched from a .app on MacOS),
@@ -1390,7 +1420,10 @@ impl TerminalBuilder {
                         reconnected_to_host = reconnected;
                         Ok(connected.pty)
                     }
-                    None => open_pty(&pty_options, TerminalBounds::default(), window_id),
+                    None => {
+                        host_failed = use_host && task.is_none() && !is_remote_terminal;
+                        open_pty(&pty_options, TerminalBounds::default(), window_id)
+                    }
                 };
                 #[cfg(not(windows))]
                 let pty = open_pty(&pty_options, TerminalBounds::default(), window_id);
@@ -1472,12 +1505,15 @@ impl TerminalBuilder {
                 child_exited: None,
                 keyboard_input_sent: false,
                 last_sent_to_pty: StdCell::new(None),
+                user_input: StdCell::new(UserInput::default()),
                 init_command_startup_marker: None,
                 init_command_startup_tx: None,
                 event_loop_task: Task::ready(Ok(())),
                 shell_integration: ShellIntegration::new(shell_nonce).with_terminal_id(terminal_id),
                 host: host_link,
                 reconnected_to_host,
+                host_failed,
+                replaying_until: reconnected_to_host.then(|| Instant::now() + REPLAY_TIMEOUT),
                 background_executor,
                 path_style,
                 cwd_history: if is_remote_terminal {
@@ -1679,6 +1715,8 @@ pub struct Terminal {
     /// SOLO: when anything (keys, mouse, focus, a resize) last went to the
     /// program, which usually answers by redrawing.
     last_sent_to_pty: StdCell<Option<Instant>>,
+    /// SOLO: what of that came from the user, see [`UserInput`].
+    user_input: StdCell<UserInput>,
     init_command_startup_marker: Option<String>,
     init_command_startup_tx: Option<Sender<()>>,
     event_loop_task: Task<Result<(), anyhow::Error>>,
@@ -1689,6 +1727,13 @@ pub struct Terminal {
     host: HostLinkField,
     /// SOLO: whether the console is one an earlier Solo left running.
     reconnected_to_host: bool,
+    /// SOLO: whether a terminal host was wanted but couldn't be started, so
+    /// the terminal ends with Solo.
+    host_failed: bool,
+    /// SOLO: until when a terminal host reconnected to may still be replaying
+    /// its output, whose queries mustn't be answered again; it says when it's
+    /// done (hosts from Solo 2.0.0 don't, hence the time).
+    replaying_until: Option<Instant>,
     cwd_history: Vec<CwdHistoryEntry>,
     pending_cwd_boundary: Option<i32>,
     #[cfg(any(test, feature = "test-support"))]
@@ -1798,6 +1843,15 @@ impl Terminal {
             TerminalBackendEvent::ClipboardStore(data) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(data))
             }
+            // SOLO: a replay's queries were answered when they were made.
+            TerminalBackendEvent::ClipboardLoad(_)
+            | TerminalBackendEvent::PtyWrite(_)
+            | TerminalBackendEvent::TextAreaSizeRequest(_)
+            | TerminalBackendEvent::ColorRequest(..)
+                if self.is_replaying() =>
+            {
+                log::debug!("not answering a query replayed by the terminal host");
+            }
             TerminalBackendEvent::ClipboardLoad(format) => {
                 self.write_to_pty(
                     match &cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -1876,6 +1930,7 @@ impl Terminal {
             TerminalBackendEvent::Notification(title, body) => {
                 cx.emit(Event::Notification { title, body });
             }
+            TerminalBackendEvent::ReplayEnd => self.replaying_until = None,
             TerminalBackendEvent::AgentHook(params) => {
                 match shell_integration::AgentHook::parse(&params) {
                     Some(hook) => {
@@ -1938,6 +1993,18 @@ impl Terminal {
     /// running, so its shell and output are already there.
     pub fn reconnected_to_host(&self) -> bool {
         self.reconnected_to_host
+    }
+
+    /// SOLO: whether a terminal host's replay may still be coming in.
+    fn is_replaying(&self) -> bool {
+        self.replaying_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    /// SOLO: whether this terminal should have kept running when Solo goes,
+    /// but its terminal host couldn't be started.
+    pub fn host_failed(&self) -> bool {
+        self.host_failed
     }
 
     /// SOLO: whether the terminal's host (and what runs in it) keeps running
@@ -2744,6 +2811,12 @@ impl Terminal {
 
     fn write_input(&mut self, input: impl Into<Cow<'static, [u8]>>) {
         let input = input.into();
+        self.note_user_input(|user_input, now| {
+            user_input.typed_at = Some(now);
+            if is_interrupt(&input) {
+                user_input.interrupted_at = Some(now);
+            }
+        });
         if !self.is_remote_terminal && input.contains(&b'\r') {
             let term = self.term.lock_unfair();
             self.pending_cwd_boundary = Some(Self::scrollback_position(
@@ -2774,6 +2847,17 @@ impl Terminal {
     /// so output right after it can be told apart from output of its own.
     pub fn last_sent_to_pty(&self) -> Option<Instant> {
         self.last_sent_to_pty.get()
+    }
+
+    /// SOLO: when the user last typed, interrupted or scrolled the program.
+    pub fn user_input(&self) -> UserInput {
+        self.user_input.get()
+    }
+
+    fn note_user_input(&self, note: impl FnOnce(&mut UserInput, Instant)) {
+        let mut user_input = self.user_input.get();
+        note(&mut user_input, Instant::now());
+        self.user_input.set(user_input);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -3233,6 +3317,8 @@ impl Terminal {
                 mouse_button_report(point, e.button, e.modifiers, true, self.last_content.mode);
 
             if let Some(bytes) = bytes {
+                // A click in the program, say picking one of its choices.
+                self.note_user_input(|user_input, now| user_input.typed_at = Some(now));
                 self.write_to_pty(bytes);
             }
         } else {
@@ -3388,6 +3474,7 @@ impl Terminal {
 
                 if let Some(scrolls) = scroll_report(point, scroll_lines, e, self.last_content.mode)
                 {
+                    self.note_user_input(|user_input, now| user_input.scrolled_at = Some(now));
                     for scroll in scrolls {
                         self.write_to_pty(scroll);
                     }
@@ -3399,6 +3486,7 @@ impl Terminal {
                     .contains(Modes::ALT_SCREEN | Modes::ALTERNATE_SCROLL)
                 && !e.shift
             {
+                self.note_user_input(|user_input, now| user_input.scrolled_at = Some(now));
                 self.write_to_pty(alt_scroll(scroll_lines));
             } else {
                 self.events
@@ -4619,6 +4707,33 @@ mod tests {
                 terminal.take_pty_write_log(),
                 vec![b"primary selection".to_vec()]
             );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_replayed_queries_are_not_answered(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        cx.run_until_parked();
+
+        // Reconnected to a terminal host, which replays a query for the
+        // terminal's type made long ago.
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.sync(window, cx);
+            terminal.take_pty_write_log();
+            terminal.replaying_until = Some(Instant::now() + REPLAY_TIMEOUT);
+            terminal.write_output(b"\x1b[c", cx);
+        });
+        cx.run_until_parked();
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.sync(window, cx);
+            assert!(terminal.take_pty_write_log().is_empty());
+            // The replay ends: queries are answered again.
+            terminal.write_output(b"\x1b]6974;replay-end\x07\x1b[c", cx);
+        });
+        cx.run_until_parked();
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.sync(window, cx);
+            assert_eq!(terminal.take_pty_write_log(), vec![b"\x1b[?6c".to_vec()]);
         });
     }
 
@@ -7356,18 +7471,21 @@ mod tests {
                     sent_at_ms: Some(1793624689993),
                     session_id: None,
                     agent: None,
+                    working_directory: None,
                 },
                 AgentHook {
                     kind: AgentHookKind::NeedsInput,
                     sent_at_ms: Some(1793624690000),
                     session_id: None,
                     agent: None,
+                    working_directory: None,
                 },
                 AgentHook {
                     kind: AgentHookKind::Stopped,
                     sent_at_ms: None,
                     session_id: None,
                     agent: None,
+                    working_directory: None,
                 },
             ]
         );

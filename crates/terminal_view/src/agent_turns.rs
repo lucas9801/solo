@@ -394,9 +394,13 @@ fn now() -> time::OffsetDateTime {
 }
 
 impl TerminalView {
-    /// Where the agent running in this terminal works: where the shell was
-    /// when it started it.
+    /// Where the agent running in this terminal works: where it said in its
+    /// reports, else where the shell was when it started it. A turn keeps the
+    /// directory it started in.
     fn agent_working_directory(&self, cx: &App) -> Option<PathBuf> {
+        if let Some(directory) = self.agent_reported_directory() {
+            return Some(directory.clone());
+        }
         let terminal = self.terminal.read(cx);
         terminal
             .shell_integration()
