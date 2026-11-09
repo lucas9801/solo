@@ -19,7 +19,10 @@ mod wsl_picker;
 
 use remote::RemoteConnectionOptions;
 pub use remote_connection::{RemoteConnectionModal, connect, connect_with_modal};
-pub use remote_connections::{navigate_to_positions, open_remote_project};
+pub use remote_connections::{
+    navigate_to_positions, open_remote_project,
+    remote_development, show_remote_development_unavailable,
+};
 
 use disconnected_overlay::DisconnectedOverlay;
 use fuzzy_nucleo::{StringMatch, StringMatchCandidate, match_strings};
@@ -376,6 +379,10 @@ pub fn init(cx: &mut App) {
             .create_new_window
             .unwrap_or_else(|| default_open_in_new_window(cx));
         with_active_or_new_workspace(cx, move |workspace, window, cx| {
+            if !remote_development() {
+                show_remote_development_unavailable(window, cx);
+                return;
+            }
             let handle = cx.entity().downgrade();
             let fs = workspace.project().read(cx).fs().clone();
             workspace.toggle_modal(window, cx, |window, cx| {
@@ -493,6 +500,10 @@ pub fn init(cx: &mut App) {
                 cx.propagate();
                 return;
             }
+            if !remote_development() {
+                show_remote_development_unavailable(window, cx);
+                return;
+            }
             let handle = cx.entity().downgrade();
             let fs = workspace.project().read(cx).fs().clone();
             workspace.toggle_modal(window, cx, |window, cx| {
@@ -505,6 +516,10 @@ pub fn init(cx: &mut App) {
 
     cx.on_action(|_: &OpenDevContainer, cx| {
         with_active_or_new_workspace(cx, move |workspace, window, cx| {
+            if !remote_development() {
+                show_remote_development_unavailable(window, cx);
+                return;
+            }
             if !workspace.project().read(cx).is_local() {
                 cx.spawn_in(window, async move |_, cx| {
                     cx.prompt(
@@ -545,6 +560,10 @@ pub fn init(cx: &mut App) {
             let Some(window) = window else {
                 return;
             };
+            // SOLO: no dev containers yet, see `remote_development`.
+            if !remote_development() {
+                return;
+            }
             // A workspace opened with `--dev-container` has its worktrees scanning
             // before this observer runs, so their update events can't be relied on
             // to trigger the auto-open.
@@ -1722,7 +1741,8 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 }
                             })
                     })
-                    .child(
+                    // SOLO: see `remote_development`.
+                    .when(remote_development(), |this| this.child(
                         ButtonLike::new("open_remote_folder")
                             .child(
                                 h_flex()
@@ -1751,7 +1771,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                                     )
                                 }
                             }),
-                    )
+                    ))
                     .into_any(),
             );
         }
@@ -1971,14 +1991,17 @@ impl PickerDelegate for RecentProjectsDelegate {
                                                     }
                                                 },
                                             )
-                                            .action(
-                                                "Open Remote Folder",
-                                                OpenRemote {
-                                                    from_existing_connection: false,
-                                                    create_new_window: Some(create_new_window),
-                                                }
-                                                .boxed_clone(),
-                                            )
+                                            // SOLO: see `remote_development`.
+                                            .when(remote_development(), |menu| {
+                                                menu.action(
+                                                    "Open Remote Folder",
+                                                    OpenRemote {
+                                                        from_existing_connection: false,
+                                                        create_new_window: Some(create_new_window),
+                                                    }
+                                                    .boxed_clone(),
+                                                )
+                                            })
                                     }
                                 }))
                             }

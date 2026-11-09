@@ -120,6 +120,37 @@ impl Settings for RemoteSettings {
     }
 }
 
+/// SOLO: whether SSH, WSL and dev container remote development is offered.
+/// It runs a remote server that Solo doesn't build yet, and Zed's servers have
+/// none for Solo's version, so it couldn't connect anyway. Tests still cover
+/// it, for when Solo builds its own server.
+pub fn remote_development() -> bool {
+    cfg!(any(test, feature = "test-support"))
+}
+
+/// SOLO: says that remote development isn't available, see
+/// [`remote_development`].
+pub fn show_remote_development_unavailable(window: &mut gpui::Window, cx: &mut gpui::App) {
+    let prompt = window.prompt(
+        gpui::PromptLevel::Info,
+        util::i18n::tr(
+            "Remote development isn't available yet",
+            "暂不支持远程开发",
+        ),
+        Some(util::i18n::tr(
+            "SSH, WSL and dev container projects need a remote server that Solo doesn't build yet. \
+             You can still use ssh or wsl in Solo's terminal.",
+            "SSH、WSL 和开发容器项目需要一个远程服务端，Solo 还没有自己构建的版本。在 Solo 的终端里照常可以用 ssh 或 wsl。",
+        )),
+        &[util::i18n::tr("OK", "确定")],
+        cx,
+    );
+    cx.background_spawn(async move {
+        prompt.await.ok();
+    })
+    .detach();
+}
+
 pub async fn open_remote_project(
     connection_options: RemoteConnectionOptions,
     paths: Vec<PathBuf>,
@@ -127,6 +158,18 @@ pub async fn open_remote_project(
     open_options: workspace::OpenOptions,
     cx: &mut AsyncApp,
 ) -> Result<WindowHandle<MultiWorkspace>> {
+    if !remote_development() {
+        cx.update(|cx| {
+            if let Some(window) = cx.active_window() {
+                window
+                    .update(cx, |_, window, cx| {
+                        show_remote_development_unavailable(window, cx)
+                    })
+                    .ok();
+            }
+        });
+        anyhow::bail!("remote development isn't available in Solo yet");
+    }
     let created_new_window = open_options.requesting_window.is_none();
 
     let existing = find_existing_workspace(

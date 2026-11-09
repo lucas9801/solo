@@ -317,7 +317,7 @@ collaboration and Zed's own auto-update are off or hidden.
   the GitHub API;
 - browsing or installing extensions, and update checks for installed ones
   (none when no extension is installed): `api.zed.dev`, Zed's extension
-  service; the remote server for SSH remote development: `cloud.zed.dev`;
+  service;
 - no other Zed service: help links open this guide (a copy Solo carries
   and writes to its data folder, so it opens without a connection);
   signing in to an MCP server with OAuth uses dynamic client registration
@@ -328,6 +328,12 @@ collaboration and Zed's own auto-update are off or hidden.
   `cdn.agentclientprotocol.com` and the icon URLs the registry lists;
 - the agents you run in the terminal (Claude Code, Codex, ...) make their own
   connections, not through Solo.
+
+**No remote development yet:** SSH, WSL and Docker (dev container) remote
+development run a server on the remote side. Solo doesn't build its own yet,
+and Zed's servers have none matching Solo, so those entries are hidden, and
+using one says it isn't supported, without contacting Zed's servers. `ssh`
+and `wsl` in the terminal work as usual.
 
 ## 10. Troubleshooting
 

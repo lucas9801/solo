@@ -171,10 +171,12 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 - 打开某种语言的文件时自动下载语言服务器：GitHub Releases、npm 源；系统里没有合适的 Node.js 时还会访问 `nodejs.org`；
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
-- 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；SSH 远程开发时下载远程服务端：`cloud.zed.dev`；
+- 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；
 - Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 自带的 agent 面板在 Windows 上不提供 WSL 沙箱，因为它需要从 zed.dev 下载 Linux 版的 Zed。
 - 打开 ACP 智能体注册表，或使用从注册表配置的智能体：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
 - 在终端里运行的智能体（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
+
+**暂不支持远程开发：** SSH、WSL、Docker（开发容器）远程开发要在远端运行一个服务端，Solo 还没有自己构建的版本，Zed 的服务器上也没有和 Solo 对应的版本，所以这些入口已经隐藏，触发时会提示暂不支持，不会访问 Zed 的服务器。在终端里用 `ssh`、`wsl` 照常可以。
 
 ## 10. 故障排查
 
