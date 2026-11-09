@@ -43,6 +43,7 @@ If `SOLO_AGENT_HOOK` isn't set, the program isn't running in a Solo terminal
 | `--agent <name>` | The agent's name, shown on the tab: up to 40 letters, digits, spaces, `-`, `_` or `.`. Optional for agents Solo knows by their command. |
 | `--session <uuid>` | The agent's session id (optional). |
 | `--seq <n>` | A number that grows with each report. Optional: by default it's the time in milliseconds. |
+| `--directory <path>` | Where the agent works, when that isn't where its shell is (say, a session resumed from another folder). Optional. Solo snapshots, reviews and rolls back turns there. |
 
 Reports may arrive out of order (on Windows the command returns before it
 has written its report, and hooks often run in the background), so Solo
@@ -59,7 +60,7 @@ The command writes an OSC escape sequence to its terminal. Programs can write
 it themselves instead:
 
 ```
-ESC ] 6973 ; agent ; <kind> ; <order> ; <session id> ; <agent> BEL
+ESC ] 6973 ; agent ; <kind> ; <order> ; <session id> ; <agent> ; <directory> BEL
 ```
 
 - `<kind>`: `prompt` (or `working`), `input` (or `blocked`), `stop`,
@@ -67,7 +68,11 @@ ESC ] 6973 ; agent ; <kind> ; <order> ; <session id> ; <agent> BEL
 - `<order>`: the `--seq` above, decimal; may be empty.
 - `<session id>`: a UUID such as `0f6ed4b2-755b-4e18-8bd1-f60252548036`; may
   be empty.
-- `<agent>`: the agent's name, as for `--agent`; may be left out.
+- `<agent>`: the agent's name, as for `--agent`; may be left out, or empty
+  before a directory.
+- `<directory>`: where the agent works, as an absolute path in UTF-8 with
+  every byte that isn't printable ASCII, and `;` and `%`, written as `%XX`;
+  may be left out. Solo uses it instead of the shell's directory.
 
 Fields at the end can be left out along with their `;`. For example, with
 `printf`:
@@ -76,9 +81,9 @@ Fields at the end can be left out along with their `;`. For example, with
 printf '\033]6973;agent;working;1;;my-agent\a'
 ```
 
-Solo's own hook for Claude Code sends
-`ESC ] 6973 ; agent ; <kind> ; <ms since the epoch> ; <session id> BEL`,
-which is the same format.
+Solo's own hook for Claude Code, Codex and Copilot CLI sends
+`ESC ] 6973 ; agent ; <kind> ; <ms since the epoch> ; <session id> ; <agent> ; <directory> BEL`,
+with the directory from the hook's `cwd`, which is the same format.
 
 ## What Solo shows
 

@@ -14,7 +14,7 @@ use std::io::{self, Read, Write};
 use std::os::windows::io::IntoRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -36,8 +36,11 @@ const HOST_EXE: &str = "solo-terminal-host.exe";
 /// What runs next to the host, copied with it.
 const HOST_FILES: &[&str] = &[HOST_EXE, "conpty.dll", "OpenConsole.exe"];
 
-/// How long a new host gets to make its pipes.
-const START_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a new host gets to make its pipes, while it runs. It makes them
+/// first thing, but with many terminals starting at once (restoring a
+/// session) and security software scanning the new processes, starting can
+/// take seconds.
+const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long to wait for a host that's busy with another client.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -169,12 +172,28 @@ pub(crate) fn start(
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(&spec)?;
     }
-    connect(&pipe, START_TIMEOUT)
+    let started = Instant::now();
+    let connected = connect(&pipe, START_TIMEOUT, Some(&mut child));
+    if connected.is_err() {
+        // Not left waiting for a client that won't come.
+        child.kill().ok();
+    }
+    log::debug!(
+        "terminal host {} {} in {:?}",
+        child.id(),
+        if connected.is_ok() {
+            "connected"
+        } else {
+            "failed"
+        },
+        started.elapsed()
+    );
+    connected
 }
 
 /// Connects to the host on `pipe`, if it's still there.
 pub(crate) fn reconnect(pipe: &str) -> Result<Connected> {
-    connect(pipe, Duration::ZERO)
+    connect(pipe, Duration::ZERO, None)
 }
 
 /// The host left on `reconnect` if it's still there, else a new host; `None`
@@ -203,12 +222,28 @@ pub(crate) fn open(
 }
 
 /// Opens the host's pipes, waiting up to `wait_for_start` for it to make
-/// them.
-fn connect(pipe: &str, wait_for_start: Duration) -> Result<Connected> {
+/// them, while `host` (one just started) runs.
+fn connect(
+    pipe: &str,
+    wait_for_start: Duration,
+    mut host: Option<&mut Child>,
+) -> Result<Connected> {
     let started = Instant::now();
-    let mut output = open_pipe(&format!("{pipe}-out"), true, started, wait_for_start)?;
-    let input = open_pipe(&format!("{pipe}-in"), false, started, START_TIMEOUT)?;
-    let control = open_pipe(&format!("{pipe}-ctl"), false, started, START_TIMEOUT)?;
+    let mut output = open_pipe(
+        &format!("{pipe}-out"),
+        true,
+        started,
+        wait_for_start,
+        host.as_deref_mut(),
+    )?;
+    let input = open_pipe(
+        &format!("{pipe}-in"),
+        false,
+        started,
+        START_TIMEOUT,
+        host.as_deref_mut(),
+    )?;
+    let control = open_pipe(&format!("{pipe}-ctl"), false, started, START_TIMEOUT, host)?;
 
     let header = read_line(&mut output)?;
     let mut fields = header.split(' ');
@@ -257,7 +292,13 @@ fn connect(pipe: &str, wait_for_start: Duration) -> Result<Connected> {
 
 const ERROR_PIPE_BUSY: i32 = 231;
 
-fn open_pipe(name: &str, read: bool, started: Instant, wait: Duration) -> Result<File> {
+fn open_pipe(
+    name: &str,
+    read: bool,
+    started: Instant,
+    wait: Duration,
+    mut host: Option<&mut Child>,
+) -> Result<File> {
     loop {
         let opened = OpenOptions::new().read(read).write(!read).open(name);
         match opened {
@@ -267,7 +308,16 @@ fn open_pipe(name: &str, read: bool, started: Instant, wait: Duration) -> Result
                 let missing = error.kind() == io::ErrorKind::NotFound;
                 let limit = if busy { wait.max(BUSY_TIMEOUT) } else { wait };
                 if !(busy || missing) || started.elapsed() >= limit {
-                    return Err(anyhow!(error).context(format!("failed to open {name}")));
+                    return Err(anyhow!(error).context(format!(
+                        "failed to open {name} after {:?}",
+                        started.elapsed()
+                    )));
+                }
+                if let Some(status) = host
+                    .as_mut()
+                    .and_then(|host| host.try_wait().ok().flatten())
+                {
+                    bail!("the terminal host exited ({status}) before making {name}");
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }

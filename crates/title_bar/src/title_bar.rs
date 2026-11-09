@@ -1035,6 +1035,9 @@ impl TitleBar {
         let settings = TitleBarSettings::get_global(cx);
         let effective_repository = Some(repository);
 
+        // SOLO: the main worktree isn't named ("main" read as a branch); a
+        // linked one (an agent task's) is.
+        let is_linked_worktree = linked_worktree_name.is_some();
         let worktree_label: SharedString = linked_worktree_name.unwrap_or_else(|| "main".into());
 
         let (creation_in_progress, is_switch) = self
@@ -1057,41 +1060,47 @@ impl TitleBar {
             worktree_label.clone()
         };
 
-        let worktree_button = settings.show_worktree_name.then(|| {
-            let project = self.project.clone();
-            let workspace_handle = workspace.downgrade();
-            PopoverMenu::new("worktree-picker-menu")
-                .menu(move |window, cx| {
-                    // When opened from the title bar, focus is on the trigger
-                    // button (not a dock), so `focused_dock` is `None`. That's
-                    // fine — there's no prior dock focus to restore.
-                    Some(cx.new(|cx| {
-                        WorktreePicker::new(project.clone(), workspace_handle.clone(), window, cx)
-                    }))
-                })
-                .trigger_with_tooltip(
-                    Button::new("worktree_picker_trigger", display_label)
-                        .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                        .label_size(LabelSize::Small)
-                        .color(Color::Muted)
-                        .tab_index(0isize)
-                        .loading(is_creating)
-                        .start_icon(
-                            Icon::new(IconName::GitWorktree)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        ),
-                    move |_window, cx| {
-                        Tooltip::with_meta(
-                            "Worktree",
-                            Some(&zed_actions::git::Worktree),
-                            format!("Currently In Use: {}", worktree_label),
-                            cx,
-                        )
-                    },
-                )
-                .anchor(gpui::Anchor::TopLeft)
-        });
+        let worktree_button = (settings.show_worktree_name && (is_linked_worktree || is_creating))
+            .then(|| {
+                let project = self.project.clone();
+                let workspace_handle = workspace.downgrade();
+                PopoverMenu::new("worktree-picker-menu")
+                    .menu(move |window, cx| {
+                        // When opened from the title bar, focus is on the trigger
+                        // button (not a dock), so `focused_dock` is `None`. That's
+                        // fine — there's no prior dock focus to restore.
+                        Some(cx.new(|cx| {
+                            WorktreePicker::new(
+                                project.clone(),
+                                workspace_handle.clone(),
+                                window,
+                                cx,
+                            )
+                        }))
+                    })
+                    .trigger_with_tooltip(
+                        Button::new("worktree_picker_trigger", display_label)
+                            .selected_style(ButtonStyle::Tinted(TintColor::Accent))
+                            .label_size(LabelSize::Small)
+                            .color(Color::Muted)
+                            .tab_index(0isize)
+                            .loading(is_creating)
+                            .start_icon(
+                                Icon::new(IconName::GitWorktree)
+                                    .size(IconSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
+                        move |_window, cx| {
+                            Tooltip::with_meta(
+                                "Worktree",
+                                Some(&zed_actions::git::Worktree),
+                                format!("Currently In Use: {}", worktree_label),
+                                cx,
+                            )
+                        },
+                    )
+                    .anchor(gpui::Anchor::TopLeft)
+            });
 
         let branch_picker = branch_name.and_then(|branch_name| {
             settings.show_branch_name.then(|| {

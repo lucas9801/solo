@@ -111,6 +111,10 @@ actions!(
     ]
 );
 
+/// SOLO: whether a remote server can be downloaded, see
+/// `recent_projects::remote_development`.
+const SOLO_REMOTE_SERVER: bool = false;
+
 #[derive(Serialize, Debug)]
 pub struct AssetQuery<'a> {
     asset: &'a str,
@@ -611,6 +615,11 @@ impl AutoUpdater {
         set_status: impl Fn(&str, &mut AsyncApp) + Send + 'static,
         cx: &mut AsyncApp,
     ) -> Result<PathBuf> {
+        // SOLO: Zed's servers have no remote server for Solo; remote
+        // development is turned off until Solo builds its own.
+        if !SOLO_REMOTE_SERVER {
+            anyhow::bail!("Solo has no remote server to download yet");
+        }
         let this = cx.update(|cx| {
             cx.default_global::<GlobalAutoUpdate>()
                 .0
@@ -667,6 +676,9 @@ impl AutoUpdater {
         arch: &str,
         cx: &mut AsyncApp,
     ) -> Result<Option<String>> {
+        if !SOLO_REMOTE_SERVER {
+            anyhow::bail!("Solo has no remote server to download yet");
+        }
         let this = cx.update(|cx| {
             cx.default_global::<GlobalAutoUpdate>()
                 .0

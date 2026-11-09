@@ -1579,7 +1579,9 @@ fn render_settings_item_link(
                 .tooltip(Tooltip::text("Copy Link"))
                 .when_some(json_path, |this, path| {
                     this.on_click(cx.listener(move |this, _, _, cx| {
-                        let link = format!("zed://settings/{}", path);
+                        // SOLO: Solo's own scheme, which its installer
+                        // registers; `zed://` would open Zed.
+                        let link = format!("solo://settings/{}", path);
                         cx.write_to_clipboard(ClipboardItem::new_string(link));
                         this.last_copied_link_path = Some(path);
                         cx.notify();
@@ -2641,6 +2643,7 @@ impl SettingsWindow {
             self.worktree_root_dirs.extend(missing_worktrees);
         }
 
+        let ui_files = self.without_duplicate_folders(ui_files, cx);
         self.files = ui_files;
         let current_file_still_exists = self
             .files
@@ -2966,6 +2969,37 @@ impl SettingsWindow {
                         this.open_current_settings_file(window, cx);
                     })),
             )
+    }
+
+    /// SOLO: a folder open in several workspaces is listed once: the entry
+    /// from the window's active workspace, else the first.
+    fn without_duplicate_folders(
+        &self,
+        files: Vec<(SettingsUiFile, FocusHandle)>,
+        cx: &App,
+    ) -> Vec<(SettingsUiFile, FocusHandle)> {
+        let worktree = |worktree_id: WorktreeId| {
+            all_projects(self.original_window.as_ref(), cx)
+                .find_map(|project| project.read(cx).worktree_for_id(worktree_id, cx))
+        };
+        let active_project = self
+            .original_window
+            .as_ref()
+            .and_then(|window| window.read(cx).ok())
+            .map(|multi_workspace| multi_workspace.workspace().read(cx).project().clone());
+        let in_active_project = |worktree_id: WorktreeId| {
+            active_project.as_ref().is_some_and(|project| {
+                project.read(cx).worktree_for_id(worktree_id, cx).is_some()
+            })
+        };
+        let folder = |file: &SettingsUiFile| -> Option<(std::path::PathBuf, WorktreeId)> {
+            let SettingsUiFile::Project((worktree_id, path)) = file else {
+                return None;
+            };
+            let root = worktree(*worktree_id)?.read(cx).abs_path();
+            Some((root.join(path.as_std_path()), *worktree_id))
+        };
+        dedup_folders(files, folder, in_active_project)
     }
 
     pub(crate) fn display_name(&self, file: &SettingsUiFile) -> Option<String> {
@@ -4735,6 +4769,38 @@ impl Render for SettingsWindow {
     }
 }
 
+/// SOLO: `files` with each folder (as `folder` gives it, with its worktree)
+/// once, keeping the entry `preferred` picks, else the first, in the place of
+/// the first.
+fn dedup_folders<T, F, W>(
+    files: Vec<(T, F)>,
+    folder: impl Fn(&T) -> Option<(std::path::PathBuf, W)>,
+    preferred: impl Fn(W) -> bool,
+) -> Vec<(T, F)> {
+    let mut kept: Vec<Option<(T, F)>> = Vec::new();
+    let mut by_folder: HashMap<std::path::PathBuf, (usize, bool)> = HashMap::default();
+    for (file, handle) in files {
+        let Some((path, worktree)) = folder(&file) else {
+            kept.push(Some((file, handle)));
+            continue;
+        };
+        let is_preferred = preferred(worktree);
+        match by_folder.get_mut(&path) {
+            Some((index, kept_preferred)) => {
+                if is_preferred && !*kept_preferred {
+                    kept[*index] = Some((file, handle));
+                    *kept_preferred = true;
+                }
+            }
+            None => {
+                by_folder.insert(path, (kept.len(), is_preferred));
+                kept.push(Some((file, handle)));
+            }
+        }
+    }
+    kept.into_iter().flatten().collect()
+}
+
 pub(crate) fn all_projects(
     window: Option<&WindowHandle<MultiWorkspace>>,
     cx: &App,
@@ -5466,6 +5532,31 @@ pub mod test {
     use credentials_provider::test_support::FakeCredentialsProvider;
     use language_model::{ApiKeyState, EnvVar, LanguageModelProviderState, LanguageModelRegistry};
     use language_models::provider::open_ai_compatible::OpenAiCompatibleLanguageModelProvider;
+
+    #[test]
+    fn test_dedup_folders() {
+        // (name, folder, worktree); worktree 2 is in the active workspace.
+        let files = vec![
+            ("user", None, 0),
+            ("a in 1", Some("C:/a"), 1),
+            ("b in 1", Some("C:/b"), 1),
+            ("a in 2", Some("C:/a"), 2),
+            ("b in 3", Some("C:/b"), 3),
+        ]
+        .into_iter()
+        .map(|(name, folder, worktree)| ((name, folder, worktree), ()))
+        .collect::<Vec<_>>();
+        let kept = dedup_folders(
+            files,
+            |(_, folder, worktree): &(&str, Option<&str>, u32)| {
+                folder.map(|folder| (std::path::PathBuf::from(folder), *worktree))
+            },
+            |worktree| worktree == 2,
+        );
+        let names: Vec<&str> = kept.iter().map(|((name, _, _), _)| *name).collect();
+        // Each folder once, in its first place; the active workspace's wins.
+        assert_eq!(names, ["user", "a in 2", "b in 1"]);
+    }
 
     impl SettingsWindow {
         fn navbar_entry(&self) -> usize {

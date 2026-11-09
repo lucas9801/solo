@@ -348,6 +348,7 @@ impl From<AlacTermEvent> for TerminalBackendEvent {
             AlacTermEvent::ShellMark { mark, line } => Self::ShellMark(mark, line),
             AlacTermEvent::Notification { title, body } => Self::Notification(title, body),
             AlacTermEvent::AgentHook(params) => Self::AgentHook(params),
+            AlacTermEvent::ReplayEnd => Self::ReplayEnd,
         }
     }
 }

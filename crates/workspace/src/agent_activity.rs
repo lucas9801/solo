@@ -22,6 +22,8 @@ pub enum AgentState {
     NeedsInput,
     /// Running but quiet, likely waiting for the next prompt.
     Idle,
+    /// Still running, and finished a turn you haven't looked at yet.
+    Finished,
     Done,
     Failed,
 }
@@ -41,6 +43,8 @@ pub struct WorkspaceTerminal {
 pub struct AgentCounts {
     pub working: usize,
     pub needs_input: usize,
+    /// Finished a turn you haven't looked at yet.
+    pub finished: usize,
     pub failed: usize,
 }
 
@@ -51,6 +55,7 @@ impl AgentCounts {
             match terminal.agent {
                 Some(AgentState::Working) => counts.working += 1,
                 Some(AgentState::NeedsInput) => counts.needs_input += 1,
+                Some(AgentState::Finished) => counts.finished += 1,
                 Some(AgentState::Failed) => counts.failed += 1,
                 Some(AgentState::Idle | AgentState::Done) | None => {}
             }

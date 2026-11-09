@@ -4,8 +4,7 @@
 //!
 //! An [`AgentAdapter`] knows one agent: how to find the session a terminal
 //! runs and how to read the agent's transcript into agent-neutral
-//! [`TranscriptEntry`]s. Claude Code ([`ClaudeCode`]) is the only one so far;
-//! Codex and Gemini CLI would be further adapters.
+//! [`TranscriptEntry`]s: Claude Code ([`ClaudeCode`]) and Codex ([`Codex`]).
 //!
 //! [`SessionState`] collects the entries of a session: its messages, tool
 //! calls, file changes, title and token usage. [`AgentSession`] keeps one up to
@@ -13,6 +12,7 @@
 //! in the background.
 
 mod claude_code;
+mod codex;
 mod live;
 
 use std::{
@@ -24,31 +24,35 @@ use std::{
 use collections::HashMap;
 
 pub use claude_code::ClaudeCode;
+pub use codex::Codex;
 pub use live::{AgentSession, AgentSessionEvent};
 
 /// The agents Solo reads sessions of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AgentKind {
     ClaudeCode,
+    Codex,
 }
 
 impl AgentKind {
     pub fn name(self) -> &'static str {
         match self {
             AgentKind::ClaudeCode => "Claude Code",
+            AgentKind::Codex => "Codex",
         }
     }
 
     pub fn adapter(self) -> &'static dyn AgentAdapter {
         match self {
             AgentKind::ClaudeCode => &ClaudeCode,
+            AgentKind::Codex => &Codex,
         }
     }
 }
 
 /// Every agent adapter.
-pub fn adapters() -> [&'static dyn AgentAdapter; 1] {
-    [&ClaudeCode]
+pub fn adapters() -> [&'static dyn AgentAdapter; 2] {
+    [&ClaudeCode, &Codex]
 }
 
 /// The adapter for the agent `command` starts, e.g. `claude --resume`.
@@ -275,6 +279,12 @@ pub enum TranscriptEntry {
     Compacted {
         tokens_after: Option<u64>,
     },
+    /// SOLO: the model, or the context window the agent says it has, when
+    /// the agent records them apart from requests (Codex does).
+    ModelInfo {
+        model: Option<String>,
+        context_window: Option<u64>,
+    },
 }
 
 /// Token usage of a session.
@@ -335,6 +345,9 @@ pub struct SessionState {
     /// Each request's usage and the turn it was in.
     request_usage: HashMap<String, (TokenUsage, usize)>,
     turn: usize,
+    /// The context window the agent recorded, for models the adapter doesn't
+    /// know.
+    recorded_context_window: Option<u64>,
 }
 
 impl SessionState {
@@ -351,6 +364,7 @@ impl SessionState {
             tool_call_ixs: HashMap::default(),
             request_usage: HashMap::default(),
             turn: 0,
+            recorded_context_window: None,
         }
     }
 
@@ -378,6 +392,14 @@ impl SessionState {
     pub fn apply(&mut self, entry: TranscriptEntry) {
         match entry {
             TranscriptEntry::Message(message) => {
+                // SOLO: Codex records no title: its first prompt is one.
+                if self.agent == AgentKind::Codex
+                    && self.title.is_none()
+                    && message.role == Role::User
+                    && !message.sidechain
+                {
+                    self.title = Some(codex::first_line(&message.text));
+                }
                 if message.role == Role::User && !message.sidechain {
                     self.turn += 1;
                     self.usage.turn = TokenUsage::default();
@@ -435,6 +457,23 @@ impl SessionState {
             TranscriptEntry::Compacted { tokens_after } => {
                 self.usage.context_tokens = tokens_after;
             }
+            TranscriptEntry::ModelInfo {
+                model,
+                context_window,
+            } => {
+                if context_window.is_some() {
+                    self.recorded_context_window = context_window;
+                }
+                if let Some(model) = model {
+                    self.usage.model = Some(model);
+                }
+                self.usage.context_window = self
+                    .usage
+                    .model
+                    .as_deref()
+                    .and_then(|model| self.agent.adapter().context_window(model))
+                    .or(self.recorded_context_window);
+            }
         }
     }
 
@@ -464,8 +503,14 @@ impl SessionState {
         let context_tokens = usage.total_input();
         self.usage.context_tokens = Some(context_tokens);
         if let Some(model) = model {
-            self.usage.context_window = self.agent.adapter().context_window(&model);
+            self.usage.context_window = self
+                .agent
+                .adapter()
+                .context_window(&model)
+                .or(self.recorded_context_window);
             self.usage.model = Some(model);
+        } else if self.usage.context_window.is_none() {
+            self.usage.context_window = self.recorded_context_window;
         }
         // A request that took more than the model is known to take ran with a
         // larger window than known: say nothing rather than something wrong.

@@ -208,6 +208,17 @@ impl TerminalView {
                 details.push(format!("{}{branch}", util::i18n::tr("Branch: ", "分支：")));
             }
         }
+        // SOLO: an agent working somewhere other than its shell.
+        if let Some(agent_directory) = self.agent_reported_directory().filter(|agent_directory| {
+            self.title_working_directory(cx)
+                .is_none_or(|directory| !same_directory(&directory, agent_directory))
+        }) {
+            details.push(format!(
+                "{}{}",
+                util::i18n::tr("The agent works in: ", "agent 的工作目录："),
+                agent_directory.display()
+            ));
+        }
         // SOLO: the agent session's usage, from its records.
         if let Some(session) = self.agent_session() {
             let session = session.read(cx);
@@ -462,4 +473,19 @@ mod tests {
         );
         assert_eq!(session_title(r"Fix C:\x"), Some(r"Fix C:\x"));
     }
+}
+
+/// SOLO: whether two directories are the same, ignoring a trailing separator,
+/// and case on Windows.
+fn same_directory(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let normalize = |path: &std::path::Path| {
+        let text = path.to_string_lossy();
+        let text = text.trim_end_matches(['/', '\\']);
+        if cfg!(windows) {
+            text.to_lowercase()
+        } else {
+            text.to_string()
+        }
+    };
+    normalize(a) == normalize(b)
 }

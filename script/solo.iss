@@ -62,6 +62,14 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "install.ps1"; Flags: igno
 Name: "{autoprograms}\Solo"; Filename: "{app}\solo.exe"
 Name: "{autodesktop}\Solo"; Filename: "{app}\solo.exe"; Tasks: desktopicon
 
+; Solo's own links (solo://settings/..., solo://skill?...), for this user;
+; removed on uninstall. zed:// is left to Zed.
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\solo"; ValueType: string; ValueName: ""; ValueData: "URL:Solo"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\solo"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\solo\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\solo.exe,0"
+Root: HKCU; Subkey: "Software\Classes\solo\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\solo.exe"" ""%1"""
+
 [Run]
 Filename: "{app}\solo.exe"; Description: "{cm:LaunchProgram,Solo}"; Flags: nowait postinstall skipifsilent
 ; Solo installs its updates silently, then starts again, unless it was

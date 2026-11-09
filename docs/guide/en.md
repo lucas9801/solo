@@ -118,10 +118,11 @@ you can:
 Snapshots are kept in Solo's data folder. They never touch your branch, HEAD,
 index, stash list or git object database, and ignored files aren't included.
 
-### Timeline (Claude Code)
+### Timeline (Claude Code, Codex)
 `terminal: show agent timeline` opens the session's timeline beside the
 terminal: each turn's prompt, the files read and changed, the commands run and
-the answer. It's read from Claude Code's own transcript (`~/.claude/projects/...`),
+the answer. It's read from the agent's own records (Claude Code's
+`~/.claude/projects/...`, Codex's `~/.codex/sessions/...`),
 which Solo only reads. If Solo picks the wrong session, use
 `terminal: choose agent session`.
 
@@ -226,7 +227,7 @@ with Solo as before, and closing a terminal's tab ends what runs in it.
 | Recognized as an agent (status, close confirmation, sending command blocks) | yes | yes | yes | yes |
 | Where the status comes from | hooks; exact | hooks; exact (Codex: after you trust them once) | its screen, with per-agent rules; may lag a moment | its output |
 | Per-turn review and roll back | yes | yes | yes, turns read from the screen | no |
-| Timeline, session title, token use | yes | no | no | no |
+| Timeline, session title, token use | yes | Codex: yes (its first prompt as the title); Copilot CLI: no | no | no |
 | Continue the session after a restart | yes (`--continue`) | yes (`codex resume --last`, `copilot --continue`) | yes, with each one's resume option (not qwen or amp) | no |
 | Agent tasks | the default command | set `agent_task_command` to it | same | same |
 
@@ -283,14 +284,20 @@ To treat another program as an agent:
   only happens when you create a task.
 - **Updates** are installed only when you choose to, by
   `solo-update-helper.exe` after Solo exits.
+- **`solo://` links:** the installer registers Solo for `solo://` links,
+  for your user only (`HKCU\Software\Classes\solo`), so a link copied from
+  the settings window opens in Solo. Uninstalling removes it. Solo doesn't
+  register `zed://`, which stays Zed's, but still opens such links passed to
+  it.
 - **Terminal hosts:** each terminal's shell runs in its own
   `solo-terminal-host.exe`, started from a copy in
-  `%LOCALAPPDATA%\Solo	erminal-host` (so updates can replace Solo's files
+  `%LOCALAPPDATA%\Solo\terminal-host` (so updates can replace Solo's files
   while one runs). It talks to Solo over named pipes only your user can open,
   and ends with its shell, with its tab, or with Solo unless something is
   running in it (see section 6).
-- Solo reads Claude Code's transcripts (`~/.claude/projects`) for the timeline
-  and session details. It never writes to them.
+- Solo reads Claude Code's transcripts (`~/.claude/projects`) and Codex's
+  sessions (`~/.codex/sessions`) for the timeline and session details. It
+  never writes to them.
 
 ## 9. Privacy and network
 
@@ -317,7 +324,7 @@ collaboration and Zed's own auto-update are off or hidden.
   the GitHub API;
 - browsing or installing extensions, and update checks for installed ones
   (none when no extension is installed): `api.zed.dev`, Zed's extension
-  service; the remote server for SSH remote development: `cloud.zed.dev`;
+  service;
 - no other Zed service: help links open this guide (a copy Solo carries
   and writes to its data folder, so it opens without a connection);
   signing in to an MCP server with OAuth uses dynamic client registration
@@ -328,6 +335,12 @@ collaboration and Zed's own auto-update are off or hidden.
   `cdn.agentclientprotocol.com` and the icon URLs the registry lists;
 - the agents you run in the terminal (Claude Code, Codex, ...) make their own
   connections, not through Solo.
+
+**No remote development yet:** SSH, WSL and Docker (dev container) remote
+development run a server on the remote side. Solo doesn't build its own yet,
+and Zed's servers have none matching Solo, so those entries are hidden, and
+using one says it isn't supported, without contacting Zed's servers. `ssh`
+and `wsl` in the terminal work as usual.
 
 ## 10. Troubleshooting
 
@@ -399,6 +412,7 @@ Solo's own settings, under `"terminal"`:
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
 | `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
+| `agent_usage_display` | `"always"` | a running agent's context and tokens in a bar at the bottom of its terminal and its context percentage on the tab; `"tooltip"` shows them only in the tab's tooltip |
 | `agent_commands` | `[]` | more programs to treat as agents |
 | `agent_task_command` | `"claude"` | what a new agent task runs |
 | `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |

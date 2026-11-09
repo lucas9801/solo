@@ -1904,6 +1904,10 @@ impl<T: EventListener> Handler for Term<T> {
                 self.event_proxy.send_event(Event::AgentHook(params));
                 return;
             },
+            [b"6974", b"replay-end"] => {
+                self.event_proxy.send_event(Event::ReplayEnd);
+                return;
+            },
             [b"777", b"notify", title, body @ ..] => {
                 self.event_proxy.send_event(Event::Notification {
                     title: Some(String::from_utf8_lossy(title).into_owned()),

@@ -110,7 +110,8 @@ fn agent_state(status: AgentStatus) -> AgentState {
         AgentStatus::Working => AgentState::Working,
         AgentStatus::NeedsInput => AgentState::NeedsInput,
         AgentStatus::Idle => AgentState::Idle,
-        AgentStatus::Finished | AgentStatus::Done => AgentState::Done,
+        AgentStatus::Finished => AgentState::Finished,
+        AgentStatus::Done => AgentState::Done,
         AgentStatus::Failed => AgentState::Failed,
     }
 }

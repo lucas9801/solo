@@ -794,8 +794,10 @@ pub fn is_agents_skills_path(path: &Path) -> bool {
     false
 }
 
-/// The `zed://` scheme used by share links.
-const SKILL_SHARE_LINK_SCHEME: &str = "zed";
+/// The scheme of share links: Solo's own (SOLO), which its installer
+/// registers. Links from Zed (`zed://`) are still read.
+const SKILL_SHARE_LINK_SCHEME: &str = "solo";
+const ZED_SKILL_SHARE_LINK_SCHEME: &str = "zed";
 /// The host (the part after `zed://`) that identifies a skill share link.
 const SKILL_SHARE_LINK_HOST: &str = "skill";
 /// The query parameter that carries the embedded `SKILL.md` payload.
@@ -828,7 +830,8 @@ pub fn decode_skill_share_link(link: &str) -> Result<String> {
     use base64::Engine as _;
     let url = Url::parse(link).context("skill share link is not a valid URL")?;
     anyhow::ensure!(
-        url.scheme() == SKILL_SHARE_LINK_SCHEME && url.host_str() == Some(SKILL_SHARE_LINK_HOST),
+        (url.scheme() == SKILL_SHARE_LINK_SCHEME || url.scheme() == ZED_SKILL_SHARE_LINK_SCHEME)
+            && url.host_str() == Some(SKILL_SHARE_LINK_HOST),
         "not a skill share link"
     );
     let data = url
@@ -2185,7 +2188,7 @@ description: A skill with no body content
             "---\nname: my-skill\ndescription: Does a thing.\n---\n\n## Steps\n\nDo the thing.\n";
         let link = encode_skill_share_link(content);
         let data = link
-            .strip_prefix("zed://skill?data=")
+            .strip_prefix("solo://skill?data=")
             .expect("link should start with the skill share prefix");
         // base64url (no-pad) output must not require percent-encoding.
         assert!(!data.contains('+') && !data.contains('/') && !data.contains('='));
