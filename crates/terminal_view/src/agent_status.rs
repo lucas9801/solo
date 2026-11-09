@@ -365,6 +365,8 @@ impl TerminalView {
             activity.reported_directory = hook.working_directory.clone();
         }
         let needs_input = hook.kind == AgentHookKind::NeedsInput;
+        // What the screen says now, to check the report against.
+        activity.screen_read_at = None;
         activity.hook = Some(HookReport {
             kind: hook.kind,
             received_at: Instant::now(),
@@ -657,6 +659,15 @@ impl TerminalView {
                     && screen_status == Some(AgentStatus::NeedsInput)
                 {
                     AgentStatus::NeedsInput
+                } else if status == AgentStatus::Idle
+                    && activity.screen_read
+                    && activity.screen.visible_working
+                    && screen_status == Some(AgentStatus::Working)
+                {
+                    // So does work plainly on screen ("esc to interrupt"):
+                    // a report or a quiet spell that said it stopped was about
+                    // something else.
+                    AgentStatus::Working
                 } else {
                     status
                 }

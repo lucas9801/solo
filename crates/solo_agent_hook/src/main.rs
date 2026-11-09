@@ -173,6 +173,9 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
         return from_argument();
     };
     let kind = match event_name {
+        // Claude Code starts its session again after compacting it, often
+        // in the middle of a turn that goes on: nothing to report.
+        "SessionStart" if field("source") == Some("compact") => None,
         "SessionStart" => Some("start"),
         "UserPromptSubmit" => Some("prompt"),
         "PermissionRequest" => Some("input"),
@@ -400,6 +403,11 @@ mod tests {
         assert_eq!(
             kind(r#"{"hook_event_name":"SessionStart","source":"startup"}"#),
             Some("start")
+        );
+        // After compacting, mid-turn.
+        assert_eq!(
+            kind(r#"{"hook_event_name":"SessionStart","source":"compact"}"#),
+            None
         );
         assert_eq!(
             kind(r#"{"session_id":"s","hook_event_name": "UserPromptSubmit","prompt":"hi"}"#),

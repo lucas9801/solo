@@ -48,6 +48,8 @@ pub(crate) struct ScreenReading {
     pub visible_blocker: bool,
     /// The screen plainly shows the agent waiting for a prompt.
     pub visible_idle: bool,
+    /// The screen plainly shows the agent at work.
+    pub visible_working: bool,
     /// When the screen first read as idle while the status was working.
     idle_since: Option<Instant>,
 }
@@ -103,6 +105,7 @@ fn next_reading(
         status: Some(status),
         visible_blocker: detection.visible_blocker,
         visible_idle: detection.visible_idle,
+        visible_working: detection.visible_working,
         idle_since: None,
     }
 }
