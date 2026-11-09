@@ -778,6 +778,8 @@ pub(crate) enum TerminalBackendEvent {
     Notification(Option<String>, String),
     /// The parameters of an agent hook report.
     AgentHook(Vec<String>),
+    /// SOLO: a terminal host's replay ended.
+    ReplayEnd,
 }
 
 impl fmt::Debug for TerminalBackendEvent {
@@ -799,6 +801,7 @@ impl fmt::Debug for TerminalBackendEvent {
             Self::ShellMark(mark, line) => write!(f, "ShellMark({mark:?}, {line})"),
             Self::Notification(title, body) => write!(f, "Notification({title:?}, {body:?})"),
             Self::AgentHook(params) => write!(f, "AgentHook({params:?})"),
+            Self::ReplayEnd => write!(f, "ReplayEnd"),
         }
     }
 }
@@ -1042,6 +1045,9 @@ fn is_interrupt(input: &[u8]) -> bool {
     matches!(input, b"\x1b" | b"\x03")
 }
 
+/// SOLO: how long a reconnected terminal host's replay may take at most.
+const REPLAY_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub const HOST_RECONNECT_ENV: &str = "SOLO_TERMINAL_HOST_RECONNECT";
 
 #[cfg(windows)]
@@ -1158,6 +1164,7 @@ impl TerminalBuilder {
             host: None,
             reconnected_to_host: false,
             host_failed: false,
+            replaying_until: None,
             cwd_history: Vec::new(),
             pending_cwd_boundary: None,
             #[cfg(any(test, feature = "test-support"))]
@@ -1506,6 +1513,7 @@ impl TerminalBuilder {
                 host: host_link,
                 reconnected_to_host,
                 host_failed,
+                replaying_until: reconnected_to_host.then(|| Instant::now() + REPLAY_TIMEOUT),
                 background_executor,
                 path_style,
                 cwd_history: if is_remote_terminal {
@@ -1722,6 +1730,10 @@ pub struct Terminal {
     /// SOLO: whether a terminal host was wanted but couldn't be started, so
     /// the terminal ends with Solo.
     host_failed: bool,
+    /// SOLO: until when a terminal host reconnected to may still be replaying
+    /// its output, whose queries mustn't be answered again; it says when it's
+    /// done (hosts from Solo 2.0.0 don't, hence the time).
+    replaying_until: Option<Instant>,
     cwd_history: Vec<CwdHistoryEntry>,
     pending_cwd_boundary: Option<i32>,
     #[cfg(any(test, feature = "test-support"))]
@@ -1831,6 +1843,15 @@ impl Terminal {
             TerminalBackendEvent::ClipboardStore(data) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(data))
             }
+            // SOLO: a replay's queries were answered when they were made.
+            TerminalBackendEvent::ClipboardLoad(_)
+            | TerminalBackendEvent::PtyWrite(_)
+            | TerminalBackendEvent::TextAreaSizeRequest(_)
+            | TerminalBackendEvent::ColorRequest(..)
+                if self.is_replaying() =>
+            {
+                log::debug!("not answering a query replayed by the terminal host");
+            }
             TerminalBackendEvent::ClipboardLoad(format) => {
                 self.write_to_pty(
                     match &cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -1909,6 +1930,7 @@ impl Terminal {
             TerminalBackendEvent::Notification(title, body) => {
                 cx.emit(Event::Notification { title, body });
             }
+            TerminalBackendEvent::ReplayEnd => self.replaying_until = None,
             TerminalBackendEvent::AgentHook(params) => {
                 match shell_integration::AgentHook::parse(&params) {
                     Some(hook) => {
@@ -1971,6 +1993,12 @@ impl Terminal {
     /// running, so its shell and output are already there.
     pub fn reconnected_to_host(&self) -> bool {
         self.reconnected_to_host
+    }
+
+    /// SOLO: whether a terminal host's replay may still be coming in.
+    fn is_replaying(&self) -> bool {
+        self.replaying_until
+            .is_some_and(|until| Instant::now() < until)
     }
 
     /// SOLO: whether this terminal should have kept running when Solo goes,
@@ -4679,6 +4707,33 @@ mod tests {
                 terminal.take_pty_write_log(),
                 vec![b"primary selection".to_vec()]
             );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_replayed_queries_are_not_answered(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        cx.run_until_parked();
+
+        // Reconnected to a terminal host, which replays a query for the
+        // terminal's type made long ago.
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.sync(window, cx);
+            terminal.take_pty_write_log();
+            terminal.replaying_until = Some(Instant::now() + REPLAY_TIMEOUT);
+            terminal.write_output(b"\x1b[c", cx);
+        });
+        cx.run_until_parked();
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.sync(window, cx);
+            assert!(terminal.take_pty_write_log().is_empty());
+            // The replay ends: queries are answered again.
+            terminal.write_output(b"\x1b]6974;replay-end\x07\x1b[c", cx);
+        });
+        cx.run_until_parked();
+        cx.update_window_entity(&terminal, |terminal, window, cx| {
+            terminal.sync(window, cx);
+            assert_eq!(terminal.take_pty_write_log(), vec![b"\x1b[?6c".to_vec()]);
         });
     }
 

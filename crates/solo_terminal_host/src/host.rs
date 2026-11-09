@@ -19,7 +19,7 @@ use windows_sys::Win32::System::LibraryLoader::*;
 use windows_sys::Win32::System::Pipes::*;
 use windows_sys::Win32::System::Threading::*;
 
-use crate::{HEADER, PROTOCOL, RING_CAPACITY, Spec};
+use crate::{HEADER, PROTOCOL, REPLAY_END, RING_CAPACITY, Spec};
 
 /// Only the user who made the pipes (Solo's user) may open them.
 const OWNER_ONLY: &str = "D:P(A;;GA;;;OW)";
@@ -465,7 +465,10 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes) {
         {
             let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
             let replay = shared.replay();
-            if out.write_all(header.as_bytes()).is_ok() && out.write_all(&replay).is_ok() {
+            if out.write_all(header.as_bytes()).is_ok()
+                && out.write_all(&replay).is_ok()
+                && out.write_all(REPLAY_END).is_ok()
+            {
                 shared.client = Some(out);
             }
         }
