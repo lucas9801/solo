@@ -449,8 +449,8 @@ fn check_unrelated_folders(window: &mut Window, cx: &mut Context<Workspace>) {
             return;
         }
         workspace
-            .update_in(cx, |_, window, cx| {
-                offer_split(cx.entity(), roots, unrelated, key, kvp, window, cx)
+            .update_in(cx, |workspace, window, cx| {
+                offer_split(workspace, roots, unrelated, key, kvp, window, cx)
             })
             .ok();
     })
@@ -464,7 +464,7 @@ fn folder_name(path: &Path) -> String {
 }
 
 fn offer_split(
-    workspace: Entity<Workspace>,
+    workspace: &mut Workspace,
     roots: Vec<Root>,
     unrelated: Vec<Root>,
     key: String,
@@ -493,9 +493,9 @@ fn offer_split(
     };
     let id = NotificationId::composite::<SplitWorkspaceNotification>((
         "split-workspace",
-        workspace.entity_id().as_u64() as usize,
+        cx.entity_id().as_u64() as usize,
     ));
-    workspace.update(cx, |workspace, cx| {
+    {
         workspace.show_notification(id, cx, |cx| {
             cx.new(|cx| {
                 MessageNotification::new(message, cx)
@@ -519,7 +519,7 @@ fn offer_split(
                     })
             })
         });
-    });
+    }
 }
 
 /// Splits `unrelated` off the active workspace of the window: each becomes
