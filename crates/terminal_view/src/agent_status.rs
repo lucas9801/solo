@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{Context, EventEmitter, Task, Window};
 use settings::Settings;
+use terminal::UserInput;
 use terminal::shell_integration::{AgentHook, AgentHookKind};
 use terminal::terminal_settings::TerminalSettings;
 use ui::{Color, IconName};
@@ -60,6 +61,9 @@ const SPINNER_STEP: Duration = Duration::from_millis(125);
 const SPINNER_STEPS_PER_TURN: u128 = 16;
 /// Notify when an agent stops after working at least this long in the background.
 pub(crate) const NOTIFY_AFTER_WORKING: Duration = Duration::from_secs(10);
+/// An agent's screen isn't read for this long after you scroll it: it shows
+/// its history then, not what it's doing.
+const SCROLL_HOLD: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentStatus {
@@ -155,20 +159,35 @@ fn supersedes(last_sent_at_ms: Option<u64>, sent_at_ms: Option<u64>) -> bool {
     }
 }
 
+/// The user input that can end what an agent reported through a hook without
+/// another report: answering its question (keys or a click), or interrupting
+/// a turn (Esc or Ctrl+C), which agents don't report. Scrolling, switching
+/// windows and resizing don't count, nor does typing the next prompt while
+/// it works.
+fn answer_to_hook(kind: AgentHookKind, user_input: UserInput) -> Option<Instant> {
+    match kind {
+        AgentHookKind::NeedsInput => user_input.typed_at,
+        AgentHookKind::PromptSubmitted => user_input.interrupted_at,
+        AgentHookKind::SessionStarted | AgentHookKind::Stopped | AgentHookKind::Idle => None,
+    }
+}
+
 /// What an agent that reports through hooks is doing, from its last report.
 ///
-/// Input after the report is the user answering a question (moving through
-/// its choices redraws it, which counts as echo), or pressing Esc, which ends
-/// a turn without a report. After that the agent works on only while it keeps
-/// drawing its spinner.
+/// An answer after the report (see [`answer_to_hook`]; moving through a
+/// question's choices redraws it, which counts as echo) ends it without a
+/// report. After that the agent works on only while it keeps drawing its
+/// spinner.
 fn status_from_hook(
     kind: AgentHookKind,
     reported_at: Instant,
     output_at: Option<Instant>,
-    last_input_at: Option<Instant>,
+    user_input: UserInput,
     now: Instant,
 ) -> AgentStatus {
-    let Some(input_at) = last_input_at.filter(|input_at| *input_at > reported_at) else {
+    let Some(input_at) =
+        answer_to_hook(kind, user_input).filter(|input_at| *input_at > reported_at)
+    else {
         return match kind {
             AgentHookKind::PromptSubmitted => AgentStatus::Working,
             AgentHookKind::NeedsInput => AgentStatus::NeedsInput,
@@ -198,15 +217,16 @@ fn status_from_hook(
 /// When a working agent's status should be looked at again if nothing else
 /// happens: once it's been quiet long enough to count as stopped.
 fn quiet_deadline(
-    hook_received_at: Option<Instant>,
+    hook: Option<(AgentHookKind, Instant)>,
     output_at: Option<Instant>,
-    last_input_at: Option<Instant>,
+    user_input: UserInput,
 ) -> Option<Instant> {
-    let last_sign = match hook_received_at {
+    let last_sign = match hook {
         None => output_at?,
-        // Only input after the report makes going quiet matter.
-        Some(reported_at) => {
-            let input_at = last_input_at.filter(|input_at| *input_at > reported_at)?;
+        // Only an answer after the report makes going quiet matter.
+        Some((kind, reported_at)) => {
+            let input_at =
+                answer_to_hook(kind, user_input).filter(|input_at| *input_at > reported_at)?;
             output_at.map_or(input_at, |output_at| output_at.max(input_at))
         }
     };
@@ -239,7 +259,7 @@ fn status_from(
     exit_code: Option<i32>,
     output_at: Option<Instant>,
     attention_at: Option<Instant>,
-    last_input_at: Option<Instant>,
+    typed_at: Option<Instant>,
     now: Instant,
 ) -> AgentStatus {
     if !running {
@@ -249,7 +269,7 @@ fn status_from(
         };
     }
     if let Some(attention_at) = attention_at
-        && last_input_at.is_none_or(|input_at| input_at < attention_at)
+        && typed_at.is_none_or(|typed_at| typed_at < attention_at)
         && output_at.is_none_or(|output_at| output_at <= attention_at + Duration::from_secs(1))
     {
         return AgentStatus::NeedsInput;
@@ -257,6 +277,20 @@ fn status_from(
     match output_at {
         Some(output_at) if now.duration_since(output_at) < QUIET_AFTER => AgentStatus::Working,
         _ => AgentStatus::Idle,
+    }
+}
+
+impl AgentActivity {
+    /// Whether the agent's stop is one it reported through a hook, or its
+    /// screen plainly shows an idle prompt.
+    fn stop_confirmed(&self) -> bool {
+        match self.hook {
+            Some(hook) => matches!(
+                hook.kind,
+                AgentHookKind::Stopped | AgentHookKind::Idle | AgentHookKind::SessionStarted
+            ),
+            None => self.screen_read && self.screen.visible_idle,
+        }
     }
 }
 
@@ -413,7 +447,11 @@ impl TerminalView {
                 self.agent_activity.working_since = None;
             }
             self.agent_activity.status = status;
-            if let Some(worked_for) = worked_for {
+            // Only a stop the agent reported, or its screen plainly shows: one
+            // that's only inferred from quiet may be wrong.
+            if let Some(worked_for) = worked_for
+                && self.agent_activity.stop_confirmed()
+            {
                 self.notify_agent_stopped(worked_for, window, cx);
             }
             cx.emit(ItemEvent::UpdateTab);
@@ -444,9 +482,11 @@ impl TerminalView {
         // Look again once it has been quiet for long enough.
         let deadline = match new {
             Some(AgentStatus::Working) => quiet_deadline(
-                self.agent_activity.hook.map(|hook| hook.received_at),
+                self.agent_activity
+                    .hook
+                    .map(|hook| (hook.kind, hook.received_at)),
                 self.agent_activity.output_at,
-                self.terminal.read(cx).last_sent_to_pty(),
+                self.terminal.read(cx).user_input(),
             ),
             _ => None,
         };
@@ -459,8 +499,16 @@ impl TerminalView {
                 .zip(self.agent_activity.screen_read_at)
                 .filter(|(output_at, read_at)| output_at >= read_at)
                 .map(|(output_at, _)| output_at + SCREEN_SETTLE);
+            let after_scrolling = self
+                .terminal
+                .read(cx)
+                .user_input()
+                .scrolled_at
+                .map(|scrolled_at| scrolled_at + SCROLL_HOLD)
+                .filter(|at| *at > now);
             [
                 after_output,
+                after_scrolling,
                 agent_detection::recheck_at(&self.agent_activity.screen),
             ]
             .into_iter()
@@ -506,7 +554,7 @@ impl TerminalView {
     ) -> Option<(String, AgentStatus)> {
         let extra = &TerminalSettings::get_global(cx).agent_commands;
         let terminal = self.terminal.read(cx);
-        let last_input_at = terminal.last_sent_to_pty();
+        let user_input = terminal.user_input();
         let activity = &mut self.agent_activity;
         let block = terminal
             .shell_integration()
@@ -561,7 +609,12 @@ impl TerminalView {
             let due = activity
                 .screen_read_at
                 .is_none_or(|read_at| now.duration_since(read_at) >= SCREEN_READ_INTERVAL);
-            if due {
+            // A screen you just scrolled shows the agent's history: keep what
+            // it said before, unless it's the first reading of this run.
+            let scrolled = user_input
+                .scrolled_at
+                .is_some_and(|scrolled_at| now.duration_since(scrolled_at) < SCROLL_HOLD);
+            if due && !(scrolled && activity.screen_read) {
                 let program = command_program(block.and_then(|block| block.command.as_deref()))
                     .unwrap_or_else(|| name.to_lowercase());
                 activity.screen_read =
@@ -580,7 +633,7 @@ impl TerminalView {
                     hook.kind,
                     hook.received_at,
                     activity.output_at,
-                    last_input_at,
+                    user_input,
                     now,
                 );
                 // A question plainly on screen wins over what the hook said.
@@ -599,7 +652,7 @@ impl TerminalView {
                 exit_code,
                 activity.output_at,
                 activity.attention_at,
-                last_input_at,
+                user_input.typed_at,
                 now,
             ),
         };
@@ -710,6 +763,21 @@ mod tests {
         );
     }
 
+    fn typed(at: Instant) -> UserInput {
+        UserInput {
+            typed_at: Some(at),
+            ..UserInput::default()
+        }
+    }
+
+    fn interrupted(at: Instant) -> UserInput {
+        UserInput {
+            typed_at: Some(at),
+            interrupted_at: Some(at),
+            ..UserInput::default()
+        }
+    }
+
     #[test]
     fn test_status_from_hook() {
         use AgentHookKind::*;
@@ -717,74 +785,122 @@ mod tests {
         let at = |secs: u64| start + Duration::from_secs(secs);
         // Each report decides, however long the agent has been quiet.
         assert_eq!(
-            status_from_hook(PromptSubmitted, at(10), None, Some(at(9)), at(100)),
+            status_from_hook(PromptSubmitted, at(10), None, typed(at(9)), at(100)),
             AgentStatus::Working
         );
         assert_eq!(
-            status_from_hook(NeedsInput, at(10), Some(at(50)), Some(at(9)), at(100)),
+            status_from_hook(NeedsInput, at(10), Some(at(50)), typed(at(9)), at(100)),
             AgentStatus::NeedsInput
         );
         for kind in [SessionStarted, Stopped, Idle] {
             // Output after the report (redraws, the user typing) changes nothing.
             assert_eq!(
-                status_from_hook(kind, at(10), Some(at(99)), Some(at(99)), at(100)),
+                status_from_hook(kind, at(10), Some(at(99)), interrupted(at(99)), at(100)),
                 AgentStatus::Idle
             );
         }
         // Choosing, or turned down: nothing drawn since but echo.
         assert_eq!(
-            status_from_hook(NeedsInput, at(10), Some(at(15)), Some(at(20)), at(40)),
+            status_from_hook(NeedsInput, at(10), Some(at(15)), typed(at(20)), at(40)),
             AgentStatus::NeedsInput
         );
         assert_eq!(
-            status_from_hook(NeedsInput, at(10), None, Some(at(20)), at(40)),
+            status_from_hook(NeedsInput, at(10), None, typed(at(20)), at(40)),
             AgentStatus::NeedsInput
         );
         // Answered: working while it keeps drawing, then interrupted.
         assert_eq!(
-            status_from_hook(NeedsInput, at(10), Some(at(21)), Some(at(20)), at(22)),
+            status_from_hook(NeedsInput, at(10), Some(at(21)), typed(at(20)), at(22)),
             AgentStatus::Working
         );
         assert_eq!(
-            status_from_hook(NeedsInput, at(10), Some(at(30)), Some(at(20)), at(32)),
+            status_from_hook(NeedsInput, at(10), Some(at(30)), typed(at(20)), at(32)),
             AgentStatus::Working
         );
         assert_eq!(
-            status_from_hook(NeedsInput, at(10), Some(at(30)), Some(at(20)), at(34)),
+            status_from_hook(NeedsInput, at(10), Some(at(30)), typed(at(20)), at(34)),
             AgentStatus::Idle
         );
         // Esc during a turn: no Stop report, but the spinner stops.
         assert_eq!(
-            status_from_hook(PromptSubmitted, at(10), Some(at(19)), Some(at(20)), at(22)),
+            status_from_hook(
+                PromptSubmitted,
+                at(10),
+                Some(at(19)),
+                interrupted(at(20)),
+                at(22)
+            ),
             AgentStatus::Working
         );
         assert_eq!(
-            status_from_hook(PromptSubmitted, at(10), Some(at(19)), Some(at(20)), at(24)),
+            status_from_hook(
+                PromptSubmitted,
+                at(10),
+                Some(at(19)),
+                interrupted(at(20)),
+                at(24)
+            ),
             AgentStatus::Idle
         );
     }
 
     #[test]
+    fn test_scrolling_and_typing_dont_end_a_turn() {
+        use AgentHookKind::*;
+        let start = Instant::now();
+        let at = |secs: u64| start + Duration::from_secs(secs);
+        // Scrolling the agent's screen (which may stop it redrawing) and
+        // switching windows during a turn: still working, however quiet.
+        let scrolled = UserInput {
+            scrolled_at: Some(at(20)),
+            ..UserInput::default()
+        };
+        assert_eq!(
+            status_from_hook(PromptSubmitted, at(10), Some(at(19)), scrolled, at(60)),
+            AgentStatus::Working
+        );
+        assert_eq!(
+            quiet_deadline(Some((PromptSubmitted, at(10))), Some(at(19)), scrolled),
+            None
+        );
+        // Typing the next prompt while it works.
+        assert_eq!(
+            status_from_hook(PromptSubmitted, at(10), Some(at(19)), typed(at(20)), at(60)),
+            AgentStatus::Working
+        );
+        // Scrolling doesn't answer a question either.
+        assert_eq!(
+            status_from_hook(NeedsInput, at(10), Some(at(21)), scrolled, at(60)),
+            AgentStatus::NeedsInput
+        );
+    }
+
+    #[test]
     fn test_quiet_deadline() {
+        use AgentHookKind::*;
         let start = Instant::now();
         let at = |secs: u64| start + Duration::from_secs(secs);
         // Without reports, by output alone.
         assert_eq!(
-            quiet_deadline(None, Some(at(10)), Some(at(20))),
+            quiet_deadline(None, Some(at(10)), typed(at(20))),
             Some(at(13))
         );
-        assert_eq!(quiet_deadline(None, None, Some(at(20))), None);
-        // With reports, only after input since the last one.
+        assert_eq!(quiet_deadline(None, None, typed(at(20))), None);
+        // With reports, only after an answer since the last one.
         assert_eq!(
-            quiet_deadline(Some(at(10)), Some(at(30)), Some(at(5))),
+            quiet_deadline(Some((NeedsInput, at(10))), Some(at(30)), typed(at(5))),
             None
         );
         assert_eq!(
-            quiet_deadline(Some(at(10)), Some(at(30)), Some(at(20))),
+            quiet_deadline(Some((NeedsInput, at(10))), Some(at(30)), typed(at(20))),
             Some(at(33))
         );
         assert_eq!(
-            quiet_deadline(Some(at(10)), None, Some(at(20))),
+            quiet_deadline(Some((NeedsInput, at(10))), None, typed(at(20))),
+            Some(at(23))
+        );
+        assert_eq!(
+            quiet_deadline(Some((PromptSubmitted, at(10))), None, interrupted(at(20))),
             Some(at(23))
         );
     }

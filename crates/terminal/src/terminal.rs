@@ -1023,6 +1023,25 @@ impl TerminalMode {
 /// SOLO: the environment variable that has a terminal connect to the terminal
 /// host on this pipe (see [`Terminal::host_pipe`]) instead of starting a
 /// shell; Solo sets it when it restores a terminal. It isn't passed on.
+/// SOLO: what the user last did to the program running in the terminal, as
+/// opposed to what Solo sends on its own (focus reports, a new size), so an
+/// agent's status can tell an answer or an interruption from the user
+/// scrolling or switching windows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UserInput {
+    /// Keys, a paste or a click.
+    pub typed_at: Option<Instant>,
+    /// Esc or Ctrl+C, which interrupt agents.
+    pub interrupted_at: Option<Instant>,
+    /// The wheel, scrolling the program's own screen.
+    pub scrolled_at: Option<Instant>,
+}
+
+/// SOLO: whether `input` is Esc or Ctrl+C on its own, as keys send them.
+fn is_interrupt(input: &[u8]) -> bool {
+    matches!(input, b"\x1b" | b"\x03")
+}
+
 pub const HOST_RECONNECT_ENV: &str = "SOLO_TERMINAL_HOST_RECONNECT";
 
 #[cfg(windows)]
@@ -1129,6 +1148,7 @@ impl TerminalBuilder {
             child_exited: None,
             keyboard_input_sent: false,
             last_sent_to_pty: StdCell::new(None),
+            user_input: StdCell::new(UserInput::default()),
             init_command_startup_marker: None,
             init_command_startup_tx: None,
             event_loop_task: Task::ready(Ok(())),
@@ -1137,6 +1157,7 @@ impl TerminalBuilder {
             shell_integration: ShellIntegration::default(),
             host: None,
             reconnected_to_host: false,
+            host_failed: false,
             cwd_history: Vec::new(),
             pending_cwd_boundary: None,
             #[cfg(any(test, feature = "test-support"))]
@@ -1214,6 +1235,8 @@ impl TerminalBuilder {
             let mut host_link: HostLinkField = None;
             #[cfg_attr(not(windows), allow(unused_mut))]
             let mut reconnected_to_host = false;
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut host_failed = false;
 
             // If the parent environment doesn't have a locale set
             // (As is the case when launched from a .app on MacOS),
@@ -1390,7 +1413,10 @@ impl TerminalBuilder {
                         reconnected_to_host = reconnected;
                         Ok(connected.pty)
                     }
-                    None => open_pty(&pty_options, TerminalBounds::default(), window_id),
+                    None => {
+                        host_failed = use_host && task.is_none() && !is_remote_terminal;
+                        open_pty(&pty_options, TerminalBounds::default(), window_id)
+                    }
                 };
                 #[cfg(not(windows))]
                 let pty = open_pty(&pty_options, TerminalBounds::default(), window_id);
@@ -1472,12 +1498,14 @@ impl TerminalBuilder {
                 child_exited: None,
                 keyboard_input_sent: false,
                 last_sent_to_pty: StdCell::new(None),
+                user_input: StdCell::new(UserInput::default()),
                 init_command_startup_marker: None,
                 init_command_startup_tx: None,
                 event_loop_task: Task::ready(Ok(())),
                 shell_integration: ShellIntegration::new(shell_nonce).with_terminal_id(terminal_id),
                 host: host_link,
                 reconnected_to_host,
+                host_failed,
                 background_executor,
                 path_style,
                 cwd_history: if is_remote_terminal {
@@ -1679,6 +1707,8 @@ pub struct Terminal {
     /// SOLO: when anything (keys, mouse, focus, a resize) last went to the
     /// program, which usually answers by redrawing.
     last_sent_to_pty: StdCell<Option<Instant>>,
+    /// SOLO: what of that came from the user, see [`UserInput`].
+    user_input: StdCell<UserInput>,
     init_command_startup_marker: Option<String>,
     init_command_startup_tx: Option<Sender<()>>,
     event_loop_task: Task<Result<(), anyhow::Error>>,
@@ -1689,6 +1719,9 @@ pub struct Terminal {
     host: HostLinkField,
     /// SOLO: whether the console is one an earlier Solo left running.
     reconnected_to_host: bool,
+    /// SOLO: whether a terminal host was wanted but couldn't be started, so
+    /// the terminal ends with Solo.
+    host_failed: bool,
     cwd_history: Vec<CwdHistoryEntry>,
     pending_cwd_boundary: Option<i32>,
     #[cfg(any(test, feature = "test-support"))]
@@ -1938,6 +1971,12 @@ impl Terminal {
     /// running, so its shell and output are already there.
     pub fn reconnected_to_host(&self) -> bool {
         self.reconnected_to_host
+    }
+
+    /// SOLO: whether this terminal should have kept running when Solo goes,
+    /// but its terminal host couldn't be started.
+    pub fn host_failed(&self) -> bool {
+        self.host_failed
     }
 
     /// SOLO: whether the terminal's host (and what runs in it) keeps running
@@ -2744,6 +2783,12 @@ impl Terminal {
 
     fn write_input(&mut self, input: impl Into<Cow<'static, [u8]>>) {
         let input = input.into();
+        self.note_user_input(|user_input, now| {
+            user_input.typed_at = Some(now);
+            if is_interrupt(&input) {
+                user_input.interrupted_at = Some(now);
+            }
+        });
         if !self.is_remote_terminal && input.contains(&b'\r') {
             let term = self.term.lock_unfair();
             self.pending_cwd_boundary = Some(Self::scrollback_position(
@@ -2774,6 +2819,17 @@ impl Terminal {
     /// so output right after it can be told apart from output of its own.
     pub fn last_sent_to_pty(&self) -> Option<Instant> {
         self.last_sent_to_pty.get()
+    }
+
+    /// SOLO: when the user last typed, interrupted or scrolled the program.
+    pub fn user_input(&self) -> UserInput {
+        self.user_input.get()
+    }
+
+    fn note_user_input(&self, note: impl FnOnce(&mut UserInput, Instant)) {
+        let mut user_input = self.user_input.get();
+        note(&mut user_input, Instant::now());
+        self.user_input.set(user_input);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -3233,6 +3289,8 @@ impl Terminal {
                 mouse_button_report(point, e.button, e.modifiers, true, self.last_content.mode);
 
             if let Some(bytes) = bytes {
+                // A click in the program, say picking one of its choices.
+                self.note_user_input(|user_input, now| user_input.typed_at = Some(now));
                 self.write_to_pty(bytes);
             }
         } else {
@@ -3388,6 +3446,7 @@ impl Terminal {
 
                 if let Some(scrolls) = scroll_report(point, scroll_lines, e, self.last_content.mode)
                 {
+                    self.note_user_input(|user_input, now| user_input.scrolled_at = Some(now));
                     for scroll in scrolls {
                         self.write_to_pty(scroll);
                     }
@@ -3399,6 +3458,7 @@ impl Terminal {
                     .contains(Modes::ALT_SCREEN | Modes::ALTERNATE_SCROLL)
                 && !e.shift
             {
+                self.note_user_input(|user_input, now| user_input.scrolled_at = Some(now));
                 self.write_to_pty(alt_scroll(scroll_lines));
             } else {
                 self.events

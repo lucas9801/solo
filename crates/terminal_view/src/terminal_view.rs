@@ -1398,10 +1398,7 @@ impl TerminalView {
     fn update_keep_running(&self, cx: &App) {
         let terminal = self.terminal.read(cx);
         let keep = self.agent_status().is_some()
-            || matches!(
-                running_program::running_command(terminal),
-                Some((_, true))
-            );
+            || matches!(running_program::running_command(terminal), Some((_, true)));
         terminal.keep_running_after_quit(keep);
     }
 
@@ -1952,6 +1949,8 @@ impl Item for TerminalView {
     }
 
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent> {
+        const HOST_FAILED: &str =
+            "Ends when Solo quits: its background process couldn't be started";
         Some(TabTooltipContent::Custom(Box::new(Tooltip::element({
             let terminal = self.terminal().read(cx);
             let title = self.smart_title(0, false, cx);
@@ -1960,6 +1959,7 @@ impl Item for TerminalView {
                 .agent_status()
                 .map(|(name, status)| format!("{name} · {}", status.label()));
             let details = self.title_details(cx);
+            let host_failed = terminal.host_failed();
 
             move |_, _| {
                 v_flex()
@@ -1967,6 +1967,14 @@ impl Item for TerminalView {
                     .child(Label::new(title.clone()))
                     .when_some(agent_status.clone(), |this, agent_status| {
                         this.child(Label::new(agent_status).size(LabelSize::Small))
+                    })
+                    // SOLO: see `Terminal::host_failed`.
+                    .when(host_failed, |this| {
+                        this.child(
+                            Label::new(HOST_FAILED)
+                                .color(Color::Warning)
+                                .size(LabelSize::Small),
+                        )
                     })
                     .children(details.iter().map(|detail| {
                         Label::new(detail.clone())
@@ -2103,6 +2111,14 @@ impl Item for TerminalView {
                         )
                     }),
             )
+            // SOLO: a terminal that won't outlive Solo though it should.
+            .when(terminal.host_failed(), |this| {
+                this.child(
+                    Icon::new(IconName::Warning)
+                        .size(IconSize::XSmall)
+                        .color(Color::Warning),
+                )
+            })
             .children(agent_turns::render_tab_entry(self, cx))
             .into_any()
     }

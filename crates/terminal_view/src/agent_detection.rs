@@ -46,6 +46,8 @@ pub(crate) struct ScreenReading {
     pub status: Option<AgentStatus>,
     /// The screen plainly shows a question or a permission prompt.
     pub visible_blocker: bool,
+    /// The screen plainly shows the agent waiting for a prompt.
+    pub visible_idle: bool,
     /// When the screen first read as idle while the status was working.
     idle_since: Option<Instant>,
 }
@@ -100,6 +102,7 @@ fn next_reading(
     ScreenReading {
         status: Some(status),
         visible_blocker: detection.visible_blocker,
+        visible_idle: detection.visible_idle,
         idle_since: None,
     }
 }
