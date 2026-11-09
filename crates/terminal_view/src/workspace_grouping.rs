@@ -8,7 +8,11 @@
 //!   workspace held all of a window's terminals, move once to their
 //!   repository's tab, which opens in the background if it isn't open.
 //! - When a terminal's shell shows its prompt in a project another tab has,
-//!   Solo offers to move the terminal there.
+//!   Solo offers to move the terminal there. A folder in several tabs
+//!   belongs to the one it's the first folder of.
+//! - A workspace holding unrelated projects (several repositories, say from
+//!   when following the terminal added folders) is offered to be split into
+//!   a tab each, once; its terminals go with their folders.
 //!
 //! Neither happens while `terminal.follow_working_directory` is on: then one
 //! workspace follows its terminals instead.
@@ -66,6 +70,13 @@ struct OpeningWorkspaces(HashMap<PathBuf, Shared<Task<Option<Entity<Workspace>>>
 impl Global for OpeningWorkspaces {}
 
 struct MoveTerminalNotification;
+struct SplitWorkspaceNotification;
+
+/// Prefix of the keys remembering the workspaces kept together.
+const KEPT_TOGETHER_KEY: &str = "solo_workspace_kept_together:";
+/// How long after a workspace opens its folders are looked at, so its
+/// worktrees are there.
+const SPLIT_CHECK_DELAY: Duration = Duration::from_secs(5);
 
 pub(crate) fn init(cx: &mut App) {
     if cx.has_global::<db::AppDatabase>() {
@@ -93,6 +104,13 @@ pub(crate) fn init(cx: &mut App) {
         .detach();
     }
 
+    cx.observe_new(|_: &mut Workspace, window, cx| {
+        if let Some(window) = window {
+            check_unrelated_folders(window, cx);
+        }
+    })
+    .detach();
+
     cx.observe_new(|view: &mut TerminalView, window, cx| {
         let Some(window) = window else {
             return;
@@ -116,23 +134,27 @@ struct Root {
 }
 
 /// How well `roots` fit `directory` in `repository`: the more path
-/// components the matching folder or repository has, the better. `None` when
-/// none fit.
+/// components the matching folder or repository has, the better; between
+/// equals, the workspace whose first folder it is. `None` when none fit.
 fn fit(roots: &[Root], directory: &Path, repository: Option<&Path>) -> Option<usize> {
     let directory = comparable(directory);
     let repository = repository.map(comparable);
     roots
         .iter()
-        .filter_map(|root| {
+        .enumerate()
+        .filter_map(|(ix, root)| {
+            let first = usize::from(ix == 0);
             let path = comparable(&root.path);
             if directory.starts_with(&path) {
-                Some(path.components().count())
+                Some(path.components().count() * 2 + first)
             } else {
                 let root_repository = root.repository.as_deref().map(comparable);
                 (repository.is_some() && root_repository == repository).then(|| {
                     repository
                         .as_ref()
                         .map_or(0, |path| path.components().count())
+                        * 2
+                        + first
                 })
             }
         })
@@ -348,6 +370,231 @@ fn prompt_started(view: &mut TerminalView, window: &mut Window, cx: &mut Context
         .ok();
     })
     .detach();
+}
+
+/// The folders of `roots` unrelated to the first one: neither in it nor in
+/// its repository, nor in a repository another of them is in.
+fn unrelated_roots(roots: &[Root]) -> Vec<Root> {
+    let Some((first, rest)) = roots.split_first() else {
+        return Vec::new();
+    };
+    let first_path = comparable(&first.path);
+    let first_repository = first.repository.as_deref().map(comparable);
+    rest.iter()
+        .filter(|root| {
+            let path = comparable(&root.path);
+            let repository = root.repository.as_deref().map(comparable);
+            !path.starts_with(&first_path)
+                && !first_path.starts_with(&path)
+                && (repository.is_none() || repository != first_repository)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Offers, once, to split a workspace whose folders are unrelated projects
+/// into a tab each.
+fn check_unrelated_folders(window: &mut Window, cx: &mut Context<Workspace>) {
+    if !cx.has_global::<db::AppDatabase>() || !cx.has_global::<SettingsStore>() {
+        return;
+    }
+    let kvp = KeyValueStore::global(cx);
+    cx.spawn_in(window, async move |workspace, cx| {
+        cx.background_executor().timer(SPLIT_CHECK_DELAY).await;
+        let Some((fs, paths)) = workspace
+            .update(cx, |workspace, cx| {
+                if TerminalSettings::get_global(cx).follow_working_directory {
+                    return None;
+                }
+                let project = workspace.project().read(cx);
+                if !project.is_local() {
+                    return None;
+                }
+                let paths: Vec<PathBuf> = project
+                    .visible_worktrees(cx)
+                    .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+                    .collect();
+                (paths.len() > 1).then(|| (project.fs().clone(), paths))
+            })
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        let home = paths::home_dir().clone();
+        let roots = roots_of(fs.as_ref(), paths.clone(), &home).await;
+        let unrelated = unrelated_roots(&roots);
+        if unrelated.is_empty() {
+            return;
+        }
+        let key = format!(
+            "{KEPT_TOGETHER_KEY}{}",
+            paths
+                .iter()
+                .map(|path| comparable(path).to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("|")
+        );
+        let kept = cx
+            .background_spawn({
+                let kvp = kvp.clone();
+                let key = key.clone();
+                async move { kvp.read_kvp(&key) }
+            })
+            .await
+            .log_err()
+            .flatten()
+            .is_some();
+        if kept {
+            return;
+        }
+        workspace
+            .update_in(cx, |_, window, cx| {
+                offer_split(cx.entity(), roots, unrelated, key, kvp, window, cx)
+            })
+            .ok();
+    })
+    .detach();
+}
+
+fn folder_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+fn offer_split(
+    workspace: Entity<Workspace>,
+    roots: Vec<Root>,
+    unrelated: Vec<Root>,
+    key: String,
+    kvp: KeyValueStore,
+    _window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let all = roots
+        .iter()
+        .map(|root| folder_name(&root.path))
+        .collect::<Vec<_>>()
+        .join(util::i18n::tr(", ", "、"));
+    let split = unrelated
+        .iter()
+        .map(|root| folder_name(&root.path))
+        .collect::<Vec<_>>()
+        .join(util::i18n::tr(", ", "、"));
+    let message = if util::i18n::is_chinese() {
+        format!(
+            "这个工作区里有互不相关的项目：{all}。要把 {split} 拆成各自的工作区标签吗？它们的终端会一起移过去，正在运行的程序不受影响。"
+        )
+    } else {
+        format!(
+            "This workspace holds unrelated projects: {all}. Split {split} into workspace tabs of their own? Their terminals go with them, and what runs in them carries on."
+        )
+    };
+    let id = NotificationId::composite::<SplitWorkspaceNotification>((
+        "split-workspace",
+        workspace.entity_id().as_u64() as usize,
+    ));
+    workspace.update(cx, |workspace, cx| {
+        workspace.show_notification(id, cx, |cx| {
+            cx.new(|cx| {
+                MessageNotification::new(message, cx)
+                    .primary_message(util::i18n::tr("Split", "拆分"))
+                    .primary_on_click({
+                        let unrelated = unrelated.clone();
+                        move |window, cx| {
+                            split_workspace_now(&unrelated, window, cx);
+                            cx.emit(DismissEvent);
+                        }
+                    })
+                    .secondary_message(util::i18n::tr("Keep Together", "保持现状"))
+                    .secondary_on_click(move |_, cx| {
+                        let kvp = kvp.clone();
+                        let key = key.clone();
+                        cx.background_spawn(async move {
+                            kvp.write_kvp(key, "1".to_string()).await.log_err();
+                        })
+                        .detach();
+                        cx.emit(DismissEvent);
+                    })
+            })
+        });
+    });
+}
+
+/// Splits `unrelated` off the active workspace of the window: each becomes
+/// a tab of its own (or joins the tab it's the first folder of), with the
+/// terminals in it.
+fn split_workspace_now(unrelated: &[Root], window: &mut Window, cx: &mut App) {
+    let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() else {
+        return;
+    };
+    let workspace = multi_workspace.read(cx).workspace().clone();
+    let views = crate::command_blocks::terminal_views(&workspace, cx);
+    let groups = multi_workspace.read(cx).project_groups(cx);
+    for root in unrelated {
+        let path = comparable(&root.path);
+        // The tab it's the first folder of, if there is one.
+        let existing = groups.iter().find(|group| {
+            !group.workspaces.contains(&workspace)
+                && group
+                    .key
+                    .path_list()
+                    .ordered_paths()
+                    .next()
+                    .is_some_and(|first| comparable(first) == path)
+        });
+        let destination = match existing {
+            Some(group) => Destination {
+                workspace: multi_workspace
+                    .read(cx)
+                    .last_active_workspace_for_group(&group.key, cx)
+                    .or_else(|| group.workspaces.first().cloned()),
+                paths: group.key.path_list().ordered_paths().cloned().collect(),
+                key: Some(group.key.clone()),
+            },
+            None => Destination {
+                key: None,
+                paths: vec![root.path.clone()],
+                workspace: None,
+            },
+        };
+        // Its terminals: those whose directory is in it.
+        let moving: Vec<Entity<TerminalView>> = views
+            .iter()
+            .filter(|view| {
+                follow_working_directory::terminal_directory(view.read(cx).terminal.read(cx))
+                    .is_some_and(|directory| comparable(&directory).starts_with(&path))
+            })
+            .cloned()
+            .collect();
+        if moving.is_empty() {
+            let opening = destination_workspace(&multi_workspace, &destination, false, window, cx);
+            cx.background_spawn(opening).detach();
+        }
+        for view in moving {
+            move_terminal(
+                view,
+                multi_workspace.clone(),
+                destination.clone(),
+                false,
+                window,
+                cx,
+            );
+        }
+        // The folder leaves this workspace.
+        workspace.update(cx, |workspace, cx| {
+            workspace.project().update(cx, |project, cx| {
+                let worktree = project
+                    .visible_worktrees(cx)
+                    .find(|worktree| comparable(&worktree.read(cx).abs_path()) == path)
+                    .map(|worktree| worktree.read(cx).id());
+                if let Some(worktree) = worktree {
+                    project.remove_worktree(worktree, cx);
+                }
+            })
+        });
+    }
 }
 
 /// Offers to move the terminal of `view` to `destination`, in a notification.
@@ -567,6 +814,69 @@ mod tests {
             path: PathBuf::from(path),
             repository: repository.map(PathBuf::from),
         }
+    }
+
+    #[test]
+    fn test_a_folder_belongs_to_the_tab_it_comes_first_in() {
+        // Dragon_Art's workspace also holds godot_engine; godot_engine has a
+        // tab of its own.
+        let mixed = vec![
+            root("/repos/dragon_art", Some("/repos/dragon_art")),
+            root("/repos/godot", Some("/repos/godot")),
+        ];
+        let godot = vec![root("/repos/godot", Some("/repos/godot"))];
+        let repository = Some(Path::new("/repos/godot"));
+        assert_eq!(
+            better_fit(
+                &mixed,
+                std::slice::from_ref(&godot),
+                Path::new("/repos/godot/src"),
+                repository
+            ),
+            Some(0)
+        );
+        // And stays there.
+        assert_eq!(
+            better_fit(
+                &godot,
+                std::slice::from_ref(&mixed),
+                Path::new("/repos/godot/src"),
+                repository
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_unrelated_roots() {
+        let paths = |roots: Vec<Root>| -> Vec<PathBuf> {
+            unrelated_roots(&roots)
+                .into_iter()
+                .map(|root| root.path)
+                .collect()
+        };
+        // Three repositories: the last two are unrelated to the first.
+        assert_eq!(
+            paths(vec![
+                root("/work/player", Some("/work/dnvfx")),
+                root("/work/dragon_art", Some("/work/dragon_art")),
+                root("/work/godot", Some("/work/godot")),
+            ]),
+            [
+                PathBuf::from("/work/dragon_art"),
+                PathBuf::from("/work/godot")
+            ]
+        );
+        // A folder of the same repository, or inside the first: related.
+        assert!(
+            paths(vec![
+                root("/work/solo", Some("/work/solo")),
+                root("/work/solo-task", Some("/work/solo")),
+                root("/work/solo/docs", Some("/work/solo")),
+            ])
+            .is_empty()
+        );
+        assert!(paths(vec![root("/work/solo", None)]).is_empty());
     }
 
     #[test]
