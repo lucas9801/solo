@@ -191,7 +191,10 @@ pub fn init(cx: &mut App) {
 /// Hides or shows the panel layout actions in the command palette based on
 /// whether AI is currently disabled.
 fn update_layout_action_filter(cx: &mut App) {
-    let disable_ai = project::DisableAiSettings::get_global(cx).disable_ai;
+    // SOLO: the layouts are about where the agent panel goes, which Solo
+    // doesn't have.
+    let disable_ai = project::DisableAiSettings::get_global(cx).disable_ai
+        || project::AgentPanelRemoved::is_set(cx);
     let layout_actions = [
         TypeId::of::<UseClassicLayout>(),
         TypeId::of::<UseAgenticLayout>(),
@@ -1355,7 +1358,9 @@ impl TitleBar {
                 let user_store = user_store.clone();
                 let workspace = workspace.clone();
 
-                let ai_enabled = !project::DisableAiSettings::get_global(cx).disable_ai;
+                // SOLO: no "Panel Layout"; it places the agent panel.
+                let ai_enabled = !project::DisableAiSettings::get_global(cx).disable_ai
+                    && !project::AgentPanelRemoved::is_set(cx);
                 let current_layout = AgentSettings::get_layout(cx);
                 let is_editor = matches!(current_layout, WindowLayout::Editor(_));
                 let is_agent = matches!(current_layout, WindowLayout::Agent(_));

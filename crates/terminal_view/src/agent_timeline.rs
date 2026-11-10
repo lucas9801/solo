@@ -524,7 +524,14 @@ impl TerminalView {
             });
             return;
         }
-        AgentTimeline::open(cx.entity(), workspace, window, cx);
+        // This view is being updated here, so the timeline can't read it, and
+        // splitting or switching tabs, which can call back into it, waits
+        // until the update is over.
+        let root = self.terminal.read(cx).working_directory();
+        let terminal_view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            AgentTimeline::open(terminal_view, root, workspace, window, cx);
+        });
     }
 }
 
@@ -558,6 +565,7 @@ pub(crate) struct AgentTimeline {
 impl AgentTimeline {
     fn open(
         terminal_view: Entity<TerminalView>,
+        root: Option<PathBuf>,
         workspace: Entity<Workspace>,
         window: &mut Window,
         cx: &mut App,
@@ -574,7 +582,7 @@ impl AgentTimeline {
             let languages = Some(workspace.project().read(cx).languages().clone());
             let workspace_handle = cx.weak_entity();
             let timeline = cx.new(|cx| {
-                AgentTimeline::new(terminal_view, workspace_handle, languages, window, cx)
+                AgentTimeline::new(terminal_view, root, workspace_handle, languages, window, cx)
             });
             // Beside the terminal, to watch both as the agent works.
             if workspace.active_pane().read(cx).items_len() == 0 {
@@ -587,6 +595,7 @@ impl AgentTimeline {
 
     fn new(
         terminal_view: Entity<TerminalView>,
+        root: Option<PathBuf>,
         workspace: WeakEntity<Workspace>,
         languages: Option<Arc<LanguageRegistry>>,
         window: &mut Window,
@@ -609,11 +618,6 @@ impl AgentTimeline {
         });
         let list_state = ListState::new(0, ListAlignment::Top, px(1000.));
         list_state.set_follow_mode(FollowMode::Tail);
-        let root = terminal_view
-            .read(cx)
-            .terminal()
-            .read(cx)
-            .working_directory();
         let mut this = Self {
             terminal_id: terminal_view.entity_id(),
             terminal_view: terminal_view.downgrade(),
@@ -1733,6 +1737,53 @@ mod tests {
                 path: PathBuf::from("notes.md"),
                 line: None
             }
+        );
+    }
+
+    /// Choosing "Agent Timeline" in a terminal's tab menu dispatches the
+    /// action to the terminal view itself, while it's being updated.
+    #[gpui::test]
+    async fn test_show_agent_timeline_from_the_terminal(cx: &mut gpui::TestAppContext) {
+        let (project, workspace, window_handle) = crate::tests::init_test_with_window(cx).await;
+        let (terminal_pane, terminal, terminal_view) =
+            crate::tests::add_display_only_terminal(&project, window_handle, true, false, cx);
+        let cx = &mut gpui::VisualTestContext::from_window(window_handle.into(), cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(
+                b"\x1b]133;A\x07$ \x1b]133;B\x07claude\r\n\x1b]633;E;claude\x07\x1b]133;C\x07",
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert!(terminal_view.read_with(cx, |view, cx| view.has_run_agent(cx)));
+
+        let timelines = |cx: &mut gpui::VisualTestContext| {
+            workspace.read_with(cx, |workspace, cx| {
+                workspace.items_of_type::<AgentTimeline>(cx).count()
+            })
+        };
+        cx.dispatch_action(ShowAgentTimeline);
+        cx.run_until_parked();
+        assert_eq!(timelines(cx), 1);
+        let timeline_pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        assert_ne!(timeline_pane, terminal_pane, "opens beside the terminal");
+
+        // Again from the terminal: switches to the open timeline.
+        cx.update(|window, cx| {
+            let focus_handle = terminal_view.read(cx).focus_handle.clone();
+            window.focus(&focus_handle, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(cx, |workspace, _| workspace.active_pane().clone()),
+            terminal_pane
+        );
+        cx.dispatch_action(ShowAgentTimeline);
+        cx.run_until_parked();
+        assert_eq!(timelines(cx), 1);
+        assert_eq!(
+            workspace.read_with(cx, |workspace, _| workspace.active_pane().clone()),
+            timeline_pane
         );
     }
 }

@@ -1455,7 +1455,7 @@ impl<T: FollowableItem> WeakFollowableItemHandle for WeakEntity<T> {
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test {
-    use super::{Item, ItemEvent, SerializableItem, TabContentParams};
+    use super::{Item, ItemEvent, RunningProgram, SerializableItem, TabContentParams};
     use crate::{
         ItemId, ItemNavHistory, Workspace, WorkspaceId,
         item::{ItemBufferKind, SaveOptions},
@@ -1496,6 +1496,9 @@ pub mod test {
         serialize: Option<Box<dyn Fn() -> Option<Task<anyhow::Result<()>>>>>,
         focus_handle: gpui::FocusHandle,
         pub child_focus_handles: Vec<gpui::FocusHandle>,
+        /// SOLO: what [`Item::running_program`] reports, e.g. an agent in a
+        /// terminal.
+        pub running_program: Option<RunningProgram>,
     }
 
     impl project::ProjectItem for TestProjectItem {
@@ -1590,6 +1593,7 @@ pub mod test {
                 focus_handle: cx.focus_handle(),
                 serialize: None,
                 child_focus_handles: Vec::new(),
+                running_program: None,
             }
         }
 
@@ -1647,6 +1651,14 @@ pub mod test {
             self
         }
 
+        pub fn with_running_program(mut self, name: &str) -> Self {
+            self.running_program = Some(RunningProgram {
+                name: SharedString::from(name.to_string()),
+                status: None,
+            });
+            self
+        }
+
         pub fn with_child_focus_handles(mut self, count: usize, cx: &mut Context<Self>) -> Self {
             self.child_focus_handles = (0..count).map(|_| cx.focus_handle()).collect();
             self
@@ -1688,6 +1700,10 @@ pub mod test {
 
         fn to_item_events(event: &Self::Event, f: &mut dyn FnMut(ItemEvent)) {
             f(*event)
+        }
+
+        fn running_program(&self, _: &App) -> Option<RunningProgram> {
+            self.running_program.clone()
         }
 
         fn tab_content_text(&self, detail: usize, _cx: &App) -> SharedString {
@@ -1794,6 +1810,7 @@ pub mod test {
                         .iter()
                         .map(|_| cx.focus_handle())
                         .collect(),
+                    running_program: None,
                 }
             })))
         }

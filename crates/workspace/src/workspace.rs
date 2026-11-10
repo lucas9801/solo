@@ -4725,11 +4725,14 @@ impl Workspace {
         dock.update(cx, |dock, cx| {
             dock.set_open(!was_visible, window, cx);
 
-            if dock.active_panel().is_none() {
+            // SOLO: nor does it show a disabled panel (e.g. Solo's agent
+            // panel), and stays closed when it has nothing else to show.
+            if dock.active_panel().is_none_or(|panel| !panel.enabled(cx)) {
                 let Some(panel_ix) = dock
                     .first_enabled_panel_idx(cx)
                     .log_with_level(log::Level::Info)
                 else {
+                    dock.set_open(false, window, cx);
                     return;
                 };
                 dock.activate_panel(panel_ix, window, cx);
@@ -4909,7 +4912,7 @@ impl Workspace {
     ) -> Option<Arc<dyn PanelHandle>> {
         let mut panel = None;
         for dock in self.all_docks() {
-            if let Some(panel_index) = dock.read(cx).panel_index_for_proto_id(panel_id) {
+            if let Some(panel_index) = dock.read(cx).panel_index_for_proto_id(panel_id, cx) {
                 panel = dock.update(cx, |dock, cx| {
                     dock.activate_panel(panel_index, window, cx);
                     dock.set_open(true, window, cx);
@@ -4937,7 +4940,7 @@ impl Workspace {
         let mut result_panel = None;
         let mut serialize = false;
         for dock in self.all_docks() {
-            if let Some(panel_index) = dock.read(cx).panel_index_for_type::<T>() {
+            if let Some(panel_index) = dock.read(cx).panel_index_for_type::<T>(cx) {
                 let mut focus_center = false;
                 let panel = dock.update(cx, |dock, cx| {
                     dock.activate_panel(panel_index, window, cx);
@@ -4976,7 +4979,7 @@ impl Workspace {
     /// Open the panel of the given type
     pub fn open_panel<T: Panel>(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for dock in self.all_docks() {
-            if let Some(panel_index) = dock.read(cx).panel_index_for_type::<T>() {
+            if let Some(panel_index) = dock.read(cx).panel_index_for_type::<T>(cx) {
                 dock.update(cx, |dock, cx| {
                     dock.activate_panel(panel_index, window, cx);
                     dock.set_open(true, window, cx);
@@ -4990,7 +4993,7 @@ impl Workspace {
     pub fn reveal_panel<T: Panel>(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dock_position = self.all_docks().iter().find_map(|dock| {
             let dock = dock.read(cx);
-            dock.panel_index_for_type::<T>().map(|_| dock.position())
+            dock.panel_index_for_type::<T>(cx).map(|_| dock.position())
         });
         self.dismiss_zoomed_items_to_reveal(dock_position, window, cx);
         self.open_panel::<T>(window, cx);
@@ -15215,6 +15218,89 @@ mod tests {
         });
     }
 
+    /// SOLO: a disabled panel (Solo's agent panel) is never shown, however
+    /// it's asked for, and isn't restored.
+    #[gpui::test]
+    async fn test_disabled_panel_is_never_shown(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let right_dock = workspace.read_with(cx, |workspace, _| workspace.right_dock().clone());
+        right_dock.update_in(cx, |dock, window, cx| {
+            dock.restore_serialized_state(
+                DockData {
+                    visible: true,
+                    active_panel: Some("TestPanel".to_string()),
+                    zoom: false,
+                },
+                window,
+                cx,
+            );
+        });
+        let panel = workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| TestPanel {
+                enabled: false,
+                ..TestPanel::new(DockPosition::Right, 100, cx)
+            });
+            workspace.add_panel(panel.clone(), window, cx);
+            panel
+        });
+        cx.run_until_parked();
+        let assert_hidden = |cx: &mut VisualTestContext| {
+            right_dock.read_with(cx, |dock, _| {
+                assert!(!dock.is_open(), "the right dock stays closed");
+                assert!(dock.active_panel().is_none());
+            });
+        };
+        assert_hidden(cx);
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(workspace.focus_panel::<TestPanel>(window, cx).is_none());
+            workspace.toggle_panel_focus::<TestPanel>(window, cx);
+            workspace.open_panel::<TestPanel>(window, cx);
+            workspace.reveal_panel::<TestPanel>(window, cx);
+            workspace.toggle_dock(DockPosition::Right, window, cx);
+        });
+        assert_hidden(cx);
+        panel.update(cx, |_, cx| cx.emit(PanelEvent::Activate));
+        cx.run_until_parked();
+        assert_hidden(cx);
+        // It's still there, for what uses it without showing it.
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.panel::<TestPanel>(cx).is_some());
+        });
+    }
+
+    /// SOLO: an open side dock whose panel has no button gets one to close
+    /// the dock.
+    #[gpui::test]
+    async fn test_side_dock_without_panel_button_gets_close_button(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            // `TestPanel` has no button.
+            let panel = cx.new(|cx| TestPanel::new(DockPosition::Right, 100, cx));
+            workspace.add_panel(panel, window, cx);
+        });
+        let right_dock = workspace.read_with(cx, |workspace, _| workspace.right_dock().clone());
+        right_dock.update_in(cx, |dock, window, cx| {
+            assert!(!dock.needs_close_button(window, cx), "closed");
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.focus_panel::<TestPanel>(window, cx);
+        });
+        right_dock.update_in(cx, |dock, window, cx| {
+            assert!(dock.is_open());
+            assert!(dock.needs_close_button(window, cx));
+        });
+    }
+
     #[gpui::test]
     async fn test_toggle_docks_and_panels(cx: &mut gpui::TestAppContext) {
         init_test(cx);
@@ -21163,6 +21249,223 @@ mod tests {
             assert!(!workspace.bottom_dock().read(cx).is_open());
             assert_eq!(workspace.zoomed_position, None);
         });
+    }
+
+    // SOLO: the terminal-first layout keeps the bottom dock for the terminal.
+    fn set_bottom_dock_layout(layout: BottomDockLayout, cx: &mut VisualTestContext) {
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.bottom_dock_layout = Some(layout);
+                });
+            });
+        });
+    }
+
+    /// Switches to the terminal-first layout (the tests' settings use
+    /// "contained") and adds a terminal panel, shown in the bottom dock.
+    fn add_fake_terminal_panel(
+        workspace: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<FakeTerminalPanel> {
+        set_bottom_dock_layout(BottomDockLayout::TerminalFirst, cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| FakeTerminalPanel {
+                focus_handle: cx.focus_handle(),
+            });
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.bottom_dock().update(cx, |dock, cx| {
+                let ix = dock
+                    .panel_index_for_type::<FakeTerminalPanel>(cx)
+                    .expect("terminal panel in the bottom dock");
+                dock.set_open(true, window, cx);
+                dock.activate_panel(ix, window, cx);
+            });
+            panel
+        })
+    }
+
+    fn bottom_dock_shows(
+        workspace: &Entity<Workspace>,
+        panel_id: EntityId,
+        cx: &mut VisualTestContext,
+    ) -> bool {
+        workspace.read_with(cx, |workspace, cx| {
+            let dock = workspace.bottom_dock().read(cx);
+            dock.is_open() && dock.visible_panel().map(|panel| panel.panel_id()) == Some(panel_id)
+        })
+    }
+
+    #[gpui::test]
+    async fn test_terminal_first_layout_keeps_bottom_dock_for_terminal(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let terminal = add_fake_terminal_panel(&workspace, cx);
+        // Like the debug panel set to "bottom".
+        let other = workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| TestPanel::new(DockPosition::Bottom, 100, cx));
+            workspace.add_panel(panel.clone(), window, cx);
+            panel
+        });
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .right_dock()
+                    .read(cx)
+                    .panel::<TestPanel>()
+                    .is_some()
+            );
+            assert!(
+                workspace
+                    .bottom_dock()
+                    .read(cx)
+                    .panel::<TestPanel>()
+                    .is_none()
+            );
+        });
+
+        // Opening it leaves the terminal in the main column.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_panel_focus::<TestPanel>(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(bottom_dock_shows(&workspace, terminal.entity_id(), cx));
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.right_dock().read(cx).is_open());
+        });
+
+        // Closing it leaves the terminal open.
+        other.update(cx, |_, cx| cx.emit(PanelEvent::Close));
+        cx.run_until_parked();
+        assert!(bottom_dock_shows(&workspace, terminal.entity_id(), cx));
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(!workspace.right_dock().read(cx).is_open());
+        });
+
+        // Its "next position" skips the bottom.
+        workspace.update_in(cx, |workspace, window, cx| {
+            let panel = workspace
+                .right_dock()
+                .read(cx)
+                .panel::<TestPanel>()
+                .unwrap();
+            PanelHandle::move_to_next_position(&panel, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            other.read_with(cx, |panel, _| panel.position),
+            DockPosition::Left
+        );
+
+        // In other layouts the bottom dock is open to any panel.
+        set_bottom_dock_layout(BottomDockLayout::Contained, cx);
+        other.update_in(cx, |panel, window, cx| {
+            panel.set_position(DockPosition::Bottom, window, cx)
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .bottom_dock()
+                    .read(cx)
+                    .panel::<TestPanel>()
+                    .is_some()
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_closing_other_panel_in_terminal_column_shows_terminal(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let terminal = add_fake_terminal_panel(&workspace, cx);
+        // A panel that got into the bottom dock anyway.
+        let other = workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| TestPanel::new(DockPosition::Bottom, 100, cx));
+            let weak_workspace = workspace.weak_handle();
+            workspace.bottom_dock().update(cx, |dock, cx| {
+                let ix = dock.add_panel(panel.clone(), weak_workspace, window, cx);
+                dock.activate_panel(ix, window, cx);
+            });
+            panel
+        });
+        assert!(bottom_dock_shows(&workspace, other.entity_id(), cx));
+
+        other.update(cx, |_, cx| cx.emit(PanelEvent::Close));
+        cx.run_until_parked();
+        assert!(bottom_dock_shows(&workspace, terminal.entity_id(), cx));
+    }
+
+    struct FakeTerminalPanel {
+        focus_handle: FocusHandle,
+    }
+
+    impl EventEmitter<PanelEvent> for FakeTerminalPanel {}
+
+    impl Focusable for FakeTerminalPanel {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl Render for FakeTerminalPanel {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("fake-terminal-panel")
+                .track_focus(&self.focus_handle(cx))
+        }
+    }
+
+    impl Panel for FakeTerminalPanel {
+        fn persistent_name() -> &'static str {
+            "TerminalPanel"
+        }
+
+        fn panel_key() -> &'static str {
+            dock::TERMINAL_PANEL_KEY
+        }
+
+        fn position(&self, _: &Window, _: &App) -> DockPosition {
+            DockPosition::Bottom
+        }
+
+        fn position_is_valid(&self, _: DockPosition) -> bool {
+            true
+        }
+
+        fn set_position(&mut self, _: DockPosition, _: &mut Window, _: &mut Context<Self>) {}
+
+        fn default_size(&self, _: &Window, _: &App) -> Pixels {
+            px(300.)
+        }
+
+        fn icon(&self, _: &Window, _: &App) -> Option<ui::IconName> {
+            None
+        }
+
+        fn icon_tooltip(&self, _: &Window, _: &App) -> Option<&'static str> {
+            None
+        }
+
+        fn toggle_action(&self) -> Box<dyn Action> {
+            ToggleSecondTestPanel.boxed_clone()
+        }
+
+        fn activation_priority(&self) -> u32 {
+            50
+        }
     }
 
     actions!(test_only, [ToggleSecondTestPanel]);

@@ -145,7 +145,7 @@ rules for that agent. Solo reads them when it starts.
 Solo's settings live in `%APPDATA%\Solo` (Windows), apart from Zed's. Its own
 terminal settings, under `"terminal"`: `shell_integration`, `input_editor`,
 `compact_prompt`, `completions_as_you_type`, `open_links_on_click`,
-`open_changed_files`, `notify_long_commands_after_seconds`,
+`notify_long_commands_after_seconds`,
 `program_notifications`, `restore_contents`, `agent_commands`,
 `claude_code_hooks`, `codex_hooks`, `copilot_hooks`, `follow_working_directory`, `confirm_close`,
 `agent_task_command`.
@@ -196,11 +196,15 @@ To release a version, with Inno Setup and the [GitHub CLI](https://cli.github.co
 signed in (`gh auth login`):
 
 ```powershell
-script\release-solo.ps1 [-Version 1.2.3] [-Notes "What's new"] [-Draft]
+script\release-solo.ps1 -NotesFile notes.md [-Version 1.2.3] [-Draft]
 ```
 
-It raises the patch version unless given one, builds the installer and zip,
-commits and tags the version, pushes, and creates the GitHub release with them.
+The notes start with a one-sentence summary in Chinese, then the same in
+English, plain text; the update notification shows the one in Solo's language.
+It raises the patch version unless given one, commits the version, builds the
+installer and zip from that commit, checks solo.exe was built from it, tags it,
+pushes, and creates the GitHub release with them. If building fails, the
+version commit and the tag are undone.
 
 ## Credits and licensing
 

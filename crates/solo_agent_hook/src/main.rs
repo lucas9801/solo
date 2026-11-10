@@ -49,7 +49,15 @@ fn main() {
     };
     let session_id = session_id_of(&input).unwrap_or_default();
     let agent = agent.filter(|agent| is_agent_name(agent));
-    let sequence = match (agent, working_directory_of(&input)) {
+    // Claude Code runs its hooks without `--agent`.
+    let project_directory = agent
+        .is_none()
+        .then(|| std::env::var("CLAUDE_PROJECT_DIR").ok())
+        .flatten();
+    let sequence = match (
+        agent,
+        working_directory_of(&input, project_directory.as_deref()),
+    ) {
         (agent, Some(directory)) => format!(
             "\x1b]6973;agent;{kind};{sent_at_ms};{session_id};{};{directory}\x07",
             agent.unwrap_or_default()
@@ -211,9 +219,19 @@ fn session_id_of(input: &str) -> Option<String> {
         .then(|| session_id.to_string())
 }
 
-/// Where the agent works, from the hook's `cwd` (Claude Code, Codex and
-/// Copilot CLI give it), percent-encoded for the escape sequence.
-fn working_directory_of(input: &str) -> Option<String> {
+/// Where the agent works, percent-encoded for the escape sequence: Claude
+/// Code's project directory (`CLAUDE_PROJECT_DIR`, where the session started),
+/// or else the hook's `cwd` (Claude Code, Codex and Copilot CLI give it).
+///
+/// Claude Code's `cwd` follows a `cd` in its Bash tool, so after one it would
+/// name a subdirectory; its project directory stays put.
+fn working_directory_of(input: &str, project_directory: Option<&str>) -> Option<String> {
+    let project_directory = project_directory
+        .map(str::trim)
+        .filter(|directory| !directory.is_empty());
+    if let Some(directory) = project_directory {
+        return Some(percent_encode(directory));
+    }
     let event = serde_json::from_str::<serde_json::Value>(input).ok()?;
     let directory = event.get("cwd")?.as_str()?.trim();
     (!directory.is_empty()).then(|| percent_encode(directory))
@@ -340,11 +358,30 @@ mod tests {
     fn working_directory_is_encoded() {
         let input = r#"{"hook_event_name":"UserPromptSubmit","cwd":"G:\\Git\\龙 x;%"}"#;
         assert_eq!(
-            working_directory_of(input).as_deref(),
+            working_directory_of(input, None).as_deref(),
             Some(r"G:\Git\%E9%BE%99 x%3B%25")
         );
-        assert_eq!(working_directory_of(r#"{"cwd":"  "}"#), None);
-        assert_eq!(working_directory_of("{}"), None);
+        assert_eq!(working_directory_of(r#"{"cwd":"  "}"#, None), None);
+        assert_eq!(working_directory_of("{}", None), None);
+    }
+
+    #[test]
+    fn claude_code_project_directory_outlasts_a_cd() {
+        // After `cd src` in Claude Code's Bash tool, the hook's cwd is the
+        // subdirectory; CLAUDE_PROJECT_DIR is still where the session started.
+        let input = r#"{"hook_event_name":"UserPromptSubmit","cwd":"G:\\Git\\app\\src"}"#;
+        assert_eq!(
+            working_directory_of(input, Some(r"G:\Git\app")).as_deref(),
+            Some(r"G:\Git\app")
+        );
+        assert_eq!(
+            working_directory_of(input, Some(" ")).as_deref(),
+            Some(r"G:\Git\app\src")
+        );
+        assert_eq!(
+            working_directory_of("{}", Some(r"G:\Git\app")).as_deref(),
+            Some(r"G:\Git\app")
+        );
     }
 
     #[test]

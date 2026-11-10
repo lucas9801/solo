@@ -290,6 +290,8 @@ fn main() {
             zlog::init_output_stdout();
         };
     }
+    // SOLO: log every panic, crash handler or not.
+    crashes::install_panic_logger();
     ztracing::init();
 
     // SOLO: the user guide's pages, so help links open them offline.
@@ -477,6 +479,9 @@ fn main() {
 
     app.run(move |cx| {
         cx.set_global(app_db);
+        // SOLO: no agent panel; agents run in terminals. Set before anything
+        // that reads it starts.
+        cx.set_global(project::AgentPanelRemoved);
         let db_trusted_paths = match workspace::WorkspaceDb::global(cx).fetch_trusted_worktrees() {
             Ok(trusted_paths) => trusted_paths,
             Err(e) => {

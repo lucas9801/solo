@@ -2077,7 +2077,8 @@ impl Sidebar {
         let Some(multi_workspace) = self.multi_workspace.upgrade() else {
             return;
         };
-        if !multi_workspace.read(cx).multi_workspace_enabled(cx) {
+        // SOLO: workspace tabs stay when AI is off; only the sidebar goes.
+        if !multi_workspace.read(cx).sidebar_enabled(cx) {
             return;
         }
 

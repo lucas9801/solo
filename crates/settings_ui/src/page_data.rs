@@ -1184,6 +1184,10 @@ fn appearance_page() -> SettingsPage {
         ]
     }
 
+    #[allow(
+        dead_code,
+        reason = "SOLO: Solo has no agent panel; kept for upstream merges"
+    )]
     fn agent_panel_font_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SectionHeader("Agent Panel Font"),
@@ -1676,7 +1680,7 @@ fn appearance_page() -> SettingsPage {
         theme_section(),
         buffer_font_section(),
         ui_font_section(),
-        agent_panel_font_section(),
+        // SOLO: Solo has no agent panel.
         markdown_preview_font_section(),
         mermaid_font_section(),
         text_rendering_section(),
@@ -6549,7 +6553,7 @@ fn panels_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Git Panel Dock",
-                description: "Where to dock the Git panel.",
+                description: "Where to dock the Git panel. In the terminal-first layout the bottom dock is the terminal's, so Bottom puts it on the right.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("git_panel.dock"),
@@ -6894,7 +6898,7 @@ fn panels_page() -> SettingsPage {
             SettingsPageItem::SectionHeader("Debugger Panel"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Debugger Panel Dock",
-                description: "The dock position of the debug panel.",
+                description: "The dock position of the debug panel. In the terminal-first layout the bottom dock is the terminal's, so Bottom puts it on the right.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("debugger.dock"),
@@ -6984,6 +6988,10 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
+    #[allow(
+        dead_code,
+        reason = "SOLO: Solo has no agent panel; kept for upstream merges"
+    )]
     fn agent_panel_section() -> [SettingsPageItem; 7] {
         [
             SettingsPageItem::SectionHeader("Agent Panel"),
@@ -7003,7 +7011,7 @@ fn panels_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Agent Panel Dock",
-                description: "Where to dock the agent panel.",
+                description: "Where to dock the agent panel. In the terminal-first layout the bottom dock is the terminal's, so Bottom puts it on the right.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("agent.dock"),
@@ -7130,8 +7138,7 @@ fn panels_page() -> SettingsPage {
             outline_panel_section(),
             git_panel_section(),
             debugger_panel_section(),
-            // SOLO: Solo has no collaboration.
-            agent_panel_section(),
+            // SOLO: Solo has no collaboration, nor an agent panel.
         ],
     }
 }
@@ -9380,13 +9387,26 @@ fn ai_page(cx: &App) -> SettingsPage {
         title: "AI",
         items: concat_sections!(
             @vec,
-            general_section(),
+            without_threads_sidebar(general_section()),
             agent_configuration_section(cx),
             edit_prediction_language_settings_section(),
             edit_prediction_display_sub_section(),
         )
         .into(),
     }
+}
+
+/// SOLO: Solo has no agent panel, nor Zed's threads sidebar, which holds it.
+fn without_threads_sidebar(
+    items: impl IntoIterator<Item = SettingsPageItem>,
+) -> Vec<SettingsPageItem> {
+    items
+        .into_iter()
+        .filter(|item| {
+            !matches!(item, SettingsPageItem::SettingItem(setting)
+                if setting.field.json_path().is_some_and(|path| path.starts_with("agent.threads_sidebar")))
+        })
+        .collect()
 }
 
 fn network_page() -> SettingsPage {

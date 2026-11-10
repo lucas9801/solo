@@ -288,9 +288,10 @@
   "use_system_path_prompts": true,
   // Whether to use the system provided dialogs for prompts, such as confirmation
   // prompts.
-  // When set to false, Solo will use its built-in prompts. Note that on Linux,
-  // this option is ignored and Solo will always use the built-in prompts.
-  "use_system_prompts": true,
+  // When set to false, Solo will use its built-in prompts, which follow the
+  // theme and the interface language. Note that on Linux, this option is
+  // ignored and Solo will always use the built-in prompts.
+  "use_system_prompts": false,
   // Whether the cursor blinks in the editor.
   "cursor_blink": true,
   // Cursor shape for the default editor.
@@ -2253,10 +2254,6 @@
     // Most terminal themes have APCA values of 40-70.
     // A value of 45 preserves colorful themes while ensuring legibility.
     "minimum_contrast": 45,
-    // Open files in the editor when they change on disk while a command runs in
-    // the focused terminal, e.g. files edited by an AI agent. Needs shell
-    // integration to know when a command runs.
-    "open_changed_files": true,
     // Type commands in an editor at the bottom of the terminal while the shell
     // waits at its prompt, with completions (Tab) and history suggestions.
     // Needs shell integration.
@@ -3091,7 +3088,10 @@
     "stepping_granularity": "line",
     "save_breakpoints": true,
     "timeout": 2000,
-    "dock": "bottom",
+    // Where to dock the debug panel: "left", "right" or "bottom". In the
+    // terminal-first layout ("bottom_dock_layout") the bottom dock is the
+    // terminal's, so a panel set to "bottom" goes to the right instead.
+    "dock": "right",
     "log_dap_communications": true,
     "format_dap_log_messages": true,
     "button": false,

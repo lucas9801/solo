@@ -1,9 +1,7 @@
 use gpui::{App, Menu, MenuItem, OsAction};
-use project::DisableAiSettings;
 use release_channel::ReleaseChannel;
-use settings::Settings;
 use terminal_view::terminal_panel;
-use zed_actions::{Quit, assistant, debug_panel, dev, git_panel, project_panel};
+use zed_actions::{Quit, debug_panel, dev, git_panel, project_panel};
 
 pub fn app_menus(cx: &mut App) -> Vec<Menu> {
     let mut view_items = vec![
@@ -44,11 +42,8 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
         // SOLO: no "Collab Panel"; calls and channels are Zed's hosted services.
         MenuItem::action("Terminal Panel", terminal_panel::Toggle),
         MenuItem::action("Debugger Panel", debug_panel::ToggleFocus),
+        // SOLO: no "Agent Panel"; Solo runs agents in terminals.
     ];
-
-    if !DisableAiSettings::get_global(cx).disable_ai {
-        view_items.push(MenuItem::action("Agent Panel", assistant::ToggleFocus));
-    }
 
     view_items.extend([
         MenuItem::action("Git Panel", git_panel::ToggleFocus),
@@ -306,21 +301,19 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                     "View Release Notes Locally",
                     auto_update_ui::ViewReleaseNotesLocally,
                 ),
-                MenuItem::action("View Telemetry", zed_actions::OpenTelemetryLog),
+                // SOLO: no "View Telemetry": Solo sends none (it would go to Zed),
+                // so the log is empty unless telemetry is turned on in settings;
+                // the command palette still has it.
                 MenuItem::action("View Dependency Licenses", zed_actions::OpenLicenses),
                 MenuItem::action("Show Welcome", onboarding::ShowWelcome),
                 MenuItem::separator(),
                 MenuItem::action("File Bug Report...", zed_actions::feedback::FileBugReport),
                 MenuItem::action("Request Feature...", zed_actions::feedback::RequestFeature),
                 MenuItem::separator(),
-                // SOLO: Solo's documentation and repository; Zed's email,
+                // SOLO: Solo's documentation (the user guide on this computer, in
+                // the interface's language) and repository; Zed's email,
                 // Twitter and jobs links aren't Solo's.
-                MenuItem::action(
-                    "Documentation",
-                    super::OpenBrowser {
-                        url: "https://github.com/lucas9801/solo#readme".into(),
-                    },
-                ),
+                MenuItem::action("Documentation", zed_actions::OpenDocs),
                 MenuItem::action("Solo Repository", feedback::OpenRepository),
             ],
         },

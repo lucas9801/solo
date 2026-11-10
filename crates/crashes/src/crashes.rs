@@ -40,6 +40,41 @@ pub fn force_backtrace() {
     }));
 }
 
+/// SOLO: writes every panic to the log, with its thread, location, message
+/// and backtrace, and flushes the log, before the hook installed before it
+/// runs. Without a crash handler nothing else records a panic: a windowed
+/// build's stderr goes nowhere. [`init`] keeps this hook when it installs its
+/// own.
+pub fn install_panic_logger() {
+    let previous_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        let thread = thread::current();
+        let report = panic_report(
+            thread.name().unwrap_or("<unnamed>"),
+            info.location(),
+            info.payload_as_str().unwrap_or("Box<Any>"),
+            &std::backtrace::Backtrace::force_capture(),
+        );
+        log::error!("{report}");
+        log::logger().flush();
+        previous_hook(info);
+    }));
+}
+
+/// What [`install_panic_logger`] logs for a panic.
+fn panic_report(
+    thread_name: &str,
+    location: Option<&Location>,
+    message: &str,
+    backtrace: &dyn std::fmt::Display,
+) -> String {
+    let message = strip_user_string_from_panic(message);
+    let location = location.map_or_else(|| "<unknown>".to_owned(), |location| location.to_string());
+    format!(
+        "thread '{thread_name}' panicked at {location}:\n{message}\nstack backtrace:\n{backtrace}"
+    )
+}
+
 /// Install crash signal handlers and spawn the crash-handler subprocess.
 ///
 /// All work happens lazily in the returned future, so it runs on whichever
@@ -91,9 +126,12 @@ where
     };
     let client = Arc::new(client);
 
+    // SOLO: keep the hook installed before, such as the one logging panics.
+    let previous_hook = panic::take_hook();
     panic::set_hook({
         let client = client.clone();
         Box::new(move |payload| {
+            previous_hook(payload);
             panic_hook(
                 client.clone(),
                 payload.payload_as_str().unwrap_or("Box<Any>"),
@@ -745,6 +783,39 @@ pub fn crash_server(socket: &Path, logs_dir: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_report_has_thread_location_message_and_backtrace() {
+        let location = Location::caller();
+        let report = panic_report(
+            "main",
+            Some(location),
+            "cannot read TerminalView while it is already being updated",
+            &"   0: solo::main\n",
+        );
+        assert_eq!(
+            report,
+            format!(
+                "thread 'main' panicked at {location}:\n\
+                 cannot read TerminalView while it is already being updated\n\
+                 stack backtrace:\n   0: solo::main\n"
+            )
+        );
+        assert!(report.contains("crashes.rs:"));
+    }
+
+    #[test]
+    fn panic_report_leaves_out_user_text() {
+        let report = panic_report(
+            "<unnamed>",
+            None,
+            "byte index 3 is not a char boundary; it is inside 'é' of `secret file text`",
+            &"",
+        );
+        assert!(report.starts_with("thread '<unnamed>' panicked at <unknown>:\n"));
+        assert!(report.contains("`<redacted>`"));
+        assert!(!report.contains("secret"));
+    }
 
     /// Clearing a tag has to remove it rather than record an empty value,
     /// because that is how an application withdraws identifying state from

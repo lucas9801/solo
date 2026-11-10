@@ -1460,14 +1460,12 @@ dependencies = [
  "db",
  "editor",
  "gpui",
+ "log",
  "markdown_preview",
  "project",
  "release_channel",
  "semver",
- "serde",
- "serde_json",
  "settings",
- "smol",
  "telemetry",
  "ui",
  "util",
@@ -19281,6 +19279,7 @@ dependencies = [
  "theme",
  "theme_settings",
  "ui",
+ "util",
  "workspace",
 ]
 
