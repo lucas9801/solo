@@ -24,7 +24,8 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
 ## 3. 更新
 
 - Solo 启动 30 秒后检查一次 [GitHub Releases](https://github.com/lucas9801/solo/releases)，之后每 6 小时检查一次。只有稳定版会检查。
-- 有新版本时会弹出通知，可以选“更新并重启”、“跳过此版本”或“查看发布说明”。Solo 不会在你没同意的情况下安装任何东西。
+- 有新版本时会弹出通知，附一句更新概要，可以选“更新并重启”、“跳过此版本”或“查看发布说明”。Solo 不会在你没同意的情况下安装任何东西。
+- **关于 Solo** 窗口显示版本、发布日期和提交号（点击可复制），是否已是最新，以及“检查更新”按钮；还有用户指南、本版本发行说明、GitHub 仓库和许可的链接。“复制”按钮复制版本、提交号和系统信息，方便报告问题。
 - 选了更新以后：安装包会下载到 `%TEMP%\solo-update\`，Solo 像正常退出一样关闭窗口（未保存的文件会询问你），然后由 `solo-update-helper.exe` 等 Solo 退出，在原来的目录静默运行安装包，装完再启动 Solo。安装日志在 `%TEMP%\solo-update\install.log`，helper 的错误记录在同一个目录的 `update-helper.log`。
 - 要关闭自动检查，在设置里写 `"auto_update": false`。命令面板里的 **Check for Updates（检查更新）** 不受这个设置影响，总会检查。
 
@@ -224,7 +225,7 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `codex_hooks` | `true` | 通过 `-c hooks...` 给 Codex 加状态 hooks |
 | `copilot_hooks` | `true` | 通过 `--plugin-dir` 给 Copilot CLI 加状态 hooks |
 | `keep_running_on_quit` | `true` | Solo 退出、更新或崩溃时，正在运行东西的终端继续运行，之后自动连回去 |
-| `agent_usage_display` | `"always"` | 运行中的 agent 的上下文和 token 显示在终端底部的细栏里，标签上显示上下文百分比；`"tooltip"` 只在标签提示里显示 |
+| `agent_usage_display` | `"always"` | 运行中的 agent 的上下文和 token 显示在终端底部的细栏里（窗口窄时先省掉本轮、再省掉本会话的 token），标签上显示上下文百分比；`"tooltip"` 只在标签提示里显示 |
 | `agent_commands` | `[]` | 把其他程序也当作智能体 |
 | `agent_task_command` | `"claude"` | 新建智能体任务时运行的命令 |
 | `confirm_close` | `"agents"` | 关闭前确认：`agents` / `commands` / `never` |

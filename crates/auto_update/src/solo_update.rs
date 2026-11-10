@@ -614,8 +614,39 @@ pub struct SoloUpdater {
     /// Survives other activity: a newer version may be checked for and
     /// downloaded meanwhile.
     ready_on_quit: Option<ReadyOnQuit>,
+    /// What the last check found.
+    checked: UpdateStatus,
     poll_task: Option<Task<()>>,
     _quit_subscription: gpui::Subscription,
+}
+
+/// What Solo knows about updates, for the About window.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdateStatus {
+    /// Not checked yet since Solo started.
+    NotChecked,
+    Checking,
+    UpToDate,
+    /// A newer version, skipped by the user or not.
+    Available(Version),
+    Failed,
+}
+
+/// The updater, in stable builds (others don't update).
+pub fn updater(cx: &App) -> Option<Entity<SoloUpdater>> {
+    Some(cx.try_global::<GlobalSoloUpdater>()?.0.clone())
+}
+
+/// What a check's outcome says about updates.
+fn update_status(outcome: &Result<CheckOutcome>) -> UpdateStatus {
+    match outcome {
+        Ok(CheckOutcome::UpdateAvailable(release)) => {
+            UpdateStatus::Available(release.version.clone())
+        }
+        Ok(CheckOutcome::Skipped(version)) => UpdateStatus::Available(version.clone()),
+        Ok(CheckOutcome::UpToDate) => UpdateStatus::UpToDate,
+        Err(_) => UpdateStatus::Failed,
+    }
 }
 
 /// What to tell the user about the update the last run was installing.
@@ -654,6 +685,7 @@ pub fn init(cx: &mut App) {
             current_version,
             activity: Activity::Idle,
             ready_on_quit: None,
+            checked: UpdateStatus::NotChecked,
             poll_task: None,
             _quit_subscription: cx.on_app_quit(|updater: &mut SoloUpdater, _| {
                 updater.install_ready_update_at_quit();
@@ -787,6 +819,15 @@ fn show_status_message(message: String, cx: &mut App) {
 }
 
 impl SoloUpdater {
+    /// What's known about updates: whether a check runs, or what the last
+    /// one found.
+    pub fn status(&self) -> UpdateStatus {
+        match self.activity {
+            Activity::Checking => UpdateStatus::Checking,
+            _ => self.checked.clone(),
+        }
+    }
+
     fn sync_polling(&mut self, cx: &mut Context<Self>) {
         let enabled = AutoUpdateSetting::get_global(cx).0;
         if enabled && self.poll_task.is_none() {
@@ -857,6 +898,7 @@ impl SoloUpdater {
         check_type: UpdateCheckType,
         cx: &mut Context<Self>,
     ) {
+        self.checked = update_status(&outcome);
         match outcome {
             Ok(CheckOutcome::UpdateAvailable(release)) if self.ready_on_quit.is_some() => {
                 let ready = self
@@ -1493,6 +1535,23 @@ mod tests {
         assert_eq!(
             notes_summary(notes, false).as_deref(),
             Some("Solo 2.1：更准。 User guide")
+        );
+    }
+
+    #[test]
+    fn update_status_from_check_outcomes() {
+        let version = Version::new(2, 2, 0);
+        assert_eq!(
+            update_status(&Ok(CheckOutcome::Skipped(version.clone()))),
+            UpdateStatus::Available(version)
+        );
+        assert_eq!(
+            update_status(&Ok(CheckOutcome::UpToDate)),
+            UpdateStatus::UpToDate
+        );
+        assert_eq!(
+            update_status(&Err(anyhow::anyhow!("offline"))),
+            UpdateStatus::Failed
         );
     }
 
