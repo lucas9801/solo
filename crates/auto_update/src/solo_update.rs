@@ -211,7 +211,46 @@ pub async fn fetch_latest_release(
     http: Arc<dyn HttpClient>,
     current: &Version,
 ) -> Result<SoloRelease> {
-    let request = Request::get(LATEST_RELEASE_URL)
+    fetch_release(http, LATEST_RELEASE_URL, current).await
+}
+
+/// The tag Solo's release of `version` is published under (`v1.2.3`).
+fn release_tag(version: &Version) -> String {
+    let version = without_build_metadata(version);
+    format!("v{version}")
+}
+
+/// The GitHub API URL of the release of `version`.
+pub fn release_api_url(version: &Version) -> String {
+    format!(
+        "https://api.github.com/repos/{SOLO_GITHUB_REPO}/releases/tags/{}",
+        release_tag(version)
+    )
+}
+
+/// The GitHub page of the release of `version`, which shows its notes.
+pub fn release_page_url(version: &Version) -> String {
+    format!(
+        "https://github.com/{SOLO_GITHUB_REPO}/releases/tag/{}",
+        release_tag(version)
+    )
+}
+
+/// Fetches the release of `version` (normally the running one) from GitHub,
+/// for its release notes.
+pub async fn fetch_release_for_version(
+    http: Arc<dyn HttpClient>,
+    version: &Version,
+) -> Result<SoloRelease> {
+    fetch_release(http, &release_api_url(version), version).await
+}
+
+async fn fetch_release(
+    http: Arc<dyn HttpClient>,
+    url: &str,
+    current: &Version,
+) -> Result<SoloRelease> {
+    let request = Request::get(url)
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", user_agent(current))
         .header("X-GitHub-Api-Version", "2022-11-28")
@@ -677,7 +716,7 @@ pub fn check_manually(window: &mut Window, cx: &mut App) {
                     "{} https://github.com/{SOLO_GITHUB_REPO}/releases",
                     util::i18n::tr("Download Solo from", "可在此下载 Solo：")
                 )),
-                &[util::i18n::tr("OK", "好")],
+                &[util::i18n::tr("OK", "确定")],
                 cx,
             ));
         }
@@ -1431,6 +1470,35 @@ mod tests {
         assert!(
             format!("{error:#}").contains("connection refused"),
             "{error:#}"
+        );
+    }
+
+    #[gpui::test]
+    async fn fetches_the_release_of_a_version(_cx: &mut TestAppContext) {
+        assert_eq!(
+            release_api_url(&version("2.1.0+stable.abc")),
+            "https://api.github.com/repos/lucas9801/solo/releases/tags/v2.1.0"
+        );
+        assert_eq!(
+            release_page_url(&version("2.1.0")),
+            "https://github.com/lucas9801/solo/releases/tag/v2.1.0"
+        );
+        let http = FakeHttpClient::create(|request| async move {
+            assert_eq!(
+                request.uri().to_string(),
+                "https://api.github.com/repos/lucas9801/solo/releases/tags/v2.1.0"
+            );
+            assert_eq!(request.headers().get("User-Agent").unwrap(), "Solo/2.1.0");
+            let body = release_json("v2.1.0", false, SETUP_ASSET);
+            Ok(Response::builder().status(200).body(body.into()).unwrap())
+        });
+        let release = fetch_release_for_version(http, &version("2.1.0"))
+            .await
+            .unwrap();
+        assert_eq!(release.version, version("2.1.0"));
+        assert_eq!(
+            release.html_url,
+            "https://github.com/lucas9801/solo/releases/tag/v2.1.0"
         );
     }
 
