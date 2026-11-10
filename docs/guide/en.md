@@ -389,14 +389,17 @@ Some security software treats these as suspicious.
   or two.
 
 ### Logs and crash information
-- Log: `%LOCALAPPDATA%\Solo\logs\Solo.log`, and `Solo.log.old` for the previous
-  run. `solo: open log` and `solo: reveal log in file manager` are in the
-  command palette.
+- Log: `%LOCALAPPDATA%\Solo\logs\Solo.log`, and `Solo.log.old` with older
+  entries (moved there when the log gets big). `solo: open log` and
+  `solo: reveal log in file manager` are in the command palette.
 - Hang traces: `%LOCALAPPDATA%\Solo\hang_traces\`.
-- Crashes: Solo writes no minidumps by default; what led up to a crash is
-  usually in `Solo.log.old`. To get a minidump, start Solo with the environment
-  variable `ZED_GENERATE_MINIDUMPS=1`; it's written to the logs folder (exact
-  file name unverified).
+- Crashes: after a crash, look in `%LOCALAPPDATA%\Solo\logs\Solo.log` (or
+  `Solo.log.old`, once the log has grown big enough to be moved there). A
+  crash caused by an error in Solo (a panic) is logged there, with where it
+  happened and the stack backtrace, under `panicked at`; include that part
+  when reporting it. Solo writes no minidumps by default. To get one, start
+  Solo with the environment variable `ZED_GENERATE_MINIDUMPS=1`; it's written
+  to the logs folder (exact file name unverified).
 - Failed updates: `%TEMP%\solo-update\install.log` and `update-helper.log`.
 - Report problems at [github.com/lucas9801/solo/issues](https://github.com/lucas9801/solo/issues),
   with the log attached.

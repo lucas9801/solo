@@ -1,7 +1,7 @@
 # SOLO: builds Solo's release packages on GitHub-hosted runners when a version
 # tag (v*) is pushed, or by hand, with script/package-solo.ps1 (the solo-dist
 # profile, the licenses, the zip and the Inno Setup installer), and uploads
-# them as workflow artifacts.
+# them as workflow artifacts, with the debug symbols (solo.pdb) beside them.
 #
 # It doesn't create or change GitHub releases: script/release-solo.ps1 still
 # does that from a local build. Nothing is signed yet; once Solo has a signing
@@ -122,4 +122,14 @@ jobs:
         with:
           name: solo-windows-x64-files
           path: dist/Solo/
+          if-no-files-found: error
+
+      # Not in the packages: solo-dist keeps line tables in these, so a crash's
+      # addresses in a released solo.exe map to functions and lines. Each
+      # matches only the exes of this run.
+      - name: Upload the debug symbols
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solo-windows-x64-pdb
+          path: target/solo-dist/*.pdb
           if-no-files-found: error

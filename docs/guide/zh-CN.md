@@ -207,9 +207,9 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 - 其他智能体的状态本来就是推断出来的，可能会慢一两秒。
 
 ### 日志和崩溃信息
-- 日志：`%LOCALAPPDATA%\Solo\logs\Solo.log`，上一次运行的是 `Solo.log.old`。命令面板里的 `solo: open log` 打开日志，`solo: reveal log in file manager` 在资源管理器里显示。
+- 日志：`%LOCALAPPDATA%\Solo\logs\Solo.log`，更早的内容在 `Solo.log.old`（日志变大时移过去）。命令面板里的 `solo: open log` 打开日志，`solo: reveal log in file manager` 在资源管理器里显示。
 - 卡顿 trace：`%LOCALAPPDATA%\Solo\hang_traces\`。
-- 崩溃：Solo 默认不生成 minidump；崩溃前的信息一般在 `Solo.log.old` 里。需要 minidump 时，设置环境变量 `ZED_GENERATE_MINIDUMPS=1` 后再启动 Solo，文件会写到 logs 目录（具体文件名待核实）。
+- 崩溃：崩溃后先看 `%LOCALAPPDATA%\Solo\logs\Solo.log`（日志变大后旧内容会移到 `Solo.log.old`）。Solo 自身出错（panic）导致的崩溃会记在里面：搜 `panicked at`，后面是出错的位置、消息和调用栈，报告问题时请附上这一段。Solo 默认不生成 minidump；需要 minidump 时，设置环境变量 `ZED_GENERATE_MINIDUMPS=1` 后再启动 Solo，文件会写到 logs 目录（具体文件名待核实）。
 - 更新失败：看 `%TEMP%\solo-update\install.log` 和 `update-helper.log`。
 - 提交问题：[github.com/lucas9801/solo/issues](https://github.com/lucas9801/solo/issues)，附上日志。
 
