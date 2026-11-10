@@ -56,7 +56,7 @@ async fn test_sidebar_disabled_when_disable_ai_is_enabled(cx: &mut TestAppContex
         cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
 
     multi_workspace.read_with(cx, |mw, cx| {
-        assert!(mw.multi_workspace_enabled(cx));
+        assert!(mw.sidebar_enabled(cx));
     });
 
     multi_workspace.update_in(cx, |mw, _window, cx| {
@@ -75,8 +75,12 @@ async fn test_sidebar_disabled_when_disable_ai_is_enabled(cx: &mut TestAppContex
             "Sidebar should be closed when disable_ai is true"
         );
         assert!(
-            !mw.multi_workspace_enabled(cx),
-            "Multi-workspace should be disabled when disable_ai is true"
+            !mw.sidebar_enabled(cx),
+            "The sidebar should be disabled when disable_ai is true"
+        );
+        assert!(
+            mw.multi_workspace_enabled(cx),
+            "SOLO: workspace tabs stay when disable_ai is true"
         );
     });
 
@@ -97,8 +101,8 @@ async fn test_sidebar_disabled_when_disable_ai_is_enabled(cx: &mut TestAppContex
 
     multi_workspace.read_with(cx, |mw, cx| {
         assert!(
-            mw.multi_workspace_enabled(cx),
-            "Multi-workspace should be enabled after re-enabling AI"
+            mw.sidebar_enabled(cx),
+            "The sidebar should be enabled after re-enabling AI"
         );
         assert!(
             !mw.sidebar_open(),
@@ -117,8 +121,14 @@ async fn test_sidebar_disabled_when_disable_ai_is_enabled(cx: &mut TestAppContex
     });
 }
 
-#[gpui::test]
-async fn test_multi_workspace_collapses_when_agent_is_disabled(cx: &mut TestAppContext) {
+/// SOLO: what turning Zed's AI off (`disable_ai`, or `agent.enabled: false`)
+/// does to a window with two workspace tabs, each with an agent running in a
+/// terminal: nothing, beyond closing Zed's threads sidebar.
+async fn assert_tabs_survive_turning_ai_off(
+    cx: &mut TestAppContext,
+    turn_ai_off: impl FnOnce(&mut App),
+    turn_ai_on: impl FnOnce(&mut App),
+) {
     init_test(cx);
     let fs = FakeFs::new(cx.executor());
     fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
@@ -128,30 +138,134 @@ async fn test_multi_workspace_collapses_when_agent_is_disabled(cx: &mut TestAppC
 
     let (multi_workspace, cx) =
         cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
-
-    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
-        multi_workspace.test_add_workspace(project_b, window, cx);
+    let workspace_a = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+    let workspace_b = multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.test_add_workspace(project_b, window, cx)
     });
+    multi_workspace.update(cx, |mw, cx| mw.open_sidebar(cx));
     cx.run_until_parked();
 
-    multi_workspace.read_with(cx, |multi_workspace, cx| {
-        assert!(multi_workspace.multi_workspace_enabled(cx));
-        assert_eq!(multi_workspace.workspaces().count(), 2);
+    let mut terminals = Vec::new();
+    for workspace in [&workspace_a, &workspace_b] {
+        let terminal = cx.new(|cx| TestItem::new(cx).with_running_program("claude"));
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_item_to_active_pane(Box::new(terminal.clone()), None, true, window, cx);
+        });
+        terminals.push(terminal);
+    }
+    cx.run_until_parked();
+    let group_keys = multi_workspace.read_with(cx, |mw, _| mw.project_group_keys());
+    assert_eq!(group_keys.len(), 2);
+
+    let assert_untouched = |cx: &mut VisualTestContext| {
+        assert!(!cx.has_pending_prompt());
+        multi_workspace.read_with(cx, |mw, cx| {
+            assert_eq!(
+                mw.workspaces().cloned().collect::<Vec<_>>(),
+                vec![workspace_a.clone(), workspace_b.clone()],
+                "both workspace tabs are kept"
+            );
+            assert_eq!(mw.project_group_keys(), group_keys);
+            assert!(mw.multi_workspace_enabled(cx));
+        });
+        for (workspace, terminal) in [&workspace_a, &workspace_b].into_iter().zip(&terminals) {
+            workspace.read_with(cx, |workspace, cx| {
+                assert!(
+                    workspace
+                        .items(cx)
+                        .any(|item| item.item_id() == terminal.entity_id()),
+                    "the terminal stays in its workspace"
+                );
+            });
+        }
+    };
+
+    cx.update(|_window, cx| turn_ai_off(cx));
+    cx.run_until_parked();
+    assert_untouched(cx);
+    multi_workspace.read_with(cx, |mw, cx| {
+        assert!(!mw.sidebar_enabled(cx));
+        assert!(!mw.sidebar_open(), "Zed's threads sidebar closes");
     });
 
-    cx.update(|_window, cx| {
+    // Switching tabs while AI is off keeps both, too.
+    multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.activate(workspace_a.clone(), None, window, cx);
+    });
+    cx.run_until_parked();
+    assert_untouched(cx);
+    multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.activate(workspace_b.clone(), None, window, cx);
+    });
+    cx.run_until_parked();
+    assert_untouched(cx);
+
+    cx.update(|_window, cx| turn_ai_on(cx));
+    cx.run_until_parked();
+    assert_untouched(cx);
+    multi_workspace.read_with(cx, |mw, cx| assert!(mw.sidebar_enabled(cx)));
+}
+
+#[gpui::test]
+async fn test_workspace_tabs_survive_disable_ai(cx: &mut TestAppContext) {
+    assert_tabs_survive_turning_ai_off(
+        cx,
+        |cx| DisableAiSettings::override_global(DisableAiSettings { disable_ai: true }, cx),
+        |cx| DisableAiSettings::override_global(DisableAiSettings { disable_ai: false }, cx),
+    )
+    .await;
+}
+
+#[gpui::test]
+async fn test_workspace_tabs_survive_disabling_agent(cx: &mut TestAppContext) {
+    fn set_agent_enabled(enabled: bool, cx: &mut App) {
         let mut settings = AgentSettings::get_global(cx).clone();
-        settings.enabled = false;
+        settings.enabled = enabled;
         AgentSettings::override_global(settings, cx);
+    }
+    assert_tabs_survive_turning_ai_off(
+        cx,
+        |cx| set_agent_enabled(false, cx),
+        |cx| set_agent_enabled(true, cx),
+    )
+    .await;
+}
+
+/// SOLO: removing a workspace tab whose terminal runs something asks first.
+#[gpui::test]
+async fn test_removing_workspace_with_running_program_asks(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file.txt": "" })).await;
+    cx.update(|cx| <dyn Fs>::set_global(fs.clone(), cx));
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs, ["/root_b".as_ref()], cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let workspace_a = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+    multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.test_add_workspace(project_b, window, cx);
+    });
+    let terminal = cx.new(|cx| TestItem::new(cx).with_running_program("claude"));
+    workspace_a.update_in(cx, |workspace, window, cx| {
+        workspace.add_item_to_active_pane(Box::new(terminal.clone()), None, true, window, cx);
     });
     cx.run_until_parked();
 
-    multi_workspace.read_with(cx, |multi_workspace, cx| {
-        assert!(!multi_workspace.multi_workspace_enabled(cx));
-        assert!(!multi_workspace.sidebar_open());
-        assert_eq!(multi_workspace.workspaces().count(), 1);
-        assert!(multi_workspace.project_group_keys().is_empty());
-    });
+    for (answer, kept) in [("Cancel", true), ("Close", false)] {
+        let removal = multi_workspace.update_in(cx, |mw, window, cx| {
+            mw.remove([workspace_a.clone()], RemovalIntent::KeepProject, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt(), "asks before ending claude");
+        cx.simulate_prompt_answer(answer);
+        cx.run_until_parked();
+        assert_eq!(removal.await.unwrap(), !kept);
+        multi_workspace.read_with(cx, |mw, _| {
+            assert_eq!(mw.workspaces().any(|w| w == &workspace_a), kept);
+        });
+    }
 }
 
 #[gpui::test]

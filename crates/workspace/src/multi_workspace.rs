@@ -333,7 +333,7 @@ impl MultiWorkspace {
 
     pub fn sidebar_render_state(&self, cx: &App) -> SidebarRenderState {
         SidebarRenderState {
-            open: self.sidebar_open() && self.multi_workspace_enabled(cx),
+            open: self.sidebar_open() && self.sidebar_enabled(cx),
             side: self.sidebar_side(cx),
         }
     }
@@ -347,16 +347,16 @@ impl MultiWorkspace {
                 task.detach();
             }
         });
+        // SOLO: turning Zed's AI off closes its threads sidebar, and that's
+        // all: the workspace tabs and what runs in them stay.
         let settings_subscription = cx.observe_global_in::<settings::SettingsStore>(window, {
-            let mut previous_multi_workspace_enabled = !DisableAiSettings::get_global(cx)
-                .disable_ai
-                && AgentSettings::get_global(cx).enabled;
+            let mut previous_sidebar_enabled = Self::sidebar_enabled_in(cx);
             move |this, window, cx| {
-                let multi_workspace_enabled = this.multi_workspace_enabled(cx);
-                if previous_multi_workspace_enabled && !multi_workspace_enabled {
-                    this.collapse_to_single_workspace(window, cx);
+                let sidebar_enabled = this.sidebar_enabled(cx);
+                if previous_sidebar_enabled && !sidebar_enabled && this.sidebar_open {
+                    this.close_sidebar(window, cx);
                 }
-                previous_multi_workspace_enabled = multi_workspace_enabled;
+                previous_sidebar_enabled = sidebar_enabled;
             }
         });
         Self::subscribe_to_workspace(&workspace, window, cx);
@@ -423,12 +423,25 @@ impl MultiWorkspace {
             .map_or(false, |s| s.is_threads_list_view_active(cx))
     }
 
-    pub fn multi_workspace_enabled(&self, cx: &App) -> bool {
+    /// SOLO: always: Solo's workspace tabs aren't one of Zed's AI features,
+    /// so `disable_ai` and `agent.enabled: false` don't turn them off (which
+    /// dropped every tab but the active one, and what ran in their terminals).
+    pub fn multi_workspace_enabled(&self, _cx: &App) -> bool {
+        true
+    }
+
+    /// SOLO: whether Zed's threads sidebar is available. It's one of Zed's AI
+    /// features, so `disable_ai` and `agent.enabled: false` turn it off.
+    pub fn sidebar_enabled(&self, cx: &App) -> bool {
+        Self::sidebar_enabled_in(cx)
+    }
+
+    fn sidebar_enabled_in(cx: &App) -> bool {
         !DisableAiSettings::get_global(cx).disable_ai && AgentSettings::get_global(cx).enabled
     }
 
     pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.multi_workspace_enabled(cx) {
+        if !self.sidebar_enabled(cx) {
             return;
         }
 
@@ -445,7 +458,7 @@ impl MultiWorkspace {
     }
 
     pub fn close_sidebar_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.multi_workspace_enabled(cx) {
+        if !self.sidebar_enabled(cx) {
             return;
         }
 
@@ -455,7 +468,7 @@ impl MultiWorkspace {
     }
 
     pub fn focus_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.multi_workspace_enabled(cx) {
+        if !self.sidebar_enabled(cx) {
             return;
         }
 
@@ -1400,27 +1413,6 @@ impl MultiWorkspace {
         cx.notify();
     }
 
-    /// Collapses to a single workspace, discarding all groups.
-    /// Used when multi-workspace is disabled by settings.
-    fn collapse_to_single_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sidebar_open {
-            self.close_sidebar(window, cx);
-        }
-
-        let displayed_workspace = self.workspace().clone();
-        for workspace in self.workspaces().cloned().collect::<Vec<_>>() {
-            if workspace != displayed_workspace {
-                self.detach_workspace(&workspace, cx);
-            }
-        }
-
-        for held in &mut self.held {
-            held.pinned = false;
-        }
-        self.project_groups.clear();
-        cx.notify();
-    }
-
     /// Detaches a workspace: clears session state, DB binding, cached
     /// group key, and emits `WorkspaceRemoved`. The DB row is preserved
     /// so the workspace still appears in the recent-projects list.
@@ -2028,11 +2020,11 @@ impl MultiWorkspace {
 
 impl Render for MultiWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let multi_workspace_enabled = self.multi_workspace_enabled(cx);
+        let sidebar_enabled = self.sidebar_enabled(cx);
         let sidebar_side = self.sidebar_side(cx);
         let sidebar_on_right = sidebar_side == SidebarSide::Right;
 
-        let sidebar: Option<AnyElement> = if multi_workspace_enabled && self.sidebar_open() {
+        let sidebar: Option<AnyElement> = if sidebar_enabled && self.sidebar_open() {
             self.sidebar.as_ref().map(|sidebar_handle| {
                 let weak = cx.weak_entity();
 
@@ -2183,7 +2175,7 @@ impl Render for MultiWorkspace {
                     })
                 })
                 .when(
-                    self.sidebar_open() && self.multi_workspace_enabled(cx),
+                    self.sidebar_open() && self.sidebar_enabled(cx),
                     |this| {
                         this.on_drag_move(cx.listener(
                             move |this: &mut Self,
