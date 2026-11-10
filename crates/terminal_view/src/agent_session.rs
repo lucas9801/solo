@@ -18,7 +18,7 @@ use agent_sessions::{
 };
 use gpui::{
     App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    Subscription, Task, WeakEntity, Window, actions,
+    Stateful, Subscription, Task, WeakEntity, Window, actions,
 };
 use picker::{Picker, PickerDelegate};
 use terminal::shell_integration::AgentSessionId;
@@ -95,31 +95,7 @@ impl TerminalView {
         if parts.is_empty() {
             return None;
         }
-        Some(
-            h_flex()
-                .id("agent-usage-bar")
-                .w_full()
-                .px_2()
-                .gap_3()
-                .overflow_hidden()
-                .border_t_1()
-                .border_color(cx.theme().colors().border_variant)
-                .bg(cx.theme().colors().terminal_background)
-                .children(parts.into_iter().map(|(text, nearly_full)| {
-                    div().flex_none().child(
-                        Label::new(text)
-                            .untranslated()
-                            .single_line()
-                            .size(LabelSize::XSmall)
-                            .color(if nearly_full {
-                                Color::Warning
-                            } else {
-                                Color::Muted
-                            }),
-                    )
-                }))
-                .into_any_element(),
-        )
+        Some(usage_bar(parts, cx).into_any_element())
     }
 
     /// SOLO: how full the running agent's context is, for its tab: the
@@ -488,6 +464,50 @@ fn format_tokens(tokens: u64) -> String {
     }
 }
 
+/// SOLO: the usage bar for [`usage_bar_parts`]. Parts that don't fit wrap to a
+/// second line, which is cut off, so whole parts go when it's narrow, from
+/// the last; the first (context and model) always stays, cut if need be.
+fn usage_bar(parts: Vec<(String, bool)>, cx: &App) -> Stateful<Div> {
+    let line_height = rems_from_px(16_f32);
+    div()
+        .id("agent-usage-bar")
+        .w_full()
+        .px_2()
+        .border_t_1()
+        .border_color(cx.theme().colors().border_variant)
+        .bg(cx.theme().colors().terminal_background)
+        .child(
+            div()
+                .debug_selector(|| "agent-usage-parts".into())
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_x_3()
+                .w_full()
+                .h(line_height)
+                .line_height(line_height)
+                .overflow_hidden()
+                .children(parts.into_iter().enumerate().map(
+                    |(ix, (text, nearly_full))| {
+                        div()
+                            .debug_selector(|| format!("agent-usage-part-{ix}"))
+                            .flex_none()
+                            .child(
+                                Label::new(text)
+                                    .untranslated()
+                                    .single_line()
+                                    .size(LabelSize::XSmall)
+                                    .color(if nearly_full {
+                                        Color::Warning
+                                    } else {
+                                        Color::Muted
+                                    }),
+                            )
+                    },
+                )),
+        )
+}
+
 /// SOLO: the parts of an agent's usage bar, most important first, each with
 /// whether to warn: the context (and model), the session's tokens, the
 /// turn's tokens. Cache details stay in the tooltip.
@@ -843,6 +863,67 @@ mod tests {
             usage_bar_parts(&usage, true)[1].0,
             "本会话 输入 1.2M · 输出 30.0k"
         );
+    }
+
+    #[gpui::test]
+    async fn test_usage_bar_drops_whole_parts(cx: &mut gpui::TestAppContext) {
+        use gpui::Bounds;
+        struct Bar {
+            width: Pixels,
+        }
+        impl Render for Bar {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let parts = vec![
+                    ("Context 170.0k / 200.0k (85%) · claude-opus".to_string(), true),
+                    ("Session 1.2M in · 30.0k out".to_string(), false),
+                    ("Turn 50.5k in · 2.0k out".to_string(), false),
+                ];
+                div().w(self.width).child(usage_bar(parts, cx))
+            }
+        }
+        crate::tests::init_test(cx).await;
+        let (bar, cx) = cx.add_window_view(|_, _| Bar { width: px(2000.) });
+        // Which parts show at `width`, with each part's bounds.
+        let mut shown_at = |width: Pixels| {
+            bar.update(cx, |bar, cx| {
+                bar.width = width;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let line = cx.debug_bounds("agent-usage-parts").expect("the bar");
+            ["agent-usage-part-0", "agent-usage-part-1", "agent-usage-part-2"]
+                .into_iter()
+                .map(|selector| {
+                    let part = cx.debug_bounds(selector).expect("a part");
+                    (part.top() < line.bottom(), part)
+                })
+                .collect::<Vec<_>>()
+        };
+        let wide = shown_at(px(2000.));
+        assert!(wide.iter().all(|(shown, _)| *shown), "{wide:?}");
+        let [(_, context), (_, session), (_, turn)] = [wide[0], wide[1], wide[2]];
+        let padding = context.left();
+        let gap = session.left() - context.right();
+        let end_of = |part: Bounds<Pixels>| part.right() + padding;
+
+        // One pixel short of the turn's tokens: they go, the rest stays.
+        let shown: Vec<bool> = shown_at(end_of(turn) - px(1.))
+            .iter()
+            .map(|(shown, _)| *shown)
+            .collect();
+        assert_eq!(shown, [true, true, false]);
+        // Short of the session's: only the context and model.
+        let shown: Vec<bool> = shown_at(end_of(session) - px(1.))
+            .iter()
+            .map(|(shown, _)| *shown)
+            .collect();
+        assert_eq!(shown, [true, false, false]);
+        // Narrower than the context: it stays, cut.
+        let shown: Vec<bool> = shown_at(end_of(context) - gap)
+            .iter()
+            .map(|(shown, _)| *shown)
+            .collect();
+        assert_eq!(shown, [true, false, false]);
     }
 
     #[test]
