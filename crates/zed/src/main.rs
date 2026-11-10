@@ -290,6 +290,8 @@ fn main() {
             zlog::init_output_stdout();
         };
     }
+    // SOLO: log every panic, crash handler or not.
+    crashes::install_panic_logger();
     ztracing::init();
 
     // SOLO: the user guide's pages, so help links open them offline.
