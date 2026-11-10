@@ -148,6 +148,11 @@ pub trait PanelHandle: Send + Sync {
         ]
         .into_iter()
         .filter(|position| self.position_is_valid(*position, cx))
+        // SOLO: the terminal-first layout keeps the bottom for the terminal.
+        .filter(|position| {
+            *position != DockPosition::Bottom
+                || !bottom_dock_reserved_for_terminal(self.panel_key(), cx)
+        })
         .skip_while(|valid_position| *valid_position != current_position)
         .nth(1)
         .unwrap_or(DockPosition::Left);
@@ -173,7 +178,14 @@ where
     }
 
     fn position(&self, window: &Window, cx: &App) -> DockPosition {
-        self.read(cx).position(window, cx)
+        // SOLO: see `position_in_layout`.
+        let panel = self.read(cx);
+        position_in_layout(
+            T::panel_key(),
+            panel.position(window, cx),
+            |position| panel.position_is_valid(position),
+            cx,
+        )
     }
 
     fn position_is_valid(&self, position: DockPosition, cx: &App) -> bool {
@@ -405,6 +417,36 @@ pub struct PanelButtons {
 fn terminal_first_layout(cx: &App) -> bool {
     WorkspaceSettings::get_global(cx).bottom_dock_layout
         == settings::BottomDockLayout::TerminalFirst
+}
+
+/// SOLO: the key of the terminal panel, the one panel the terminal-first
+/// layout keeps in the bottom dock.
+pub const TERMINAL_PANEL_KEY: &str = "TerminalPanel";
+
+/// SOLO: whether the panel with `panel_key` is kept out of the bottom dock: in
+/// the terminal-first layout the bottom dock is the terminal's main column,
+/// and a dock shows one panel at a time, so any other panel there would hide
+/// the terminal.
+pub fn bottom_dock_reserved_for_terminal(panel_key: &str, cx: &App) -> bool {
+    panel_key != TERMINAL_PANEL_KEY && terminal_first_layout(cx)
+}
+
+/// SOLO: where a panel set to `position` goes in the current layout. In the
+/// terminal-first layout a panel other than the terminal set to the bottom
+/// goes to the right (or, if it can't go there, the left) instead.
+pub fn position_in_layout(
+    panel_key: &str,
+    position: DockPosition,
+    position_is_valid: impl Fn(DockPosition) -> bool,
+    cx: &App,
+) -> DockPosition {
+    if position != DockPosition::Bottom || !bottom_dock_reserved_for_terminal(panel_key, cx) {
+        return position;
+    }
+    [DockPosition::Right, DockPosition::Left]
+        .into_iter()
+        .find(|position| position_is_valid(*position))
+        .unwrap_or(position)
 }
 
 pub(crate) const PANEL_SIZE_STATE_KEY: &str = "dock_panel_size";
@@ -645,6 +687,34 @@ impl Dock {
         }
     }
 
+    /// SOLO: in the terminal-first layout's main column (the bottom dock),
+    /// shows the terminal panel when another panel there would close, and
+    /// returns whether it did.
+    pub(crate) fn activate_terminal_instead_of_closing(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.position != DockPosition::Bottom || !terminal_first_layout(cx) {
+            return false;
+        }
+        if self
+            .visible_panel()
+            .is_none_or(|panel| panel.panel_key() == TERMINAL_PANEL_KEY)
+        {
+            return false;
+        }
+        let Some(terminal_ix) = self
+            .panel_entries
+            .iter()
+            .position(|entry| entry.panel.panel_key() == TERMINAL_PANEL_KEY)
+        else {
+            return false;
+        };
+        self.activate_panel(terminal_ix, window, cx);
+        true
+    }
+
     pub(crate) fn add_panel<T: Panel>(
         &mut self,
         panel: Entity<T>,
@@ -659,7 +729,8 @@ impl Dock {
                 let panel = panel.clone();
 
                 move |this, window, cx| {
-                    let new_position = panel.read(cx).position(window, cx);
+                    // SOLO: `PanelHandle::position`, which follows the layout.
+                    let new_position = PanelHandle::position(&panel, window, cx);
                     if new_position == this.position {
                         return;
                     }
@@ -759,7 +830,7 @@ impl Dock {
                             .update(cx, |workspace, cx| {
                                 workspace.zoomed = Some(panel.downgrade().into());
                                 workspace.zoomed_position =
-                                    Some(panel.read(cx).position(window, cx));
+                                    Some(PanelHandle::position(panel, window, cx));
                                 cx.emit(Event::ZoomChanged);
                             })
                             .ok();
@@ -793,7 +864,12 @@ impl Dock {
                             .visible_panel()
                             .is_some_and(|p| p.panel_id() == Entity::entity_id(panel))
                         {
-                            this.set_open(false, window, cx);
+                            // SOLO: closing another panel shown in the
+                            // terminal-first layout's main column brings the
+                            // terminal back instead of closing the column.
+                            if !this.activate_terminal_instead_of_closing(window, cx) {
+                                this.set_open(false, window, cx);
+                            }
                         }
                     }
                 },
@@ -1498,6 +1574,13 @@ impl Render for PanelButtons {
                             ContextMenu::build(window, cx, |mut menu, _, cx| {
                                 let mut has_position_entries = false;
                                 for position in POSITIONS {
+                                    // SOLO: the terminal-first layout keeps the
+                                    // bottom for the terminal.
+                                    if position == DockPosition::Bottom
+                                        && bottom_dock_reserved_for_terminal(panel.panel_key(), cx)
+                                    {
+                                        continue;
+                                    }
                                     if panel.position_is_valid(position, cx) {
                                         let is_current = position == dock_position;
                                         let panel = panel.clone();

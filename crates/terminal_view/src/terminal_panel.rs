@@ -42,7 +42,9 @@ use workspace::{
 use anyhow::{Result, anyhow};
 use zed_actions::assistant::InlineAssist;
 
-const TERMINAL_PANEL_KEY: &str = "TerminalPanel";
+// SOLO: shared with the workspace, whose terminal-first layout keeps the
+// bottom dock for this panel.
+const TERMINAL_PANEL_KEY: &str = workspace::dock::TERMINAL_PANEL_KEY;
 
 actions!(
     terminal_panel,

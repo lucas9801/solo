@@ -2017,11 +2017,22 @@ impl Pane {
                 ),
             ),
         };
+        // The button says what it ends, e.g. "Close and End claude".
+        let ended = match running.as_slice() {
+            [(_, program)] => program.name.to_string(),
+            _ if chinese => format!("{} 个程序", running.len()),
+            _ => format!("{} Programs", running.len()),
+        };
+        let confirm_label = if chinese {
+            format!("{close_label}并结束 {ended}")
+        } else {
+            format!("{close_label} and End {ended}")
+        };
         let answer = window.prompt(
             PromptLevel::Warning,
             &message,
             detail.as_deref(),
-            &[close_label, util::i18n::tr("Cancel", "取消")],
+            &[confirm_label.as_str(), util::i18n::tr("Cancel", "取消")],
             cx,
         );
         Some(async move { answer.await == Ok(0) })

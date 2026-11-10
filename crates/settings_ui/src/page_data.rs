@@ -6549,7 +6549,7 @@ fn panels_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Git Panel Dock",
-                description: "Where to dock the Git panel.",
+                description: "Where to dock the Git panel. In the terminal-first layout the bottom dock is the terminal's, so Bottom puts it on the right.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("git_panel.dock"),
@@ -6894,7 +6894,7 @@ fn panels_page() -> SettingsPage {
             SettingsPageItem::SectionHeader("Debugger Panel"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Debugger Panel Dock",
-                description: "The dock position of the debug panel.",
+                description: "The dock position of the debug panel. In the terminal-first layout the bottom dock is the terminal's, so Bottom puts it on the right.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("debugger.dock"),
@@ -7003,7 +7003,7 @@ fn panels_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Agent Panel Dock",
-                description: "Where to dock the agent panel.",
+                description: "Where to dock the agent panel. In the terminal-first layout the bottom dock is the terminal's, so Bottom puts it on the right.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("agent.dock"),

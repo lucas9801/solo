@@ -306,21 +306,19 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                     "View Release Notes Locally",
                     auto_update_ui::ViewReleaseNotesLocally,
                 ),
-                MenuItem::action("View Telemetry", zed_actions::OpenTelemetryLog),
+                // SOLO: no "View Telemetry": Solo sends none (it would go to Zed),
+                // so the log is empty unless telemetry is turned on in settings;
+                // the command palette still has it.
                 MenuItem::action("View Dependency Licenses", zed_actions::OpenLicenses),
                 MenuItem::action("Show Welcome", onboarding::ShowWelcome),
                 MenuItem::separator(),
                 MenuItem::action("File Bug Report...", zed_actions::feedback::FileBugReport),
                 MenuItem::action("Request Feature...", zed_actions::feedback::RequestFeature),
                 MenuItem::separator(),
-                // SOLO: Solo's documentation and repository; Zed's email,
+                // SOLO: Solo's documentation (the user guide on this computer, in
+                // the interface's language) and repository; Zed's email,
                 // Twitter and jobs links aren't Solo's.
-                MenuItem::action(
-                    "Documentation",
-                    super::OpenBrowser {
-                        url: "https://github.com/lucas9801/solo#readme".into(),
-                    },
-                ),
+                MenuItem::action("Documentation", zed_actions::OpenDocs),
                 MenuItem::action("Solo Repository", feedback::OpenRepository),
             ],
         },
