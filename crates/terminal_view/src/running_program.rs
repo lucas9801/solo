@@ -249,7 +249,7 @@ mod tests {
         cx.run_until_parked();
         let (message, _) = cx.pending_prompt().expect("closing an agent asks");
         assert_eq!(message, "claude is running. Closing will end it.");
-        cx.simulate_prompt_answer("Close");
+        cx.simulate_prompt_answer("Close and End claude");
         close_all.await.unwrap();
         assert!(!cx.has_pending_prompt());
         assert_eq!(item_count(cx), 0);
