@@ -7,30 +7,36 @@
 //! (see [`review`]), where hunks can be kept or rejected, commented on for the
 //! agent, or the work tree rolled back to before any recorded turn. Agents
 //! whose status is only guessed from their output have no turns.
+//!
+//! A directory that can't be snapshotted (not a repository and too big, say)
+//! still gets a list of the files that changed during the turn, from the
+//! project's file events, without diffs or roll back.
 
 mod diagnostics;
 mod review;
 mod snapshot;
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use collections::HashMap;
 use futures::FutureExt as _;
 use futures::future::{BoxFuture, Shared};
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EntityId, Global, Task, WeakEntity, Window,
-    actions,
+    AnyElement, App, AppContext as _, Context, Entity, EntityId, Global, Subscription, Task,
+    WeakEntity, Window, actions,
 };
-use ui::{Tooltip, prelude::*};
+use project::{PathChange, UpdatedEntriesSet, Worktree};
+use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
 use util::ResultExt as _;
 use workspace::{Workspace, item::ItemEvent};
 
 use crate::{AgentTurnEvent, TerminalView, terminal_panel::TerminalPanel};
 use diagnostics::{DiagnosticsBefore, TurnDiagnostics};
 pub(crate) use review::AgentTurnReview;
-use snapshot::{ChangedFile, FileChange, SnapshotStore, TreeId};
+use snapshot::{ChangedFile, FileChange, SnapshotStore, SnapshotUnavailable, TreeId};
 
 actions!(
     terminal,
@@ -43,6 +49,14 @@ actions!(
 
 /// Turns remembered per terminal.
 const MAX_TURNS: usize = 20;
+/// Files noted per turn that can't be snapshotted; more are only counted as
+/// "more".
+const MAX_WATCHED_FILES: usize = 10_000;
+/// How long changes are still noted after a turn without a snapshot ends:
+/// the project hears of a file's change a moment after it's written.
+const WATCH_AFTER_TURN: Duration = Duration::from_secs(1);
+/// Files listed in the menu of a turn without a snapshot.
+const MAX_LISTED_FILES: usize = 50;
 
 pub(crate) fn init(cx: &mut App) {
     cx.observe_new(|_: &mut TerminalView, _, cx: &mut Context<TerminalView>| {
@@ -111,10 +125,26 @@ pub(crate) struct AgentTurn {
     pub diagnostics: TurnDiagnostics,
 }
 
+/// A finished turn whose directory couldn't be snapshotted: only which files
+/// the project saw change during it.
+pub(crate) struct UnsnapshottedTurn {
+    pub number: usize,
+    pub directory: PathBuf,
+    /// Why there's no snapshot, so no diff or roll back.
+    pub reason: SharedString,
+    /// Absolute paths, sorted.
+    pub changed: Vec<(PathBuf, FileChange)>,
+    /// Whether more files changed than were noted.
+    pub more: bool,
+}
+
 struct StartedTurn {
     store: Arc<SnapshotStore>,
     before: TreeId,
 }
+
+/// A turn's snapshot, or why there's none.
+type TurnSnapshot = Result<Arc<StartedTurn>, SharedString>;
 
 struct PendingTurn {
     number: usize,
@@ -123,7 +153,24 @@ struct PendingTurn {
     prompt_source: Option<PathBuf>,
     project: WeakEntity<project::Project>,
     diagnostics_before: DiagnosticsBefore,
-    snapshot: Shared<BoxFuture<'static, Option<Arc<StartedTurn>>>>,
+    snapshot: Shared<BoxFuture<'static, TurnSnapshot>>,
+}
+
+/// The files in a turn's directory the project saw change since the turn
+/// started, kept for when there's no snapshot.
+struct TurnWatch {
+    number: usize,
+    directory: PathBuf,
+    changes: WatchedChanges,
+    _subscription: Subscription,
+}
+
+#[derive(Default)]
+struct WatchedChanges {
+    /// By absolute path. Removed directories are here too until the turn's
+    /// end, as their entries are gone and they can't be told from files.
+    files: BTreeMap<PathBuf, FileChange>,
+    more: bool,
 }
 
 #[derive(Default)]
@@ -131,7 +178,11 @@ struct TerminalTurns {
     turns_started: usize,
     /// Finished turns that changed files, oldest first.
     turns: VecDeque<AgentTurn>,
+    /// The last finished turn that couldn't be snapshotted.
+    unsnapshotted: Option<Arc<UnsnapshottedTurn>>,
     pending: Option<PendingTurn>,
+    /// Turns whose changes are being noted.
+    watches: Vec<TurnWatch>,
     /// Whether the last finished turn changed files, so its tab offers them.
     offer_last_turn: bool,
     /// Stores by directory, which keep their index between snapshots.
@@ -139,11 +190,27 @@ struct TerminalTurns {
     _end_task: Option<Task<()>>,
 }
 
+impl TerminalTurns {
+    fn finished_turns(&self) -> usize {
+        self.turns_started
+            .saturating_sub(usize::from(self.pending.is_some()))
+    }
+
+    /// While the last finished turn's changes are offered on the tab.
+    fn offering(&self) -> bool {
+        self.offer_last_turn && self.pending.is_none()
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct AgentTurns {
     terminals: HashMap<EntityId, TerminalTurns>,
     /// Where snapshots are stored, if not in Solo's data directory.
     storage_root: Option<PathBuf>,
+    /// How many files a directory outside a repository may have to be
+    /// snapshotted, if not the usual.
+    #[cfg(test)]
+    max_files_outside_repository: Option<usize>,
 }
 
 struct GlobalAgentTurns(Entity<AgentTurns>);
@@ -194,28 +261,45 @@ impl AgentTurns {
     /// before a turn has finished.
     pub(crate) fn last_turn_changed_files(&self, terminal: EntityId) -> Option<usize> {
         let turns = self.terminals.get(&terminal)?;
-        let finished = turns
-            .turns_started
-            .saturating_sub(usize::from(turns.pending.is_some()));
+        let finished = turns.finished_turns();
         if finished == 0 {
             return None;
         }
-        Some(
-            turns
-                .turns
-                .back()
-                .filter(|turn| turn.number == finished)
-                .map_or(0, |turn| turn.changed.len()),
-        )
+        let snapshotted = turns
+            .turns
+            .back()
+            .filter(|turn| turn.number == finished)
+            .map(|turn| turn.changed.len());
+        let unsnapshotted = turns
+            .unsnapshotted
+            .as_ref()
+            .filter(|turn| turn.number == finished)
+            .map(|turn| turn.changed.len());
+        Some(snapshotted.or(unsnapshotted).unwrap_or(0))
     }
 
     /// The files the last turn changed, while its tab offers them.
     fn offered_turn(&self, terminal: EntityId) -> Option<&AgentTurn> {
         let turns = self.terminals.get(&terminal)?;
-        if !turns.offer_last_turn || turns.pending.is_some() {
+        if !turns.offering() {
             return None;
         }
-        turns.turns.back()
+        let finished = turns.finished_turns();
+        turns.turns.back().filter(|turn| turn.number == finished)
+    }
+
+    /// The files the last turn changed when it couldn't be snapshotted,
+    /// while its tab offers them.
+    fn offered_unsnapshotted_turn(&self, terminal: EntityId) -> Option<&Arc<UnsnapshottedTurn>> {
+        let turns = self.terminals.get(&terminal)?;
+        if !turns.offering() {
+            return None;
+        }
+        let finished = turns.finished_turns();
+        turns
+            .unsnapshotted
+            .as_ref()
+            .filter(|turn| turn.number == finished)
     }
 
     fn start_turn(
@@ -231,21 +315,38 @@ impl AgentTurns {
             log::debug!("no working directory to snapshot for an agent turn");
             return;
         };
-        let terminal = self.terminals.entry(terminal_view.entity_id()).or_default();
-        terminal.turns_started += 1;
-        terminal.offer_last_turn = false;
-        let known_store = terminal.stores.get(&directory).cloned();
+        let terminal_id = terminal_view.entity_id();
+        #[cfg(test)]
+        let max_files_outside_repository = self.max_files_outside_repository;
         let storage_root = self
             .storage_root
             .clone()
             .unwrap_or_else(|| paths::data_dir().join("agent_turns"));
+        let terminal = self.terminals.entry(terminal_id).or_default();
+        if let Some(previous) = terminal.pending.take() {
+            terminal
+                .watches
+                .retain(|watch| watch.number != previous.number);
+        }
+        terminal.turns_started += 1;
+        terminal.offer_last_turn = false;
+        let number = terminal.turns_started;
+        let known_store = terminal.stores.get(&directory).cloned();
         let snapshot = cx
             .background_spawn({
                 let directory = directory.clone();
                 async move {
                     let store = match known_store {
                         Some(store) => store,
-                        None => Arc::new(SnapshotStore::open(&directory, &storage_root)?),
+                        None => {
+                            #[allow(unused_mut)]
+                            let mut store = SnapshotStore::open(&directory, &storage_root)?;
+                            #[cfg(test)]
+                            if let Some(max) = max_files_outside_repository {
+                                store.set_max_files_outside_repository(max);
+                            }
+                            Arc::new(store)
+                        }
                     };
                     let started = std::time::Instant::now();
                     let before = store.snapshot()?;
@@ -257,11 +358,43 @@ impl AgentTurns {
                     anyhow::Ok(Arc::new(StartedTurn { store, before }))
                 }
             })
-            .map(|result| result.log_err())
+            .map(|result| result.map_err(|error| snapshot_unavailable_reason(&error)))
             .boxed()
             .shared();
+        // What changed, in case there's no snapshot.
+        let subscription = project.upgrade().map(|project| {
+            cx.subscribe(&project, move |this, project, event, cx| {
+                let project::Event::WorktreeUpdatedEntries(worktree_id, changes) = event else {
+                    return;
+                };
+                let Some(watch) = this.terminals.get_mut(&terminal_id).and_then(|terminal| {
+                    terminal
+                        .watches
+                        .iter_mut()
+                        .find(|watch| watch.number == number)
+                }) else {
+                    return;
+                };
+                if let Some(worktree) = project.read(cx).worktree_for_id(*worktree_id, cx) {
+                    watch_changes(
+                        &mut watch.changes,
+                        &watch.directory,
+                        worktree.read(cx),
+                        changes,
+                    );
+                }
+            })
+        });
+        if let Some(subscription) = subscription {
+            terminal.watches.push(TurnWatch {
+                number,
+                directory: directory.clone(),
+                changes: WatchedChanges::default(),
+                _subscription: subscription,
+            });
+        }
         terminal.pending = Some(PendingTurn {
-            number: terminal.turns_started,
+            number,
             started_at: now(),
             directory: directory.clone(),
             prompt_source,
@@ -270,9 +403,8 @@ impl AgentTurns {
             snapshot: snapshot.clone(),
         });
         // Keep the store for the next turn once it's open.
-        let terminal_id = terminal_view.entity_id();
         cx.spawn(async move |this, cx| {
-            if let Some(started) = snapshot.await {
+            if let Ok(started) = snapshot.await {
                 this.update(cx, |this, _| {
                     if let Some(terminal) = this.terminals.get_mut(&terminal_id) {
                         terminal.stores.insert(directory, started.store.clone());
@@ -292,11 +424,35 @@ impl AgentTurns {
         let Some(pending) = terminal.pending.take() else {
             return;
         };
+        // Earlier turns' watches belong to end tasks this one replaces.
+        terminal
+            .watches
+            .retain(|watch| watch.number == pending.number);
         let terminal_view = terminal_view.downgrade();
         terminal._end_task = Some(cx.spawn(async move |this, cx| {
-            let Some(started) = pending.snapshot.await else {
-                return;
+            let started = match pending.snapshot.await {
+                Ok(started) => started,
+                Err(reason) => {
+                    // The last changes still on their way.
+                    cx.background_executor().timer(WATCH_AFTER_TURN).await;
+                    this.update(cx, |this, cx| {
+                        this.end_unsnapshotted_turn(
+                            terminal_id,
+                            pending.number,
+                            pending.directory,
+                            reason,
+                            cx,
+                        );
+                        update_tab(&terminal_view, cx);
+                    })
+                    .ok();
+                    return;
+                }
             };
+            this.update(cx, |this, _| {
+                this.stop_watching(terminal_id, pending.number)
+            })
+            .ok();
             let prompt_source = pending.prompt_source;
             let started_at = pending.started_at;
             let project = pending.project;
@@ -373,6 +529,41 @@ impl AgentTurns {
         }));
     }
 
+    fn stop_watching(&mut self, terminal: EntityId, number: usize) -> Option<TurnWatch> {
+        let watches = &mut self.terminals.get_mut(&terminal)?.watches;
+        let ix = watches.iter().position(|watch| watch.number == number)?;
+        Some(watches.remove(ix))
+    }
+
+    /// Records a turn that couldn't be snapshotted with the files the project
+    /// saw change.
+    fn end_unsnapshotted_turn(
+        &mut self,
+        terminal_id: EntityId,
+        number: usize,
+        directory: PathBuf,
+        reason: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        let changes = self
+            .stop_watching(terminal_id, number)
+            .map(|watch| watch.changes)
+            .unwrap_or_default();
+        let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+            return;
+        };
+        let changed = changed_files(changes.files);
+        terminal.offer_last_turn = !changed.is_empty();
+        terminal.unsnapshotted = Some(Arc::new(UnsnapshottedTurn {
+            number,
+            directory,
+            reason,
+            changed,
+            more: changes.more,
+        }));
+        cx.notify();
+    }
+
     /// Stops offering the last turn's changes on the terminal's tab.
     pub(crate) fn dismiss_offer(&mut self, terminal: EntityId, cx: &mut Context<Self>) {
         if let Some(turns) = self.terminals.get_mut(&terminal) {
@@ -391,6 +582,115 @@ fn update_tab(terminal_view: &WeakEntity<TerminalView>, cx: &mut App) {
 fn now() -> time::OffsetDateTime {
     let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
     time::OffsetDateTime::now_utc().to_offset(offset)
+}
+
+/// Why a turn has no snapshot, to tell the user; logs the error.
+fn snapshot_unavailable_reason(error: &anyhow::Error) -> SharedString {
+    let chinese = util::i18n::is_chinese();
+    match error.downcast_ref::<SnapshotUnavailable>() {
+        Some(SnapshotUnavailable::TooManyFiles { limit, .. }) => {
+            log::info!("no snapshot for an agent turn: {error:#}");
+            if chinese {
+                format!("不是 git 仓库，且超过 {limit} 个文件").into()
+            } else {
+                format!("Not a git repository, and more than {limit} files").into()
+            }
+        }
+        Some(SnapshotUnavailable::TooBroad(_)) => {
+            log::info!("no snapshot for an agent turn: {error:#}");
+            util::i18n::tr(
+                "The folder is a whole drive or your home folder",
+                "这个文件夹是整个磁盘或你的用户主目录",
+            )
+            .into()
+        }
+        None => {
+            log::error!("failed to snapshot for an agent turn: {error:#}");
+            util::i18n::tr("The snapshot failed (see the log)", "快照失败（详见日志）").into()
+        }
+    }
+}
+
+/// Notes the files in `directory` that `updates` changed, leaving out ignored
+/// ones.
+fn watch_changes(
+    changes: &mut WatchedChanges,
+    directory: &Path,
+    worktree: &Worktree,
+    updates: &UpdatedEntriesSet,
+) {
+    for (path, entry_id, change) in updates.iter() {
+        let change = match change {
+            PathChange::Added => FileChange::Added,
+            PathChange::Updated | PathChange::AddedOrUpdated => FileChange::Modified,
+            PathChange::Removed => FileChange::Deleted,
+            PathChange::Loaded => continue,
+        };
+        if change == FileChange::Deleted {
+            if worktree.is_path_ignored(path) {
+                continue;
+            }
+        } else if !worktree
+            .entry_for_id(*entry_id)
+            .is_some_and(|entry| entry.is_file() && !entry.is_ignored)
+        {
+            continue;
+        }
+        let abs_path = worktree.absolutize(path);
+        if !is_within(&abs_path, directory) {
+            continue;
+        }
+        let previous = changes.files.get(&abs_path).copied();
+        let change = match (previous, change) {
+            // Created and deleted within the turn.
+            (Some(FileChange::Added), FileChange::Deleted) => {
+                changes.files.remove(&abs_path);
+                continue;
+            }
+            (Some(FileChange::Added), _) => FileChange::Added,
+            (Some(FileChange::Deleted), FileChange::Added) => FileChange::Modified,
+            (_, change) => change,
+        };
+        if previous.is_none() && changes.files.len() >= MAX_WATCHED_FILES {
+            changes.more = true;
+            continue;
+        }
+        changes.files.insert(abs_path, change);
+    }
+}
+
+/// The files of a turn's noted changes: removed directories, which removed
+/// files inside them, left out.
+fn changed_files(files: BTreeMap<PathBuf, FileChange>) -> Vec<(PathBuf, FileChange)> {
+    let mut changed: Vec<(PathBuf, FileChange)> = files.into_iter().collect();
+    // Sorted by path, so a directory comes right before what was in it.
+    let removed_directories: Vec<usize> = changed
+        .windows(2)
+        .enumerate()
+        .filter(|(_, pair)| {
+            pair[0].1 == FileChange::Deleted
+                && pair[1].1 == FileChange::Deleted
+                && pair[1].0.starts_with(&pair[0].0)
+        })
+        .map(|(ix, _)| ix)
+        .collect();
+    for ix in removed_directories.into_iter().rev() {
+        changed.remove(ix);
+    }
+    changed
+}
+
+/// Whether `path` is in `directory`; on Windows, whatever their case.
+fn is_within(path: &Path, directory: &Path) -> bool {
+    if path.starts_with(directory) {
+        return true;
+    }
+    if cfg!(windows) {
+        let lowercase = |path: &Path| PathBuf::from(path.to_string_lossy().to_lowercase());
+        lowercase(path).starts_with(lowercase(directory))
+    } else {
+        false
+    }
 }
 
 impl TerminalView {
@@ -419,16 +719,12 @@ impl TerminalView {
 pub(crate) fn render_tab_entry(view: &TerminalView, cx: &App) -> Option<AnyElement> {
     let terminal_view = view.self_handle.upgrade()?;
     let turns = AgentTurns::try_global(cx)?.read(cx);
-    let turn = turns.offered_turn(terminal_view.entity_id())?;
-    let count = turn.changed.len();
-    let chinese = util::i18n::is_chinese();
-    let mut label = if chinese {
-        format!("{count} 个文件已修改")
-    } else if count == 1 {
-        "1 file changed".to_string()
-    } else {
-        format!("{count} files changed")
+    let Some(turn) = turns.offered_turn(terminal_view.entity_id()) else {
+        let turn = turns.offered_unsnapshotted_turn(terminal_view.entity_id())?;
+        return Some(render_unsnapshotted_tab_entry(terminal_view, turn.clone()));
     };
+    let chinese = util::i18n::is_chinese();
+    let mut label = changed_files_label(turn.changed.len(), false);
     // What the turn did to the errors, once the language servers checked.
     if let Some((added, fixed)) = turn.diagnostics.error_delta()
         && (added > 0 || fixed > 0)
@@ -463,6 +759,122 @@ pub(crate) fn render_tab_entry(view: &TerminalView, cx: &App) -> Option<AnyEleme
         })
         .into_any_element(),
     )
+}
+
+fn changed_files_label(count: usize, more: bool) -> String {
+    let more = if more { "+" } else { "" };
+    if util::i18n::is_chinese() {
+        format!("{count}{more} 个文件已修改")
+    } else if count == 1 && more.is_empty() {
+        "1 file changed".to_string()
+    } else {
+        format!("{count}{more} files changed")
+    }
+}
+
+/// The entry on the tab of a terminal whose last turn couldn't be
+/// snapshotted: a menu of the files it changed, which opens them.
+fn render_unsnapshotted_tab_entry(
+    terminal_view: Entity<TerminalView>,
+    turn: Arc<UnsnapshottedTurn>,
+) -> AnyElement {
+    let terminal_id = terminal_view.entity_id();
+    let label = changed_files_label(turn.changed.len(), turn.more);
+    PopoverMenu::new(("agent-turn-files", terminal_id.as_u64() as usize))
+        .trigger_with_tooltip(
+            Button::new(
+                ("agent-turn-file-list", terminal_id.as_u64() as usize),
+                label,
+            )
+            .style(ButtonStyle::Tinted(ui::TintColor::Accent))
+            .label_size(LabelSize::XSmall),
+            Tooltip::text(util::i18n::tr(
+                "The files the agent changed in its last turn",
+                "agent 本轮改动的文件",
+            )),
+        )
+        .menu(move |window, cx| {
+            let workspace = terminal_view.read(cx).workspace.clone();
+            Some(unsnapshotted_turn_menu(
+                &turn,
+                terminal_view.downgrade(),
+                workspace,
+                window,
+                cx,
+            ))
+        })
+        .into_any_element()
+}
+
+fn unsnapshotted_turn_menu(
+    turn: &UnsnapshottedTurn,
+    terminal_view: WeakEntity<TerminalView>,
+    workspace: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<ContextMenu> {
+    let chinese = util::i18n::is_chinese();
+    ContextMenu::build(window, cx, |mut menu, _, _| {
+        menu = menu
+            .header(util::i18n::tr(
+                "No diff or roll back for this turn",
+                "这一轮没有差异和回滚",
+            ))
+            .label(turn.reason.clone())
+            .separator();
+        for (abs_path, change) in turn.changed.iter().take(MAX_LISTED_FILES) {
+            let relative = abs_path
+                .strip_prefix(&turn.directory)
+                .unwrap_or(abs_path)
+                .to_string_lossy()
+                .into_owned();
+            let marker = match change {
+                FileChange::Added => "A",
+                FileChange::Modified => "M",
+                FileChange::Deleted => "D",
+            };
+            let label = format!("{marker}  {relative}");
+            if *change == FileChange::Deleted {
+                menu = menu.label(label);
+                continue;
+            }
+            let abs_path = abs_path.clone();
+            let workspace = workspace.clone();
+            menu = menu.entry(label, None, move |window, cx| {
+                workspace
+                    .update(cx, |workspace, cx| {
+                        workspace
+                            .open_abs_path(
+                                abs_path.clone(),
+                                workspace::OpenOptions::default(),
+                                window,
+                                cx,
+                            )
+                            .detach_and_log_err(cx);
+                    })
+                    .ok();
+            });
+        }
+        let unlisted = turn.changed.len().saturating_sub(MAX_LISTED_FILES);
+        if unlisted > 0 || turn.more {
+            let more = if turn.more { "+" } else { "" };
+            menu = menu.label(if chinese {
+                format!("还有 {unlisted}{more} 个文件")
+            } else {
+                format!("and {unlisted}{more} more files")
+            });
+        }
+        menu.separator().entry(
+            util::i18n::tr("Dismiss", "不再显示"),
+            None,
+            move |_, cx| {
+                AgentTurns::global(cx).update(cx, |turns, cx| {
+                    turns.dismiss_offer(terminal_view.entity_id(), cx)
+                });
+                update_tab(&terminal_view, cx);
+            },
+        )
+    })
 }
 
 /// Whether a terminal has recorded turns to review.
@@ -741,6 +1153,208 @@ mod tests {
         );
         assert!(!repository.join("b.txt").exists());
         assert!(repository.join("new.txt").exists());
+    }
+
+    /// A turn reported by an agent's hooks in a directory that can't be
+    /// snapshotted: the tab lists the files the project saw change.
+    #[gpui::test]
+    async fn test_turn_without_a_snapshot_lists_changed_files(cx: &mut TestAppContext) {
+        use project::Fs as _;
+
+        crate::tests::init_test(cx).await;
+        cx.update(init);
+        cx.executor().allow_parking();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project");
+        let agent_directory = root.join("agent");
+        // On disk too, as the snapshot runs git there: a plain directory.
+        std::fs::create_dir_all(&agent_directory).unwrap();
+        for name in ["a.txt", "c.txt", "e.txt"] {
+            std::fs::write(agent_directory.join(name), "before\n").unwrap();
+        }
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            &root,
+            serde_json::json!({
+                ".git": {},
+                ".gitignore": "ignored/\n",
+                "outside.txt": "before\n",
+                "agent": {
+                    "a.txt": "before\n",
+                    "c.txt": "before\n",
+                    "e.txt": "before\n",
+                    "sub": { "d.txt": "before\n" },
+                    "ignored": { "x.txt": "before\n" },
+                },
+            }),
+        )
+        .await;
+        let project = project::Project::test(fs.clone(), [root.as_path()], cx).await;
+        cx.run_until_parked();
+
+        let turns = cx.update(|cx| AgentTurns::global(cx));
+        turns.update(cx, |turns, _| {
+            turns.storage_root = Some(temp.path().join("storage"));
+            // Fewer files than there are, so the snapshot fails.
+            turns.max_files_outside_repository = Some(1);
+        });
+        let terminal = cx.new(|cx| {
+            terminal::TerminalBuilder::new_display_only(
+                Default::default(),
+                terminal::terminal_settings::AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                util::paths::PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        let window = cx.add_window(|window, cx| {
+            TerminalView::new(
+                terminal.clone(),
+                WeakEntity::new_invalid(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+        let terminal_view = window.root(cx).unwrap();
+        let terminal_id = terminal_view.entity_id();
+        let write = |bytes: &[u8], cx: &mut TestAppContext| {
+            terminal.update(cx, |terminal, cx| terminal.write_raw_output(bytes, cx));
+            cx.run_until_parked();
+        };
+        let tab_entry = |cx: &mut TestAppContext| {
+            terminal_view.read_with(cx, |view, cx| render_tab_entry(view, cx).is_some())
+        };
+
+        // Claude Code runs in the terminal, and its hooks report a prompt.
+        write(b"\x1b]133;A\x07$ \x1b]133;B\x07", cx);
+        write(b"claude\r\n\x1b]633;E;claude\x07\x1b]133;C\x07", cx);
+        let directory = agent_directory.to_string_lossy().replace('%', "%25");
+        write(
+            format!("\x1b]6973;agent;prompt;1;;claude;{directory}\x07").as_bytes(),
+            cx,
+        );
+        turns.read_with(cx, |turns, _| {
+            let terminal = turns.terminals.get(&terminal_id).expect("a turn started");
+            assert!(terminal.pending.is_some());
+            assert_eq!(terminal.watches.len(), 1);
+        });
+
+        // What the agent does; and a file outside its directory, and an
+        // ignored one, that change meanwhile.
+        fs.save(
+            &agent_directory.join("a.txt"),
+            &"after\n".into(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        fs.insert_file(agent_directory.join("b.txt"), b"new\n".to_vec())
+            .await;
+        fs.remove_file(&agent_directory.join("c.txt"), Default::default())
+            .await
+            .unwrap();
+        fs.remove_dir(
+            &agent_directory.join("sub"),
+            project::RemoveOptions {
+                recursive: true,
+                ignore_if_not_exists: false,
+            },
+        )
+        .await
+        .unwrap();
+        // Created and deleted within the turn.
+        fs.insert_file(agent_directory.join("temp.txt"), b"temp\n".to_vec())
+            .await;
+        cx.run_until_parked();
+        fs.remove_file(&agent_directory.join("temp.txt"), Default::default())
+            .await
+            .unwrap();
+        fs.insert_file(agent_directory.join("ignored/y.txt"), b"y\n".to_vec())
+            .await;
+        fs.save(
+            &root.join("outside.txt"),
+            &"after\n".into(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        cx.run_until_parked();
+        // Nothing is offered while the turn is under way.
+        assert!(!tab_entry(cx));
+
+        write(b"\x1b]6973;agent;stop;2\x07", cx);
+        cx.executor().advance_clock(WATCH_AFTER_TURN);
+        cx.run_until_parked();
+
+        turns.read_with(cx, |turns, _| {
+            assert!(turns.offered_turn(terminal_id).is_none());
+            let turn = turns
+                .offered_unsnapshotted_turn(terminal_id)
+                .expect("the turn's files are offered");
+            assert_eq!(turn.number, 1);
+            assert!(turn.reason.contains("git"), "{}", turn.reason);
+            assert!(!turn.more);
+            assert_eq!(
+                turn.changed,
+                vec![
+                    (agent_directory.join("a.txt"), FileChange::Modified),
+                    (agent_directory.join("b.txt"), FileChange::Added),
+                    (agent_directory.join("c.txt"), FileChange::Deleted),
+                    (
+                        agent_directory.join("sub").join("d.txt"),
+                        FileChange::Deleted
+                    ),
+                ]
+            );
+            assert_eq!(turns.last_turn_changed_files(terminal_id), Some(4));
+            assert!(turns.terminals[&terminal_id].watches.is_empty());
+        });
+        assert!(tab_entry(cx));
+
+        // Dismissed, the tab stops offering them.
+        turns.update(cx, |turns, cx| turns.dismiss_offer(terminal_id, cx));
+        assert!(!tab_entry(cx));
+    }
+
+    #[test]
+    fn test_changed_files_leave_out_removed_directories() {
+        let files = BTreeMap::from_iter([
+            (PathBuf::from("dir"), FileChange::Deleted),
+            (PathBuf::from("dir").join("a"), FileChange::Deleted),
+            (PathBuf::from("dir").join("b"), FileChange::Deleted),
+            (PathBuf::from("dir-2"), FileChange::Deleted),
+            (PathBuf::from("file"), FileChange::Modified),
+        ]);
+        assert_eq!(
+            changed_files(files),
+            vec![
+                (PathBuf::from("dir").join("a"), FileChange::Deleted),
+                (PathBuf::from("dir").join("b"), FileChange::Deleted),
+                (PathBuf::from("dir-2"), FileChange::Deleted),
+                (PathBuf::from("file"), FileChange::Modified),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_is_within() {
+        let directory = Path::new(if cfg!(windows) {
+            r"C:\Work\Project"
+        } else {
+            "/work/project"
+        });
+        assert!(is_within(&directory.join("a.txt"), directory));
+        assert!(!is_within(
+            &directory.with_file_name("Project2").join("a"),
+            directory
+        ));
+        if cfg!(windows) {
+            assert!(is_within(Path::new(r"c:\work\project\a.txt"), directory));
+        }
     }
 
     #[test]

@@ -82,6 +82,10 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 
 快照存在 Solo 自己的目录里，不会改动你的分支、HEAD、暂存区、stash，也不会往你的 git 对象库里写东西。被 `.gitignore` 忽略的文件不在快照里。
 
+拍不了快照时（例如不是 git 仓库、文件又超过 20000 个），Solo 会记下这一轮里项目中被改动的文件（只算智能体工作目录下、没被忽略的文件），标签上照样显示 **“N 个文件已修改”**；点开是一个文件列表，点文件在编辑器里打开，列表上方写明为什么这一轮没有差异和回滚。这种情况下只能看到项目里打开的文件夹里的改动，别的程序同时改的文件也会算进去。
+
+Solo 不会在智能体工作时自动打开它改的文件。
+
 ### 时间线（Claude Code、Codex）
 命令 `terminal: show agent timeline`（“显示智能体时间线”）会在终端旁边打开这次会话的时间线：每一轮的提示词、读过和改过的文件、跑过的命令和最后的回答。内容读自 agent 自己的会话记录（Claude Code 的 `~/.claude/projects/...`，Codex 的 `~/.codex/sessions/...`），Solo 只读不写。如果 Solo 判断不出是哪个会话，用 `terminal: choose agent session` 手动选。
 
@@ -230,7 +234,6 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `confirm_close` | `"agents"` | 关闭前确认：`agents` / `commands` / `never` |
 | `follow_working_directory` | `false` | 文件树和搜索跟随当前终端所在的仓库 |
 | `restore_contents` | `false` | 重启后恢复终端内容 |
-| `open_changed_files` | `true` | 命令运行期间被修改的文件自动在编辑器里打开 |
 | `input_editor` | `true` | 在底部用编辑器输入命令 |
 | `notify_long_commands_after_seconds` | `10` | 长命令跑完后通知；设为 0 关闭 |
 | `program_notifications` | `true` | 允许程序发桌面通知（OSC 9/777） |
