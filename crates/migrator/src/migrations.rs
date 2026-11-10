@@ -388,3 +388,10 @@ pub(crate) mod m_2026_09_29 {
 
     pub(crate) use settings::move_copilot_enterprise_uri;
 }
+
+// SOLO
+pub(crate) mod m_2026_11_10 {
+    mod settings;
+
+    pub(crate) use settings::remove_terminal_open_changed_files;
+}
