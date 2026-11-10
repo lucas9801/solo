@@ -605,24 +605,21 @@ mod tests {
     fn test_first_client_connects_in_time() {
         let name = unique_pipe_name();
         let pipes = Pipes::make(&name, true).expect("pipes");
-        let client = {
-            let name = name.clone();
-            thread::spawn(move || {
-                let out = std::fs::OpenOptions::new()
-                    .read(true)
-                    .open(format!("{name}-out"))
-                    .expect("out");
-                let input = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(format!("{name}-in"))
-                    .expect("in");
-                let control = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(format!("{name}-ctl"))
-                    .expect("ctl");
-                (out, input, control)
-            })
-        };
+        let client = thread::spawn(move || {
+            let out = std::fs::OpenOptions::new()
+                .read(true)
+                .open(format!("{name}-out"))
+                .expect("out");
+            let input = std::fs::OpenOptions::new()
+                .write(true)
+                .open(format!("{name}-in"))
+                .expect("in");
+            let control = std::fs::OpenOptions::new()
+                .write(true)
+                .open(format!("{name}-ctl"))
+                .expect("ctl");
+            (out, input, control)
+        });
         let (mut out, _input, _control) = pipes
             .connect_within(Duration::from_secs(10))
             .expect("the client connected");
