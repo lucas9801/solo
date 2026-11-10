@@ -4725,11 +4725,14 @@ impl Workspace {
         dock.update(cx, |dock, cx| {
             dock.set_open(!was_visible, window, cx);
 
-            if dock.active_panel().is_none() {
+            // SOLO: nor does it show a disabled panel (e.g. Solo's agent
+            // panel), and stays closed when it has nothing else to show.
+            if dock.active_panel().is_none_or(|panel| !panel.enabled(cx)) {
                 let Some(panel_ix) = dock
                     .first_enabled_panel_idx(cx)
                     .log_with_level(log::Level::Info)
                 else {
+                    dock.set_open(false, window, cx);
                     return;
                 };
                 dock.activate_panel(panel_ix, window, cx);
@@ -4909,7 +4912,7 @@ impl Workspace {
     ) -> Option<Arc<dyn PanelHandle>> {
         let mut panel = None;
         for dock in self.all_docks() {
-            if let Some(panel_index) = dock.read(cx).panel_index_for_proto_id(panel_id) {
+            if let Some(panel_index) = dock.read(cx).panel_index_for_proto_id(panel_id, cx) {
                 panel = dock.update(cx, |dock, cx| {
                     dock.activate_panel(panel_index, window, cx);
                     dock.set_open(true, window, cx);
@@ -4937,7 +4940,7 @@ impl Workspace {
         let mut result_panel = None;
         let mut serialize = false;
         for dock in self.all_docks() {
-            if let Some(panel_index) = dock.read(cx).panel_index_for_type::<T>() {
+            if let Some(panel_index) = dock.read(cx).panel_index_for_type::<T>(cx) {
                 let mut focus_center = false;
                 let panel = dock.update(cx, |dock, cx| {
                     dock.activate_panel(panel_index, window, cx);
@@ -4976,7 +4979,7 @@ impl Workspace {
     /// Open the panel of the given type
     pub fn open_panel<T: Panel>(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for dock in self.all_docks() {
-            if let Some(panel_index) = dock.read(cx).panel_index_for_type::<T>() {
+            if let Some(panel_index) = dock.read(cx).panel_index_for_type::<T>(cx) {
                 dock.update(cx, |dock, cx| {
                     dock.activate_panel(panel_index, window, cx);
                     dock.set_open(true, window, cx);
@@ -4990,7 +4993,7 @@ impl Workspace {
     pub fn reveal_panel<T: Panel>(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dock_position = self.all_docks().iter().find_map(|dock| {
             let dock = dock.read(cx);
-            dock.panel_index_for_type::<T>().map(|_| dock.position())
+            dock.panel_index_for_type::<T>(cx).map(|_| dock.position())
         });
         self.dismiss_zoomed_items_to_reveal(dock_position, window, cx);
         self.open_panel::<T>(window, cx);
@@ -15212,6 +15215,89 @@ mod tests {
             let (top, nested) = nested_axis(workspace);
             assert_eq!(*top.flexes.lock(), vec![1.0; top.members.len()]);
             assert_eq!(*nested.flexes.lock(), vec![1.0; nested.members.len()]);
+        });
+    }
+
+    /// SOLO: a disabled panel (Solo's agent panel) is never shown, however
+    /// it's asked for, and isn't restored.
+    #[gpui::test]
+    async fn test_disabled_panel_is_never_shown(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let right_dock = workspace.read_with(cx, |workspace, _| workspace.right_dock().clone());
+        right_dock.update_in(cx, |dock, window, cx| {
+            dock.restore_serialized_state(
+                DockData {
+                    visible: true,
+                    active_panel: Some("TestPanel".to_string()),
+                    zoom: false,
+                },
+                window,
+                cx,
+            );
+        });
+        let panel = workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| TestPanel {
+                enabled: false,
+                ..TestPanel::new(DockPosition::Right, 100, cx)
+            });
+            workspace.add_panel(panel.clone(), window, cx);
+            panel
+        });
+        cx.run_until_parked();
+        let assert_hidden = |cx: &mut VisualTestContext| {
+            right_dock.read_with(cx, |dock, _| {
+                assert!(!dock.is_open(), "the right dock stays closed");
+                assert!(dock.active_panel().is_none());
+            });
+        };
+        assert_hidden(cx);
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(workspace.focus_panel::<TestPanel>(window, cx).is_none());
+            workspace.toggle_panel_focus::<TestPanel>(window, cx);
+            workspace.open_panel::<TestPanel>(window, cx);
+            workspace.reveal_panel::<TestPanel>(window, cx);
+            workspace.toggle_dock(DockPosition::Right, window, cx);
+        });
+        assert_hidden(cx);
+        panel.update(cx, |_, cx| cx.emit(PanelEvent::Activate));
+        cx.run_until_parked();
+        assert_hidden(cx);
+        // It's still there, for what uses it without showing it.
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.panel::<TestPanel>(cx).is_some());
+        });
+    }
+
+    /// SOLO: an open side dock whose panel has no button gets one to close
+    /// the dock.
+    #[gpui::test]
+    async fn test_side_dock_without_panel_button_gets_close_button(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            // `TestPanel` has no button.
+            let panel = cx.new(|cx| TestPanel::new(DockPosition::Right, 100, cx));
+            workspace.add_panel(panel, window, cx);
+        });
+        let right_dock = workspace.read_with(cx, |workspace, _| workspace.right_dock().clone());
+        right_dock.update_in(cx, |dock, window, cx| {
+            assert!(!dock.needs_close_button(window, cx), "closed");
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.focus_panel::<TestPanel>(window, cx);
+        });
+        right_dock.update_in(cx, |dock, window, cx| {
+            assert!(dock.is_open());
+            assert!(dock.needs_close_button(window, cx));
         });
     }
 

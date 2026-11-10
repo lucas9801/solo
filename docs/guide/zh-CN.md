@@ -173,7 +173,7 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
 - 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；
-- Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 自带的 agent 面板在 Windows 上不提供 WSL 沙箱，因为它需要从 zed.dev 下载 Linux 版的 Zed。
+- Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 去掉了智能体面板（Zed 自己的 agent 界面），它的下载（比如 WSL 沙箱要用的 Linux 版 Zed）也就不会发生。
 - 打开 ACP 智能体注册表，或使用从注册表配置的智能体：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
 - 在终端里运行的智能体（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
 
@@ -235,4 +235,4 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `notify_long_commands_after_seconds` | `10` | 长命令跑完后通知；设为 0 关闭 |
 | `program_notifications` | `true` | 允许程序发桌面通知（OSC 9/777） |
 
-不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`。
+不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`。`"disable_ai"`（以及 `"agent": { "enabled": false }`）只关闭 Zed 自己的 AI 功能（内联助手、编辑预测、提交信息生成），不影响工作区标签、终端和其中运行的智能体、按轮审阅。

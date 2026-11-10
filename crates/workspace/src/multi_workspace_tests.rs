@@ -255,7 +255,12 @@ async fn test_removing_workspace_with_running_program_asks(cx: &mut TestAppConte
 
     for (answer, kept) in [("Cancel", true), ("Close", false)] {
         let removal = multi_workspace.update_in(cx, |mw, window, cx| {
-            mw.remove([workspace_a.clone()], RemovalIntent::KeepProject, window, cx)
+            mw.remove(
+                [workspace_a.clone()],
+                RemovalIntent::KeepProject,
+                window,
+                cx,
+            )
         });
         cx.run_until_parked();
         assert!(cx.has_pending_prompt(), "asks before ending claude");

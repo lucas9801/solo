@@ -1255,6 +1255,20 @@ impl DisableAiSettings {
     }
 }
 
+/// SOLO: Solo has no agent panel (it runs agents in terminals); set when it
+/// starts. The panel is still created, since the inline assistant uses it, but
+/// nothing shows it, nor Zed's threads sidebar, which holds it. Unlike
+/// `disable_ai`, this leaves Zed's other AI features alone.
+pub struct AgentPanelRemoved;
+
+impl gpui::Global for AgentPanelRemoved {}
+
+impl AgentPanelRemoved {
+    pub fn is_set(cx: &App) -> bool {
+        cx.has_global::<Self>()
+    }
+}
+
 impl Project {
     pub fn init(client: &Arc<Client>, cx: &mut App) {
         connection_manager::init(client.clone(), cx);

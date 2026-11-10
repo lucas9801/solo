@@ -543,22 +543,49 @@ impl Dock {
             .find_map(|entry| entry.panel.to_any().downcast().ok())
     }
 
-    pub fn panel_index_for_type<T: Panel>(&self) -> Option<usize> {
-        self.panel_entries
-            .iter()
-            .position(|entry| entry.panel.to_any().downcast::<T>().is_ok())
+    // SOLO: the `panel_index_for_*` lookups, which the workspace uses to show
+    // panels, skip disabled ones (e.g. Solo's agent panel): nothing shows them.
+    pub fn panel_index_for_type<T: Panel>(&self, cx: &App) -> Option<usize> {
+        self.panel_entries.iter().position(|entry| {
+            entry.panel.to_any().downcast::<T>().is_ok() && entry.panel.enabled(cx)
+        })
     }
 
-    pub fn panel_index_for_persistent_name(&self, ui_name: &str, _cx: &App) -> Option<usize> {
+    pub fn panel_index_for_persistent_name(&self, ui_name: &str, cx: &App) -> Option<usize> {
         self.panel_entries
             .iter()
-            .position(|entry| entry.panel.persistent_name() == ui_name)
+            .position(|entry| entry.panel.persistent_name() == ui_name && entry.panel.enabled(cx))
     }
 
-    pub fn panel_index_for_proto_id(&self, panel_id: PanelId) -> Option<usize> {
+    pub fn panel_index_for_proto_id(&self, panel_id: PanelId, cx: &App) -> Option<usize> {
         self.panel_entries
             .iter()
-            .position(|entry| entry.panel.remote_id() == Some(panel_id))
+            .position(|entry| entry.panel.remote_id() == Some(panel_id) && entry.panel.enabled(cx))
+    }
+
+    /// SOLO: whether `serialized` would show a panel that's there but
+    /// disabled. The dock stays closed then, rather than waiting for it.
+    fn restores_disabled_panel(&self, serialized: &DockData, cx: &App) -> bool {
+        serialized
+            .active_panel
+            .as_deref()
+            .filter(|_| serialized.visible)
+            .is_some_and(|name| {
+                self.panel_entries
+                    .iter()
+                    .any(|entry| entry.panel.persistent_name() == name && !entry.panel.enabled(cx))
+            })
+    }
+
+    /// SOLO: whether the dock is open showing a panel that has no button
+    /// (its `button` setting is off, say), so its buttons add one to close
+    /// it. Only for the side docks.
+    pub(crate) fn needs_close_button(&self, window: &Window, cx: &App) -> bool {
+        self.is_open
+            && self.position != DockPosition::Bottom
+            && self
+                .active_panel_entry()
+                .is_some_and(|entry| entry.panel.icon(window, cx).is_none())
     }
 
     pub fn panel_for_id(&self, panel_id: EntityId) -> Option<&Arc<dyn PanelHandle>> {
@@ -778,10 +805,11 @@ impl Dock {
                             .ok();
                     }
                     PanelEvent::Activate => {
-                        if let Some(ix) = this
-                            .panel_entries
-                            .iter()
-                            .position(|entry| entry.panel.panel_id() == Entity::entity_id(panel))
+                        // SOLO: a disabled panel doesn't show itself.
+                        if panel.read(cx).enabled(cx)
+                            && let Some(ix) = this.panel_entries.iter().position(|entry| {
+                                entry.panel.panel_id() == Entity::entity_id(panel)
+                            })
                         {
                             this.set_open(true, window, cx);
                             this.activate_panel(ix, window, cx);
@@ -872,6 +900,11 @@ impl Dock {
         let Some(serialized) = self.restoration.pending().cloned() else {
             return;
         };
+        if self.restores_disabled_panel(&serialized, cx) {
+            self.set_open_internal(false, window, cx);
+            self.restoration.discard_pending();
+            return;
+        }
         let waiting_for_active_panel = serialized
             .active_panel
             .as_deref()
@@ -1614,6 +1647,26 @@ impl Render for PanelButtons {
             buttons.reverse();
         }
 
+        let mut buttons: Vec<AnyElement> = buttons
+            .into_iter()
+            .map(IntoElement::into_any_element)
+            .collect();
+        if dock.needs_close_button(window, cx) {
+            let action = dock.toggle_action();
+            let tooltip: SharedString = util::i18n::tr("Close Dock", "关闭停靠栏").into();
+            buttons.push(
+                IconButton::new(("close-dock", dock_position as u64), IconName::Close)
+                    .icon_size(IconSize::Small)
+                    .aria_label(tooltip.clone())
+                    .tooltip({
+                        let action = action.boxed_clone();
+                        move |_window, cx| Tooltip::for_action(tooltip.clone(), &*action, cx)
+                    })
+                    .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+                    .into_any_element(),
+            );
+        }
+
         let has_buttons = !buttons.is_empty();
 
         if self.vertical {
@@ -1667,6 +1720,7 @@ pub mod test {
         pub default_size: Pixels,
         pub flexible: bool,
         pub activation_priority: u32,
+        pub enabled: bool,
     }
     actions!(test_only, [ToggleTestPanel]);
 
@@ -1683,6 +1737,7 @@ pub mod test {
                 default_size: px(300.),
                 flexible: false,
                 activation_priority,
+                enabled: true,
             }
         }
 
@@ -1786,6 +1841,10 @@ pub mod test {
 
         fn toggle_action(&self) -> Box<dyn Action> {
             ToggleTestPanel.boxed_clone()
+        }
+
+        fn enabled(&self, _cx: &App) -> bool {
+            self.enabled
         }
 
         fn is_zoomed(&self, _window: &Window, _: &App) -> bool {

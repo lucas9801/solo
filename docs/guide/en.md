@@ -329,8 +329,8 @@ collaboration and Zed's own auto-update are off or hidden.
   and writes to its data folder, so it opens without a connection);
   signing in to an MCP server with OAuth uses dynamic client registration
   only, never Zed's client identity (servers that only take a client metadata document can't be
-  signed in to); the agent panel has no WSL sandbox on Windows, which would
-  download a Linux build of Zed from zed.dev;
+  signed in to); Solo has no agent panel (Zed's own agent UI), so none of
+  its downloads (e.g. a Linux build of Zed for a WSL sandbox) happen;
 - looking at the ACP agent registry, or using an agent configured from it:
   `cdn.agentclientprotocol.com` and the icon URLs the registry lists;
 - the agents you run in the terminal (Claude Code, Codex, ...) make their own
@@ -425,4 +425,7 @@ Solo's own settings, under `"terminal"`:
 
 Outside `"terminal"`: `"ui_language"` (`"system"`, `"en"` or `"zh"`; the
 environment variable `SOLO_LANGUAGE` overrides it), `"auto_update"` and
-`"disable_ai"`.
+`"disable_ai"`. `"disable_ai"` (and `"agent": { "enabled": false }`) turn off
+only Zed's own AI features (inline assistant, edit predictions, commit message
+generation); workspace tabs, terminals and the agents running in them, and
+turn review are unaffected.

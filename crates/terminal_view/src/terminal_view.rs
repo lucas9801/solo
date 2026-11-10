@@ -771,6 +771,8 @@ impl TerminalView {
         let has_agent_turns = agent_turns::has_turns(self, cx);
         let has_failed_command = self.failed_command_block(cx).is_some();
         let offers_remote_control = self.offers_remote_control();
+        // SOLO: no agent panel to add selections to.
+        let agent_panel_removed = project::AgentPanelRemoved::is_set(cx);
         let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
             menu.context(self.focus_handle.clone())
                 .when(self.shows_workspace_actions(), |menu| {
@@ -851,9 +853,17 @@ impl TerminalView {
                             .when(!self.read_only, |menu| {
                                 menu.action("Inline Assist", Box::new(InlineAssist::default()))
                             })
-                            .when(has_selection && self.shows_workspace_actions(), |menu| {
-                                menu.action("Add to Agent Thread", Box::new(AddSelectionToThread))
-                            })
+                            .when(
+                                has_selection
+                                    && self.shows_workspace_actions()
+                                    && !agent_panel_removed,
+                                |menu| {
+                                    menu.action(
+                                        "Add to Agent Thread",
+                                        Box::new(AddSelectionToThread),
+                                    )
+                                },
+                            )
                     },
                 )
                 .when(self.shows_workspace_actions(), |menu| {

@@ -431,13 +431,16 @@ impl MultiWorkspace {
     }
 
     /// SOLO: whether Zed's threads sidebar is available. It's one of Zed's AI
-    /// features, so `disable_ai` and `agent.enabled: false` turn it off.
+    /// features, so `disable_ai` and `agent.enabled: false` turn it off; and
+    /// it holds the agent panel, which Solo doesn't have.
     pub fn sidebar_enabled(&self, cx: &App) -> bool {
         Self::sidebar_enabled_in(cx)
     }
 
     fn sidebar_enabled_in(cx: &App) -> bool {
-        !DisableAiSettings::get_global(cx).disable_ai && AgentSettings::get_global(cx).enabled
+        !DisableAiSettings::get_global(cx).disable_ai
+            && AgentSettings::get_global(cx).enabled
+            && !project::AgentPanelRemoved::is_set(cx)
     }
 
     pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2174,26 +2177,20 @@ impl Render for MultiWorkspace {
                         ))
                     })
                 })
-                .when(
-                    self.sidebar_open() && self.sidebar_enabled(cx),
-                    |this| {
-                        this.on_drag_move(cx.listener(
-                            move |this: &mut Self,
-                                  e: &DragMoveEvent<DraggedSidebar>,
-                                  window,
-                                  cx| {
-                                if let Some(sidebar) = &this.sidebar {
-                                    let new_width = if sidebar_on_right {
-                                        window.bounds().size.width - e.event.position.x
-                                    } else {
-                                        e.event.position.x
-                                    };
-                                    sidebar.set_width(Some(new_width), cx);
-                                }
-                            },
-                        ))
-                    },
-                )
+                .when(self.sidebar_open() && self.sidebar_enabled(cx), |this| {
+                    this.on_drag_move(cx.listener(
+                        move |this: &mut Self, e: &DragMoveEvent<DraggedSidebar>, window, cx| {
+                            if let Some(sidebar) = &this.sidebar {
+                                let new_width = if sidebar_on_right {
+                                    window.bounds().size.width - e.event.position.x
+                                } else {
+                                    e.event.position.x
+                                };
+                                sidebar.set_width(Some(new_width), cx);
+                            }
+                        },
+                    ))
+                })
                 .children(left_sidebar)
                 .child(
                     div()
