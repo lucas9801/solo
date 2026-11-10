@@ -21165,6 +21165,223 @@ mod tests {
         });
     }
 
+    // SOLO: the terminal-first layout keeps the bottom dock for the terminal.
+    fn set_bottom_dock_layout(layout: BottomDockLayout, cx: &mut VisualTestContext) {
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.bottom_dock_layout = Some(layout);
+                });
+            });
+        });
+    }
+
+    /// Switches to the terminal-first layout (the tests' settings use
+    /// "contained") and adds a terminal panel, shown in the bottom dock.
+    fn add_fake_terminal_panel(
+        workspace: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<FakeTerminalPanel> {
+        set_bottom_dock_layout(BottomDockLayout::TerminalFirst, cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| FakeTerminalPanel {
+                focus_handle: cx.focus_handle(),
+            });
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.bottom_dock().update(cx, |dock, cx| {
+                let ix = dock
+                    .panel_index_for_type::<FakeTerminalPanel>()
+                    .expect("terminal panel in the bottom dock");
+                dock.set_open(true, window, cx);
+                dock.activate_panel(ix, window, cx);
+            });
+            panel
+        })
+    }
+
+    fn bottom_dock_shows(
+        workspace: &Entity<Workspace>,
+        panel_id: EntityId,
+        cx: &mut VisualTestContext,
+    ) -> bool {
+        workspace.read_with(cx, |workspace, cx| {
+            let dock = workspace.bottom_dock().read(cx);
+            dock.is_open() && dock.visible_panel().map(|panel| panel.panel_id()) == Some(panel_id)
+        })
+    }
+
+    #[gpui::test]
+    async fn test_terminal_first_layout_keeps_bottom_dock_for_terminal(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let terminal = add_fake_terminal_panel(&workspace, cx);
+        // Like the debug panel set to "bottom".
+        let other = workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| TestPanel::new(DockPosition::Bottom, 100, cx));
+            workspace.add_panel(panel.clone(), window, cx);
+            panel
+        });
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .right_dock()
+                    .read(cx)
+                    .panel::<TestPanel>()
+                    .is_some()
+            );
+            assert!(
+                workspace
+                    .bottom_dock()
+                    .read(cx)
+                    .panel::<TestPanel>()
+                    .is_none()
+            );
+        });
+
+        // Opening it leaves the terminal in the main column.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_panel_focus::<TestPanel>(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(bottom_dock_shows(&workspace, terminal.entity_id(), cx));
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.right_dock().read(cx).is_open());
+        });
+
+        // Closing it leaves the terminal open.
+        other.update(cx, |_, cx| cx.emit(PanelEvent::Close));
+        cx.run_until_parked();
+        assert!(bottom_dock_shows(&workspace, terminal.entity_id(), cx));
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(!workspace.right_dock().read(cx).is_open());
+        });
+
+        // Its "next position" skips the bottom.
+        workspace.update_in(cx, |workspace, window, cx| {
+            let panel = workspace
+                .right_dock()
+                .read(cx)
+                .panel::<TestPanel>()
+                .unwrap();
+            PanelHandle::move_to_next_position(&panel, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            other.read_with(cx, |panel, _| panel.position),
+            DockPosition::Left
+        );
+
+        // In other layouts the bottom dock is open to any panel.
+        set_bottom_dock_layout(BottomDockLayout::Contained, cx);
+        other.update_in(cx, |panel, window, cx| {
+            panel.set_position(DockPosition::Bottom, window, cx)
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                workspace
+                    .bottom_dock()
+                    .read(cx)
+                    .panel::<TestPanel>()
+                    .is_some()
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_closing_other_panel_in_terminal_column_shows_terminal(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        let terminal = add_fake_terminal_panel(&workspace, cx);
+        // A panel that got into the bottom dock anyway.
+        let other = workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| TestPanel::new(DockPosition::Bottom, 100, cx));
+            let weak_workspace = workspace.weak_handle();
+            workspace.bottom_dock().update(cx, |dock, cx| {
+                let ix = dock.add_panel(panel.clone(), weak_workspace, window, cx);
+                dock.activate_panel(ix, window, cx);
+            });
+            panel
+        });
+        assert!(bottom_dock_shows(&workspace, other.entity_id(), cx));
+
+        other.update(cx, |_, cx| cx.emit(PanelEvent::Close));
+        cx.run_until_parked();
+        assert!(bottom_dock_shows(&workspace, terminal.entity_id(), cx));
+    }
+
+    struct FakeTerminalPanel {
+        focus_handle: FocusHandle,
+    }
+
+    impl EventEmitter<PanelEvent> for FakeTerminalPanel {}
+
+    impl Focusable for FakeTerminalPanel {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl Render for FakeTerminalPanel {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("fake-terminal-panel")
+                .track_focus(&self.focus_handle(cx))
+        }
+    }
+
+    impl Panel for FakeTerminalPanel {
+        fn persistent_name() -> &'static str {
+            "TerminalPanel"
+        }
+
+        fn panel_key() -> &'static str {
+            dock::TERMINAL_PANEL_KEY
+        }
+
+        fn position(&self, _: &Window, _: &App) -> DockPosition {
+            DockPosition::Bottom
+        }
+
+        fn position_is_valid(&self, _: DockPosition) -> bool {
+            true
+        }
+
+        fn set_position(&mut self, _: DockPosition, _: &mut Window, _: &mut Context<Self>) {}
+
+        fn default_size(&self, _: &Window, _: &App) -> Pixels {
+            px(300.)
+        }
+
+        fn icon(&self, _: &Window, _: &App) -> Option<ui::IconName> {
+            None
+        }
+
+        fn icon_tooltip(&self, _: &Window, _: &App) -> Option<&'static str> {
+            None
+        }
+
+        fn toggle_action(&self) -> Box<dyn Action> {
+            ToggleSecondTestPanel.boxed_clone()
+        }
+
+        fn activation_priority(&self) -> u32 {
+            50
+        }
+    }
+
     actions!(test_only, [ToggleSecondTestPanel]);
 
     struct SecondTestPanel {
