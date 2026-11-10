@@ -69,7 +69,7 @@ use project::{
 use project_panel::ProjectPanel;
 use quick_action_bar::QuickActionBar;
 use recent_projects::open_remote_project;
-use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
+use release_channel::{AppCommitSha, ReleaseChannel};
 use rope::Rope;
 use search::project_search::ProjectSearchBar;
 use settings::{
@@ -91,7 +91,7 @@ use std::{
 use terminal_view::terminal_panel::{self, TerminalPanel};
 use theme::{ActiveTheme, SystemAppearance, ThemeRegistry};
 use theme_settings::{ThemeSettings, load_user_theme};
-use ui::{Navigable, NavigableEntry, PopoverMenuHandle, TintColor, prelude::*};
+use ui::{Navigable, NavigableEntry, PopoverMenuHandle, TintColor, Tooltip, prelude::*};
 use util::markdown::MarkdownString;
 use util::rel_path::RelPath;
 use util::{ResultExt, asset_str, maybe};
@@ -1524,57 +1524,149 @@ fn open_about_window(cx: &mut App) {
         Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))
     }
 
+    // SOLO: what Solo is (version, release date, commit), whether it's up to
+    // date, where to read more, and a copy of it all for bug reports.
     struct AboutWindow {
         focus_handle: FocusHandle,
         ok_entry: NavigableEntry,
         copy_entry: NavigableEntry,
         app_icon: Arc<Image>,
-        message: SharedString,
-        commit: Option<SharedString>,
-        full_version: SharedString,
+        /// "Solo 2.1.0", without the channel's "+stable" and the commit.
+        title: SharedString,
+        version: &'static str,
+        /// Whether this is a release, rather than a build of some commit.
+        stable: bool,
+        date: Option<&'static str>,
+        commit: Option<AppCommitSha>,
+        commit_copied: bool,
+        updater: Option<Entity<auto_update::solo_update::SoloUpdater>>,
+        _updater_subscription: Option<gpui::Subscription>,
     }
 
     impl AboutWindow {
         fn new(cx: &mut Context<Self>) -> Self {
             let release_channel = ReleaseChannel::global(cx);
-            let release_channel_name = release_channel.display_name();
-            let full_version: SharedString = AppVersion::global(cx).to_string().into();
             let version = env!("CARGO_PKG_VERSION");
-
             let debug = if cfg!(debug_assertions) {
-                "(debug)"
+                " (debug)"
             } else {
                 ""
             };
-            let message: SharedString = format!("{release_channel_name} {version} {debug}").into();
-            let commit = AppCommitSha::try_global(cx)
-                .map(|sha| sha.full())
-                .filter(|commit| !commit.is_empty())
-                .map(SharedString::from);
+            let title: SharedString =
+                format!("{} {version}{debug}", release_channel.display_name()).into();
+            let commit = AppCommitSha::try_global(cx).filter(|commit| !commit.full().is_empty());
+            let updater = auto_update::solo_update::updater(cx);
+            let _updater_subscription = updater
+                .as_ref()
+                .map(|updater| cx.observe(updater, |_, _, cx| cx.notify()));
 
             Self {
                 focus_handle: cx.focus_handle(),
                 ok_entry: NavigableEntry::focusable(cx),
                 copy_entry: NavigableEntry::focusable(cx),
                 app_icon: about_window_icon(release_channel),
-                message,
+                title,
+                version,
+                stable: release_channel == ReleaseChannel::Stable,
+                date: option_env!("SOLO_COMMIT_DATE"),
                 commit,
-                full_version,
+                commit_copied: false,
+                updater,
+                _updater_subscription,
             }
         }
 
-        fn copy_details(&self, window: &mut Window, cx: &mut Context<Self>) {
-            let content = match self.commit.as_ref() {
-                Some(commit) => {
-                    format!(
-                        "{}\nCommit: {}\nVersion: {}",
-                        self.message, commit, self.full_version
-                    )
-                }
-                None => format!("{}\nVersion: {}", self.message, self.full_version),
+        fn date_line(&self) -> Option<String> {
+            let date = self.date?;
+            Some(match (self.stable, util::i18n::is_chinese()) {
+                (true, true) => format!("发布于 {date}"),
+                (true, false) => format!("Released {date}"),
+                (false, true) => format!("提交日期 {date}"),
+                (false, false) => format!("Commit of {date}"),
+            })
+        }
+
+        fn update_status_text(&self, cx: &App) -> String {
+            use auto_update::solo_update::UpdateStatus;
+            let Some(updater) = &self.updater else {
+                return util::i18n::tr(
+                    "Only stable builds check for updates",
+                    "只有正式版会检查更新",
+                )
+                .to_string();
             };
-            cx.write_to_clipboard(ClipboardItem::new_string(content));
-            window.remove_window();
+            match updater.read(cx).status() {
+                UpdateStatus::NotChecked => {
+                    util::i18n::tr("Not checked yet", "尚未检查更新").to_string()
+                }
+                UpdateStatus::Checking => {
+                    util::i18n::tr("Checking for updates…", "正在检查更新…").to_string()
+                }
+                UpdateStatus::UpToDate => util::i18n::tr("Up to date", "已是最新").to_string(),
+                UpdateStatus::Available(version) => {
+                    if util::i18n::is_chinese() {
+                        format!("有新版本 {version}")
+                    } else {
+                        format!("Version {version} is available")
+                    }
+                }
+                UpdateStatus::Failed => {
+                    util::i18n::tr("Couldn't check for updates", "检查更新失败").to_string()
+                }
+            }
+        }
+
+        fn copy_commit(&mut self, cx: &mut Context<Self>) {
+            if let Some(commit) = &self.commit {
+                cx.write_to_clipboard(ClipboardItem::new_string(commit.full()));
+                self.commit_copied = true;
+                cx.notify();
+            }
+        }
+
+        /// The version, commit and system for a bug report, then closes.
+        fn copy_details(&self, window: &mut Window, cx: &mut Context<Self>) {
+            let mut lines = vec![self.title.to_string()];
+            lines.extend(self.date_line());
+            if let Some(commit) = &self.commit {
+                lines.push(format!("Commit: {}", commit.full()));
+            }
+            let specs = system_specs::SystemSpecs::new(
+                window,
+                cx,
+                client::telemetry::os_name(),
+                client::telemetry::os_version(),
+            );
+            cx.spawn_in(window, async move |_, cx| {
+                let specs = specs.await.to_string();
+                // Its first line is the version again, with the channel and
+                // the commit: given above already.
+                lines.extend(
+                    specs
+                        .lines()
+                        .filter(|line| !line.starts_with("Solo: "))
+                        .map(str::to_string),
+                );
+                cx.update(|window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(lines.join("\n")));
+                    window.remove_window();
+                })
+                .log_err();
+            })
+            .detach();
+        }
+
+        fn render_link(
+            &self,
+            id: &'static str,
+            label: &'static str,
+            open: impl Fn(&mut App) + 'static,
+        ) -> impl IntoElement {
+            Button::new(id, label)
+                .style(ButtonStyle::Subtle)
+                .label_size(LabelSize::Small)
+                .color(Color::Accent)
+                .on_click(move |_, _, cx| open(cx))
         }
     }
 
@@ -1582,6 +1674,12 @@ fn open_about_window(cx: &mut App) {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let ok_is_focused = self.ok_entry.focus_handle.contains_focused(window, cx);
             let copy_is_focused = self.copy_entry.focus_handle.contains_focused(window, cx);
+            let repository = format!(
+                "https://github.com/{}",
+                auto_update::solo_update::SOLO_GITHUB_REPO
+            );
+            let release_notes = format!("{repository}/releases/tag/v{}", self.version);
+            let license = format!("{repository}/blob/v{}/LICENSE-GPL", self.version);
 
             Navigable::new(
                 v_flex()
@@ -1594,38 +1692,110 @@ fn open_about_window(cx: &mut App) {
                     .size_full()
                     .bg(cx.theme().colors().editor_background)
                     .text_color(cx.theme().colors().text)
-                    .p_4()
-                    .when(cfg!(target_os = "macos"), |this| this.pt_10())
-                    .gap_4()
+                    .px_4()
+                    .pb_4()
+                    .gap_3()
                     .text_center()
                     .justify_between()
                     .child(
+                        // The window has no title bar of its own: the top
+                        // moves it (on Windows; macOS has its own).
                         v_flex()
+                            .window_control_area(gpui::WindowControlArea::Drag)
                             .w_full()
-                            .gap_2()
+                            .pt_4()
+                            .when(cfg!(target_os = "macos"), |this| this.pt_10())
+                            .gap_1()
                             .items_center()
-                            .child(img(self.app_icon.clone()).size_16().flex_none())
-                            .child(Headline::new(self.message.clone()))
-                            .when_some(self.commit.clone(), |this, commit| {
+                            .child(img(self.app_icon.clone()).size_12().flex_none())
+                            .child(Headline::new(self.title.clone()))
+                            .when_some(self.date_line(), |this, date| {
                                 this.child(
-                                    Label::new("Commit")
-                                        .color(Color::Muted)
-                                        .size(LabelSize::XSmall),
+                                    Label::new(date).color(Color::Muted).size(LabelSize::Small),
                                 )
-                                .child(Label::new(commit).size(LabelSize::Small))
-                            })
+                            }),
+                    )
+                    .when_some(self.commit.clone(), |this, commit| {
+                        let copied = self.commit_copied;
+                        this.child(
+                            h_flex()
+                                .w_full()
+                                .justify_center()
+                                .gap_1()
+                                .child(
+                                    Label::new(util::i18n::tr("Commit", "提交"))
+                                        .color(Color::Muted)
+                                        .size(LabelSize::Small),
+                                )
+                                .child(
+                                    Button::new("copy-commit", commit.short())
+                                        .style(ButtonStyle::Subtle)
+                                        .label_size(LabelSize::Small)
+                                        .tooltip(Tooltip::text(if copied {
+                                            util::i18n::tr("Copied", "已复制")
+                                        } else {
+                                            util::i18n::tr("Copy the commit", "复制提交号")
+                                        }))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.copy_commit(cx);
+                                        })),
+                                )
+                                .when(copied, |this| {
+                                    this.child(
+                                        Label::new(util::i18n::tr("Copied", "已复制"))
+                                            .color(Color::Muted)
+                                            .size(LabelSize::XSmall),
+                                    )
+                                }),
+                        )
+                    })
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_center()
+                            .gap_2()
                             .child(
-                                Label::new("Version")
-                                    .color(Color::Muted)
-                                    .size(LabelSize::XSmall),
+                                Label::new(self.update_status_text(cx))
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
                             )
-                            .child(Label::new(self.full_version.clone()).size(LabelSize::Small))
-                            // SOLO: where Solo comes from, as its license asks.
                             .child(
-                                Label::new("Based on Zed")
-                                    .color(Color::Muted)
-                                    .size(LabelSize::XSmall),
+                                Button::new(
+                                    "check-for-updates",
+                                    util::i18n::tr("Check for Updates", "检查更新"),
+                                )
+                                .style(ButtonStyle::Outlined)
+                                .label_size(LabelSize::Small)
+                                .on_click(|_, window, cx| {
+                                    auto_update::solo_update::check_manually(window, cx);
+                                }),
                             ),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .flex_wrap()
+                            .justify_center()
+                            .gap_1()
+                            .child(self.render_link(
+                                "user-guide",
+                                util::i18n::tr("User Guide", "用户指南"),
+                                |cx| cx.open_url(util::i18n::guide_url()),
+                            ))
+                            .child(self.render_link(
+                                "release-notes",
+                                util::i18n::tr("Release Notes", "发行说明"),
+                                move |cx| cx.open_url(&release_notes),
+                            ))
+                            .child(self.render_link("repository", "GitHub", move |cx| {
+                                cx.open_url(&repository)
+                            }))
+                            // Where Solo comes from, as its license asks.
+                            .child(self.render_link(
+                                "license",
+                                util::i18n::tr("GPL-3.0, based on Zed", "GPL-3.0，基于 Zed"),
+                                move |cx| cx.open_url(&license),
+                            )),
                     )
                     .child(
                         h_flex()
@@ -1639,7 +1809,7 @@ fn open_about_window(cx: &mut App) {
                                         window.remove_window();
                                     }))
                                     .child(
-                                        Button::new("ok", "OK")
+                                        Button::new("ok", util::i18n::tr("OK", "好"))
                                             .full_width()
                                             .style(ButtonStyle::OutlinedGhost)
                                             .toggle_state(ok_is_focused)
@@ -1659,11 +1829,15 @@ fn open_about_window(cx: &mut App) {
                                         },
                                     ))
                                     .child(
-                                        Button::new("copy", "Copy")
+                                        Button::new("copy", util::i18n::tr("Copy", "复制"))
                                             .full_width()
                                             .style(ButtonStyle::Tinted(TintColor::Accent))
                                             .toggle_state(copy_is_focused)
                                             .selected_style(ButtonStyle::Tinted(TintColor::Accent))
+                                            .tooltip(Tooltip::text(util::i18n::tr(
+                                                "Copy the version, commit and system details",
+                                                "复制版本、提交号和系统信息",
+                                            )))
                                             .on_click(cx.listener(|this, _event, window, cx| {
                                                 this.copy_details(window, cx);
                                             })),
@@ -1700,7 +1874,7 @@ fn open_about_window(cx: &mut App) {
 
     let window_size = Size {
         width: px(440.),
-        height: px(320.),
+        height: px(360.),
     };
 
     cx.open_window(

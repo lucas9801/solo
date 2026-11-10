@@ -38,8 +38,13 @@ files.
 
 - Solo checks [its GitHub releases](https://github.com/lucas9801/solo/releases)
   30 seconds after it starts and every 6 hours after that (stable builds only).
-- A newer version shows a notification: update and restart, skip this version,
-  or view the release notes. Nothing is installed without you agreeing to it.
+- A newer version shows a notification with a one-line summary: update and
+  restart, skip this version, or view the release notes. Nothing is installed
+  without you agreeing to it.
+- **About Solo** shows the version, its release date and commit (click it to
+  copy), whether Solo is up to date with a **Check for Updates** button, and
+  links to this guide, the release notes, the repository and the license.
+  **Copy** copies the version, commit and system details for a bug report.
 - When you update, the installer is downloaded to `%TEMP%\solo-update\`. Solo
   closes its windows the way Quit does, so it still asks about unsaved files.
   `solo-update-helper.exe` then waits for Solo to exit, runs the installer
@@ -415,7 +420,7 @@ Solo's own settings, under `"terminal"`:
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
 | `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
-| `agent_usage_display` | `"always"` | a running agent's context and tokens in a bar at the bottom of its terminal and its context percentage on the tab; `"tooltip"` shows them only in the tab's tooltip |
+| `agent_usage_display` | `"always"` | a running agent's context and tokens in a bar at the bottom of its terminal (when narrow, the turn's tokens go first, then the session's) and its context percentage on the tab; `"tooltip"` shows them only in the tab's tooltip |
 | `agent_commands` | `[]` | more programs to treat as agents |
 | `agent_task_command` | `"claude"` | what a new agent task runs |
 | `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |

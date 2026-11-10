@@ -16,7 +16,9 @@
 //! One client at a time. When it goes (Solo quit, closed the window, or
 //! crashed), the host ends unless it was last told `P`; then the next client
 //! can connect, and resizing makes the console repaint the whole screen for
-//! it. The host ends with the program it runs.
+//! it. The host ends with the program it runs, and ends it if no first
+//! client connects within a minute (Solo crashed or was ended after starting
+//! the host).
 
 #[cfg(windows)]
 mod host;

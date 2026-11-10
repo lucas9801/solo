@@ -452,27 +452,118 @@ fn can_install() -> bool {
     cfg!(target_os = "windows")
 }
 
-/// A few lines of the release notes for the notification.
-fn notes_excerpt(notes: &str) -> Option<String> {
-    let mut excerpt = String::new();
-    for line in notes
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .take(4)
-    {
-        if !excerpt.is_empty() {
-            excerpt.push('\n');
+/// The most characters of the release notes' summary the notification shows.
+const SUMMARY_MAX_CHARS: usize = 200;
+
+/// One sentence of the release notes for the notification, in the UI's
+/// language, as plain text.
+///
+/// Solo's release notes start with a summary in Chinese on the first line and
+/// in English on the second, each one plain sentence (checked by
+/// `script/release-solo.ps1`). Notes that don't (older releases') give the
+/// plain text of their first paragraph that isn't only headings.
+fn notes_summary(notes: &str, chinese: bool) -> Option<String> {
+    let mut lines = notes.lines().map(str::trim).filter(|line| !line.is_empty());
+    let summary = match (lines.next(), lines.next()) {
+        (Some(zh), Some(en)) if is_summary_line(zh, true) && is_summary_line(en, false) => {
+            if chinese { zh } else { en }.to_string()
         }
-        excerpt.push_str(line);
+        _ => first_paragraph_text(notes)?,
+    };
+    Some(truncate_at_boundary(&summary, SUMMARY_MAX_CHARS))
+}
+
+/// Whether `line` is one of the summary lines the release notes start with:
+/// plain text, with Chinese in it or not.
+fn is_summary_line(line: &str, chinese: bool) -> bool {
+    let markdown = line.starts_with(['#', '-', '*', '>', '[', '!', '|', '`', '<', '+'])
+        || line.contains("](")
+        || line.contains("://");
+    let has_cjk = line.chars().any(is_cjk);
+    !markdown && has_cjk == chinese && (chinese || line.chars().any(char::is_alphabetic))
+}
+
+fn is_cjk(character: char) -> bool {
+    matches!(character, '\u{3400}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
+}
+
+/// The plain text of the first paragraph with any, skipping headings.
+fn first_paragraph_text(notes: &str) -> Option<String> {
+    let mut paragraph = Vec::new();
+    for line in notes.lines().map(str::trim) {
+        if line.is_empty() {
+            if !paragraph.is_empty() {
+                break;
+            }
+            continue;
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        let text = plain_text(line);
+        if !text.is_empty() {
+            paragraph.push(text);
+        }
     }
-    if excerpt.is_empty() {
-        return None;
+    (!paragraph.is_empty()).then(|| paragraph.join(" "))
+}
+
+/// One line of markdown as plain text: no list or quote markers, emphasis or
+/// code marks; links as their text, without addresses.
+fn plain_text(line: &str) -> String {
+    let mut line = line.trim_start_matches(['>', ' ']);
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(rest) = line.strip_prefix(marker) {
+            line = rest;
+        }
     }
-    if excerpt.chars().count() > 300 {
-        excerpt = excerpt.chars().take(300).collect::<String>() + "…";
+    if let Some((number, rest)) = line.split_once(". ")
+        && !number.is_empty()
+        && number.chars().all(|character| character.is_ascii_digit())
+    {
+        line = rest;
     }
-    Some(excerpt)
+    let mut text = String::new();
+    let mut rest = line;
+    while !rest.is_empty() {
+        // `[text](address)` and `![alt](address)`: the text.
+        if let Some(after) = rest.strip_prefix("![").or_else(|| rest.strip_prefix('['))
+            && let Some((label, after)) = after.split_once("](")
+            && let Some((_, after)) = after.split_once(')')
+        {
+            text.push_str(label);
+            rest = after;
+            continue;
+        }
+        let character = rest.chars().next().unwrap_or_default();
+        if !matches!(character, '*' | '`' | '~') {
+            text.push(character);
+        }
+        rest = &rest[character.len_utf8()..];
+    }
+    text.split_whitespace()
+        .filter(|word| !word.contains("://") && !word.starts_with("www."))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `text` cut to at most `max_chars` (and "…"), between words or, in
+/// Chinese, between characters.
+fn truncate_at_boundary(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max_chars).collect();
+    let next = text.chars().nth(max_chars).unwrap_or(' ');
+    let mid_word = |character: char| character.is_alphanumeric() && !is_cjk(character);
+    let kept = match kept.chars().last() {
+        Some(last) if mid_word(last) && mid_word(next) => match kept.rfind(char::is_whitespace) {
+            Some(space) => kept[..space].to_string(),
+            None => kept,
+        },
+        _ => kept,
+    };
+    format!("{}…", kept.trim_end())
 }
 
 fn read_skipped_version(cx: &App) -> Task<Option<Version>> {
@@ -523,8 +614,39 @@ pub struct SoloUpdater {
     /// Survives other activity: a newer version may be checked for and
     /// downloaded meanwhile.
     ready_on_quit: Option<ReadyOnQuit>,
+    /// What the last check found.
+    checked: UpdateStatus,
     poll_task: Option<Task<()>>,
     _quit_subscription: gpui::Subscription,
+}
+
+/// What Solo knows about updates, for the About window.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdateStatus {
+    /// Not checked yet since Solo started.
+    NotChecked,
+    Checking,
+    UpToDate,
+    /// A newer version, skipped by the user or not.
+    Available(Version),
+    Failed,
+}
+
+/// The updater, in stable builds (others don't update).
+pub fn updater(cx: &App) -> Option<Entity<SoloUpdater>> {
+    Some(cx.try_global::<GlobalSoloUpdater>()?.0.clone())
+}
+
+/// What a check's outcome says about updates.
+fn update_status(outcome: &Result<CheckOutcome>) -> UpdateStatus {
+    match outcome {
+        Ok(CheckOutcome::UpdateAvailable(release)) => {
+            UpdateStatus::Available(release.version.clone())
+        }
+        Ok(CheckOutcome::Skipped(version)) => UpdateStatus::Available(version.clone()),
+        Ok(CheckOutcome::UpToDate) => UpdateStatus::UpToDate,
+        Err(_) => UpdateStatus::Failed,
+    }
 }
 
 /// What to tell the user about the update the last run was installing.
@@ -563,6 +685,7 @@ pub fn init(cx: &mut App) {
             current_version,
             activity: Activity::Idle,
             ready_on_quit: None,
+            checked: UpdateStatus::NotChecked,
             poll_task: None,
             _quit_subscription: cx.on_app_quit(|updater: &mut SoloUpdater, _| {
                 updater.install_ready_update_at_quit();
@@ -696,6 +819,15 @@ fn show_status_message(message: String, cx: &mut App) {
 }
 
 impl SoloUpdater {
+    /// What's known about updates: whether a check runs, or what the last
+    /// one found.
+    pub fn status(&self) -> UpdateStatus {
+        match self.activity {
+            Activity::Checking => UpdateStatus::Checking,
+            _ => self.checked.clone(),
+        }
+    }
+
     fn sync_polling(&mut self, cx: &mut Context<Self>) {
         let enabled = AutoUpdateSetting::get_global(cx).0;
         if enabled && self.poll_task.is_none() {
@@ -766,6 +898,7 @@ impl SoloUpdater {
         check_type: UpdateCheckType,
         cx: &mut Context<Self>,
     ) {
+        self.checked = update_status(&outcome);
         match outcome {
             Ok(CheckOutcome::UpdateAvailable(release)) if self.ready_on_quit.is_some() => {
                 let ready = self
@@ -1109,7 +1242,7 @@ fn show_update_available(release: SoloRelease, cx: &mut App) {
                 } else {
                     format!("Solo {version} is available")
                 };
-                let excerpt = notes_excerpt(&release.notes);
+                let excerpt = notes_summary(&release.notes, util::i18n::is_chinese());
                 let mut notification = MessageNotification::new_from_builder(cx, move |_, _| {
                     Label::new(title.clone()).into_any_element()
                 })
@@ -1174,7 +1307,7 @@ fn show_update_available(release: SoloRelease, cx: &mut App) {
                     } else {
                         format!("Updating and restarting now ends: {names}")
                     };
-                    let notes = notes_excerpt(&release.notes)
+                    let notes = notes_summary(&release.notes, util::i18n::is_chinese())
                         .map(|excerpt| format!("{warning}\n\n{excerpt}"))
                         .unwrap_or(warning);
                     notification
@@ -1361,12 +1494,81 @@ mod tests {
     }
 
     #[test]
-    fn excerpts_release_notes() {
-        assert_eq!(notes_excerpt("\n\n  "), None);
+    fn summarizes_release_notes_in_the_ui_language() {
+        // v2.1.0's notes as published: a summary in each language first.
+        let notes = include_str!("../test_data/release-notes-v2.1.0.md");
         assert_eq!(
-            notes_excerpt("## New\n\n- a\n- b\n- c\n- d"),
-            Some("## New\n- a\n- b\n- c".to_string())
+            notes_summary(notes, true).as_deref(),
+            Some("Solo 2.1：agent 状态更准，常驻终端更可靠，Codex 的会话信息和 Claude 一样详细。")
         );
+        assert_eq!(
+            notes_summary(notes, false).as_deref(),
+            Some(
+                "Solo 2.1: more accurate agent status, more reliable terminals that outlive \
+                 Solo, and Codex sessions as detailed as Claude's."
+            )
+        );
+        // The same with Windows line ends.
+        assert_eq!(
+            notes_summary(&notes.replace('\n', "\r\n"), true),
+            notes_summary(notes, true)
+        );
+    }
+
+    #[test]
+    fn summarizes_release_notes_without_summary_lines() {
+        assert_eq!(notes_summary("\n\n  ", true), None);
+        // An older release's: the first paragraph that isn't headings, plain.
+        let notes = "## What's new\n\n\
+            - **Agent tabs** show [the status](https://example.com/status) of `claude`;\n\
+            - see https://github.com/lucas9801/solo for more.\n\n\
+            ## Fixes\n\n- Something.";
+        let plain = "Agent tabs show the status of claude; see for more.";
+        assert_eq!(notes_summary(notes, true).as_deref(), Some(plain));
+        assert_eq!(notes_summary(notes, false).as_deref(), Some(plain));
+        assert_eq!(
+            notes_summary(&notes.replace('\n', "\r\n"), false).as_deref(),
+            Some(plain)
+        );
+        // Links on the second line: not the summary convention either.
+        let notes = "Solo 2.1：更准。\n[User guide](https://example.com/guide)\n\nMore.";
+        assert_eq!(
+            notes_summary(notes, false).as_deref(),
+            Some("Solo 2.1：更准。 User guide")
+        );
+    }
+
+    #[test]
+    fn update_status_from_check_outcomes() {
+        let version = Version::new(2, 2, 0);
+        assert_eq!(
+            update_status(&Ok(CheckOutcome::Skipped(version.clone()))),
+            UpdateStatus::Available(version)
+        );
+        assert_eq!(
+            update_status(&Ok(CheckOutcome::UpToDate)),
+            UpdateStatus::UpToDate
+        );
+        assert_eq!(
+            update_status(&Err(anyhow::anyhow!("offline"))),
+            UpdateStatus::Failed
+        );
+    }
+
+    #[test]
+    fn truncates_summaries_between_words() {
+        assert_eq!(truncate_at_boundary("short", 10), "short");
+        assert_eq!(
+            truncate_at_boundary("more reliable terminals", 16),
+            "more reliable…"
+        );
+        assert_eq!(truncate_at_boundary("one, two", 4), "one,…");
+        assert_eq!(
+            truncate_at_boundary("agent 状态更准，常驻终端更可靠", 10),
+            "agent 状态更准…"
+        );
+        // One long word: cut in it rather than show nothing.
+        assert_eq!(truncate_at_boundary("abcdefgh", 4), "abcd…");
     }
 
     fn fake_http(status: u16, body: String) -> Arc<dyn HttpClient> {
