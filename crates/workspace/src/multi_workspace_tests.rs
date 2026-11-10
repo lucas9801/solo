@@ -253,7 +253,7 @@ async fn test_removing_workspace_with_running_program_asks(cx: &mut TestAppConte
     });
     cx.run_until_parked();
 
-    for (answer, kept) in [("Cancel", true), ("Close", false)] {
+    for (answer, kept) in [("Cancel", true), ("Close and End claude", false)] {
         let removal = multi_workspace.update_in(cx, |mw, window, cx| {
             mw.remove(
                 [workspace_a.clone()],

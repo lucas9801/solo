@@ -21276,7 +21276,7 @@ mod tests {
             workspace.add_panel(panel.clone(), window, cx);
             workspace.bottom_dock().update(cx, |dock, cx| {
                 let ix = dock
-                    .panel_index_for_type::<FakeTerminalPanel>()
+                    .panel_index_for_type::<FakeTerminalPanel>(cx)
                     .expect("terminal panel in the bottom dock");
                 dock.set_open(true, window, cx);
                 dock.activate_panel(ix, window, cx);
