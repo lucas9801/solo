@@ -6,7 +6,7 @@ use std::mem::{size_of, transmute, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::ptr::{null, null_mut};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -349,7 +349,26 @@ impl Pipes {
         let control = connect_pipe(self.control).ok()?;
         Some((out, input, control))
     }
+
+    /// [`Pipes::connect`], giving up after `timeout`. The connecting thread
+    /// is left waiting then, so only for a host about to end.
+    fn connect_within(self, timeout: Duration) -> Option<(File, File, File)> {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            sender.send(self.connect()).ok();
+        });
+        receiver.recv_timeout(timeout).ok().flatten()
+    }
 }
+
+// The handles are only pipe instances this process made, used by one thread
+// at a time.
+unsafe impl Send for Pipes {}
+
+/// How long the host waits for its first client: Solo connects right after
+/// starting it, so a host nobody connects to (Solo crashed or was ended in
+/// between) ends rather than keep a shell running for no one.
+const FIRST_CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Output kept for the next client, and the client being written to.
 struct Shared {
@@ -453,7 +472,14 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes) {
     // next client, even past one that opened the pipes and went.
     let mut kept = false;
     while let Some(next) = pipes.take().or_else(|| Pipes::make(&spec.pipe, false)) {
-        let Some((mut out, input, control)) = next.connect() else {
+        // Only the first client is waited for at most so long; after a
+        // client said to keep running, the next may come any time.
+        let connected = if kept {
+            next.connect()
+        } else {
+            next.connect_within(FIRST_CLIENT_TIMEOUT)
+        };
+        let Some((mut out, input, control)) = connected else {
             if kept {
                 continue;
             }
@@ -522,9 +548,9 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes) {
         shared.lock().unwrap_or_else(|e| e.into_inner()).client = None;
         forward_input.join().ok();
     }
-    // The pipes can't be made (someone else holds the name), or a client
-    // failed before saying to keep running: end rather than run on
-    // unreachable.
+    // The pipes can't be made (someone else holds the name), no first client
+    // came in time, or a client failed before saying to keep running: end
+    // rather than run on unreachable.
     console.kill();
     std::process::exit(4);
 }
@@ -552,6 +578,59 @@ mod tests {
         assert_eq!(shared(b"[1mcd\nef\ngh", true).replay(), b"ef\ngh");
         // No line start: all of it, rather than nothing.
         assert_eq!(shared(b"abc", true).replay(), b"abc");
+    }
+
+    fn unique_pipe_name() -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        format!(
+            r"\\.\pipe\solo-terminal-host-test-{}-{nanos}",
+            std::process::id()
+        )
+    }
+
+    #[test]
+    fn test_first_client_times_out() {
+        let name = unique_pipe_name();
+        let pipes = Pipes::make(&name, true).expect("pipes");
+        let started = std::time::Instant::now();
+        assert!(pipes.connect_within(Duration::from_millis(300)).is_none());
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(300), "{waited:?}");
+        assert!(waited < Duration::from_secs(10), "{waited:?}");
+    }
+
+    #[test]
+    fn test_first_client_connects_in_time() {
+        let name = unique_pipe_name();
+        let pipes = Pipes::make(&name, true).expect("pipes");
+        let client = {
+            let name = name.clone();
+            thread::spawn(move || {
+                let out = std::fs::OpenOptions::new()
+                    .read(true)
+                    .open(format!("{name}-out"))
+                    .expect("out");
+                let input = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(format!("{name}-in"))
+                    .expect("in");
+                let control = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(format!("{name}-ctl"))
+                    .expect("ctl");
+                (out, input, control)
+            })
+        };
+        let (mut out, _input, _control) = pipes
+            .connect_within(Duration::from_secs(10))
+            .expect("the client connected");
+        let (mut client_out, _client_input, _client_control) = client.join().unwrap();
+        out.write_all(b"hi").unwrap();
+        let mut read = [0u8; 2];
+        client_out.read_exact(&mut read).unwrap();
+        assert_eq!(&read, b"hi");
     }
 
     #[test]
