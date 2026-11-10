@@ -230,6 +230,8 @@ pub fn deploy_context_menu(
             editor.buffer.read(cx).as_singleton().as_ref(),
             cx,
         );
+        // SOLO: no agent panel to add selections to.
+        let agent_panel_removed = project::AgentPanelRemoved::is_set(cx);
 
         let is_markdown = editor
             .buffer()
@@ -297,9 +299,10 @@ pub fn deploy_context_menu(
                         quick_launch: false,
                     }),
                 )
-                .when(!disable_ai && has_selections, |this| {
-                    this.action("Add to Agent Thread", Box::new(AddSelectionToThread))
-                })
+                .when(
+                    !disable_ai && has_selections && !agent_panel_removed,
+                    |this| this.action("Add to Agent Thread", Box::new(AddSelectionToThread)),
+                )
                 .when(send_to_agent, |this| {
                     this.separator()
                         .when(has_selections, |this| {

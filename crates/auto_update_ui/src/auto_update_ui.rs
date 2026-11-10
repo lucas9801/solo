@@ -9,9 +9,7 @@ use markdown_preview::markdown_preview_view::{MarkdownPreviewMode, MarkdownPrevi
 use project::DisableAiSettings;
 use release_channel::{AppVersion, ReleaseChannel};
 use semver::Version;
-use serde::Deserialize;
 use settings::Settings as _;
-use smol::io::AsyncReadExt;
 use ui::{AnnouncementToast, DeltaIllustration, ListBulletItem, prelude::*};
 use util::{ResultExt as _, maybe};
 use workspace::{
@@ -51,12 +49,6 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
-#[derive(Deserialize)]
-struct ReleaseNotesBody {
-    title: String,
-    release_notes: String,
-}
-
 fn notify_release_notes_failed_to_show(
     workspace: &mut Workspace,
     _window: &mut Window,
@@ -86,31 +78,17 @@ fn notify_release_notes_failed_to_show(
     workspace.show_error(ReleaseNotesError { url }, cx);
 }
 
+/// SOLO: shows the running version's release notes from its GitHub release
+/// (Zed fetched them from zed.dev, which has none for Solo's versions), and
+/// opens the release page when they can't be fetched.
 fn view_release_notes_locally(
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let release_channel = ReleaseChannel::global(cx);
-
-    if matches!(
-        release_channel,
-        ReleaseChannel::Nightly | ReleaseChannel::Dev
-    ) {
-        if let Some(url) = release_notes_url(cx) {
-            cx.open_url(&url);
-        }
-        return;
-    }
-
-    let version = AppVersion::global(cx).to_string();
-
-    let client = client::Client::global(cx).http_client();
-    let url = client.build_url(&format!(
-        "/api/release_notes/v2/{}/{}",
-        release_channel.dev_name(),
-        version
-    ));
+    let version = AppVersion::global(cx);
+    let http = client::Client::global(cx).http_client();
+    let page_url = auto_update::solo_update::release_page_url(&version);
 
     let markdown = workspace
         .app_state()
@@ -119,21 +97,23 @@ fn view_release_notes_locally(
 
     cx.spawn_in(window, async move |workspace, cx| {
         let markdown = markdown.await.log_err();
-        let response = client.get(&url, Default::default(), true).await;
-        let Some(mut response) = response.log_err() else {
-            workspace
-                .update_in(cx, notify_release_notes_failed_to_show)
-                .log_err();
-            return;
+        let release = auto_update::solo_update::fetch_release_for_version(http, &version).await;
+        let notes = match release {
+            Ok(release) if !release.notes.trim().is_empty() => release.notes,
+            Ok(_) => {
+                log::info!("Solo {version}'s release has no notes, opening its page");
+                cx.update(|_, cx| cx.open_url(&page_url)).ok();
+                return;
+            }
+            Err(error) => {
+                log::warn!("Couldn't fetch Solo {version}'s release notes: {error:#}");
+                cx.update(|_, cx| cx.open_url(&page_url)).ok();
+                return;
+            }
         };
-
-        let mut body = Vec::new();
-        response.body_mut().read_to_end(&mut body).await.ok();
-
-        let body: serde_json::Result<ReleaseNotesBody> = serde_json::from_slice(body.as_slice());
+        let title = release_notes_title(&version);
 
         let res: Option<()> = maybe!(async {
-            let body = body.ok()?;
             let project = workspace
                 .read_with(cx, |workspace, _| workspace.project().clone())
                 .ok()?;
@@ -144,11 +124,9 @@ fn view_release_notes_locally(
                 )
             });
             let buffer = buffer.await.ok()?;
-            buffer.update(cx, |buffer, cx| {
-                buffer.edit([(0..0, body.release_notes)], None, cx)
-            });
+            buffer.update(cx, |buffer, cx| buffer.edit([(0..0, notes)], None, cx));
 
-            let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx).with_title(body.title));
+            let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx).with_title(title));
 
             let ws_handle = workspace.clone();
             workspace
@@ -182,6 +160,16 @@ fn view_release_notes_locally(
         }
     })
     .detach();
+}
+
+/// SOLO: the title of the release notes tab, e.g. "Solo 2.1.0 Release Notes".
+fn release_notes_title(version: &Version) -> String {
+    let version = format!("{}.{}.{}", version.major, version.minor, version.patch);
+    if util::i18n::is_chinese() {
+        format!("Solo {version} 发行说明")
+    } else {
+        format!("Solo {version} Release Notes")
+    }
 }
 
 #[derive(Clone)]

@@ -24,7 +24,8 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
 ## 3. 更新
 
 - Solo 启动 30 秒后检查一次 [GitHub Releases](https://github.com/lucas9801/solo/releases)，之后每 6 小时检查一次。只有稳定版会检查。
-- 有新版本时会弹出通知，可以选“更新并重启”、“跳过此版本”或“查看发布说明”。Solo 不会在你没同意的情况下安装任何东西。
+- 有新版本时会弹出通知，附一句更新概要，可以选“更新并重启”、“跳过此版本”或“查看发布说明”。Solo 不会在你没同意的情况下安装任何东西。
+- **关于 Solo** 窗口显示版本、发布日期和提交号（点击可复制），是否已是最新，以及“检查更新”按钮；还有用户指南、本版本发行说明、GitHub 仓库和许可的链接。“复制”按钮复制版本、提交号和系统信息，方便报告问题。
 - 选了更新以后：安装包会下载到 `%TEMP%\solo-update\`，Solo 像正常退出一样关闭窗口（未保存的文件会询问你），然后由 `solo-update-helper.exe` 等 Solo 退出，在原来的目录静默运行安装包，装完再启动 Solo。安装日志在 `%TEMP%\solo-update\install.log`，helper 的错误记录在同一个目录的 `update-helper.log`。
 - 要关闭自动检查，在设置里写 `"auto_update": false`。命令面板里的 **Check for Updates（检查更新）** 不受这个设置影响，总会检查。
 
@@ -82,6 +83,10 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 
 快照存在 Solo 自己的目录里，不会改动你的分支、HEAD、暂存区、stash，也不会往你的 git 对象库里写东西。被 `.gitignore` 忽略的文件不在快照里。
 
+拍不了快照时（例如不是 git 仓库、文件又超过 20000 个），Solo 会记下这一轮里项目中被改动的文件（只算智能体工作目录下、没被忽略的文件），标签上照样显示 **“N 个文件已修改”**；点开是一个文件列表，点文件在编辑器里打开，列表上方写明为什么这一轮没有差异和回滚。这种情况下只能看到项目里打开的文件夹里的改动，别的程序同时改的文件也会算进去。
+
+Solo 不会在智能体工作时自动打开它改的文件。
+
 ### 时间线（Claude Code、Codex）
 命令 `terminal: show agent timeline`（“显示智能体时间线”）会在终端旁边打开这次会话的时间线：每一轮的提示词、读过和改过的文件、跑过的命令和最后的回答。内容读自 agent 自己的会话记录（Claude Code 的 `~/.claude/projects/...`，Codex 的 `~/.codex/sessions/...`），Solo 只读不写。如果 Solo 判断不出是哪个会话，用 `terminal: choose agent session` 手动选。
 
@@ -110,7 +115,7 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 - 命令失败时，退出码旁边（以及右键菜单里）有 **发给 agent**：只挑出失败的部分，比如编译错误和位置、失败的测试和断言（支持 cargo、tsc、gcc/clang、MSVC、pytest、go、jest），其他情况取输出的最后一段，粘贴给在同一目录里工作的智能体。
 - 在 Markdown 预览里选中文字，右键选 **批注…**。批注列在文档下方；点 **发给 agent**，所有批注连同行号和原文一起粘贴给最近改过这份文档的智能体（没有的话给最近用过的）。你读过之后文档又被改了，上方会提示新增和删除了多少行；**显示改动** 会标出改过的段落，**标为已读** 表示看完了。
 - 智能体可以用 `solo-cli agent` 驱动其他终端（列出终端、发消息、等它完成、读它的回答、新开任务），见 [agent-cli.md](../agent-cli.md)。设置项 `agent_control` 控制它能做到什么程度。
-- 在 Claude Code 终端的菜单里选“启用远程控制”，Solo 会往 Claude Code 里输入 `/remote-control`，之后可以用手机上的 Claude App 继续这个会话。
+- 在 Claude Code 终端的菜单里选“开启手机控制”，Solo 会往 Claude Code 里输入 `/remote-control`，之后可以用手机上的 Claude App 继续这个会话。
 
 ### 关掉 Solo，智能体照样在跑
 每个终端的 shell 跑在一个小的后台进程 `solo-terminal-host.exe` 里。Solo 退出、更新重启，甚至崩溃时，正在运行东西（智能体，或者编译之类的命令）的终端会在那里继续跑；Solo 再打开那个工作区时会自动连回去，期间的输出也都在。空闲的 shell 还是随 Solo 一起结束；关掉终端标签会结束里面运行的东西。
@@ -173,7 +178,7 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
 - 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；
-- Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 自带的 agent 面板在 Windows 上不提供 WSL 沙箱，因为它需要从 zed.dev 下载 Linux 版的 Zed。
+- Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 去掉了智能体面板（Zed 自己的 agent 界面），它的下载（比如 WSL 沙箱要用的 Linux 版 Zed）也就不会发生。
 - 打开 ACP 智能体注册表，或使用从注册表配置的智能体：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
 - 在终端里运行的智能体（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
 
@@ -207,9 +212,9 @@ Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响�
 - 其他智能体的状态本来就是推断出来的，可能会慢一两秒。
 
 ### 日志和崩溃信息
-- 日志：`%LOCALAPPDATA%\Solo\logs\Solo.log`，上一次运行的是 `Solo.log.old`。命令面板里的 `solo: open log` 打开日志，`solo: reveal log in file manager` 在资源管理器里显示。
+- 日志：`%LOCALAPPDATA%\Solo\logs\Solo.log`，更早的内容在 `Solo.log.old`（日志变大时移过去）。命令面板里的 `solo: open log` 打开日志，`solo: reveal log in file manager` 在资源管理器里显示。
 - 卡顿 trace：`%LOCALAPPDATA%\Solo\hang_traces\`。
-- 崩溃：Solo 默认不生成 minidump；崩溃前的信息一般在 `Solo.log.old` 里。需要 minidump 时，设置环境变量 `ZED_GENERATE_MINIDUMPS=1` 后再启动 Solo，文件会写到 logs 目录（具体文件名待核实）。
+- 崩溃：崩溃后先看 `%LOCALAPPDATA%\Solo\logs\Solo.log`（日志变大后旧内容会移到 `Solo.log.old`）。Solo 自身出错（panic）导致的崩溃会记在里面：搜 `panicked at`，后面是出错的位置、消息和调用栈，报告问题时请附上这一段。Solo 默认不生成 minidump；需要 minidump 时，设置环境变量 `ZED_GENERATE_MINIDUMPS=1` 后再启动 Solo，文件会写到 logs 目录（具体文件名待核实）。
 - 更新失败：看 `%TEMP%\solo-update\install.log` 和 `update-helper.log`。
 - 提交问题：[github.com/lucas9801/solo/issues](https://github.com/lucas9801/solo/issues)，附上日志。
 
@@ -224,15 +229,14 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `codex_hooks` | `true` | 通过 `-c hooks...` 给 Codex 加状态 hooks |
 | `copilot_hooks` | `true` | 通过 `--plugin-dir` 给 Copilot CLI 加状态 hooks |
 | `keep_running_on_quit` | `true` | Solo 退出、更新或崩溃时，正在运行东西的终端继续运行，之后自动连回去 |
-| `agent_usage_display` | `"always"` | 运行中的 agent 的上下文和 token 显示在终端底部的细栏里，标签上显示上下文百分比；`"tooltip"` 只在标签提示里显示 |
+| `agent_usage_display` | `"always"` | 运行中的 agent 的上下文和 token 显示在终端底部的细栏里（窗口窄时先省掉本轮、再省掉本会话的 token），标签上显示上下文百分比；`"tooltip"` 只在标签提示里显示 |
 | `agent_commands` | `[]` | 把其他程序也当作智能体 |
 | `agent_task_command` | `"claude"` | 新建智能体任务时运行的命令 |
 | `confirm_close` | `"agents"` | 关闭前确认：`agents` / `commands` / `never` |
 | `follow_working_directory` | `false` | 文件树和搜索跟随当前终端所在的仓库 |
 | `restore_contents` | `false` | 重启后恢复终端内容 |
-| `open_changed_files` | `true` | 命令运行期间被修改的文件自动在编辑器里打开 |
 | `input_editor` | `true` | 在底部用编辑器输入命令 |
 | `notify_long_commands_after_seconds` | `10` | 长命令跑完后通知；设为 0 关闭 |
 | `program_notifications` | `true` | 允许程序发桌面通知（OSC 9/777） |
 
-不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`。
+不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`。`"disable_ai"`（以及 `"agent": { "enabled": false }`）只关闭 Zed 自己的 AI 功能（内联助手、编辑预测、提交信息生成），不影响工作区标签、终端和其中运行的智能体、按轮审阅。

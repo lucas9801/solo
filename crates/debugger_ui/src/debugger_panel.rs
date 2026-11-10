@@ -516,7 +516,11 @@ impl DebugPanel {
                     gpui::PromptLevel::Warning,
                     "This Debug Session is still running. Are you sure you want to terminate it?",
                     None,
-                    &["Yes", "No"],
+                    // SOLO: say what the button does, and let Escape cancel.
+                    &[
+                        gpui::PromptButton::new("Terminate"),
+                        gpui::PromptButton::cancel("Cancel"),
+                    ],
                 );
                 if response.await == Ok(1) {
                     return;
@@ -671,9 +675,9 @@ impl DebugPanel {
             h_flex().pl_0p5().gap_1().child(Divider::vertical()).child(
                 IconButton::new("debug-close-panel", IconName::Close)
                     .icon_size(IconSize::Small)
-                    .on_click(move |_, window, cx| {
-                        window.dispatch_action(workspace::ToggleBottomDock.boxed_clone(), cx)
-                    })
+                    // SOLO: close this panel rather than the whole bottom dock,
+                    // which in the terminal-first layout is the terminal.
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PanelEvent::Close)))
                     .tooltip(Tooltip::text("Close Panel")),
             )
         };
@@ -1528,7 +1532,14 @@ impl Panel for DebugPanel {
     }
 
     fn position(&self, _window: &Window, cx: &App) -> DockPosition {
-        DebuggerSettings::get_global(cx).dock.into()
+        // SOLO: where it actually goes, so its layout follows the dock it's in
+        // (the terminal-first layout keeps the bottom dock for the terminal).
+        workspace::dock::position_in_layout(
+            DEBUG_PANEL_KEY,
+            DebuggerSettings::get_global(cx).dock.into(),
+            |_| true,
+            cx,
+        )
     }
 
     fn position_is_valid(&self, _: DockPosition) -> bool {
@@ -1541,7 +1552,10 @@ impl Panel for DebugPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if position.axis() != self.position(window, cx).axis() {
+        // SOLO: compare where the panel will actually go.
+        let new_position =
+            workspace::dock::position_in_layout(DEBUG_PANEL_KEY, position, |_| true, cx);
+        if new_position.axis() != self.position(window, cx).axis() {
             self.sessions_with_children.keys().for_each(|session_item| {
                 session_item.update(cx, |item, cx| {
                     item.running_state()

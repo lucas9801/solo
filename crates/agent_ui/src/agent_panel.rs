@@ -5142,7 +5142,8 @@ impl Panel for AgentPanel {
     }
 
     fn enabled(&self, cx: &App) -> bool {
-        AgentSettings::get_global(cx).enabled(cx)
+        // SOLO: never shown in Solo, see `AgentPanelRemoved`.
+        !project::AgentPanelRemoved::is_set(cx) && AgentSettings::get_global(cx).enabled(cx)
     }
 
     fn is_agent_panel(&self) -> bool {

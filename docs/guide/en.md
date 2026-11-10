@@ -38,8 +38,13 @@ files.
 
 - Solo checks [its GitHub releases](https://github.com/lucas9801/solo/releases)
   30 seconds after it starts and every 6 hours after that (stable builds only).
-- A newer version shows a notification: update and restart, skip this version,
-  or view the release notes. Nothing is installed without you agreeing to it.
+- A newer version shows a notification with a one-line summary: update and
+  restart, skip this version, or view the release notes. Nothing is installed
+  without you agreeing to it.
+- **About Solo** shows the version, its release date and commit (click it to
+  copy), whether Solo is up to date with a **Check for Updates** button, and
+  links to this guide, the release notes, the repository and the license.
+  **Copy** copies the version, commit and system details for a bug report.
 - When you update, the installer is downloaded to `%TEMP%\solo-update\`. Solo
   closes its windows the way Quit does, so it still asks about unsaved files.
   `solo-update-helper.exe` then waits for Solo to exit, runs the installer
@@ -117,6 +122,16 @@ you can:
 
 Snapshots are kept in Solo's data folder. They never touch your branch, HEAD,
 index, stash list or git object database, and ignored files aren't included.
+
+When the folder can't be snapshotted (say, it isn't a git repository and has
+more than 20000 files), Solo notes the files in the project that change during
+the turn (only those in the agent's working directory and not ignored), and the
+tab still shows **"N files changed"**: it opens a list of the files, where a
+click opens one in the editor, and says why the turn has no diff or roll back.
+Then only changes in folders open in the project are seen, and files other
+programs change at the same time count too.
+
+Solo doesn't open the files an agent changes while it works.
 
 ### Timeline (Claude Code, Codex)
 `terminal: show agent timeline` opens the session's timeline beside the
@@ -329,8 +344,8 @@ collaboration and Zed's own auto-update are off or hidden.
   and writes to its data folder, so it opens without a connection);
   signing in to an MCP server with OAuth uses dynamic client registration
   only, never Zed's client identity (servers that only take a client metadata document can't be
-  signed in to); the agent panel has no WSL sandbox on Windows, which would
-  download a Linux build of Zed from zed.dev;
+  signed in to); Solo has no agent panel (Zed's own agent UI), so none of
+  its downloads (e.g. a Linux build of Zed for a WSL sandbox) happen;
 - looking at the ACP agent registry, or using an agent configured from it:
   `cdn.agentclientprotocol.com` and the icon URLs the registry lists;
 - the agents you run in the terminal (Claude Code, Codex, ...) make their own
@@ -389,14 +404,17 @@ Some security software treats these as suspicious.
   or two.
 
 ### Logs and crash information
-- Log: `%LOCALAPPDATA%\Solo\logs\Solo.log`, and `Solo.log.old` for the previous
-  run. `solo: open log` and `solo: reveal log in file manager` are in the
-  command palette.
+- Log: `%LOCALAPPDATA%\Solo\logs\Solo.log`, and `Solo.log.old` with older
+  entries (moved there when the log gets big). `solo: open log` and
+  `solo: reveal log in file manager` are in the command palette.
 - Hang traces: `%LOCALAPPDATA%\Solo\hang_traces\`.
-- Crashes: Solo writes no minidumps by default; what led up to a crash is
-  usually in `Solo.log.old`. To get a minidump, start Solo with the environment
-  variable `ZED_GENERATE_MINIDUMPS=1`; it's written to the logs folder (exact
-  file name unverified).
+- Crashes: after a crash, look in `%LOCALAPPDATA%\Solo\logs\Solo.log` (or
+  `Solo.log.old`, once the log has grown big enough to be moved there). A
+  crash caused by an error in Solo (a panic) is logged there, with where it
+  happened and the stack backtrace, under `panicked at`; include that part
+  when reporting it. Solo writes no minidumps by default. To get one, start
+  Solo with the environment variable `ZED_GENERATE_MINIDUMPS=1`; it's written
+  to the logs folder (exact file name unverified).
 - Failed updates: `%TEMP%\solo-update\install.log` and `update-helper.log`.
 - Report problems at [github.com/lucas9801/solo/issues](https://github.com/lucas9801/solo/issues),
   with the log attached.
@@ -412,17 +430,19 @@ Solo's own settings, under `"terminal"`:
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
 | `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
-| `agent_usage_display` | `"always"` | a running agent's context and tokens in a bar at the bottom of its terminal and its context percentage on the tab; `"tooltip"` shows them only in the tab's tooltip |
+| `agent_usage_display` | `"always"` | a running agent's context and tokens in a bar at the bottom of its terminal (when narrow, the turn's tokens go first, then the session's) and its context percentage on the tab; `"tooltip"` shows them only in the tab's tooltip |
 | `agent_commands` | `[]` | more programs to treat as agents |
 | `agent_task_command` | `"claude"` | what a new agent task runs |
 | `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |
 | `follow_working_directory` | `false` | file tree and search follow the active terminal's repository |
 | `restore_contents` | `false` | show terminals' previous contents after a restart |
-| `open_changed_files` | `true` | open files that change while a command runs |
 | `input_editor` | `true` | type commands in an editor at the bottom |
 | `notify_long_commands_after_seconds` | `10` | notify when a long command finishes; 0 turns it off |
 | `program_notifications` | `true` | let programs show desktop notifications (OSC 9/777) |
 
 Outside `"terminal"`: `"ui_language"` (`"system"`, `"en"` or `"zh"`; the
 environment variable `SOLO_LANGUAGE` overrides it), `"auto_update"` and
-`"disable_ai"`.
+`"disable_ai"`. `"disable_ai"` (and `"agent": { "enabled": false }`) turn off
+only Zed's own AI features (inline assistant, edit predictions, commit message
+generation); workspace tabs, terminals and the agents running in them, and
+turn review are unaffected.

@@ -254,6 +254,8 @@ impl Render for QuickActionBar {
             let focus = editor.focus_handle(cx);
 
             let disable_ai = DisableAiSettings::get_global(cx).disable_ai;
+            // SOLO: no agent panel to add selections to.
+            let agent_panel_removed = project::AgentPanelRemoved::is_set(cx);
 
             PopoverMenu::new("editor-selections-dropdown")
                 .trigger_with_tooltip(
@@ -290,7 +292,7 @@ impl Render for QuickActionBar {
                                     skip_soft_wrap: true,
                                 }),
                             )
-                            .when(!disable_ai, |this| {
+                            .when(!disable_ai && !agent_panel_removed, |this| {
                                 this.separator().action_disabled_when(
                                     !has_selection,
                                     "Add to Agent Thread",

@@ -226,6 +226,8 @@ pub struct AgentSettingsContent {
     /// Default: true
     pub button: Option<bool>,
     /// Where to dock the agent panel.
+    /// In the terminal-first layout the bottom dock is the terminal's, so
+    /// "bottom" puts the agent panel on the right.
     ///
     /// Default: left (Agentic layout), right (Classic layout)
     pub dock: Option<DockPosition>,

@@ -420,7 +420,9 @@ impl Render for WelcomePage {
         let first_section_entries = first_section.entries.len();
         let mut next_tab_index = first_section_entries + second_section.entries.len();
 
-        let ai_enabled = AgentSettings::get_global(cx).enabled(cx);
+        // SOLO: no "Open Agent Panel" card; Solo has no agent panel.
+        let ai_enabled =
+            AgentSettings::get_global(cx).enabled(cx) && !project::AgentPanelRemoved::is_set(cx);
 
         let recent_projects = self
             .recent_workspaces

@@ -242,12 +242,6 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: "system"
     pub bell: Option<TerminalBell>,
-    /// Whether to open files in the editor when they change on disk while a
-    /// command runs in the focused terminal, e.g. files edited by an AI agent.
-    /// Needs shell integration to know when a command runs.
-    ///
-    /// Default: true
-    pub open_changed_files: Option<bool>,
     /// Whether to type commands in an editor at the bottom of the terminal
     /// while the shell waits at its prompt, with completions and history
     /// suggestions. Needs shell integration.
@@ -363,7 +357,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         cursor_shape, blinking, alternate_scroll, option_as_meta, copy_on_select,
         keep_selection_on_copy, open_links_in_mouse_mode, button, dock, starts_open, flexible,
         default_width, default_height, max_scroll_history_lines, scroll_multiplier, toolbar,
-        scrollbar, minimum_contrast, show_count_badge, bell, open_changed_files,
+        scrollbar, minimum_contrast, show_count_badge, bell,
         input_editor, compact_prompt, completions_as_you_type, open_links_on_click,
         notify_long_commands_after_seconds, program_notifications, restore_contents,
         agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, keep_running_on_quit, follow_working_directory, confirm_close,

@@ -1460,14 +1460,12 @@ dependencies = [
  "db",
  "editor",
  "gpui",
+ "log",
  "markdown_preview",
  "project",
  "release_channel",
  "semver",
- "serde",
- "serde_json",
  "settings",
- "smol",
  "telemetry",
  "ui",
  "util",
@@ -19281,6 +19279,7 @@ dependencies = [
  "theme",
  "theme_settings",
  "ui",
+ "util",
  "workspace",
 ]
 
@@ -22476,7 +22475,7 @@ dependencies = [
 
 [[package]]
 name = "zed"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "acp_thread",
  "acp_tools",

@@ -1,6 +1,6 @@
 //! SOLO: selecting and copying shell integration command blocks.
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use gpui::{App, ClipboardItem, Context, Entity, Window, actions};
 use settings::Settings as _;
@@ -316,7 +316,8 @@ impl TerminalView {
             return;
         };
         let this = cx.entity();
-        let Some(agent) = find_agent_terminal(&workspace, &this, cx) else {
+        let here = self.terminal.read(cx).working_directory();
+        let Some(agent) = find_agent_terminal(&workspace, &this, here, cx) else {
             cx.write_to_clipboard(ClipboardItem::new_string(markdown));
             workspace.update(cx, |workspace, cx| {
                 struct NoAgentToast;
@@ -446,10 +447,12 @@ pub(crate) fn terminal_views(
 }
 
 /// The other terminal running an AI agent (the one focused last if several
-/// are), or else the only other terminal running anything.
+/// are), or else the only other terminal running anything. `this`, whose
+/// working directory is `here`, isn't read: it's being updated.
 fn find_agent_terminal(
     workspace: &Entity<Workspace>,
     this: &Entity<TerminalView>,
+    here: Option<PathBuf>,
     cx: &gpui::App,
 ) -> Option<Entity<TerminalView>> {
     let extra = &TerminalSettings::get_global(cx).agent_commands;
@@ -457,7 +460,6 @@ fn find_agent_terminal(
     crate::agent_context::most_recently_focused_first(&mut views, cx);
     // An agent in the same directory, such as a task's worktree, works on the
     // code this terminal builds and tests.
-    let here = this.read(cx).terminal.read(cx).working_directory();
     let agents: Vec<&Entity<TerminalView>> = views
         .iter()
         .filter(|view| *view != this && view.read(cx).runs_agent(cx))
@@ -583,6 +585,44 @@ mod tests {
         assert_eq!(
             command_block_markdown("cmd /c exit 5", "", Some(5)),
             "```\n$ cmd /c exit 5\n```\nExit code: 5"
+        );
+    }
+
+    /// The action reaches the terminal view while it's being updated, so
+    /// finding the agent's terminal can't read it.
+    #[gpui::test]
+    async fn test_send_command_block_to_agent_terminal(cx: &mut gpui::TestAppContext) {
+        let (project, _workspace, window_handle) = crate::tests::init_test_with_window(cx).await;
+        let (pane, agent_terminal, agent_view) =
+            crate::tests::add_display_only_terminal(&project, window_handle, false, false, cx);
+        let (_, terminal, view) =
+            crate::tests::add_display_only_terminal(&project, window_handle, true, false, cx);
+        let cx = &mut gpui::VisualTestContext::from_window(window_handle.into(), cx);
+        agent_terminal.update(cx, |terminal, cx| {
+            // Claude Code runs and takes bracketed paste.
+            terminal.write_raw_output(
+                b"\x1b]133;A\x07$ \x1b]133;B\x07claude\r\n\x1b]633;E;claude\x07\x1b]133;C\x07\x1b[?2004h",
+                cx,
+            )
+        });
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(
+                b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]633;E;ls\x07\x1b]133;C\x07a.txt\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07",
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let active_item = |cx: &mut gpui::VisualTestContext| {
+            pane.read_with(cx, |pane, _| pane.active_item().map(|item| item.item_id()))
+        };
+        assert_eq!(active_item(cx), Some(view.entity_id()));
+
+        cx.dispatch_action(SendCommandBlockToAgent);
+        cx.run_until_parked();
+        assert_eq!(
+            active_item(cx),
+            Some(agent_view.entity_id()),
+            "switches to the agent's terminal"
         );
     }
 }

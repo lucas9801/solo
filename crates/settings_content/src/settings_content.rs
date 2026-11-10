@@ -700,9 +700,10 @@ pub struct DebuggerSettingsContent {
     ///
     /// Default: true
     pub format_dap_log_messages: Option<bool>,
-    /// The dock position of the debug panel
+    /// The dock position of the debug panel. In the terminal-first layout the
+    /// bottom dock is the terminal's, so "bottom" puts the panel on the right.
     ///
-    /// Default: Bottom
+    /// Default: Right
     pub dock: Option<DockPosition>,
 }
 
@@ -776,6 +777,8 @@ pub struct GitPanelSettingsContent {
     /// Default: true
     pub button: Option<bool>,
     /// Where to dock the panel.
+    /// In the terminal-first layout the bottom dock is the terminal's, so
+    /// "bottom" puts the panel on the right.
     ///
     /// Default: right (Agentic layout), left (Classic layout)
     pub dock: Option<DockPosition>,
@@ -989,6 +992,8 @@ pub struct PanelSettingsContent {
     /// Default: true
     pub button: Option<bool>,
     /// Where to dock the panel.
+    /// In the terminal-first layout the bottom dock is the terminal's, so
+    /// "bottom" puts the panel on the right.
     ///
     /// Default: right (Agentic layout), left (Classic layout)
     pub dock: Option<DockPosition>,

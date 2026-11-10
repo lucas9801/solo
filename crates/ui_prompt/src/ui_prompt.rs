@@ -19,6 +19,8 @@ pub fn init(cx: &mut App) {
 
 fn process_settings(cx: &mut App) {
     let settings = WorkspaceSettings::get_global(cx);
+    // SOLO: `use_system_prompts` defaults to false, so prompts follow the theme
+    // and the interface language.
     if settings.use_system_prompts && cfg!(not(any(target_os = "linux", target_os = "freebsd"))) {
         cx.reset_prompt_builder();
     } else {
@@ -40,13 +42,23 @@ fn zed_prompt_renderer(
     let renderer = cx.new({
         |cx| ZedPromptRenderer {
             _level: level,
-            message: cx.new(|cx| Markdown::new(SharedString::new(message), None, None, cx)),
+            // SOLO: messages and details in the interface's language when
+            // they're translated (the buttons already are, as labels).
+            message: cx.new(|cx| {
+                let message = util::i18n::translate(message).unwrap_or(message);
+                Markdown::new(SharedString::new(message), None, None, cx)
+            }),
             actions: actions.iter().map(|a| a.label().to_string()).collect(),
+            cancel_action_id: cancel_action_id(actions),
             focus: cx.focus_handle(),
             active_action_id: 0,
-            detail: detail
-                .filter(|text| !text.is_empty())
-                .map(|text| cx.new(|cx| Markdown::new(SharedString::new(text), None, None, cx))),
+            // SOLO: a line break in the detail (e.g. one line per running
+            // program) starts a new line, as in the system dialogs.
+            detail: detail.filter(|text| !text.is_empty()).map(|text| {
+                let text = util::i18n::translate(text).unwrap_or(text);
+                let text = text.replace('\n', "  \n");
+                cx.new(|cx| Markdown::new(SharedString::from(text), None, None, cx))
+            }),
         }
     });
 
@@ -59,7 +71,21 @@ pub struct ZedPromptRenderer {
     actions: Vec<String>,
     focus: FocusHandle,
     active_action_id: usize,
+    /// SOLO: the button Escape picks, see [`cancel_action_id`].
+    cancel_action_id: Option<usize>,
     detail: Option<Entity<Markdown>>,
+}
+
+/// SOLO: the button Escape picks: the cancel button (also when its label is
+/// translated, which turns it into an ordinary button), or the only button
+/// of a prompt that just reports something.
+fn cancel_action_id(actions: &[PromptButton]) -> Option<usize> {
+    actions
+        .iter()
+        .position(|action| {
+            action.is_cancel() || matches!(action.label().as_ref(), "Cancel" | "取消")
+        })
+        .or_else(|| (actions.len() == 1).then_some(0))
 }
 
 impl ZedPromptRenderer {
@@ -68,7 +94,7 @@ impl ZedPromptRenderer {
     }
 
     fn cancel(&mut self, _: &menu::Cancel, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.actions.iter().position(|a| a == "Cancel") {
+        if let Some(ix) = self.cancel_action_id {
             cx.emit(PromptResponse(ix));
         }
     }

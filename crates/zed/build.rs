@@ -39,6 +39,8 @@ fn main() {
 
     // Populate git sha environment variable if git is available
     println!("cargo:rerun-if-changed=../../.git/logs/HEAD");
+    // SOLO: script/release-solo.ps1 sets it to the commit it releases.
+    println!("cargo:rerun-if-env-changed=ZED_COMMIT_SHA");
     println!(
         "cargo:rustc-env=TARGET={}",
         std::env::var("TARGET").unwrap()
@@ -66,6 +68,21 @@ fn main() {
 
     if let Some(git_sha) = git_sha {
         println!("cargo:rustc-env=ZED_COMMIT_SHA={git_sha}");
+
+        // SOLO: the commit's date (YYYY-MM-DD), for the About window: a
+        // release is built from the commit that sets its version.
+        if let Some(output) = Command::new("git")
+            .args(["show", "-s", "--format=%cs", &git_sha])
+            .output()
+            .ok()
+            && output.status.success()
+        {
+            let date = String::from_utf8_lossy(&output.stdout);
+            let date = date.trim();
+            if !date.is_empty() {
+                println!("cargo:rustc-env=SOLO_COMMIT_DATE={date}");
+            }
+        }
 
         if let Some(build_identifier) = option_env!("GITHUB_RUN_NUMBER") {
             println!("cargo:rustc-env=ZED_BUILD_ID={build_identifier}");

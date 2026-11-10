@@ -1164,11 +1164,12 @@ codegen-units = 1
 [profile.release.package]
 zed = { codegen-units = 16 }
 
-# SOLO: what Solo ships: optimized like release, but quicker to build and
-# without debug info.
+# SOLO: what Solo ships: optimized like release, but quicker to build. Line
+# tables only: solo.pdb (kept by CI, not shipped) maps a crash's addresses to
+# functions and lines.
 [profile.solo-dist]
 inherits = "release"
-debug = false
+debug = "line-tables-only"
 codegen-units = 16
 
 [profile.release-fast]
