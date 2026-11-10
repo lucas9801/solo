@@ -20,7 +20,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow};
 
 /// A tree object id.
 pub(crate) type TreeId = String;
@@ -58,6 +58,28 @@ pub(crate) struct ChangedFile {
     pub change: FileChange,
 }
 
+/// Why a directory isn't snapshotted, to tell the user.
+#[derive(Debug)]
+pub(crate) enum SnapshotUnavailable {
+    /// A drive or the home directory: not a project.
+    TooBroad(PathBuf),
+    /// Not in a repository, and more files than the limit.
+    TooManyFiles { work_tree: PathBuf, limit: usize },
+}
+
+impl std::fmt::Display for SnapshotUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooBroad(work_tree) => write!(f, "{work_tree:?} is too broad to snapshot"),
+            Self::TooManyFiles { work_tree, limit } => {
+                write!(f, "{work_tree:?} has more than {limit} files")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SnapshotUnavailable {}
+
 #[derive(Debug)]
 pub(crate) struct Restored {
     /// The state before restoring, to undo it.
@@ -74,6 +96,8 @@ pub(crate) struct SnapshotStore {
     /// The user's index, to seed the private one.
     seed_index: Option<PathBuf>,
     store_dir: PathBuf,
+    /// How many files a work tree outside a repository may have.
+    max_files_outside_repository: usize,
 }
 
 impl SnapshotStore {
@@ -117,7 +141,7 @@ impl SnapshotStore {
                 let work_tree =
                     PathBuf::from(util::paths::SanitizedPath::new(&work_tree).as_path());
                 if work_tree.parent().is_none() || dirs::home_dir().as_ref() == Some(&work_tree) {
-                    bail!("{work_tree:?} is too broad to snapshot");
+                    return Err(SnapshotUnavailable::TooBroad(work_tree).into());
                 }
                 (work_tree, PathBuf::new(), None, None)
             }
@@ -153,7 +177,13 @@ impl SnapshotStore {
             alternate_objects,
             seed_index,
             store_dir,
+            max_files_outside_repository: MAX_FILES_OUTSIDE_REPOSITORY,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_max_files_outside_repository(&mut self, max: usize) {
+        self.max_files_outside_repository = max;
     }
 
     pub(crate) fn work_tree(&self) -> &Path {
@@ -206,11 +236,12 @@ impl SnapshotStore {
                     .output()
                     .context("running git ls-files")?;
                 let count = output.stdout.split(|byte| *byte == 0).count();
-                if count > MAX_FILES_OUTSIDE_REPOSITORY {
-                    bail!(
-                        "{:?} has more than {MAX_FILES_OUTSIDE_REPOSITORY} files",
-                        self.work_tree
-                    );
+                if count > self.max_files_outside_repository {
+                    return Err(SnapshotUnavailable::TooManyFiles {
+                        work_tree: self.work_tree.clone(),
+                        limit: self.max_files_outside_repository,
+                    }
+                    .into());
                 }
             }
         }
@@ -839,6 +870,23 @@ mod tests {
         assert_eq!(fs::read_to_string(directory.join("a.txt")).unwrap(), "a\n");
         assert!(!directory.join("b.txt").exists());
         assert!(!directory.join(".git").exists());
+    }
+
+    #[test]
+    fn test_too_many_files_outside_a_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("plain");
+        fs::create_dir_all(&directory).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(directory.join(name), "a").unwrap();
+        }
+        let mut store = SnapshotStore::open(&directory, &temp.path().join("storage")).unwrap();
+        store.set_max_files_outside_repository(2);
+        let error = store.snapshot().unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<SnapshotUnavailable>(),
+            Some(SnapshotUnavailable::TooManyFiles { limit: 2, .. })
+        ));
     }
 
     #[test]

@@ -123,6 +123,16 @@ you can:
 Snapshots are kept in Solo's data folder. They never touch your branch, HEAD,
 index, stash list or git object database, and ignored files aren't included.
 
+When the folder can't be snapshotted (say, it isn't a git repository and has
+more than 20000 files), Solo notes the files in the project that change during
+the turn (only those in the agent's working directory and not ignored), and the
+tab still shows **"N files changed"**: it opens a list of the files, where a
+click opens one in the editor, and says why the turn has no diff or roll back.
+Then only changes in folders open in the project are seen, and files other
+programs change at the same time count too.
+
+Solo doesn't open the files an agent changes while it works.
+
 ### Timeline (Claude Code, Codex)
 `terminal: show agent timeline` opens the session's timeline beside the
 terminal: each turn's prompt, the files read and changed, the commands run and
@@ -426,7 +436,6 @@ Solo's own settings, under `"terminal"`:
 | `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |
 | `follow_working_directory` | `false` | file tree and search follow the active terminal's repository |
 | `restore_contents` | `false` | show terminals' previous contents after a restart |
-| `open_changed_files` | `true` | open files that change while a command runs |
 | `input_editor` | `true` | type commands in an editor at the bottom |
 | `notify_long_commands_after_seconds` | `10` | notify when a long command finishes; 0 turns it off |
 | `program_notifications` | `true` | let programs show desktop notifications (OSC 9/777) |

@@ -258,6 +258,8 @@ pub fn migrate_settings(text: &str) -> Result<Option<String>> {
         MigrationType::Json(migrations::m_2026_08_30::nest_markdown_preview_settings),
         MigrationType::Json(migrations::m_2026_09_16::nest_agent_threads_sidebar_settings),
         MigrationType::Json(migrations::m_2026_09_29::move_copilot_enterprise_uri),
+        // SOLO
+        MigrationType::Json(migrations::m_2026_11_10::remove_terminal_open_changed_files),
     ];
     run_migrations(text, migrations)
 }
@@ -5437,6 +5439,27 @@ mod tests {
                             "position": "right",
                             "default_width": 420
                         }
+                    }
+                }
+            "#}),
+        );
+    }
+
+    #[test]
+    fn test_remove_terminal_open_changed_files_is_registered() {
+        assert_migrate_settings(
+            indoc! {r#"
+                {
+                    "terminal": {
+                        "open_changed_files": false,
+                        "font_size": 14
+                    }
+                }
+            "#},
+            Some(indoc! {r#"
+                {
+                    "terminal": {
+                        "font_size": 14
                     }
                 }
             "#}),

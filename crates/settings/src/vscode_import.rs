@@ -977,7 +977,6 @@ impl VsCodeSettings {
                     }
                 }),
             minimum_contrast: None,
-            open_changed_files: None,
             input_editor: None,
             compact_prompt: None,
             completions_as_you_type: None,

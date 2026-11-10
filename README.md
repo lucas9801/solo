@@ -145,7 +145,7 @@ rules for that agent. Solo reads them when it starts.
 Solo's settings live in `%APPDATA%\Solo` (Windows), apart from Zed's. Its own
 terminal settings, under `"terminal"`: `shell_integration`, `input_editor`,
 `compact_prompt`, `completions_as_you_type`, `open_links_on_click`,
-`open_changed_files`, `notify_long_commands_after_seconds`,
+`notify_long_commands_after_seconds`,
 `program_notifications`, `restore_contents`, `agent_commands`,
 `claude_code_hooks`, `codex_hooks`, `copilot_hooks`, `follow_working_directory`, `confirm_close`,
 `agent_task_command`.

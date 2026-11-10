@@ -4058,6 +4058,15 @@ mod tests {
                     .map(|(name, status)| (name.to_string(), status))
             })
         };
+        // SOLO: an agent whose status is only guessed from its output has no turns.
+        let turn_events = Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let turn_events = turn_events.clone();
+            cx.subscribe(&terminal_view, move |_, event: &AgentTurnEvent, _| {
+                turn_events.borrow_mut().push(*event)
+            })
+            .detach();
+        });
 
         write(b"\x1b]133;A\x07$ \x1b]133;B\x07", cx);
         assert_eq!(status(cx), None);
@@ -4080,6 +4089,7 @@ mod tests {
         );
         write(b"ls\r\n\x1b]633;E;ls\x07\x1b]133;C\x07", cx);
         assert_eq!(status(cx), None);
+        assert!(turn_events.borrow().is_empty());
     }
 
     #[gpui::test]
@@ -4113,6 +4123,15 @@ mod tests {
         let status = |cx: &mut gpui::VisualTestContext| {
             terminal_view.read_with(cx, |view, _| view.agent_status().map(|(_, status)| status))
         };
+        // SOLO: an agent read from its screen has turns, too.
+        let turn_events = Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let turn_events = turn_events.clone();
+            cx.subscribe(&terminal_view, move |_, event: &AgentTurnEvent, _| {
+                turn_events.borrow_mut().push(*event)
+            })
+            .detach();
+        });
 
         write(b"\x1b]133;A\x07$ \x1b]133;B\x07", cx);
         write(b"codex\r\n\x1b]633;E;codex\x07\x1b]133;C\x07", cx);
@@ -4124,8 +4143,13 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(200));
         write(b"\x1b]0;Action Required\x07", cx);
         assert_eq!(status(cx), Some(agent_status::AgentStatus::NeedsInput));
+        assert_eq!(*turn_events.borrow(), vec![AgentTurnEvent::Started]);
         write(b"\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07", cx);
         assert_eq!(status(cx), Some(agent_status::AgentStatus::Done));
+        assert_eq!(
+            *turn_events.borrow(),
+            vec![AgentTurnEvent::Started, AgentTurnEvent::Ended]
+        );
     }
 
     #[gpui::test]
