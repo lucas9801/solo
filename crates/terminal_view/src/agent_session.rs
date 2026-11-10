@@ -487,24 +487,27 @@ fn usage_bar(parts: Vec<(String, bool)>, cx: &App) -> Stateful<Div> {
                 .h(line_height)
                 .line_height(line_height)
                 .overflow_hidden()
-                .children(parts.into_iter().enumerate().map(
-                    |(ix, (text, nearly_full))| {
-                        div()
-                            .debug_selector(|| format!("agent-usage-part-{ix}"))
-                            .flex_none()
-                            .child(
-                                Label::new(text)
-                                    .untranslated()
-                                    .single_line()
-                                    .size(LabelSize::XSmall)
-                                    .color(if nearly_full {
-                                        Color::Warning
-                                    } else {
-                                        Color::Muted
-                                    }),
-                            )
-                    },
-                )),
+                .children(
+                    parts
+                        .into_iter()
+                        .enumerate()
+                        .map(|(ix, (text, nearly_full))| {
+                            div()
+                                .debug_selector(|| format!("agent-usage-part-{ix}"))
+                                .flex_none()
+                                .child(
+                                    Label::new(text)
+                                        .untranslated()
+                                        .single_line()
+                                        .size(LabelSize::XSmall)
+                                        .color(if nearly_full {
+                                            Color::Warning
+                                        } else {
+                                            Color::Muted
+                                        }),
+                                )
+                        }),
+                ),
         )
 }
 
@@ -874,7 +877,10 @@ mod tests {
         impl Render for Bar {
             fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 let parts = vec![
-                    ("Context 170.0k / 200.0k (85%) · claude-opus".to_string(), true),
+                    (
+                        "Context 170.0k / 200.0k (85%) · claude-opus".to_string(),
+                        true,
+                    ),
                     ("Session 1.2M in · 30.0k out".to_string(), false),
                     ("Turn 50.5k in · 2.0k out".to_string(), false),
                 ];
@@ -891,13 +897,17 @@ mod tests {
             });
             cx.run_until_parked();
             let line = cx.debug_bounds("agent-usage-parts").expect("the bar");
-            ["agent-usage-part-0", "agent-usage-part-1", "agent-usage-part-2"]
-                .into_iter()
-                .map(|selector| {
-                    let part = cx.debug_bounds(selector).expect("a part");
-                    (part.top() < line.bottom(), part)
-                })
-                .collect::<Vec<_>>()
+            [
+                "agent-usage-part-0",
+                "agent-usage-part-1",
+                "agent-usage-part-2",
+            ]
+            .into_iter()
+            .map(|selector| {
+                let part = cx.debug_bounds(selector).expect("a part");
+                (part.top() < line.bottom(), part)
+            })
+            .collect::<Vec<_>>()
         };
         let wide = shown_at(px(2000.));
         assert!(wide.iter().all(|(shown, _)| *shown), "{wide:?}");
