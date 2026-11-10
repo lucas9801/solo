@@ -887,6 +887,7 @@ fn maybe_backfill_editor_layout(fs: Arc<dyn Fs>, is_new_install: bool, cx: &mut 
 fn update_command_palette_filter(cx: &mut App) {
     let disable_ai = DisableAiSettings::get_global(cx).disable_ai;
     let agent_enabled = AgentSettings::get_global(cx).enabled;
+    let agent_panel_removed = project::AgentPanelRemoved::is_set(cx);
 
     let edit_prediction_provider = AllLanguageSettings::get_global(cx)
         .edit_predictions
@@ -908,6 +909,20 @@ fn update_command_palette_filter(cx: &mut App) {
         ];
 
         let manage_skills_action = [TypeId::of::<zed_actions::assistant::ManageSkills>()];
+        // SOLO: opening AGENTS.md doesn't need the agent panel.
+        let agents_md_actions = [
+            TypeId::of::<zed_actions::assistant::OpenGlobalAgentsMdRules>(),
+            TypeId::of::<zed_actions::assistant::OpenProjectAgentsMdRules>(),
+        ];
+        // SOLO: Zed's threads sidebar holds the agent panel.
+        let threads_sidebar_actions = [
+            TypeId::of::<workspace::ToggleWorkspaceSidebar>(),
+            TypeId::of::<workspace::CloseWorkspaceSidebar>(),
+            TypeId::of::<workspace::FocusWorkspaceSidebar>(),
+            TypeId::of::<workspace::NextThread>(),
+            TypeId::of::<workspace::PreviousThread>(),
+            TypeId::of::<workspace::NewThread>(),
+        ];
         let skill_creator_actions = [
             TypeId::of::<zed_actions::assistant::OpenSkillCreator>(),
             TypeId::of::<zed_actions::assistant::CreateSkillFromUrl>(),
@@ -923,15 +938,24 @@ fn update_command_palette_filter(cx: &mut App) {
 
             filter.hide_action_types(&edit_prediction_actions);
             filter.hide_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
+            filter.hide_action_types(&agents_md_actions);
         } else {
             if agent_enabled {
                 filter.show_namespace("agent");
                 filter.show_namespace("agents");
                 filter.show_namespace("assistant");
+                filter.show_action_types(agents_md_actions.iter());
             } else {
                 filter.hide_namespace("agent");
                 filter.hide_namespace("agents");
                 filter.hide_namespace("assistant");
+                filter.hide_action_types(&agents_md_actions);
+            }
+            // SOLO: nothing that opens (or works in) the agent panel is
+            // offered; the inline assistant (`assistant::`) still is.
+            if agent_panel_removed {
+                filter.hide_namespace("agent");
+                filter.hide_namespace("agents_sidebar");
             }
 
             match edit_prediction_provider {
@@ -962,6 +986,9 @@ fn update_command_palette_filter(cx: &mut App) {
             filter.hide_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
 
             filter.show_namespace("multi_workspace");
+        }
+        if agent_panel_removed {
+            filter.hide_action_types(&threads_sidebar_actions);
         }
 
         // Skills are surfaced through the settings UI now, so this command
@@ -1055,6 +1082,45 @@ mod tests {
     use settings::{
         DockPosition, NotifyWhenAgentWaiting, PlaySoundWhenAgentDone, Settings, SettingsStore,
     };
+
+    /// SOLO: with the agent panel removed, nothing in the command palette
+    /// opens it (or the threads sidebar); the inline assistant stays.
+    #[gpui::test]
+    fn test_command_palette_without_agent_panel(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            command_palette_hooks::init(cx);
+            AgentSettings::register(cx);
+            DisableAiSettings::register(cx);
+            AllLanguageSettings::register(cx);
+            cx.set_global(project::AgentPanelRemoved);
+            update_command_palette_filter(cx);
+        });
+
+        cx.update(|cx| {
+            let filter = CommandPaletteFilter::try_global(cx).unwrap();
+            assert!(AgentSettings::get_global(cx).enabled(cx));
+            for hidden in [
+                &zed_actions::assistant::ToggleFocus as &dyn gpui::Action,
+                &zed_actions::assistant::Toggle,
+                &zed_actions::assistant::FocusAgent,
+                &NewThread,
+                &NewTerminalThread,
+                &workspace::ToggleWorkspaceSidebar,
+                &workspace::FocusWorkspaceSidebar,
+            ] {
+                assert!(filter.is_hidden(hidden), "{} is hidden", hidden.name());
+            }
+            for shown in [
+                &zed_actions::assistant::InlineAssist::default() as &dyn gpui::Action,
+                &zed_actions::assistant::OpenProjectAgentsMdRules,
+                &zed_actions::assistant::OpenGlobalAgentsMdRules,
+            ] {
+                assert!(!filter.is_hidden(shown), "{} is shown", shown.name());
+            }
+        });
+    }
 
     #[gpui::test]
     fn test_agent_command_palette_visibility(cx: &mut TestAppContext) {

@@ -1,9 +1,7 @@
 use gpui::{App, Menu, MenuItem, OsAction};
-use project::DisableAiSettings;
 use release_channel::ReleaseChannel;
-use settings::Settings;
 use terminal_view::terminal_panel;
-use zed_actions::{Quit, assistant, debug_panel, dev, git_panel, project_panel};
+use zed_actions::{Quit, debug_panel, dev, git_panel, project_panel};
 
 pub fn app_menus(cx: &mut App) -> Vec<Menu> {
     let mut view_items = vec![
@@ -44,11 +42,8 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
         // SOLO: no "Collab Panel"; calls and channels are Zed's hosted services.
         MenuItem::action("Terminal Panel", terminal_panel::Toggle),
         MenuItem::action("Debugger Panel", debug_panel::ToggleFocus),
+        // SOLO: no "Agent Panel"; Solo runs agents in terminals.
     ];
-
-    if !DisableAiSettings::get_global(cx).disable_ai {
-        view_items.push(MenuItem::action("Agent Panel", assistant::ToggleFocus));
-    }
 
     view_items.extend([
         MenuItem::action("Git Panel", git_panel::ToggleFocus),

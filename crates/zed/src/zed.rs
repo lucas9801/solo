@@ -2563,7 +2563,16 @@ fn is_ai_keybinding(binding: &KeyBinding) -> bool {
         .any(|namespace| name.starts_with(namespace))
 }
 
+/// SOLO: Solo has no agent panel (it runs agents in terminals). Bindings that
+/// would open it, e.g. in the Cursor or VS Code base keymaps, are dropped so
+/// they don't shadow other bindings of the same keys.
+const AGENT_PANEL_ACTIONS: &[&str] = &["agent::Toggle", "agent::ToggleFocus", "agent::FocusAgent"];
+
 fn filter_disabled_ai_bindings(bindings: Vec<KeyBinding>, cx: &App) -> Vec<KeyBinding> {
+    let bindings = bindings
+        .into_iter()
+        .filter(|binding| !AGENT_PANEL_ACTIONS.contains(&binding.action().name()))
+        .collect::<Vec<_>>();
     if !DisableAiSettings::get_global(cx).disable_ai {
         return bindings;
     }
@@ -7011,6 +7020,13 @@ mod tests {
                 has_ai_binding,
                 "expected AI-namespaced bindings in the default keymap before disabling AI"
             );
+            // SOLO: nothing opens the agent panel.
+            assert!(
+                !keymap
+                    .bindings()
+                    .any(|binding| AGENT_PANEL_ACTIONS.contains(&binding.action().name())),
+                "expected no bindings that open the agent panel"
+            );
         });
 
         cx.update(|cx| {
@@ -8689,8 +8705,8 @@ mod tests {
         cx.update(|cx| reload_keymaps(cx, Vec::new()));
         cx.update(|cx| {
             assert!(
-                has_view_item(cx, "Agent Panel"),
-                "expected Agent Panel in the View menu when AI is enabled"
+                !has_view_item(cx, "Agent Panel"),
+                "SOLO: the agent panel is never in the View menu"
             );
             assert!(
                 has_view_item(cx, "Diagnostics"),
@@ -8711,7 +8727,7 @@ mod tests {
         cx.update(|cx| {
             assert!(
                 !has_view_item(cx, "Agent Panel"),
-                "expected Agent Panel to be removed from the View menu after disabling AI"
+                "SOLO: the agent panel is never in the View menu"
             );
             assert!(
                 has_view_item(cx, "Diagnostics"),
@@ -8729,8 +8745,8 @@ mod tests {
         cx.update(|cx| reload_keymaps(cx, Vec::new()));
         cx.update(|cx| {
             assert!(
-                has_view_item(cx, "Agent Panel"),
-                "expected Agent Panel back in the View menu after re-enabling AI"
+                !has_view_item(cx, "Agent Panel"),
+                "SOLO: the agent panel is never in the View menu"
             );
             assert!(
                 has_view_item(cx, "Diagnostics"),
@@ -8746,8 +8762,8 @@ mod tests {
         cx.update(|cx| reload_keymaps(cx, Vec::new()));
         cx.update(|cx| {
             assert!(
-                has_view_item(cx, "Agent Panel"),
-                "expected Agent Panel before disabling AI"
+                !has_view_item(cx, "Agent Panel"),
+                "SOLO: the agent panel is never in the View menu"
             );
             assert!(
                 has_view_item(cx, "Diagnostics"),
@@ -8792,7 +8808,7 @@ mod tests {
         cx.update(|cx| {
             assert!(
                 !has_view_item(cx, "Agent Panel"),
-                "expected Agent Panel removed even though the keymap file is malformed"
+                "SOLO: the agent panel is never in the View menu"
             );
             assert!(
                 has_view_item(cx, "Diagnostics"),
@@ -8813,8 +8829,8 @@ mod tests {
 
         cx.update(|cx| {
             assert!(
-                has_view_item(cx, "Agent Panel"),
-                "expected Agent Panel added back even though the keymap file is malformed"
+                !has_view_item(cx, "Agent Panel"),
+                "SOLO: the agent panel is never in the View menu"
             );
             assert!(
                 has_view_item(cx, "Diagnostics"),
