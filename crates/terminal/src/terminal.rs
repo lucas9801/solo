@@ -1023,9 +1023,6 @@ impl TerminalMode {
     }
 }
 
-/// SOLO: the environment variable that has a terminal connect to the terminal
-/// host on this pipe (see [`Terminal::host_pipe`]) instead of starting a
-/// shell; Solo sets it when it restores a terminal. It isn't passed on.
 /// SOLO: what the user last did to the program running in the terminal, as
 /// opposed to what Solo sends on its own (focus reports, a new size), so an
 /// agent's status can tell an answer or an interruption from the user
@@ -1048,6 +1045,9 @@ fn is_interrupt(input: &[u8]) -> bool {
 /// SOLO: how long a reconnected terminal host's replay may take at most.
 const REPLAY_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// SOLO: the environment variable that has a terminal connect to the terminal
+/// host on this pipe (see [`Terminal::host_pipe`]) instead of starting a
+/// shell; Solo sets it when it restores a terminal. It isn't passed on.
 pub const HOST_RECONNECT_ENV: &str = "SOLO_TERMINAL_HOST_RECONNECT";
 
 #[cfg(windows)]
