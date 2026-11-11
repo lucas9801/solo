@@ -89,8 +89,8 @@ __solo_shell_path=${__solo_shell_path//\\/\\\\}
 printf '\e]633;P;Shell=%s;%s\a' "${__solo_shell_path//;/\\x3b}" "$__solo_nonce"
 unset __solo_shell_path
 
-# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this terminal.
-if [[ -n "${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-}" ]]; then
+# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's) write to this terminal.
+if [[ -n "${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-}${SOLO_OPENCODE_CONFIG_DIR-}" ]]; then
     if [[ -r /proc/$$/winpid ]]; then
         # Git Bash: the hooks attach to this shell's Windows console.
         export SOLO_AGENT_CONSOLE_PID=$(</proc/$$/winpid)
@@ -164,6 +164,24 @@ if [[ -n "${SOLO_COPILOT_PLUGIN-}" ]] && ! declare -F copilot >/dev/null; then
         else
             command copilot "$@"
         fi
+    }
+fi
+
+# OpenCode reports what it's doing through plugins Solo loads for the session:
+# OpenCode 2's from SOLO_OPENCODE_CLI_CONFIG, OpenCode 1's from the folder in
+# SOLO_OPENCODE_CONFIG_DIR. Variables of the user's own stay.
+# An opencode function of the user's own stays.
+if [[ -n "${SOLO_OPENCODE_CONFIG_DIR-}" ]] && ! declare -F opencode >/dev/null; then
+    opencode() {
+        (
+            if [[ -z "${OPENCODE_CLI_CONFIG_CONTENT+set}" && -n "${SOLO_OPENCODE_CLI_CONFIG-}" ]]; then
+                export OPENCODE_CLI_CONFIG_CONTENT="$SOLO_OPENCODE_CLI_CONFIG"
+            fi
+            if [[ -z "${OPENCODE_CONFIG_DIR+set}" && -d "$SOLO_OPENCODE_CONFIG_DIR" ]]; then
+                export OPENCODE_CONFIG_DIR="$SOLO_OPENCODE_CONFIG_DIR"
+            fi
+            command opencode "$@"
+        )
     }
 fi
 

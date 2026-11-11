@@ -106,7 +106,8 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 | agent | 状态从哪里来 | 按轮审阅 | 重启后接着用 |
 |---|---|---|---|
 | Claude Code、Codex、Copilot CLI | Solo 加的 hooks，准确上报 | 支持 | 接最近一次会话 |
-| Gemini CLI、Cursor CLI、OpenCode | 读屏幕 | 支持 | 接最近一次会话 |
+| OpenCode | Solo 加的插件，准确上报 | 支持 | 接回原来的会话 |
+| Gemini CLI、Cursor CLI | 读屏幕 | 支持 | 接最近一次会话 |
 | Amp、Qwen Code、Kimi、Cline 等 16 种 | 读屏幕 | 支持 | 不支持 |
 | Aider 和用 `agent_commands` 加的程序 | 终端输出 | 不支持 | Aider 恢复聊天记录，其他不支持 |
 | 其他程序 | [状态协议](docs/agent-status-protocol.md) | 支持 | 不支持 |

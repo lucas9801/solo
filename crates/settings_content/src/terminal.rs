@@ -330,6 +330,14 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub copilot_hooks: Option<bool>,
+    /// Whether OpenCode started in a terminal with shell integration reports
+    /// what it's doing through a plugin Solo loads for that session (with
+    /// `OPENCODE_CLI_CONFIG_CONTENT` for OpenCode 2, `OPENCODE_CONFIG_DIR` for
+    /// OpenCode 1), so its turns can be reviewed like Claude Code's. Nothing
+    /// is written to OpenCode's own config. Takes effect in new terminals.
+    ///
+    /// Default: true
+    pub opencode_hooks: Option<bool>,
     /// On Windows, terminals run their shell in a small background process
     /// (`solo-terminal-host`). When Solo quits, or restarts for an update,
     /// terminals that are running a command or an agent keep running there,
@@ -382,7 +390,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         ai_command_claude_model, ai_command_codex_model, ai_command_include_last_failure,
         open_links_on_click,
         notify_long_commands_after_seconds, program_notifications, restore_contents,
-        agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
+        agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, opencode_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
         agent_task_command, agent_control, agent_usage_display,
     },
     defaults: {},

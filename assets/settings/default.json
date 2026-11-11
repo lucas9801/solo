@@ -2313,6 +2313,12 @@
     // session with `copilot --plugin-dir`, so its turns can be reviewed like
     // Claude Code's. Takes effect in new terminals.
     "copilot_hooks": true,
+    // Let OpenCode started in a terminal with shell integration report what
+    // it's doing through a plugin Solo loads for that session (with
+    // OPENCODE_CLI_CONFIG_CONTENT for OpenCode 2, OPENCODE_CONFIG_DIR for
+    // OpenCode 1), so its turns can be reviewed like Claude Code's. Nothing is
+    // written to OpenCode's own config. Takes effect in new terminals.
+    "opencode_hooks": true,
     // On Windows, terminals run their shell in a small background process
     // (solo-terminal-host). When Solo quits, or restarts for an update,
     // terminals that are running a command or an agent keep running there,

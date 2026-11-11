@@ -992,6 +992,7 @@ impl VsCodeSettings {
             claude_code_hooks: None,
             codex_hooks: None,
             copilot_hooks: None,
+            opencode_hooks: None,
             keep_running_on_quit: None,
             follow_working_directory: None,
             agent_task_command: None,

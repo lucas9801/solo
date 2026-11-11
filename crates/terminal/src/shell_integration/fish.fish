@@ -61,8 +61,8 @@ function fish_prompt
     printf '\e]133;B\a'
 end
 
-# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this terminal.
-if set -q SOLO_CLAUDE_SETTINGS; or set -q SOLO_CODEX_ARGS; or set -q SOLO_COPILOT_PLUGIN
+# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's) write to this terminal.
+if set -q SOLO_CLAUDE_SETTINGS; or set -q SOLO_CODEX_ARGS; or set -q SOLO_COPILOT_PLUGIN; or set -q SOLO_OPENCODE_CONFIG_DIR
     set -l solo_tty (tty 2>/dev/null)
     and set -gx SOLO_AGENT_TTY $solo_tty
 end
@@ -112,6 +112,23 @@ if set -q SOLO_COPILOT_PLUGIN; and not functions -q copilot
         else
             command copilot --plugin-dir "$SOLO_COPILOT_PLUGIN" $argv
         end
+    end
+end
+
+# OpenCode reports what it's doing through plugins Solo loads for the session:
+# OpenCode 2's from SOLO_OPENCODE_CLI_CONFIG, OpenCode 1's from the folder in
+# SOLO_OPENCODE_CONFIG_DIR. Variables of the user's own stay.
+# An opencode function of the user's own stays.
+if set -q SOLO_OPENCODE_CONFIG_DIR; and not functions -q opencode
+    function opencode
+        set -l solo_env
+        if not set -q OPENCODE_CLI_CONFIG_CONTENT; and test -n "$SOLO_OPENCODE_CLI_CONFIG"
+            set -a solo_env OPENCODE_CLI_CONFIG_CONTENT=$SOLO_OPENCODE_CLI_CONFIG
+        end
+        if not set -q OPENCODE_CONFIG_DIR; and test -d "$SOLO_OPENCODE_CONFIG_DIR"
+            set -a solo_env OPENCODE_CONFIG_DIR=$SOLO_OPENCODE_CONFIG_DIR
+        end
+        env $solo_env opencode $argv
     end
 end
 
