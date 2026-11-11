@@ -1282,6 +1282,56 @@ mod tests {
         }
     }
 
+    // SOLO (G10): a terminal in the solo tab whose claude works in
+    // godot_engine, a folder no worktree holds, prints `object.h:163-164`.
+    #[gpui::test]
+    async fn test_bare_file_name_outside_the_worktrees(cx: &mut TestAppContext) {
+        let mut test_path_like = init_test(
+            cx,
+            vec![
+                (path!("/solo"), json!({ "README.md": "" })),
+                (
+                    path!("/godot"),
+                    json!({
+                        ".git": { "object.h": "" },
+                        "core": { "object": { "object.h": lines(200) } },
+                    }),
+                ),
+            ],
+            vec![path!("/solo")],
+        )
+        .await;
+        for (working_directory, expected) in [
+            (path!("/godot"), Some(path!("/godot/core/object/object.h"))),
+            // Inside a worktree, only the worktrees are searched, as before.
+            (path!("/solo"), None),
+        ] {
+            let (_, open_target) = test_path_like(
+                HoveredWord {
+                    word: "object.h:163".to_string(),
+                    word_match: Range::new(Point::new(0, 0), Point::new(0, 0)),
+                    id: 0,
+                },
+                PathLikeTarget {
+                    maybe_path: "object.h:163".to_string(),
+                    working_directory: Some(PathBuf::from(working_directory)),
+                    context_paths: Vec::new(),
+                    position_files: Vec::new(),
+                },
+                BackgroundPathChecks::LocalFileSystem,
+            )
+            .await;
+            assert_eq!(
+                open_target.as_ref().map(|target| target.path().path.as_path()),
+                expected.map(Path::new),
+                "{working_directory}"
+            );
+            if expected.is_some() {
+                assert_eq!(open_target.unwrap().path().row, Some(163));
+            }
+        }
+    }
+
     // SOLO (G26): an open buffer's lines count, not the file's on disk.
     #[gpui::test]
     async fn test_has_row_counts_open_buffer(cx: &mut TestAppContext) {
