@@ -204,7 +204,7 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - 打开 ACP 智能体注册表，或使用从注册表配置的智能体：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
 - 在终端里运行的智能体（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
 
-**暂不支持远程开发：** SSH、WSL、Docker（开发容器）远程开发要在远端运行一个服务端，Solo 还没有自己构建的版本，Zed 的服务器上也没有和 Solo 对应的版本，所以这些入口已经隐藏，触发时会提示暂不支持，不会访问 Zed 的服务器。在终端里用 `ssh`、`wsl` 照常可以。
+**远程开发暂时关闭：** SSH、WSL、Docker（开发容器）远程开发要在远端运行一个服务端。Solo 的 release 现在带有自己构建的 Linux 版（x86_64 和 aarch64），但还在测试中，所以这些入口仍然隐藏，触发时会提示暂不可用。在终端里用 `ssh`、`wsl` 照常可以。想试用的话，设置环境变量 `SOLO_REMOTE_DEVELOPMENT=1` 后重新启动 Solo：连接时会从 Solo 的 GitHub release 下载与当前版本对应的远程服务端（`github.com`，按 GitHub 提供的 SHA-256 校验），上传到远端，从 `~/.solo_server` 运行，数据放在 `~/.local/share/solo`，与 Zed 的分开。不会访问 Zed 的服务器。暂不支持 macOS 和 Windows 远端。
 
 ## 10. 故障排查
 

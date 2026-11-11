@@ -66,12 +66,18 @@ static CURRENT_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// On Windows, this is `%APPDATA%\Zed`.
 static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// Returns the relative path to the zed_server directory on the ssh host.
+/// Returns the relative path to the remote server directory on the ssh host.
+// SOLO: `.solo_server`, not Zed's `.zed_server`, so Solo's remote servers
+// stay apart from those of a Zed used on the same host.
 pub fn remote_server_dir_relative() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::from_unix_str(".zed_server").unwrap());
+        LazyLock::new(|| RelPath::from_unix_str(".solo_server").unwrap());
     *CACHED
 }
+
+/// SOLO: the start of the remote server's file name on remote hosts,
+/// `solo-remote-server-<channel>-<version>` (Zed's is `zed-remote-server`).
+pub const REMOTE_SERVER_BINARY_PREFIX: &str = "solo-remote-server";
 
 // Remove this once 223 goes stable
 /// Returns the relative path to the zed_wsl_server directory on the wsl host.
