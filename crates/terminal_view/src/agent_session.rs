@@ -51,8 +51,6 @@ pub(crate) struct AgentSessionBinding {
     chosen: Option<SessionLocation>,
     last_attempt: Option<Instant>,
     finding: bool,
-    /// Whether the user was told the context is nearly full.
-    warned_context_full: bool,
     _subscription: Option<Subscription>,
 }
 
@@ -231,25 +229,17 @@ impl TerminalView {
         let session = cx.new(|cx| AgentSession::new(location, cx));
         self.agent_session._subscription = Some(cx.subscribe(&session, Self::agent_session_event));
         self.agent_session.session = Some(session.clone());
-        self.agent_session.warned_context_full = false;
         session
     }
 
+    /// The session changed: its usage shows on the tab and the usage bar.
     fn agent_session_event(
         &mut self,
-        session: Entity<AgentSession>,
+        _: Entity<AgentSession>,
         _: &AgentSessionEvent,
         cx: &mut Context<Self>,
     ) {
-        let nearly_full = session.read(cx).state().usage.context_nearly_full();
-        if nearly_full && !self.agent_session.warned_context_full {
-            self.agent_session.warned_context_full = true;
-            let state = session.read(cx).state();
-            let (agent, usage) = (state.agent(), state.usage.clone());
-            self.warn_context_nearly_full(agent, &usage, cx);
-        } else if !nearly_full {
-            self.agent_session.warned_context_full = false;
-        }
+        cx.notify();
     }
 
     /// The agent's hook reported its session id.
@@ -295,44 +285,6 @@ impl TerminalView {
             let session = find.await?;
             agent_answers(&session, 1, cx).await?.into_iter().next()
         })
-    }
-
-    fn warn_context_nearly_full(
-        &self,
-        agent_kind: agent_sessions::AgentKind,
-        usage: &agent_sessions::UsageSummary,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(percent) = usage
-            .context_fraction()
-            .map(|fraction| (fraction * 100.).round())
-        else {
-            return;
-        };
-        let agent = agent_kind.name();
-        let model = usage.model.clone().unwrap_or_default();
-        let compact_hint = match agent_kind {
-            agent_sessions::AgentKind::ClaudeCode | agent_sessions::AgentKind::Codex => {
-                " (/compact)"
-            }
-        };
-        let message = if util::i18n::is_chinese() {
-            format!("{agent} 的上下文已用 {percent}%（{model}），建议压缩{compact_hint}或开新会话")
-        } else {
-            format!(
-                "{agent}'s context is {percent}% full ({model}). Consider compacting it{compact_hint} or starting a new session."
-            )
-        };
-        let Some(workspace) = self.workspace.upgrade() else {
-            return;
-        };
-        let id = workspace::notifications::NotificationId::composite::<ChooseAgentSession>((
-            "agent-context-full",
-            cx.entity_id(),
-        ));
-        workspace.update(cx, |workspace, cx| {
-            workspace.show_toast(workspace::Toast::new(id, message), cx)
-        });
     }
 
     pub(crate) fn choose_agent_session(
@@ -644,17 +596,11 @@ pub(crate) fn session_tooltip_lines(
             ),
             _ => format_tokens(context_tokens),
         };
-        let mut line = if chinese {
+        let line = if chinese {
             format!("上下文：{context}  {model}")
         } else {
             format!("Context: {context}  {model}")
         };
-        if usage.context_nearly_full() {
-            line.push_str(util::i18n::tr(
-                " — nearly full, compact it or start a new session",
-                " — 快满了，建议压缩或开新会话",
-            ));
-        }
         lines.push(line.trim_end().to_string());
     }
     lines
@@ -953,13 +899,7 @@ mod tests {
                 "Session (guessed): Fix the build",
                 "Session tokens: 170.0k in · 2.0k out (150.0k cache read · 20.0k cache write · 10 uncached)",
                 "Turn tokens: 170.0k in · 2.0k out",
-                &format!(
-                    "Context: 170.0k / 200.0k (85%)  claude-haiku-4-5{}",
-                    util::i18n::tr(
-                        " — nearly full, compact it or start a new session",
-                        " — 快满了，建议压缩或开新会话",
-                    )
-                ),
+                "Context: 170.0k / 200.0k (85%)  claude-haiku-4-5",
             ]
         );
         assert_eq!(
