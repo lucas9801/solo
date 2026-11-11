@@ -8,6 +8,13 @@
 ; tool SoloSign as well (package-solo.ps1 does when SOLO_SIGN_COMMAND is set):
 ;
 ;   ISCC.exe ... /DSignInstaller "/sSoloSign=signtool.exe sign ... $f" script\solo.iss
+;
+; Or, when the uninstaller is signed elsewhere (SignPath, in the release
+; workflow), define SignedUninstallerDir: the first compile writes the
+; unsigned uninstaller there as uninst-<Inno version>-<hash>.e32 and stops
+; asking for it to be signed; once it is signed in place, compiling again
+; puts it in the installer (package-solo.ps1 -Step Uninstaller, then -Step
+; Package -SignedUninstallerDir).
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -46,6 +53,10 @@ OutputBaseFilename=Solo-Setup-{#AppVersion}
 #ifdef SignInstaller
 SignTool=SoloSign
 SignedUninstaller=yes
+#endif
+#ifdef SignedUninstallerDir
+SignedUninstaller=yes
+SignedUninstallerDir={#SignedUninstallerDir}
 #endif
 
 [Languages]
