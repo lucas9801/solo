@@ -28,6 +28,14 @@ impl TerminalView {
             title: self.title_with(0, false, agent.is_some(), cx),
             agent,
             location: self.title_details(cx),
+            // SOLO: a terminal not in its tab's folders says so under where
+            // it is.
+            location_note: self.grouping.misplaced.as_ref().and_then(|misplaced| {
+                Some((
+                    misplaced.directory.display().to_string(),
+                    misplaced.card_note()?,
+                ))
+            }),
             // See `Terminal::host_failed`.
             warning: terminal.host_failed().then(|| {
                 tr(
@@ -327,6 +335,9 @@ pub(crate) struct TabCard {
     pub agent: Option<AgentCard>,
     /// Where it runs: (what, value) for its directory, branch and command.
     pub location: Vec<(&'static str, String)>,
+    /// A note under the row of `location` with this value (or the first):
+    /// (value, note).
+    pub location_note: Option<(String, String)>,
     /// A warning, like the terminal not outliving Solo.
     pub warning: Option<&'static str>,
     pub pid: Option<u32>,
@@ -426,27 +437,45 @@ impl TabCard {
 
         // Where it runs.
         if !self.location.is_empty() {
-            card = card.child(v_flex().gap_1().children(self.location.iter().map(
-                |(what, value)| {
-                    h_flex()
-                        .gap_2()
-                        .items_start()
-                        .child(
-                            div()
-                                .flex_none()
-                                .w(rems_from_px(LABEL_COLUMN))
-                                .child(small(what.to_string()).color(Color::Muted)),
-                        )
-                        .child(
-                            div().min_w_0().child(
-                                small(value.clone())
-                                    .untranslated()
-                                    .buffer_font(cx)
-                                    .truncate(),
-                            ),
-                        )
-                },
-            )));
+            let note_row = self.location_note.as_ref().map(|(under, _)| {
+                self.location
+                    .iter()
+                    .position(|(_, value)| value == under)
+                    .unwrap_or(0)
+            });
+            card = card.child(
+                v_flex()
+                    .gap_1()
+                    .children(self.location.iter().enumerate().map(|(ix, (what, value))| {
+                        let note = self
+                            .location_note
+                            .as_ref()
+                            .filter(|_| note_row == Some(ix))
+                            .map(|(_, note)| note.clone());
+                        h_flex()
+                            .gap_2()
+                            .items_start()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(rems_from_px(LABEL_COLUMN))
+                                    .child(small(what.to_string()).color(Color::Muted)),
+                            )
+                            .child(
+                                v_flex()
+                                    .min_w_0()
+                                    .child(
+                                        small(value.clone())
+                                            .untranslated()
+                                            .buffer_font(cx)
+                                            .truncate(),
+                                    )
+                                    .when_some(note, |this, note| {
+                                        this.child(small(note).untranslated().color(Color::Muted))
+                                    }),
+                            )
+                    })),
+            );
         }
 
         // Its tokens.
