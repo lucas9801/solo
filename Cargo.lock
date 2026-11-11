@@ -18083,6 +18083,7 @@ dependencies = [
  "ui",
  "util",
  "warp-command-signatures",
+ "which",
  "workspace",
  "zed_actions",
 ]

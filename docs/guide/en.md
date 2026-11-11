@@ -240,6 +240,10 @@ with Solo as before, and closing a terminal's tab ends what runs in it.
   (`terminal.confirm_close`, `"agents"` by default).
 - After a restart, a terminal that was running an agent and couldn't be kept
   offers to continue its session (for example `claude --continue`).
+- Closing the last terminal keeps the terminal column open, with buttons for a
+  new terminal (Ctrl+Shift+`), one running Claude Code or Codex (whichever is
+  on the `PATH`) and the file finder. With the column hidden (Ctrl+`) and no
+  files open, the editor area shows the same shortcuts.
 
 ## 7. Supported agents
 
