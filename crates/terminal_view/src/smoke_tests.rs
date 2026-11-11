@@ -102,10 +102,16 @@ fn action_variants(name: &str, cx: &mut VisualTestContext) -> Vec<Box<dyn Action
         "terminal::SendSelectionToAgent"
         | "terminal::SendPositionToAgent"
         | "terminal::SendDiagnosticsToAgent" => &[serde_json::json!({ "choose_terminal": true })],
+        // Needs a tab: the one the terminal is already in.
+        "terminal::MoveToTab" => &[serde_json::json!({ "path": path!("/project") })],
         _ => &[],
     };
+    // Actions that can't be built without data.
+    let needs_data = matches!(name, "terminal::MoveToTab");
     cx.update(|_, cx| {
-        std::iter::once(None)
+        (!needs_data)
+            .then_some(None)
+            .into_iter()
             .chain(options.iter().cloned().map(Some))
             .map(|data| {
                 cx.build_action(name, data)

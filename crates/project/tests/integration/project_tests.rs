@@ -4301,7 +4301,7 @@ async fn test_solo_analysis_modes(cx: &mut gpui::TestAppContext) {
         )
     });
     cx.run_until_parked();
-    assert!(fake_rust_servers.try_next().is_err());
+    assert!(fake_rust_servers.try_recv().is_err());
 
     // Pausing background analysis restarts the server with other options.
     cx.update(|cx| {
@@ -4330,7 +4330,7 @@ async fn test_solo_analysis_modes(cx: &mut gpui::TestAppContext) {
         .receive_notification::<lsp::notification::Exit>()
         .await;
     cx.run_until_parked();
-    assert!(fake_rust_servers.try_next().is_err());
+    assert!(fake_rust_servers.try_recv().is_err());
 
     // Turned on again, it starts for the open file.
     cx.update(|cx| {
