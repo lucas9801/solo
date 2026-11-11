@@ -2572,8 +2572,8 @@ impl Workspace {
 
     pub fn finish_dock_restoration(&self, cx: &mut App) {
         for dock in [&self.left_dock, &self.bottom_dock, &self.right_dock] {
-            dock.update(cx, |dock, _| {
-                dock.finish_restoration();
+            dock.update(cx, |dock, cx| {
+                dock.finish_restoration(cx);
             });
         }
     }
@@ -21079,6 +21079,43 @@ mod tests {
 
         workspace.read_with(cx, |workspace, cx| {
             assert!(!workspace.bottom_dock().read(cx).is_open());
+        });
+    }
+
+    // SOLO: a dock last showing a panel Solo no longer registers (the agent
+    // panel) doesn't come back open and empty.
+    #[gpui::test]
+    async fn test_dock_waiting_for_missing_panel_closes_when_loading_finishes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.right_dock().update(cx, |dock, cx| {
+                dock.restore_serialized_state(
+                    DockData {
+                        visible: true,
+                        active_panel: Some("AgentPanel".to_string()),
+                        zoom: false,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.right_dock().read(cx).is_open());
+        });
+
+        workspace.update(cx, |workspace, cx| {
+            workspace.finish_dock_restoration(cx);
+        });
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(!workspace.right_dock().read(cx).is_open());
         });
     }
 

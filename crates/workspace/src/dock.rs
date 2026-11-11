@@ -1016,7 +1016,14 @@ impl Dock {
         self.set_open_internal(serialized.visible, window, cx);
     }
 
-    pub(crate) fn finish_restoration(&mut self) {
+    pub(crate) fn finish_restoration(&mut self, cx: &mut Context<Self>) {
+        // SOLO: a dock still waiting for a panel that never came (the agent
+        // panel, which Solo no longer registers) would stay open and empty.
+        if self.restoration.pending().is_some() && self.active_panel_index.is_none() && self.is_open
+        {
+            self.is_open = false;
+            cx.notify();
+        }
         self.restoration = DockRestoreState::Finished;
     }
 
