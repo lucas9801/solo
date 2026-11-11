@@ -300,8 +300,9 @@ To treat another program as an agent:
 - **Updates** are installed only when you choose to, by
   `solo-update-helper.exe` after Solo exits.
 - **`solo://` links:** the installer registers Solo for `solo://` links,
-  for your user only (`HKCU\Software\Classes\solo`), so a link copied from
-  the settings window opens in Solo. Uninstalling removes it. Solo doesn't
+  for your user only (`HKCU\Software\Classes\solo`), so links such as
+  `solo://settings/terminal.font_size` (jumps to that setting) or a shared
+  skill link open in Solo. Uninstalling removes it. Solo doesn't
   register `zed://`, which stays Zed's, but still opens such links passed to
   it.
 - **Terminal hosts:** each terminal's shell runs in its own
