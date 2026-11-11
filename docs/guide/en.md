@@ -229,6 +229,44 @@ with Solo as before, and closing a terminal's tab ends what runs in it.
 - If a background process itself fails, its terminal ends; after a restart
   the terminal offers to continue the agent's session as below.
 
+### The command input
+While the shell waits at its prompt (with shell integration), commands are
+typed in an editor at the bottom of the terminal.
+
+- **Completions open as you type**, after a short pause: subcommands, options
+  and their values (git branches, npm scripts, docker containers, ...) for
+  about 500 well-known commands, PowerShell's own completions, commands on
+  `PATH` and paths. Not on an empty line, inside quotes or in a `#` request.
+  In a menu that opened by itself, **Tab** accepts and **Enter runs the
+  command** as typed; in a menu opened with Tab (or `ctrl-r`), Enter accepts.
+  **Esc** closes it. Results that take longer (PowerShell, branch lists)
+  follow the quick ones without holding up typing. To open completions only
+  with Tab: `"terminal": {"completions_as_you_type": false}`.
+- **Grey suggestions** after the cursor come from commands you ran (here
+  first), else from the command's spec (`git ch` suggests `eckout`); `right`
+  or Tab takes one.
+- **`# what you want`** and Enter asks AI for a command, which fills the input
+  for you to check; nothing runs until you press Enter again. It uses your own
+  Claude Code (`claude -p`, model `haiku` by default) or Codex (`codex exec`),
+  whichever is installed (Claude Code first; `terminal.ai_command_agent`
+  picks one), with their tools turned off: Claude Code gets no tools at all,
+  Codex a read-only sandbox without its shell, so generating can't run
+  commands or change files. They run in an empty folder of Solo's, so your
+  project's hooks, MCP servers and CLAUDE.md/AGENTS.md don't load. **Esc**
+  cancels; the time taken shows meanwhile.
+- **What is sent:** the request, the shell, the system and the current folder,
+  plus the last failed command and the end of its output (up to 4000
+  characters; `terminal.ai_command_include_last_failure`), so
+  `# fix that error` works. Select a command block and press `ctrl-i` (or
+  **Ask AI for a Command About This** in its context menu) to add it too. The
+  blocks being sent show as chips above the input; click their × to leave one
+  out. They go to Claude Code or Codex, under your account, like anything you
+  type there.
+- Solo doesn't guess whether what you type is a command or a request (as
+  Warp's Agent Mode does): requests start with `#`. Solo's terminals mostly
+  run agents, and sending a command to an AI by mistake costs more than
+  typing `#`.
+
 ### Also
 - Closing a terminal or a window while an agent runs asks first
   (`terminal.confirm_close`, `"agents"` by default).
@@ -437,6 +475,11 @@ Solo's own settings, under `"terminal"`:
 | `follow_working_directory` | `false` | file tree and search follow the active terminal's repository |
 | `restore_contents` | `false` | show terminals' previous contents after a restart |
 | `input_editor` | `true` | type commands in an editor at the bottom |
+| `completions_as_you_type` | `true` | open completions in the input as you type; `false`: only with Tab |
+| `ai_command_agent` | `"auto"` | which agent turns `# requests` into commands: `auto` / `claude_code` / `codex` |
+| `ai_command_claude_model` | `"haiku"` | the model Claude Code generates commands with |
+| `ai_command_codex_model` | `""` | the model Codex generates commands with (empty: Codex's default) |
+| `ai_command_include_last_failure` | `true` | send the last failed command and the end of its output with a `#` request |
 | `notify_long_commands_after_seconds` | `10` | notify when a long command finishes; 0 turns it off |
 | `program_notifications` | `true` | let programs show desktop notifications (OSC 9/777) |
 

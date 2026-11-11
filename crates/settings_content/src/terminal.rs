@@ -254,11 +254,31 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub compact_prompt: Option<bool>,
-    /// Whether the input editor opens completions as you type, rather than
-    /// only on Tab.
+    /// Whether the input editor opens completions as you type (after a short
+    /// pause), rather than only on Tab.
     ///
-    /// Default: false
+    /// Default: true
     pub completions_as_you_type: Option<bool>,
+    /// Which agent CLI turns a `# request` in the input editor into a
+    /// command: "auto" (Claude Code if installed, else Codex),
+    /// "claude_code" or "codex".
+    ///
+    /// Default: "auto"
+    pub ai_command_agent: Option<AiCommandAgent>,
+    /// The model Claude Code generates commands with (`--model`).
+    ///
+    /// Default: "haiku"
+    pub ai_command_claude_model: Option<String>,
+    /// The model Codex generates commands with (`--model`); empty uses
+    /// Codex's own default.
+    ///
+    /// Default: ""
+    pub ai_command_codex_model: Option<String>,
+    /// Whether a `# request` also sends the last failed command and the end
+    /// of its output, so "# fix that error" works.
+    ///
+    /// Default: true
+    pub ai_command_include_last_failure: Option<bool>,
     /// Whether file paths and URLs in the terminal are underlined on hover
     /// and open with a plain click, rather than only with ctrl/cmd held.
     ///
@@ -358,7 +378,9 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         keep_selection_on_copy, open_links_in_mouse_mode, button, dock, starts_open, flexible,
         default_width, default_height, max_scroll_history_lines, scroll_multiplier, toolbar,
         scrollbar, minimum_contrast, show_count_badge, bell,
-        input_editor, compact_prompt, completions_as_you_type, open_links_on_click,
+        input_editor, compact_prompt, completions_as_you_type, ai_command_agent,
+        ai_command_claude_model, ai_command_codex_model, ai_command_include_last_failure,
+        open_links_on_click,
         notify_long_commands_after_seconds, program_notifications, restore_contents,
         agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
         agent_task_command, agent_control, agent_usage_display,
@@ -675,6 +697,30 @@ pub enum AgentUsageDisplay {
     Always,
     /// Only in the tab's tooltip.
     Tooltip,
+}
+
+/// SOLO: the agent CLI that generates commands from `# requests`.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AiCommandAgent {
+    /// Claude Code if it's installed, else Codex.
+    #[default]
+    Auto,
+    ClaudeCode,
+    Codex,
 }
 
 #[derive(

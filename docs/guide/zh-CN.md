@@ -124,6 +124,15 @@ Solo 不会在智能体工作时自动打开它改的文件。
 - 关闭方法：`"terminal": {"keep_running_on_quit": false}`，之后新开的终端跑在 Solo 里面，随 Solo 结束。
 - 如果某个后台进程自己出了问题，它的终端就结束了；重启后会按下面的方式提示继续会话。
 
+### 命令输入框
+shell 在提示符处等待输入时（需要 shell 集成），命令在终端底部的编辑器里输入。
+
+- **边输边弹补全**：停顿一小会儿就出现。约 500 个常用命令有子命令、选项和参数值（git 分支、npm 脚本、docker 容器等），另外还有 PowerShell 自己的补全、PATH 里的命令和路径。空行、引号中间、`#` 请求里不弹。自动弹出的菜单里 **Tab 接受**、**Enter 直接运行**输入的命令；按 Tab（或 `ctrl-r`）打开的菜单里 Enter 接受。**Esc** 关闭。慢的来源（PowerShell、分支列表）随后补上，不影响打字。只想按 Tab 才出现：`"terminal": {"completions_as_you_type": false}`。
+- **灰色提示**：光标后面的灰字先来自跑过的命令（这个目录里跑过的优先），没有的话来自命令规格（输入 `git ch` 提示 `eckout`）；按 `→` 或 Tab 接受。
+- **`# 想做的事`** 加 Enter：让 AI 生成命令，填进输入框给你确认，再按一次 Enter 才运行。用的是你自己的 Claude Code（`claude -p`，默认模型 `haiku`）或 Codex（`codex exec`），装了哪个用哪个（都装了优先 Claude Code；用 `terminal.ai_command_agent` 指定）。生成时关掉了它们的工具：Claude Code 不给任何工具，Codex 用只读沙箱且没有 shell 工具，所以生成过程不会执行命令或改文件。它们在 Solo 的一个空目录里运行，不会加载项目的 hooks、MCP 服务器和 CLAUDE.md/AGENTS.md。生成中显示已用时间，**Esc** 取消。
+- **会发送什么**：请求本身、shell、系统和当前目录，再加上最近一条失败的命令和它输出的最后一部分（最多 4000 字符；`terminal.ai_command_include_last_failure`），所以 `# 修好刚才的错误` 能用。选中一个命令块按 `ctrl-i`（或右键菜单“带上这个命令块让 AI 生成命令”）也可以把它带上。要发送的命令块以小标签显示在输入框上方，点 × 可以去掉。这些内容会以你的账号发给你自己的 Claude Code 或 Codex，和你直接在里面输入一样。
+- Solo 不自动判断输入的是命令还是自然语言（Warp 的 Agent Mode 会这样做），请求要以 `#` 开头：Solo 的终端主要用来跑智能体，把命令误当成自然语言发给 AI 的代价比多打一个 `#` 大。
+
 ### 其他
 - 关闭正在运行智能体的终端或窗口前会先确认（`terminal.confirm_close`，默认 `"agents"`）。
 - 重启后，跑着智能体、但没能保留下来的终端会提示是否继续上次的会话（例如 `claude --continue`）。
@@ -236,6 +245,11 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `follow_working_directory` | `false` | 文件树和搜索跟随当前终端所在的仓库 |
 | `restore_contents` | `false` | 重启后恢复终端内容 |
 | `input_editor` | `true` | 在底部用编辑器输入命令 |
+| `completions_as_you_type` | `true` | 输入框边输边弹补全；`false` 只在按 Tab 时出现 |
+| `ai_command_agent` | `"auto"` | 用哪个智能体把 `#` 请求变成命令：`auto` / `claude_code` / `codex` |
+| `ai_command_claude_model` | `"haiku"` | Claude Code 生成命令用的模型 |
+| `ai_command_codex_model` | `""` | Codex 生成命令用的模型（空：用 Codex 的默认） |
+| `ai_command_include_last_failure` | `true` | `#` 请求带上最近一条失败的命令和它输出的最后一部分 |
 | `notify_long_commands_after_seconds` | `10` | 长命令跑完后通知；设为 0 关闭 |
 | `program_notifications` | `true` | 允许程序发桌面通知（OSC 9/777） |
 

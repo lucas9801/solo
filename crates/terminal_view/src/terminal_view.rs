@@ -823,6 +823,13 @@ impl TerminalView {
                             util::i18n::tr("Save Command as Workflow", "把命令存为 Workflow"),
                             Box::new(SaveCommandBlockAsWorkflow),
                         )
+                        .action(
+                            util::i18n::tr(
+                                "Ask AI for a Command About This",
+                                "带上这个命令块让 AI 生成命令",
+                            ),
+                            Box::new(command_blocks::AskAiAboutCommandBlock),
+                        )
                 })
                 .when(has_mermaid_diagram, |menu| {
                     menu.action(
@@ -1838,6 +1845,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::copy_command_block))
             .on_action(cx.listener(TerminalView::rerun_command_block))
             .on_action(cx.listener(TerminalView::send_command_block_to_agent))
+            .on_action(cx.listener(TerminalView::ask_ai_about_command_block))
             .on_action(cx.listener(TerminalView::send_failures_to_agent))
             .on_action(cx.listener(TerminalView::preview_mermaid_diagram))
             .on_action(cx.listener(TerminalView::choose_agent_session))

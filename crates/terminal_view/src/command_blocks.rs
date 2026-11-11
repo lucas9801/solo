@@ -39,6 +39,9 @@ actions!(
         /// Saves the command of the selected (or last) command block as a
         /// workflow.
         SaveCommandBlockAsWorkflow,
+        /// Starts a `#` request for a command in the input, with the
+        /// selected (or last) command block and its output attached.
+        AskAiAboutCommandBlock,
     ]
 );
 
@@ -395,6 +398,33 @@ impl TerminalView {
                 );
             });
         }
+    }
+
+    /// SOLO: attaches the block to a `#` request in the input, like Warp
+    /// attaching blocks as context.
+    pub(crate) fn ask_ai_about_command_block(
+        &mut self,
+        _: &AskAiAboutCommandBlock,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.read_only || self.command_running(cx) {
+            return;
+        }
+        let Some(ix) = self.target_command_block(cx) else {
+            return;
+        };
+        let Some(command) = self.terminal.read(cx).command_block_command(ix) else {
+            return;
+        };
+        let Some(input) = self.input.clone() else {
+            return;
+        };
+        self.select_command_block(None, cx);
+        input.update(cx, |input, cx| {
+            input.attach_block(ix, command, cx);
+            input.start_ai_request(window, cx);
+        });
     }
 
     fn target_command_block_markdown(&self, cx: &Context<Self>) -> Option<String> {

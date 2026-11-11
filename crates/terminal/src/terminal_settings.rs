@@ -3,7 +3,9 @@ use gpui::{FontFallbacks, FontFeatures, FontWeight, Pixels};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use settings::{AgentControl, AgentUsageDisplay, AlternateScroll, TerminalConfirmClose};
+pub use settings::{
+    AgentControl, AgentUsageDisplay, AiCommandAgent, AlternateScroll, TerminalConfirmClose,
+};
 
 use settings::{
     IntoGpui, PathHyperlinkRegex, RegisterSetting, ShowScrollbar, TerminalBell, TerminalBlink,
@@ -56,6 +58,10 @@ pub struct TerminalSettings {
     pub input_editor: bool,
     pub compact_prompt: bool,
     pub completions_as_you_type: bool,
+    pub ai_command_agent: AiCommandAgent,
+    pub ai_command_claude_model: String,
+    pub ai_command_codex_model: String,
+    pub ai_command_include_last_failure: bool,
     pub open_links_on_click: bool,
     pub notify_long_commands_after_seconds: u64,
     pub program_notifications: bool,
@@ -146,6 +152,12 @@ impl settings::Settings for TerminalSettings {
             input_editor: user_content.input_editor.unwrap(),
             compact_prompt: user_content.compact_prompt.unwrap(),
             completions_as_you_type: user_content.completions_as_you_type.unwrap(),
+            ai_command_agent: user_content.ai_command_agent.unwrap_or_default(),
+            ai_command_claude_model: user_content.ai_command_claude_model.unwrap_or_default(),
+            ai_command_codex_model: user_content.ai_command_codex_model.unwrap_or_default(),
+            ai_command_include_last_failure: user_content
+                .ai_command_include_last_failure
+                .unwrap_or(true),
             open_links_on_click: user_content.open_links_on_click.unwrap(),
             notify_long_commands_after_seconds: user_content
                 .notify_long_commands_after_seconds

@@ -2262,8 +2262,21 @@
     // an arrow) in shells with Solo's integration; the input editor shows the
     // full path and git branch.
     "compact_prompt": true,
-    // Open completions in the input editor as you type, rather than only on Tab.
-    "completions_as_you_type": false,
+    // Open completions in the input editor as you type (after a short pause),
+    // rather than only on Tab. A menu that opened by itself leaves Enter to
+    // run the command; Tab accepts the selected completion.
+    "completions_as_you_type": true,
+    // Which agent CLI turns "# what you want" in the input editor into a
+    // command: "auto" (Claude Code if installed, else Codex), "claude_code"
+    // or "codex". It runs with its tools turned off, so it can only answer.
+    "ai_command_agent": "auto",
+    // The model Claude Code generates commands with.
+    "ai_command_claude_model": "haiku",
+    // The model Codex generates commands with; empty uses Codex's default.
+    "ai_command_codex_model": "",
+    // Also send the last failed command and the end of its output with a
+    // "# request", so "# fix that error" works.
+    "ai_command_include_last_failure": true,
     // Underline file paths and URLs on hover and open them with a plain click
     // (files open in the editor), rather than only with ctrl/cmd held.
     "open_links_on_click": true,
