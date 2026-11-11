@@ -1794,8 +1794,10 @@ impl AgentTasksModal {
                         h_flex()
                             .gap_1()
                             .when_some(status, |this, status| {
-                                let (icon, color) = status.icon();
-                                this.child(Icon::new(icon).size(IconSize::Small).color(color))
+                                this.child(
+                                    workspace::agent_activity::AgentStateIcon::new(status)
+                                        .size(IconSize::Small),
+                                )
                             })
                             .child(Label::new(display_name(task)))
                             .child(

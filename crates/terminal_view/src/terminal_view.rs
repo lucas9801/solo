@@ -5,6 +5,7 @@ mod agent_detection;
 mod agent_resume;
 mod agent_session;
 mod agent_status;
+mod agent_tab;
 pub mod agent_tasks;
 mod agent_timeline;
 mod agent_turns;
@@ -74,7 +75,7 @@ use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
 use ui::{
-    ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
+    ContextMenu, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
     prelude::*,
     scrollbars::{self, ScrollbarVisibility},
 };
@@ -1972,53 +1973,28 @@ impl Item for TerminalView {
             .detach();
     }
 
+    // SOLO: a card on who runs in the terminal and what it's doing, how full
+    // its context is, where it runs and its tokens (see `agent_tab`).
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent> {
-        const HOST_FAILED: &str =
-            "Ends when Solo quits: its background process couldn't be started";
-        Some(TabTooltipContent::Custom(Box::new(Tooltip::element({
-            let terminal = self.terminal().read(cx);
-            let title = self.smart_title(0, false, cx);
-            let pid = terminal.pid_getter()?.fallback_pid();
-            let agent_status = self
-                .agent_status()
-                .map(|(name, status)| format!("{name} · {}", status.label()));
-            let details = self.title_details(cx);
-            let host_failed = terminal.host_failed();
-
-            move |_, _| {
-                v_flex()
-                    .gap_1()
-                    .child(Label::new(title.clone()))
-                    .when_some(agent_status.clone(), |this, agent_status| {
-                        this.child(Label::new(agent_status).size(LabelSize::Small))
-                    })
-                    // SOLO: see `Terminal::host_failed`.
-                    .when(host_failed, |this| {
-                        this.child(
-                            Label::new(HOST_FAILED)
-                                .color(Color::Warning)
-                                .size(LabelSize::Small),
-                        )
-                    })
-                    .children(details.iter().map(|detail| {
-                        Label::new(detail.clone())
-                            .color(Color::Muted)
-                            .size(LabelSize::Small)
-                    }))
-                    .child(h_flex().flex_grow_1().child(Divider::horizontal()))
-                    .child(
-                        Label::new(format!("Process ID (PID): {}", pid))
-                            .color(Color::Muted)
-                            .size(LabelSize::Small),
-                    )
-                    .into_any_element()
-            }
-        }))))
+        let card = self.tab_card(cx)?;
+        Some(TabTooltipContent::Custom(Box::new(Tooltip::element(
+            move |_, cx| card.render(cx),
+        ))))
     }
 
     fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
         let terminal = self.terminal().read(cx);
-        let title = self.smart_title(params.detail.unwrap_or(0), true, cx);
+        // SOLO: an agent shows as its mark with its status on it, beside its
+        // session's title.
+        let agent = terminal
+            .task()
+            .is_none()
+            .then(|| self.agent_status())
+            .flatten();
+        let title = match agent {
+            Some(_) => self.tab_label_title(params.detail.unwrap_or(0), cx),
+            None => self.smart_title(params.detail.unwrap_or(0), true, cx),
+        };
 
         let (icon, icon_color, rerun_button) = match terminal.task() {
             Some(terminal_task) => match &terminal_task.status {
@@ -2042,19 +2018,8 @@ impl Item for TerminalView {
                     }
                 }
             },
-            None => match self.agent_status() {
-                Some((_, status)) => {
-                    let (icon, color) = status.icon();
-                    (icon, color, None)
-                }
-                None => (IconName::Terminal, Color::Muted, None),
-            },
+            None => (IconName::Terminal, Color::Muted, None),
         };
-        let working = terminal.task().is_none()
-            && matches!(
-                self.agent_status(),
-                Some((_, agent_status::AgentStatus::Working))
-            );
 
         let self_handle = self.self_handle.clone();
         h_flex()
@@ -2076,16 +2041,22 @@ impl Item for TerminalView {
                             .when(rerun_button.is_some(), |this| {
                                 this.hover(|style| style.invisible().w_0())
                             })
-                            .map(|this| {
-                                let icon = Icon::new(icon).color(icon_color);
-                                if working {
-                                    let turn = gpui::Transformation::rotate(gpui::percentage(
-                                        self.agent_spinner_turn(),
-                                    ));
-                                    this.child(ui::Transformable::transform(icon, turn))
-                                } else {
-                                    this.child(icon)
+                            .map(|this| match agent {
+                                Some((name, status)) => {
+                                    let colors = cx.theme().colors();
+                                    this.child(agent_tab::render_agent_badge(
+                                        name,
+                                        status,
+                                        self.agent_status_phase(),
+                                        if params.selected {
+                                            colors.tab_active_background
+                                        } else {
+                                            colors.tab_inactive_background
+                                        },
+                                        cx,
+                                    ))
                                 }
+                                None => this.child(Icon::new(icon).color(icon_color)),
                             }),
                     )
                     .when_some(rerun_button, |this, rerun_button| {
@@ -2100,9 +2071,12 @@ impl Item for TerminalView {
             .child(
                 div()
                     .relative()
+                    // SOLO: a narrow tab cuts only the title.
+                    .min_w_0()
                     .child(
                         Label::new(title)
                             .single_line()
+                            .truncate()
                             // SOLO: a folder or program name, like "Admin".
                             .untranslated()
                             .color(params.text_color())
@@ -2136,21 +2110,15 @@ impl Item for TerminalView {
                     }),
             )
             // SOLO: how full the running agent's context is.
-            .when_some(
-                self.agent_context_percent(cx),
-                |this, (percent, nearly_full)| {
-                    this.child(
-                        Label::new(format!("{percent}%"))
-                            .untranslated()
-                            .size(LabelSize::XSmall)
-                            .color(if nearly_full {
-                                Color::Warning
-                            } else {
-                                Color::Muted
-                            }),
-                    )
-                },
-            )
+            .when_some(self.agent_context_fraction(cx), |this, fraction| {
+                let colors = cx.theme().colors();
+                let background = if params.selected {
+                    colors.tab_active_background
+                } else {
+                    colors.tab_inactive_background
+                };
+                this.child(agent_tab::render_context_meter(fraction, background, cx))
+            })
             // SOLO: a terminal that won't outlive Solo though it should.
             .when(terminal.host_failed(), |this| {
                 this.child(

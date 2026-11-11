@@ -4,11 +4,10 @@
 use gpui::{App, AppContext as _, Entity, EntityId, Task, Window};
 use workspace::{
     Workspace,
-    agent_activity::{self, AgentState, WorkspaceTask, WorkspaceTerminal},
+    agent_activity::{self, WorkspaceTask, WorkspaceTerminal},
 };
 
 use crate::{
-    agent_status::AgentStatus,
     agent_tasks::{self, git},
     command_blocks::{activate_terminal_view, terminal_views},
 };
@@ -90,7 +89,7 @@ fn list(workspace: &Entity<Workspace>, cx: &App) -> Vec<WorkspaceTerminal> {
             WorkspaceTerminal {
                 id: entity.entity_id(),
                 title: view.smart_title(0, true, cx).into(),
-                agent: view.agent_status().map(|(_, status)| agent_state(status)),
+                agent: view.agent_status().map(|(_, status)| status),
             }
         })
         .collect()
@@ -102,16 +101,5 @@ fn activate(workspace: &Entity<Workspace>, id: EntityId, window: &mut Window, cx
         .find(|view| view.entity_id() == id)
     {
         activate_terminal_view(workspace, &view, window, cx);
-    }
-}
-
-fn agent_state(status: AgentStatus) -> AgentState {
-    match status {
-        AgentStatus::Working => AgentState::Working,
-        AgentStatus::NeedsInput => AgentState::NeedsInput,
-        AgentStatus::Idle => AgentState::Idle,
-        AgentStatus::Finished => AgentState::Finished,
-        AgentStatus::Done => AgentState::Done,
-        AgentStatus::Failed => AgentState::Failed,
     }
 }
