@@ -136,7 +136,7 @@
 | `terminal.program_notifications` | `true` | 允许程序发 OSC 9/777 桌面通知 | | 人工 |
 | `terminal.restore_contents` | `false` | 重启后显示终端旧内容 | | 单测、人工 |
 | `terminal.agent_commands` | `[]` | 额外当作 agent 的程序 | 加 `"my-agent"` | 单测 |
-| `terminal.claude_code_hooks` / `codex_hooks` / `copilot_hooks` | `true` | 每个会话通过 `--settings` / `-c hooks` / `--plugin-dir` 加状态 hook，不改用户配置 | 新终端里跑 agent 看状态 | 单测（solo_agent_hook）、人工 |
+| `terminal.claude_code_hooks` / `codex_hooks` / `copilot_hooks` / `opencode_hooks` | `true` | 每个会话通过 `--settings` / `-c hooks` / `--plugin-dir` / OpenCode 插件（环境变量加载）加状态 hook，不改用户配置 | 新终端里跑 agent 看状态 | 单测（solo_agent_hook）、人工 |
 | `terminal.keep_running_on_quit` | `true` | 跑着东西的终端在退出 / 更新 / 崩溃后继续，重开时重连（pending G4/G5/G22） | 跑 agent 时退出再开 | 单测（solo_terminal_host）、人工 |
 | `terminal.agent_usage_display` | `"always"` | 底部用量条 + 标签上的上下文百分比；`"tooltip"` 只在提示里（pending G16/G23） | | 单测、人工 |
 | `terminal.follow_working_directory` | `false` | 文件树和搜索跟随活动终端的仓库 | | 人工 |

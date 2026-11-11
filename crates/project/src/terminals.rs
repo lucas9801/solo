@@ -482,6 +482,10 @@ impl Project {
                                         &mut env,
                                     );
                                 }
+                                // SOLO: OpenCode's status plugins.
+                                if settings.opencode_hooks {
+                                    terminal::shell_integration::integrate_opencode(&mut env);
+                                }
                                 (shell, env)
                             }
                             None => {

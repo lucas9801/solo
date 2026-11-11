@@ -130,7 +130,8 @@ terminal bell.
 | Codex | hooks Solo adds per session (`-c hooks...`), and its screen | yes | the most recent session |
 | Copilot CLI | hooks in a plugin Solo loads per session (`--plugin-dir`), and its screen | yes | the most recent session |
 | Gemini CLI, Cursor CLI | its screen | yes, turns read from the screen | the most recent session |
-| OpenCode, Amp, Qwen Code, Cline, Kimi, Kiro, Grok, Droid, Devin, Antigravity, Kilo, Letta, Hermes, Pi, Qoder, Maki, Muse | its screen | yes, turns read from the screen | no |
+| OpenCode | a plugin Solo loads per session (`OPENCODE_CLI_CONFIG_CONTENT` / `OPENCODE_CONFIG_DIR`), and its screen | yes | its session (`opencode --session <id>`) |
+| Amp, Qwen Code, Cline, Kimi, Kiro, Grok, Droid, Devin, Antigravity, Kilo, Letta, Hermes, Pi, Qoder, Maki, Muse | its screen | yes, turns read from the screen | no |
 | Aider and programs added with `agent_commands` | its output (working while it prints, needs input when it rings the bell) | no | no |
 | Anything that reports through [the status protocol](docs/agent-status-protocol.md) | its reports | yes | no |
 
@@ -147,7 +148,7 @@ terminal settings, under `"terminal"`: `shell_integration`, `input_editor`,
 `compact_prompt`, `completions_as_you_type`, `open_links_on_click`,
 `notify_long_commands_after_seconds`,
 `program_notifications`, `restore_contents`, `agent_commands`,
-`claude_code_hooks`, `codex_hooks`, `copilot_hooks`, `follow_working_directory`, `confirm_close`,
+`claude_code_hooks`, `codex_hooks`, `copilot_hooks`, `opencode_hooks`, `follow_working_directory`, `confirm_close`,
 `agent_task_command`.
 
 Project settings, tasks and debug scenarios go in a `.solo` folder in the

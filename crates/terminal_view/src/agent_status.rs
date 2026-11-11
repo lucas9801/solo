@@ -330,6 +330,10 @@ impl TerminalView {
         if let Some(session_id) = hook.session_id {
             self.agent_session_reported(session_id, cx);
         }
+        // SOLO: kept to resume that session by its id after a restart.
+        if let Some(session_id) = hook.raw_session_id.clone() {
+            self.agent_resume_session_reported(session_id, cx);
+        }
         let activity = &mut self.agent_activity;
         let last_sent_at_ms = activity.hook.and_then(|last| last.sent_at_ms);
         if !supersedes(last_sent_at_ms, hook.sent_at_ms) {

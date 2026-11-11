@@ -22,6 +22,10 @@ use crate::{TerminalView, command_blocks::is_agent_command, persistence::Termina
 pub(crate) struct AgentSession {
     pub command: String,
     pub working_directory: Option<PathBuf>,
+    /// The session id the agent's hook reported, for agents that resume a
+    /// session by its id (see [`RESUME_BY_ID`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl AgentSession {
@@ -38,6 +42,8 @@ impl AgentSession {
 pub(crate) struct AgentResumeState {
     /// When the agent command this terminal saved started.
     recorded: Option<Instant>,
+    /// The agent session saved for that command.
+    current: Option<AgentSession>,
     /// The session from before the restart, offered until acted on.
     offer: Option<AgentSession>,
 }
@@ -62,6 +68,16 @@ const RESUME_ARGUMENTS: &[(&str, &str)] = &[
     ("aider", "--restore-chat-history"),
 ];
 
+/// What resumes a session by its id, for the agents whose hook reports a
+/// session id: with several sessions on one server, OpenCode's "most recent"
+/// may be another terminal's.
+const RESUME_BY_ID: &[(&str, &str)] = &[
+    // OpenCode CLI (https://docs.opencode.ai/docs/cli/): `--session <id>`,
+    // "Session ID to continue". OpenCode 2 documents it for `opencode mini`
+    // and `opencode run` (https://opencode.ai/docs/cli/commands/).
+    ("opencode", "--session"),
+];
+
 /// The program of `command` as typed, and its name, lowercase.
 fn program(command: &str) -> Option<(&str, String)> {
     let program = command.split_whitespace().next()?;
@@ -79,10 +95,23 @@ pub(crate) fn agent_display_name(command: &str) -> String {
         .unwrap_or_else(|| command.trim().to_string())
 }
 
-/// The command that continues the most recent session of the agent `command`
-/// ran, using the same program (so a full path or a wrapper name still works).
-pub(crate) fn resume_command(command: &str) -> Option<String> {
+/// The command that continues the session of the agent `command` ran: the
+/// one with `session_id` if the agent resumes by id, else its most recent
+/// one. It uses the same program (so a full path or a wrapper name still
+/// works).
+pub(crate) fn resume_command(command: &str, session_id: Option<&str>) -> Option<String> {
     let (program, name) = program(command)?;
+    let by_id = session_id
+        .filter(|id| terminal::shell_integration::is_session_id(id))
+        .and_then(|id| {
+            RESUME_BY_ID
+                .iter()
+                .find(|(agent, _)| *agent == name)
+                .map(|(_, flag)| format!("{program} {flag} {id}"))
+        });
+    if by_id.is_some() {
+        return by_id;
+    }
     RESUME_ARGUMENTS
         .iter()
         .find(|(agent, _)| *agent == name)
@@ -122,8 +151,10 @@ impl TerminalView {
                 .working_directory
                 .clone()
                 .or_else(|| terminal.working_directory()),
+            session_id: None,
         };
         self.agent_resume.recorded = block.started_at;
+        self.agent_resume.current = Some(session.clone());
         // Started again by hand: nothing left to offer.
         if self.agent_resume.offer.take().is_some() {
             cx.notify();
@@ -150,7 +181,28 @@ impl TerminalView {
             return;
         }
         self.agent_resume.recorded = None;
+        self.agent_resume.current = None;
         self.save_agent_session(None, cx);
+    }
+
+    /// The running agent's hook reported its session: saved with the agent
+    /// command, for agents that resume a session by its id.
+    pub(crate) fn agent_resume_session_reported(
+        &mut self,
+        session_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.agent_resume.current.as_mut() else {
+            return;
+        };
+        let resumes_by_id = program(&session.command)
+            .is_some_and(|(_, name)| RESUME_BY_ID.iter().any(|(agent, _)| *agent == name));
+        if !resumes_by_id || session.session_id.as_deref() == Some(session_id.as_str()) {
+            return;
+        }
+        session.session_id = Some(session_id);
+        let session = session.clone();
+        self.save_agent_session(Some(session), cx);
     }
 
     /// Offers to continue `session`, saved before the restart, and keeps it
@@ -177,11 +229,10 @@ impl TerminalView {
     }
 
     fn continue_agent_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(command) = self
-            .agent_resume
-            .offer
-            .take()
-            .and_then(|session| resume_command(&session.command))
+        let Some(command) =
+            self.agent_resume.offer.take().and_then(|session| {
+                resume_command(&session.command, session.session_id.as_deref())
+            })
         else {
             return;
         };
@@ -224,7 +275,8 @@ impl TerminalView {
     pub(crate) fn render_agent_resume_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let session = self.agent_resume.offer.as_ref()?;
         let name = agent_display_name(&session.command);
-        let can_continue = resume_command(&session.command).is_some();
+        let can_continue =
+            resume_command(&session.command, session.session_id.as_deref()).is_some();
         let text = if util::i18n::is_chinese() {
             format!("上次在这里运行过 {name}")
         } else {
@@ -293,31 +345,60 @@ mod tests {
     #[test]
     fn test_resume_command() {
         assert_eq!(
-            resume_command("claude").as_deref(),
+            resume_command("claude", None).as_deref(),
             Some("claude --continue")
         );
         assert_eq!(
-            resume_command("claude --model opus").as_deref(),
+            resume_command("claude --model opus", None).as_deref(),
             Some("claude --continue")
         );
         assert_eq!(
-            resume_command(r"C:\tools\Claude.exe").as_deref(),
+            resume_command(r"C:\tools\Claude.exe", None).as_deref(),
             Some(r"C:\tools\Claude.exe --continue")
         );
         assert_eq!(
-            resume_command("codex").as_deref(),
+            resume_command("codex", None).as_deref(),
             Some("codex resume --last")
         );
-        assert_eq!(resume_command("gemini").as_deref(), Some("gemini --resume"));
         assert_eq!(
-            resume_command("cursor-agent").as_deref(),
+            resume_command("gemini", None).as_deref(),
+            Some("gemini --resume")
+        );
+        assert_eq!(
+            resume_command("cursor-agent", None).as_deref(),
             Some("cursor-agent resume")
         );
         // Not confirmed in their documentation.
-        assert_eq!(resume_command("qwen"), None);
-        assert_eq!(resume_command("amp"), None);
-        assert_eq!(resume_command("my-agent"), None);
-        assert_eq!(resume_command(""), None);
+        assert_eq!(resume_command("qwen", None), None);
+        assert_eq!(resume_command("amp", None), None);
+        assert_eq!(resume_command("my-agent", None), None);
+        assert_eq!(resume_command("", None), None);
+    }
+
+    #[test]
+    fn test_resume_command_by_session_id() {
+        assert_eq!(
+            resume_command("opencode", Some("ses_4f2a1cB9")).as_deref(),
+            Some("opencode --session ses_4f2a1cB9")
+        );
+        assert_eq!(
+            resume_command(r"C:\tools\opencode.cmd --model x", Some("ses_1")).as_deref(),
+            Some(r"C:\tools\opencode.cmd --session ses_1")
+        );
+        // No id yet, or one that isn't: the most recent session.
+        assert_eq!(
+            resume_command("opencode", None).as_deref(),
+            Some("opencode --continue")
+        );
+        assert_eq!(
+            resume_command("opencode", Some("ses_1; rm -rf /")).as_deref(),
+            Some("opencode --continue")
+        );
+        // Agents that resume by id only when listed.
+        assert_eq!(
+            resume_command("claude", Some("0f6ed4b2-755b-4e18-8bd1-f60252548036")).as_deref(),
+            Some("claude --continue")
+        );
     }
 
     #[test]
@@ -325,15 +406,31 @@ mod tests {
         let session = AgentSession {
             command: "claude --model opus".into(),
             working_directory: Some(PathBuf::from("/work/project")),
+            session_id: None,
+        };
+        let json = session.to_json().expect("serializes");
+        assert!(!json.contains("session_id"), "{json}");
+        assert_eq!(AgentSession::from_json(&json), Some(session));
+        assert_eq!(AgentSession::from_json("not json"), None);
+        let session = AgentSession {
+            command: "opencode".into(),
+            working_directory: None,
+            session_id: Some("ses_4f2a1cB9".into()),
         };
         let json = session.to_json().expect("serializes");
         assert_eq!(AgentSession::from_json(&json), Some(session));
-        assert_eq!(AgentSession::from_json("not json"), None);
+        // Saved before session ids were.
+        assert_eq!(
+            AgentSession::from_json(r#"{"command":"opencode","working_directory":null}"#)
+                .and_then(|session| session.session_id),
+            None
+        );
     }
 
     #[gpui::test]
     async fn test_saved_agent_session_round_trip() {
-        let db = TerminalDb::open_test_db_with_workspaces("test_saved_agent_session_round_trip").await;
+        let db =
+            TerminalDb::open_test_db_with_workspaces("test_saved_agent_session_round_trip").await;
         // The terminal's workspace isn't what's tested.
         db.write(|connection| connection.exec("PRAGMA foreign_keys = OFF")?())
             .await
@@ -345,6 +442,7 @@ mod tests {
         let session = AgentSession {
             command: "claude".into(),
             working_directory: Some(PathBuf::from("/work/project")),
+            session_id: None,
         };
         db.save_agent_session(item_id, workspace_id, session.to_json())
             .await

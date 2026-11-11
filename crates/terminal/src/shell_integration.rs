@@ -374,6 +374,142 @@ fn copilot_hooks(hook: &str) -> serde_json::Value {
     })
 }
 
+/// SOLO: Lets OpenCode started from the integrated shell report what it's
+/// doing, so its turns are tracked like Claude Code's.
+///
+/// OpenCode has no command hooks, only JavaScript plugins, so Solo writes
+/// plugins (beside the shell scripts) that run `solo-agent-hook report` on
+/// OpenCode's events. The shell scripts wrap `opencode` to load them for that
+/// session only, unless the user set the variable themselves; nothing is
+/// written to OpenCode's own config:
+/// - OpenCode 2 runs a shared server for all its clients, so the plugin is a
+///   TUI plugin (it runs in the terminal) listed in
+///   `OPENCODE_CLI_CONFIG_CONTENT`, from `SOLO_OPENCODE_CLI_CONFIG`
+///   (<https://opencode.ai/docs/cli/config/#inline-config>). That list
+///   replaces the one in the user's `cli.json`, so it's theirs plus Solo's.
+/// - OpenCode 1 loads plugins from the extra config folder in
+///   `OPENCODE_CONFIG_DIR`, from `SOLO_OPENCODE_CONFIG_DIR`
+///   (<https://docs.opencode.ai/docs/config/#custom-directory>).
+pub fn integrate_opencode(env: &mut HashMap<String, String>) {
+    if agent_hook_executable().is_none() {
+        return;
+    }
+    let (plugin, config_dir) = match write_opencode_plugins() {
+        Ok(paths) => paths,
+        Err(error) => {
+            log::warn!("failed to write the OpenCode plugins: {error}");
+            return;
+        }
+    };
+    env.insert("SOLO_OPENCODE_CONFIG_DIR".to_string(), config_dir);
+    let path = opencode_cli_config_path(env);
+    let user_settings = std::fs::read_to_string(&path).ok();
+    let user_settings = user_settings
+        .as_deref()
+        .map(|contents| (contents, path.parent().unwrap_or(Path::new("/"))));
+    match opencode_cli_config(&plugin, user_settings) {
+        Some(config) => {
+            env.insert("SOLO_OPENCODE_CLI_CONFIG".to_string(), config);
+        }
+        None => log::warn!(
+            "{} isn't JSON Solo can read: OpenCode 2 won't report its status",
+            path.display()
+        ),
+    }
+}
+
+const OPENCODE_SHARED: &str = include_str!("shell_integration/opencode/solo-opencode.js");
+const OPENCODE_TUI_PLUGIN: &str = include_str!("shell_integration/opencode/tui.js");
+const OPENCODE_V1_PLUGIN: &str = include_str!("shell_integration/opencode/solo-v1.js");
+
+/// Writes the OpenCode 2 plugin folder and OpenCode 1's config folder (whose
+/// plugin imports from the former); returns the plugin's file URL and the
+/// config folder.
+fn write_opencode_plugins() -> std::io::Result<(String, String)> {
+    write_script("opencode-plugin/solo-opencode.js", OPENCODE_SHARED)?;
+    let tui = write_script("opencode-plugin/tui.js", OPENCODE_TUI_PLUGIN)?;
+    let v1 = write_script("opencode-config/plugins/solo.js", OPENCODE_V1_PLUGIN)?;
+    let plugin_dir = native_path(Path::new(&tui).parent().unwrap_or(Path::new("")));
+    let plugin = url::Url::from_file_path(&plugin_dir).map_err(|()| {
+        std::io::Error::other(format!("{} isn't an absolute path", plugin_dir.display()))
+    })?;
+    let config_dir = native_path(
+        Path::new(&v1)
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(Path::new("")),
+    );
+    Ok((
+        plugin.to_string(),
+        config_dir.to_string_lossy().into_owned(),
+    ))
+}
+
+/// `path` with the platform's separators (the scripts' paths use `/`).
+fn native_path(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(path.to_string_lossy().replace('/', "\\"))
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Where OpenCode 2 keeps the user's CLI settings
+/// (<https://opencode.ai/docs/cli/config/#configuration-file>).
+fn opencode_cli_config_path(env: &HashMap<String, String>) -> PathBuf {
+    env.get("XDG_CONFIG_HOME")
+        .cloned()
+        .or_else(|| std::env::var("XDG_CONFIG_HOME").ok())
+        .filter(|dir| !dir.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths::home_dir().join(".config"))
+        .join("opencode")
+        .join("cli.json")
+}
+
+/// OpenCode 2 CLI settings that load the plugin at `plugin` (a file URL) as
+/// well as the user's own plugins, from their `cli.json` (its contents and
+/// folder) if they have one, since an inline `plugins` list replaces theirs.
+/// `None` if their `cli.json` can't be read as JSON: their plugins would be
+/// lost.
+fn opencode_cli_config(plugin: &str, user: Option<(&str, &Path)>) -> Option<String> {
+    let mut plugins = Vec::new();
+    if let Some((contents, dir)) = user.filter(|(contents, _)| !contents.trim().is_empty()) {
+        let settings: serde_json::Value = serde_json::from_str(contents).ok()?;
+        let user_plugins = settings
+            .get("plugins")
+            .and_then(|plugins| plugins.as_array())
+            .cloned()
+            .unwrap_or_default();
+        // Relative paths are relative to cli.json's folder.
+        let absolute = |package: &str| -> serde_json::Value {
+            if ["./", "../", ".\\", "..\\"]
+                .iter()
+                .any(|prefix| package.starts_with(prefix))
+            {
+                dir.join(package).to_string_lossy().into_owned().into()
+            } else {
+                package.into()
+            }
+        };
+        for entry in user_plugins {
+            plugins.push(match entry {
+                serde_json::Value::String(package) => absolute(&package),
+                serde_json::Value::Object(mut entry) => {
+                    let package = entry.get("package").and_then(|package| package.as_str());
+                    if let Some(package) = package.map(absolute) {
+                        entry.insert("package".to_string(), package);
+                    }
+                    serde_json::Value::Object(entry)
+                }
+                other => other,
+            });
+        }
+    }
+    plugins.push(serde_json::json!({ "package": plugin }));
+    Some(serde_json::json!({ "plugins": plugins }).to_string())
+}
+
 /// The Codex events Solo reports, as in its `hooks` config.
 const CODEX_HOOK_EVENTS: [&str; 5] = [
     "SessionStart",
@@ -551,6 +687,9 @@ pub struct AgentHook {
     /// The agent's session (Claude Code's `session_id`), which tells which
     /// transcript is this terminal's.
     pub session_id: Option<AgentSessionId>,
+    /// SOLO: The session id as reported, for agents whose ids aren't UUIDs
+    /// (OpenCode's `ses_...`): up to 128 letters, digits, `-` or `_`.
+    pub raw_session_id: Option<String>,
     /// What the agent calls itself, for programs Solo doesn't know as agents.
     pub agent: Option<String>,
     /// Where the agent works, which can differ from where the shell is (a
@@ -567,7 +706,12 @@ impl AgentHook {
         let (kind, rest) = params.split_first()?;
         let kind = AgentHookKind::parse(kind)?;
         let sent_at_ms = rest.first().and_then(|sent_at| sent_at.trim().parse().ok());
-        let session_id = rest.get(1).and_then(|id| AgentSessionId::parse(id));
+        let raw_session_id = rest
+            .get(1)
+            .map(|id| id.trim())
+            .filter(|id| is_session_id(id))
+            .map(str::to_string);
+        let session_id = raw_session_id.as_deref().and_then(AgentSessionId::parse);
         let agent = rest
             .get(2)
             .map(|name| name.trim())
@@ -589,10 +733,20 @@ impl AgentHook {
             kind,
             sent_at_ms,
             session_id,
+            raw_session_id,
             agent,
             working_directory,
         })
     }
+}
+
+/// SOLO: Whether `id` can be an agent's session id: up to 128 letters,
+/// digits, `-` or `_`.
+pub fn is_session_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
 /// SOLO: `%XX` bytes back, as UTF-8; `None` if it isn't valid.
@@ -1119,6 +1273,7 @@ mod tests {
                 kind: AgentHookKind::PromptSubmitted,
                 sent_at_ms: Some(1793624689993),
                 session_id: None,
+                raw_session_id: None,
                 agent: None,
                 working_directory: None,
             })
@@ -1130,6 +1285,7 @@ mod tests {
                 kind: AgentHookKind::Stopped,
                 sent_at_ms: None,
                 session_id: None,
+                raw_session_id: None,
                 agent: None,
                 working_directory: None,
             })
@@ -1235,6 +1391,95 @@ mod tests {
             command("SessionStart", "bash"),
             r"'C:\Program Files\it'\''s\solo-agent-hook.exe' start --agent copilot"
         );
+    }
+
+    #[test]
+    fn opencode_cli_config_keeps_the_users_plugins() {
+        let plugin =
+            "file:///C:/Users/me/AppData/Local/Temp/solo-shell-integration/opencode-plugin";
+        let parse = |config: Option<String>| -> serde_json::Value {
+            serde_json::from_str(&config.expect("a config")).expect("JSON")
+        };
+        let solo = serde_json::json!({ "package": plugin });
+        assert_eq!(
+            parse(opencode_cli_config(plugin, None)),
+            serde_json::json!({ "plugins": [solo] })
+        );
+        assert_eq!(
+            parse(opencode_cli_config(
+                plugin,
+                Some((
+                    r#"{"theme":{"name":"x"}}"#,
+                    Path::new("/home/me/.config/opencode")
+                ))
+            )),
+            serde_json::json!({ "plugins": [solo] })
+        );
+        // Their list, in order, with relative paths made absolute, then Solo's.
+        let dir = Path::new("/home/me/.config/opencode");
+        let user = r#"{"plugins": ["-opencode.notifications", "./plugins/status",
+            {"package": "../shared", "options": {"compact": true}}, "@acme/tui@1.0.0"]}"#;
+        assert_eq!(
+            parse(opencode_cli_config(plugin, Some((user, dir)))),
+            serde_json::json!({ "plugins": [
+                "-opencode.notifications",
+                dir.join("./plugins/status").to_string_lossy(),
+                { "package": dir.join("../shared").to_string_lossy(), "options": { "compact": true } },
+                "@acme/tui@1.0.0",
+                solo,
+            ] })
+        );
+        // Their plugins can't be kept: Solo's isn't added.
+        assert_eq!(
+            opencode_cli_config(plugin, Some(("{ // comment", dir))),
+            None
+        );
+    }
+
+    #[test]
+    fn opencode_plugins_are_written() {
+        let (plugin, config_dir) = write_opencode_plugins().expect("writes the plugins");
+        let plugin_dir = url::Url::parse(&plugin)
+            .expect("a URL")
+            .to_file_path()
+            .expect("a file URL");
+        assert_eq!(
+            std::fs::read_to_string(plugin_dir.join("tui.js")).unwrap(),
+            OPENCODE_TUI_PLUGIN
+        );
+        let v1 = Path::new(&config_dir).join("plugins").join("solo.js");
+        assert_eq!(std::fs::read_to_string(&v1).unwrap(), OPENCODE_V1_PLUGIN);
+        // What the OpenCode 1 plugin imports.
+        let import = "../../opencode-plugin/solo-opencode.js";
+        assert!(OPENCODE_V1_PLUGIN.contains(import));
+        let shared = v1.parent().unwrap().join(import);
+        assert_eq!(std::fs::read_to_string(shared).unwrap(), OPENCODE_SHARED);
+        assert!(OPENCODE_TUI_PLUGIN.contains("\"./solo-opencode.js\""));
+    }
+
+    #[test]
+    fn opencode_session_ids_are_kept_raw() {
+        let params = |params: &[&str]| -> Vec<String> {
+            params.iter().map(|param| param.to_string()).collect()
+        };
+        let hook = AgentHook::parse(&params(&["prompt", "1", "ses_4f2a1cB9", "opencode"])).unwrap();
+        assert_eq!(hook.raw_session_id.as_deref(), Some("ses_4f2a1cB9"));
+        assert_eq!(hook.session_id, None);
+        assert_eq!(hook.agent.as_deref(), Some("opencode"));
+        let uuid = "0f6ed4b2-755b-4e18-8bd1-f60252548036";
+        let hook = AgentHook::parse(&params(&["start", "1", uuid])).unwrap();
+        assert_eq!(hook.raw_session_id.as_deref(), Some(uuid));
+        assert!(hook.session_id.is_some());
+        let too_long = "x".repeat(129);
+        for bad in ["a b", "a/b", "", too_long.as_str()] {
+            assert_eq!(
+                AgentHook::parse(&params(&["stop", "1", bad]))
+                    .unwrap()
+                    .raw_session_id,
+                None,
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

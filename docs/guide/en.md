@@ -335,13 +335,13 @@ the background; on a large repository that can take several GB of memory.
 
 ## 7. Supported agents
 
-| | Claude Code | Codex, Copilot CLI | gemini, opencode, qwen, amp, cursor-agent and others | aider, programs in `agent_commands` |
+| | Claude Code | Codex, Copilot CLI, OpenCode | gemini, qwen, amp, cursor-agent and others | aider, programs in `agent_commands` |
 | --- | --- | --- | --- | --- |
 | Recognized as an agent (status, close confirmation, sending command blocks) | yes | yes | yes | yes |
-| Where the status comes from | hooks; exact | hooks; exact (Codex: after you trust them once) | its screen, with per-agent rules; may lag a moment | its output |
+| Where the status comes from | hooks; exact | hooks (OpenCode: a plugin); exact (Codex: after you trust them once) | its screen, with per-agent rules; may lag a moment | its output |
 | Per-turn review and roll back | yes | yes | yes, turns read from the screen | no |
-| Timeline, session title, token use | yes | Codex: yes (its first prompt as the title); Copilot CLI: no | no | no |
-| Continue the session after a restart | yes (`--continue`) | yes (`codex resume --last`, `copilot --continue`) | yes, with each one's resume option (not qwen or amp) | no |
+| Timeline, session title, token use | yes | Codex: yes (its first prompt as the title); Copilot CLI, OpenCode: no | no | no |
+| Continue the session after a restart | yes (`--continue`) | yes (`codex resume --last`, `copilot --continue`, `opencode --session <id>`) | yes, with each one's resume option (not qwen or amp) | no |
 | Agent tasks | the default command | set `agent_task_command` to it | same | same |
 
 For agents without hooks, Solo reads the status from the terminal: a spinner
@@ -381,6 +381,21 @@ To treat another program as an agent:
   `solo-agent-hook.exe`) with PowerShell. Subcommands that don't start a
   session (`copilot login`, `copilot plugin`, ...) run as typed. To turn them
   off: `"terminal": {"copilot_hooks": false}` (takes effect in new terminals).
+- **OpenCode's status plugin applies to one session only, too.** OpenCode
+  has no command hooks, so Solo writes a small JavaScript plugin to
+  `%TEMP%\solo-shell-integration\opencode-plugin` (and, for OpenCode 1,
+  `opencode-config\plugins`); its `opencode` wrapper loads it for that
+  session through environment variables: `OPENCODE_CLI_CONFIG_CONTENT` for
+  OpenCode 2 (your `cli.json` plugins plus Solo's; your `cli.json` is read,
+  not changed) and `OPENCODE_CONFIG_DIR` for OpenCode 1. **Nothing is written
+  to `~/.config/opencode`**. If you set either variable yourself, Solo leaves
+  it alone (and that OpenCode version then shows the status read from the
+  screen). The plugin runs `solo-agent-hook.exe report` when a turn starts,
+  asks for a permission or an answer, and ends; it reports only the session
+  the OpenCode window shows. After a restart, "Continue Session" types
+  `opencode --session <id>`. OpenCode 1 installs its plugin package into
+  `opencode-config` the first time. To turn it off:
+  `"terminal": {"opencode_hooks": false}` (takes effect in new terminals).
 - **Shell integration**: PowerShell, bash, zsh and fish started without custom
   arguments load Solo's integration script from `%TEMP%\solo-shell-integration`,
   after your own profile. PowerShell runs it with `-NoExit -Command`, which
@@ -491,7 +506,7 @@ Some security software treats these as suspicious.
   System32 (WSL) isn't supported.
 - If you have your own `claude` function or alias, Solo's wrapper isn't used,
   and the status is read from the output.
-- Changing `claude_code_hooks`, `codex_hooks` or `copilot_hooks` only affects
+- Changing `claude_code_hooks`, `codex_hooks`, `copilot_hooks` or `opencode_hooks` only affects
   new terminals.
 - Codex shows no status from hooks until you trust Solo's hooks in the review
   Codex shows when it starts; until then its status is read
@@ -528,6 +543,7 @@ Solo's own settings, under `"terminal"`:
 | `claude_code_hooks` | `true` | add status hooks to Claude Code with `--settings` |
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
+| `opencode_hooks` | `true` | load a status plugin into OpenCode for each session |
 | `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
 | `agent_usage_display` | `"always"` | a running agent's context, model and tokens in a bar at the bottom of its terminal (when narrow, whole parts go: the session's tokens first, then the turn's, then the model, leaving the context's bar and percentage) and its context on the tab; `"tooltip"` shows them only in the tab's tooltip |
 | `agent_commands` | `[]` | more programs to treat as agents |

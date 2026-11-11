@@ -1,5 +1,6 @@
-//! SOLO: A Claude Code and Codex hook that tells the Solo terminal the agent
-//! runs in what it's doing, with
+//! SOLO: A Claude Code, Codex and Copilot CLI hook (and the command
+//! OpenCode's plugin runs) that tells the Solo terminal the agent runs in
+//! what it's doing, with
 //! `OSC 6973 ; agent ; <kind> ; <ms since the epoch> ; <session id> [; <agent>
 //! [; <working directory>]]` (parsed by `terminal::shell_integration::AgentHook`).
 //! The working directory, where the agent works (which can differ from the
@@ -111,11 +112,10 @@ fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> 
         return Err(format!("--seq {order:?} isn't a number"));
     }
     // Everything goes into an escape sequence: nothing that could end it.
-    if !session
-        .chars()
-        .all(|character| character.is_ascii_hexdigit() || character == '-')
-    {
-        return Err(format!("--session {session:?} isn't a UUID"));
+    if !session.is_empty() && !is_session_id(&session) {
+        return Err(format!(
+            "--session {session:?} must be up to 128 letters, digits, '-' or '_'"
+        ));
     }
     if !is_agent_name(&agent) {
         return Err(format!(
@@ -213,10 +213,17 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
 fn session_id_of(input: &str) -> Option<String> {
     let event = serde_json::from_str::<serde_json::Value>(input).ok()?;
     let session_id = event.get("session_id")?.as_str()?;
-    session_id
-        .chars()
-        .all(|character| character.is_ascii_hexdigit() || character == '-')
-        .then(|| session_id.to_string())
+    is_session_id(session_id).then(|| session_id.to_string())
+}
+
+/// Whether `id` can go into the escape sequence as a session id: a UUID, or
+/// another agent's id such as OpenCode's `ses_...`: up to 128 letters,
+/// digits, '-' or '_'.
+fn is_session_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
 /// Where the agent works, percent-encoded for the escape sequence: Claude
@@ -411,6 +418,25 @@ mod tests {
             report_sequence(&args(&["--state", "idle"]), "5"),
             Ok("\x1b]6973;agent;stop;5;;\x07".to_string())
         );
+        // What OpenCode's plugin runs.
+        assert_eq!(
+            report_sequence(
+                &args(&[
+                    "--state",
+                    "blocked",
+                    "--agent",
+                    "opencode",
+                    "--seq",
+                    "8",
+                    "--session",
+                    "ses_4f2a1cB9",
+                    "--directory",
+                    r"C:\work dir",
+                ]),
+                "123"
+            ),
+            Ok("\x1b]6973;agent;input;8;ses_4f2a1cB9;opencode;C:\\work dir\x07".to_string())
+        );
         for bad in [
             &["--state", "dancing"][..],
             &[][..],
@@ -432,6 +458,12 @@ mod tests {
         );
         assert_eq!(session_id_of("{\"session_id\":\"a\\u0007b\"}"), None);
         assert_eq!(session_id_of("not json"), None);
+        assert_eq!(
+            session_id_of(r#"{"session_id":"ses_4f2a1cB9"}"#).as_deref(),
+            Some("ses_4f2a1cB9")
+        );
+        assert_eq!(session_id_of(r#"{"session_id":"a;b"}"#), None);
+        assert_eq!(session_id_of(r#"{"session_id":""}"#), None);
     }
 
     #[test]
