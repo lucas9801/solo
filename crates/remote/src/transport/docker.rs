@@ -224,8 +224,10 @@ impl DockerExecConnection {
             ReleaseChannel::Dev => "build".to_string(),
             _ => version.to_string(),
         };
+        // SOLO: Solo's own name, see `paths::REMOTE_SERVER_BINARY_PREFIX`.
         let binary_name = format!(
-            "zed-remote-server-{}-{}",
+            "{}-{}-{}",
+            paths::REMOTE_SERVER_BINARY_PREFIX,
             release_channel.dev_name(),
             version_str
         );

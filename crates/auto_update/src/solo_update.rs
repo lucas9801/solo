@@ -48,7 +48,8 @@ use workspace::{
 /// The GitHub repository Solo's releases are published in.
 pub const SOLO_GITHUB_REPO: &str = "lucas9801/solo";
 
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/lucas9801/solo/releases/latest";
+pub(crate) const LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/lucas9801/solo/releases/latest";
 const INSTALLER_PREFIX: &str = "Solo-Setup-";
 const INSTALLER_SUFFIX: &str = ".exe";
 
@@ -139,22 +140,47 @@ fn is_installer_asset(name: &str) -> bool {
     lower.starts_with(&INSTALLER_PREFIX.to_ascii_lowercase()) && lower.ends_with(INSTALLER_SUFFIX)
 }
 
-/// Parses the JSON returned by GitHub's "latest release" endpoint.
-pub fn parse_release(json: &[u8]) -> Result<SoloRelease> {
+impl From<GithubAssetJson> for SoloInstaller {
+    fn from(asset: GithubAssetJson) -> Self {
+        SoloInstaller {
+            sha256: asset.digest.as_deref().and_then(sha256_of_digest),
+            name: asset.name,
+            url: asset.browser_download_url,
+            size: asset.size,
+        }
+    }
+}
+
+fn parse_release_json(json: &[u8]) -> Result<(GithubReleaseJson, Version)> {
     let release: GithubReleaseJson =
         serde_json::from_slice(json).context("unexpected response from GitHub")?;
     let version = parse_version(&release.tag_name)
         .with_context(|| format!("release tag {:?} is not a version", release.tag_name))?;
+    Ok((release, version))
+}
+
+/// The version of a release (GitHub's JSON for it) and all its files, which
+/// [`SoloInstaller`] describes as well as the installer.
+pub(crate) fn parse_release_assets(json: &[u8]) -> Result<(Version, Vec<SoloInstaller>)> {
+    let (release, version) = parse_release_json(json)?;
+    Ok((
+        version,
+        release
+            .assets
+            .into_iter()
+            .map(SoloInstaller::from)
+            .collect(),
+    ))
+}
+
+/// Parses the JSON returned by GitHub's "latest release" endpoint.
+pub fn parse_release(json: &[u8]) -> Result<SoloRelease> {
+    let (release, version) = parse_release_json(json)?;
     let installer = release
         .assets
         .into_iter()
         .find(|asset| is_installer_asset(&asset.name))
-        .map(|asset| SoloInstaller {
-            name: asset.name,
-            url: asset.browser_download_url,
-            size: asset.size,
-            sha256: asset.digest.as_deref().and_then(sha256_of_digest),
-        });
+        .map(SoloInstaller::from);
     Ok(SoloRelease {
         version,
         html_url: release.html_url,
@@ -202,7 +228,7 @@ pub fn evaluate_release(
     CheckOutcome::UpdateAvailable(release)
 }
 
-fn user_agent(current: &Version) -> String {
+pub(crate) fn user_agent(current: &Version) -> String {
     format!("Solo/{current}")
 }
 
@@ -250,6 +276,15 @@ async fn fetch_release(
     url: &str,
     current: &Version,
 ) -> Result<SoloRelease> {
+    parse_release(&fetch_release_json(http, url, current).await?)
+}
+
+/// GitHub's JSON for the release at `url` (an API URL).
+pub(crate) async fn fetch_release_json(
+    http: Arc<dyn HttpClient>,
+    url: &str,
+    current: &Version,
+) -> Result<Vec<u8>> {
     let request = Request::get(url)
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", user_agent(current))
@@ -273,7 +308,7 @@ async fn fetch_release(
         let text: String = text.chars().take(200).collect();
         anyhow::bail!("GitHub returned {}: {text}", status.as_u16());
     }
-    parse_release(&body)
+    Ok(body)
 }
 
 /// One whole check: fetch the latest release and decide what to report.
@@ -294,6 +329,20 @@ pub async fn download_installer(
     installer: &SoloInstaller,
     current: &Version,
     target: &Path,
+    on_progress: impl FnMut(u8),
+) -> Result<()> {
+    download_asset(http, installer, "installer", current, target, on_progress).await
+}
+
+/// Downloads a release file (`what` names it in errors) to `target`,
+/// reporting whole percentages, and checks its size and SHA-256 against the
+/// ones GitHub reported. A file that doesn't match is deleted.
+pub(crate) async fn download_asset(
+    http: Arc<dyn HttpClient>,
+    installer: &SoloInstaller,
+    what: &str,
+    current: &Version,
+    target: &Path,
     mut on_progress: impl FnMut(u8),
 ) -> Result<()> {
     let request = Request::get(installer.url.as_str())
@@ -305,10 +354,10 @@ pub async fn download_installer(
     let mut response = http
         .send(request)
         .await
-        .context("couldn't download the installer")?;
+        .with_context(|| format!("couldn't download the {what}"))?;
     anyhow::ensure!(
         response.status().is_success(),
-        "downloading the installer failed: {}",
+        "downloading the {what} failed: {}",
         response.status()
     );
 
@@ -351,7 +400,7 @@ pub async fn download_installer(
     if installer.size > 0 && written != installer.size {
         smol::fs::remove_file(target).await.ok();
         anyhow::bail!(
-            "the downloaded installer is incomplete ({written} of {} bytes)",
+            "the downloaded {what} is incomplete ({written} of {} bytes)",
             installer.size
         );
     }
@@ -362,7 +411,7 @@ pub async fn download_installer(
             if &actual != expected {
                 smol::fs::remove_file(target).await.ok();
                 anyhow::bail!(
-                    "the downloaded installer is corrupt: its SHA-256 is {actual}, not {expected}"
+                    "the downloaded {what} is corrupt: its SHA-256 is {actual}, not {expected}"
                 );
             }
         }

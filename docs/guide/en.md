@@ -450,11 +450,17 @@ collaboration and Zed's own auto-update are off or hidden.
 - the agents you run in the terminal (Claude Code, Codex, ...) make their own
   connections, not through Solo.
 
-**No remote development yet:** SSH, WSL and Docker (dev container) remote
-development run a server on the remote side. Solo doesn't build its own yet,
-and Zed's servers have none matching Solo, so those entries are hidden, and
-using one says it isn't supported, without contacting Zed's servers. `ssh`
-and `wsl` in the terminal work as usual.
+**Remote development is off for now:** SSH, WSL and Docker (dev container)
+remote development run a server on the remote side. Solo's releases now carry
+their own for Linux (x86_64 and aarch64), but it's still being tested, so
+those entries stay hidden, and using one says it isn't available yet. `ssh`
+and `wsl` in the terminal work as usual. To try it, set the environment
+variable `SOLO_REMOTE_DEVELOPMENT=1` and start Solo again: connecting then
+downloads the remote server of your Solo version from Solo's GitHub release
+(`github.com`, checked against the SHA-256 GitHub reports), uploads it to the
+remote host, which runs it from `~/.solo_server`, and keeps its data in
+`~/.local/share/solo`, apart from Zed's. Zed's servers are never contacted.
+Remote macOS and Windows hosts aren't supported.
 
 ## 10. Troubleshooting
 
