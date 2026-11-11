@@ -135,7 +135,7 @@ fn possibly_open_target(
 /// SOLO: what a path link opens, for its tooltip and its click alike. A bare
 /// position (`:3788`) put in the file named nearest before it is tried in
 /// the other files named before it too, nearest first, and goes to the first
-/// that exists and has that line; when none does, to the nearest.
+/// that exists and has that line; when none does, to the nearest that exists.
 fn resolve_path_like_target(
     workspace: &WeakEntity<Workspace>,
     path_like_target: &PathLikeTarget,
@@ -194,7 +194,9 @@ fn resolve_path_like_target(
                 return Some(candidate.clone());
             }
         }
-        candidates.into_iter().next().flatten()
+        // None has the line: the nearest that exists, rather than no link
+        // when the nearest isn't a file at all (e.g. `classes.getptr`).
+        candidates.into_iter().flatten().next()
     })
 }
 
