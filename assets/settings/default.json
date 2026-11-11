@@ -2850,6 +2850,29 @@
   },
   // LSP Specific settings.
   "lsp": {
+    // SOLO: lighter defaults, so that large repositories don't take all the
+    // memory and CPU. Set these back in your settings to undo them.
+    //
+    // rust-analyzer runs `cargo check` on save and to build proc macros;
+    // by default cargo starts as many `rustc` as there are logical cores, each
+    // up to ~1.5 GB on a large workspace. "auto" means a quarter of the
+    // logical cores, at least 2; "default" lets cargo decide again.
+    "rust-analyzer": {
+      "initialization_options": {
+        "cargo": {
+          "extraEnv": {
+            "CARGO_BUILD_JOBS": "auto",
+          },
+        },
+      },
+    },
+    // clangd builds its background index with 2 workers at a low priority,
+    // and keeps precompiled headers on disk instead of in memory.
+    "clangd": {
+      "binary": {
+        "arguments": ["-j=2", "--background-index-priority=background", "--pch-storage=disk"],
+      },
+    },
     // Specify the LSP name as a key here.
     // "rust-analyzer": {
     //     // A special flag for rust-analyzer integration, to use server-provided tasks
