@@ -20,6 +20,8 @@ mod output_perf_tests;
 mod persistence;
 mod running_program;
 mod session_contents;
+#[cfg(test)]
+mod smoke_tests;
 mod tab_title;
 pub mod terminal_element;
 pub mod terminal_panel;

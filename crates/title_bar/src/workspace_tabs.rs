@@ -635,6 +635,68 @@ mod tests {
         );
     }
 
+    /// The workspace switching actions (G11's smoke test covers the
+    /// terminal's; these live here, with the workspace tabs).
+    #[gpui::test]
+    async fn test_switch_workspaces_with_actions(cx: &mut gpui::TestAppContext) {
+        use fs::Fs as _;
+        use gpui::VisualTestContext;
+        use project::Project;
+        use util::path;
+
+        let app_state = cx.update(workspace::AppState::test);
+        let fs = app_state.fs.as_fake();
+        for dir in [path!("/a"), path!("/b")] {
+            fs.create_dir(dir.as_ref()).await.unwrap();
+        }
+        let project_a = Project::test(app_state.fs.clone(), [path!("/a").as_ref()], cx).await;
+        let project_b = Project::test(app_state.fs.clone(), [path!("/b").as_ref()], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let multi_workspace = window_handle.root(cx).unwrap();
+        let workspace_a =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.test_add_workspace(project_b, window, cx)
+        });
+        for workspace in [&workspace_a, &workspace_b] {
+            workspace.update(cx, |workspace, _| register_actions(workspace));
+        }
+        cx.run_until_parked();
+        let active = |cx: &mut VisualTestContext| {
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        };
+        let dispatch = |action: &dyn Action, cx: &mut VisualTestContext| {
+            let focus = active(cx).read_with(cx, |workspace, cx| workspace.focus_handle(cx));
+            cx.update(|window, cx| {
+                window.focus(&focus, cx);
+                window.dispatch_action(action.boxed_clone(), cx);
+            });
+            cx.run_until_parked();
+        };
+        assert_eq!(active(cx), workspace_b);
+
+        dispatch(&NextWorkspace, cx);
+        assert_eq!(active(cx), workspace_a, "wraps around");
+        dispatch(&PreviousWorkspace, cx);
+        assert_eq!(active(cx), workspace_b);
+        // In the order the tabs show.
+        let tabs = cx.update(|_, cx| {
+            workspace_tabs(&multi_workspace, cx)
+                .into_iter()
+                .filter_map(|tab| tab.workspace)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(tabs.len(), 2);
+        for (index, workspace) in tabs.iter().enumerate().rev() {
+            dispatch(&ActivateWorkspace { index }, cx);
+            assert_eq!(&active(cx), workspace);
+        }
+        dispatch(&ActivateWorkspace { index: 8 }, cx);
+        assert_eq!(active(cx), tabs[0], "no ninth tab: stays");
+    }
+
     #[test]
     fn test_task_label() {
         util::i18n::set_language(util::i18n::Language::English);
