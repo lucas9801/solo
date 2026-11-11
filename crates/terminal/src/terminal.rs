@@ -723,6 +723,10 @@ pub struct PathLikeTarget {
     /// SOLO: file paths written near this one, which tell which of several
     /// files of its name it means.
     pub context_paths: Vec<String>,
+    /// SOLO: when `maybe_path` is a bare position put in the file named
+    /// nearest before it, that position in the other files named before it,
+    /// nearest first, to try when that file doesn't have the line.
+    pub position_files: Vec<String>,
 }
 
 /// A string inside terminal, potentially useful as a URI that can be opened.
@@ -2376,6 +2380,7 @@ impl Terminal {
             is_url,
             range,
             context_paths,
+            position_files,
         } = hyperlink;
         let prev_hovered_word = self.last_content.last_hovered_word.take();
         let match_line = range.start().line;
@@ -2391,6 +2396,7 @@ impl Terminal {
                     maybe_path: decoded_path,
                     working_directory,
                     context_paths,
+                    position_files,
                 })
             } else {
                 MaybeNavigationTarget::Url(maybe_url_or_path.clone())
@@ -2400,6 +2406,7 @@ impl Terminal {
                 maybe_path: maybe_url_or_path.clone(),
                 working_directory,
                 context_paths,
+                position_files,
             })
         };
 
