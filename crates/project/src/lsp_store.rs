@@ -23,6 +23,8 @@ pub mod log_store;
 pub mod lsp_ext_command;
 pub mod rust_analyzer_ext;
 mod semantic_tokens;
+// SOLO: per-project analysis modes for language servers.
+pub mod solo_server_modes;
 pub mod vue_language_server_ext;
 
 use self::code_lens::CodeLensData;
@@ -4967,6 +4969,10 @@ impl LspStore {
         cx.subscribe(&toolchain_store, Self::on_toolchain_store_event)
             .detach();
         cx.observe_global::<SettingsStore>(Self::on_settings_changed)
+            .detach();
+        // SOLO: a changed analysis mode restarts or stops servers like a
+        // settings change.
+        cx.observe_global::<solo_server_modes::LanguageServerModes>(Self::on_settings_changed)
             .detach();
         let binary_status_task = subscribe_to_binary_statuses(&languages, cx);
 

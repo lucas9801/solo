@@ -130,6 +130,15 @@ Solo 不会在智能体工作时自动打开它改的文件。
 - 重启后，跑着智能体、但没能保留下来的终端会提示是否继续上次的会话（例如 `claude --continue`）。
 - 关掉最后一个终端后终端栏不收起，显示"新建终端"（Ctrl+Shift+`）、"新建 Claude Code / Codex 终端"（只列 `PATH` 里找得到的）和"查找文件"按钮。终端栏被收起（Ctrl+`）又没有打开文件时，编辑区显示同样的快捷入口。
 
+### 大仓库里的语言服务
+语言服务（rust-analyzer、clangd 等）会在后台分析整个项目，大仓库里可能占好几 GB 内存。
+- **默认更省。** rust-analyzer 的 `cargo check` 同时最多跑逻辑核数四分之一个 `rustc`（至少 2 个）；clangd 用 2 个线程、低优先级建索引，预编译头放在磁盘上。想改回去：在设置里写 `"lsp": {"rust-analyzer": {"initialization_options": {"cargo": {"extraEnv": {"CARGO_BUILD_JOBS": "default"}}}}}`，并给 `lsp.clangd.binary.arguments` 写上你自己的参数（不要参数就写 `[]`）。
+- **占了多少。** 状态栏 ⚡ 按钮旁边的数字是所有语言服务的内存，包括它们启动的进程（rust-analyzer 下面的 `cargo`、`rustc`）。鼠标停在按钮上，每个语言服务一行，例如"rust-analyzer：检查中 · 5 个编译进程 · 3.1 GB"；语言服务的子菜单里也有。
+- **按项目设置。** 在语言服务的子菜单"在本项目"下选：完整分析；"暂停后台分析（只分析打开的文件）"（rust-analyzer 保存时不跑 `cargo check`、不在后台建索引；clangd 不建后台索引），只有 rust-analyzer 和 clangd 有这一项；或者在本项目关闭。选择按项目记住（存在 Solo 的数据库里，不写进仓库），重启后保持。关掉的语言服务列在菜单最下面，可以再开启。
+- **大项目提醒。** 在超过 10 万个文件的项目里启动重的语言服务（rust-analyzer、clangd、roslyn、jdtls、gopls 等）时，Solo 会问一次要分析多少。
+- **按轮审阅和暂停。** 一轮结束时，即使暂停了后台分析，Solo 仍会让 rust-analyzer 对改过的文件跑一次 `cargo check`，这一轮的诊断仍然完整；关掉以后就不比较 Rust 的诊断了。
+- **语言服务起不来时**，如果 Solo 认得原因（例如 roslyn 缺 .NET 运行时、下载失败），状态栏会直接写出原因；点一下可以看到解决办法和下载链接。
+
 ## 7. 支持哪些智能体、支持到什么程度
 
 | 功能 | Claude Code | Codex、Copilot CLI | gemini、opencode、qwen、amp、cursor-agent 等 | aider、`agent_commands` 里加的程序 |

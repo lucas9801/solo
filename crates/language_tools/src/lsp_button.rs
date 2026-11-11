@@ -1,12 +1,11 @@
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     rc::Rc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+use sysinfo::System;
 
 use language::language_settings::{EditPredictionProvider, all_language_settings};
 
@@ -30,6 +29,11 @@ use util::{ResultExt, paths::PathExt, rel_path::RelPath};
 use workspace::{StatusItemView, ToggleWorktreeSecurity, Workspace};
 
 use crate::lsp_log_view;
+use crate::server_resources::{
+    self, ProcessTreeUsage, ServerActivity, choose_mode, describe_server, describe_usage,
+    format_memory, mode_label, modes_for, server_activity,
+};
+use project::lsp_store::solo_server_modes;
 
 actions!(
     lsp_tool,
@@ -44,6 +48,7 @@ pub struct LspButton {
     popover_menu_handle: PopoverMenuHandle<ContextMenu>,
     lsp_menu: Option<Entity<ContextMenu>>,
     lsp_menu_refresh: Task<()>,
+    _usage_sampler: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -53,7 +58,9 @@ struct LanguageServerState {
     lsp_store: WeakEntity<LspStore>,
     active_editor: Option<ActiveEditor>,
     language_servers: LanguageServers,
-    process_memory_cache: Rc<RefCell<ProcessMemoryCache>>,
+    /// SOLO: memory and processes per server process id, sampled in the
+    /// background.
+    server_usage: HashMap<u32, ProcessTreeUsage>,
 }
 
 impl std::fmt::Debug for LanguageServerState {
@@ -65,78 +72,6 @@ impl std::fmt::Debug for LanguageServerState {
             .field("active_editor", &self.active_editor)
             .field("language_servers", &self.language_servers)
             .finish_non_exhaustive()
-    }
-}
-
-const PROCESS_MEMORY_CACHE_DURATION: Duration = Duration::from_secs(5);
-
-struct ProcessMemoryCache {
-    system: System,
-    memory_usage: HashMap<u32, u64>,
-    last_refresh: Option<Instant>,
-}
-
-impl ProcessMemoryCache {
-    fn new() -> Self {
-        Self {
-            system: System::new(),
-            memory_usage: HashMap::new(),
-            last_refresh: None,
-        }
-    }
-
-    fn get_memory_usage(&mut self, process_id: u32) -> u64 {
-        let cache_expired = self
-            .last_refresh
-            .map(|last| last.elapsed() >= PROCESS_MEMORY_CACHE_DURATION)
-            .unwrap_or(true);
-
-        if cache_expired {
-            let refresh_kind = RefreshKind::nothing()
-                .with_processes(ProcessRefreshKind::nothing().without_tasks().with_memory());
-            self.system.refresh_specifics(refresh_kind);
-            self.memory_usage.clear();
-            self.last_refresh = Some(Instant::now());
-        }
-
-        if let Some(&memory) = self.memory_usage.get(&process_id) {
-            return memory;
-        }
-
-        let root_pid = Pid::from_u32(process_id);
-
-        let parent_map: HashMap<Pid, Pid> = self
-            .system
-            .processes()
-            .iter()
-            .filter_map(|(&pid, process)| Some((pid, process.parent()?)))
-            .collect();
-
-        let total_memory = self
-            .system
-            .processes()
-            .iter()
-            .filter(|(pid, _)| self.is_descendant_of(**pid, root_pid, &parent_map))
-            .map(|(_, process)| process.memory())
-            .sum();
-
-        self.memory_usage.insert(process_id, total_memory);
-        total_memory
-    }
-
-    fn is_descendant_of(&self, pid: Pid, root_pid: Pid, parent_map: &HashMap<Pid, Pid>) -> bool {
-        let mut current = pid;
-        let mut visited = HashSet::default();
-        while current != root_pid {
-            if !visited.insert(current) {
-                return false;
-            }
-            match parent_map.get(&current) {
-                Some(&parent) => current = parent,
-                None => return false,
-            }
-        }
-        true
     }
 }
 
@@ -194,6 +129,10 @@ struct ServerMetadata {
     server_version: Option<SharedString>,
     binary_display_path: Option<SharedString>,
     process_id: Option<u32>,
+    /// SOLO: the root of the project the server runs for, and what it is
+    /// doing.
+    project_root: Option<PathBuf>,
+    activity: Option<ServerActivity>,
 }
 
 impl ServerInfo {
@@ -276,7 +215,8 @@ impl LanguageServerState {
 
         let server_metadata =
             self.lsp_store
-                .update(cx, |lsp_store, _| {
+                .update(cx, |lsp_store, cx| {
+                    let worktree_store = lsp_store.worktree_store();
                     lsp_store
                         .language_server_statuses()
                         .map(|(server_id, status)| {
@@ -288,14 +228,19 @@ impl LanguageServerState {
                                         tooltip_for_server_binary(binary, path_style)
                                     }),
                                     process_id: status.process_id,
+                                    project_root: status
+                                        .worktree
+                                        .and_then(|worktree_id| {
+                                            worktree_store.read(cx).worktree_for_id(worktree_id, cx)
+                                        })
+                                        .map(|worktree| worktree.read(cx).abs_path().to_path_buf()),
+                                    activity: Some(server_activity(status.pending_work.values())),
                                 },
                             )
                         })
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
-
-        let process_memory_cache = self.process_memory_cache.clone();
 
         let mut first_button_encountered = false;
         for item in &self.items {
@@ -388,6 +333,8 @@ impl LanguageServerState {
                 server_version,
                 binary_display_path,
                 process_id,
+                project_root,
+                activity,
             } = server_metadata
                 .get(&server_info.id)
                 .cloned()
@@ -410,9 +357,10 @@ impl LanguageServerState {
                     let lsp_store = self.lsp_store.clone();
                     let state = cx.entity().downgrade();
                     let can_stop = submenu_server_info.can_stop();
-                    let process_memory_cache = process_memory_cache.clone();
+                    let project_root = project_root.clone().filter(|_| !is_remote);
+                    let activity = activity.clone();
 
-                    move |menu, _window, _cx| {
+                    move |menu, _window, cx| {
                         let mut submenu = menu;
 
                         if let Some(ref message) = message {
@@ -600,26 +548,55 @@ impl LanguageServerState {
                             });
                         }
 
+                        // SOLO: how much this server analyzes in this
+                        // project, remembered across restarts.
+                        if let Some(project_root) = project_root.clone() {
+                            let server_name = submenu_server_name.clone();
+                            let current =
+                                solo_server_modes::mode_for(&project_root, &server_name, cx);
+                            submenu = submenu
+                                .separator()
+                                .header(util::i18n::tr("In This Project", "在本项目"));
+                            for mode in modes_for(&server_name) {
+                                let project_root = project_root.clone();
+                                let server_name = server_name.clone();
+                                submenu = submenu.toggleable_entry(
+                                    mode_label(mode),
+                                    mode == current,
+                                    IconPosition::Start,
+                                    None,
+                                    move |_, cx| {
+                                        choose_mode(
+                                            project_root.clone(),
+                                            server_name.clone(),
+                                            mode,
+                                            cx,
+                                        );
+                                    },
+                                );
+                            }
+                        }
+
                         submenu = submenu.separator().custom_row({
                             let binary_display_path = binary_display_path.clone();
                             let server_version = server_version.clone();
                             let server_message = server_message.clone();
-                            let process_memory_cache = process_memory_cache.clone();
+                            let state = state.clone();
+                            let activity = activity.clone();
                             move |_, cx| {
-                                let memory_usage = process_id.map(|pid| {
-                                    process_memory_cache.borrow_mut().get_memory_usage(pid)
+                                // SOLO: memory includes the server's child
+                                // processes (cargo and rustc under
+                                // rust-analyzer), sampled in the background.
+                                let usage = process_id.and_then(|pid| {
+                                    state.upgrade()?.read(cx).server_usage.get(&pid).copied()
                                 });
-
-                                let memory_label = memory_usage.map(|bytes| {
-                                    if bytes >= 1024 * 1024 * 1024 {
-                                        format!(
-                                            "{:.1} GB",
-                                            bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+                                let memory_label =
+                                    (usage.is_some() || activity.is_some()).then(|| {
+                                        describe_usage(
+                                            activity.as_ref().unwrap_or(&ServerActivity::Idle),
+                                            usage,
                                         )
-                                    } else {
-                                        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-                                    }
-                                });
+                                    });
 
                                 let version_label =
                                     server_version.as_ref().map(|v| format!("v{}", v.as_ref()));
@@ -690,6 +667,53 @@ impl LanguageServerState {
                     }
                 },
             );
+        }
+
+        // SOLO: servers turned off in this project, to turn on again.
+        let is_remote = self
+            .lsp_store
+            .update(cx, |lsp_store, _| lsp_store.as_remote().is_some())
+            .unwrap_or(true);
+        let project_roots: Vec<PathBuf> = if is_remote {
+            Vec::new()
+        } else {
+            self.workspace
+                .upgrade()
+                .map(|workspace| {
+                    workspace
+                        .read(cx)
+                        .project()
+                        .read(cx)
+                        .visible_worktrees(cx)
+                        .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut header_added = false;
+        for project_root in project_roots {
+            for server_name in server_resources::servers_off_in(&project_root, cx) {
+                if !header_added {
+                    menu = menu
+                        .separator()
+                        .header(util::i18n::tr("Off in This Project", "已在本项目关闭"));
+                    header_added = true;
+                }
+                let label = if util::i18n::is_chinese() {
+                    format!("开启 {server_name}")
+                } else {
+                    format!("Turn On {server_name}")
+                };
+                let project_root = project_root.clone();
+                menu = menu.entry(label, None, move |_, cx| {
+                    choose_mode(
+                        project_root.clone(),
+                        server_name.clone(),
+                        solo_server_modes::AnalysisMode::Full,
+                        cx,
+                    );
+                });
+            }
         }
         menu
     }
@@ -926,14 +950,15 @@ impl LspButton {
             lsp_store: lsp_store.downgrade(),
             active_editor: None,
             language_servers,
-            process_memory_cache: Rc::new(RefCell::new(ProcessMemoryCache::new())),
+            server_usage: HashMap::new(),
         });
 
         let mut lsp_button = Self {
-            server_state,
+            server_state: server_state.clone(),
             popover_menu_handle,
             lsp_menu: None,
             lsp_menu_refresh: Task::ready(()),
+            _usage_sampler: Self::sample_usage(server_state, cx),
             _subscriptions: vec![settings_subscription, lsp_store_subscription],
         };
         let is_restricted = TrustedWorktrees::has_restricted_worktrees(
@@ -955,12 +980,79 @@ impl LspButton {
         lsp_button
     }
 
+    /// SOLO: samples the memory and processes of the running servers (with
+    /// their children) every few seconds, on a background thread.
+    fn sample_usage(server_state: Entity<LanguageServerState>, cx: &mut Context<Self>) -> Task<()> {
+        const INTERVAL: Duration = Duration::from_secs(4);
+        cx.spawn(async move |lsp_button, cx| {
+            let mut system = System::new();
+            loop {
+                let roots = server_state.update(cx, |state, cx| {
+                    let Some(lsp_store) = state.lsp_store.upgrade() else {
+                        return Vec::new();
+                    };
+                    let lsp_store = lsp_store.read(cx);
+                    if lsp_store.as_remote().is_some() {
+                        return Vec::new();
+                    }
+                    lsp_store
+                        .language_server_statuses()
+                        .filter_map(|(_, status)| status.process_id)
+                        .collect::<Vec<_>>()
+                });
+                let usage = if roots.is_empty() {
+                    HashMap::new()
+                } else {
+                    let (returned_system, usage) = cx
+                        .background_spawn(async move {
+                            let usage = server_resources::sample_process_trees(&mut system, &roots);
+                            (system, usage)
+                        })
+                        .await;
+                    system = returned_system;
+                    usage.into_iter().collect()
+                };
+                let changed = server_state.update(cx, |state, _| {
+                    let changed = state.server_usage != usage;
+                    state.server_usage = usage;
+                    changed
+                });
+                if changed {
+                    if lsp_button.update(cx, |_, cx| cx.notify()).is_err() {
+                        return;
+                    }
+                }
+                cx.background_executor().timer(INTERVAL).await;
+            }
+        })
+    }
+
     fn on_lsp_store_event(
         &mut self,
         e: &LspStoreEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // SOLO: a heavy server starting in a very large project asks once
+        // how much it should analyze.
+        if let LspStoreEvent::LanguageServerAdded(_, name, Some(worktree_id)) = e {
+            let workspace = self.server_state.read(cx).workspace.clone();
+            let worktree = workspace.upgrade().and_then(|workspace| {
+                workspace
+                    .read(cx)
+                    .project()
+                    .read(cx)
+                    .worktree_for_id(*worktree_id, cx)
+            });
+            if let Some(worktree) = worktree {
+                server_resources::maybe_ask_about_large_project(
+                    workspace,
+                    worktree,
+                    name.clone(),
+                    cx,
+                );
+            }
+        }
         if self.lsp_menu.is_none() {
             return;
         };
@@ -1441,41 +1533,85 @@ impl Render for LspButton {
             (None, "All Servers Operational")
         };
 
+        // SOLO: the servers' memory (with their child processes) next to the
+        // button, and per server in the tooltip.
+        let mut total_memory = 0;
+        let mut server_lines = Vec::new();
+        if let Some(lsp_store) = state.lsp_store.upgrade() {
+            for (_, status) in lsp_store.read(cx).language_server_statuses() {
+                let Some(usage) = status
+                    .process_id
+                    .and_then(|pid| state.server_usage.get(&pid).copied())
+                else {
+                    continue;
+                };
+                total_memory += usage.memory;
+                server_lines.push(describe_server(
+                    &status.name.0,
+                    &server_activity(status.pending_work.values()),
+                    Some(usage),
+                ));
+            }
+        }
+        server_lines.sort();
+        let description: SharedString = if server_lines.is_empty() {
+            description.into()
+        } else {
+            format!("{description}\n{}", server_lines.join("\n")).into()
+        };
+        let memory_label = (total_memory > 0).then(|| format_memory(total_memory));
+
         let lsp_button = cx.weak_entity();
 
-        div().child(
-            PopoverMenu::new("lsp-tool")
-                .on_open(Rc::new(move |_window, cx| {
-                    let copilot_enabled = all_language_settings(None, cx).edit_predictions.provider
-                        == EditPredictionProvider::Copilot;
-                    telemetry::event!(
-                        "Toolbar Menu Opened",
-                        name = "Language Servers",
-                        copilot_enabled,
-                        is_via_ssh,
-                    );
-                }))
-                .menu(move |_, cx| {
-                    lsp_button
-                        .read_with(cx, |lsp_button, _| lsp_button.lsp_menu.clone())
-                        .ok()
-                        .flatten()
-                })
-                .anchor(Anchor::BottomLeft)
-                .with_handle(self.popover_menu_handle.clone())
-                .trigger_with_tooltip(
-                    IconButton::new("zed-lsp-tool-button", IconName::BoltOutlined)
-                        .when_some(indicator, IconButton::indicator)
-                        .icon_size(IconSize::Small)
-                        .tab_index(0isize)
-                        .aria_label("Language Servers")
-                        .when(is_restricted, |s| s.icon_color(Color::Warning))
-                        .indicator_border_color(Some(cx.theme().colors().status_bar_background)),
-                    move |_window, cx| {
-                        Tooltip::with_meta("Language Servers", Some(&ToggleMenu), description, cx)
-                    },
-                ),
-        )
+        div()
+            .child(
+                PopoverMenu::new("lsp-tool")
+                    .on_open(Rc::new(move |_window, cx| {
+                        let copilot_enabled =
+                            all_language_settings(None, cx).edit_predictions.provider
+                                == EditPredictionProvider::Copilot;
+                        telemetry::event!(
+                            "Toolbar Menu Opened",
+                            name = "Language Servers",
+                            copilot_enabled,
+                            is_via_ssh,
+                        );
+                    }))
+                    .menu(move |_, cx| {
+                        lsp_button
+                            .read_with(cx, |lsp_button, _| lsp_button.lsp_menu.clone())
+                            .ok()
+                            .flatten()
+                    })
+                    .anchor(Anchor::BottomLeft)
+                    .with_handle(self.popover_menu_handle.clone())
+                    .trigger_with_tooltip(
+                        IconButton::new("zed-lsp-tool-button", IconName::BoltOutlined)
+                            .when_some(indicator, IconButton::indicator)
+                            .icon_size(IconSize::Small)
+                            .tab_index(0isize)
+                            .aria_label("Language Servers")
+                            .when(is_restricted, |s| s.icon_color(Color::Warning))
+                            .indicator_border_color(Some(
+                                cx.theme().colors().status_bar_background,
+                            )),
+                        move |_window, cx| {
+                            Tooltip::with_meta(
+                                "Language Servers",
+                                Some(&ToggleMenu),
+                                description.clone(),
+                                cx,
+                            )
+                        },
+                    ),
+            )
+            .when_some(memory_label, |this, memory_label| {
+                this.flex().items_center().gap_0p5().child(
+                    Label::new(memory_label)
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+            })
     }
 }
 

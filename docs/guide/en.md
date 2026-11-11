@@ -247,6 +247,38 @@ with Solo as before, and closing a terminal's tab ends what runs in it.
   on the `PATH`) and the file finder. With the column hidden (Ctrl+`) and no
   files open, the editor area shows the same shortcuts.
 
+### Language servers on large repositories
+Language servers (rust-analyzer, clangd and others) analyze the project in
+the background; on a large repository that can take several GB of memory.
+- **Lighter defaults.** rust-analyzer's `cargo check` runs at most a quarter
+  of the logical cores' worth of `rustc` at a time (at least 2); clangd
+  indexes with 2 workers at low priority and keeps precompiled headers on
+  disk. To undo: in your settings, set
+  `"lsp": {"rust-analyzer": {"initialization_options": {"cargo": {"extraEnv": {"CARGO_BUILD_JOBS": "default"}}}}}`,
+  and give `lsp.clangd.binary.arguments` your own list (`[]` for none).
+- **What they cost.** The number next to the ⚡ button in the status bar is the
+  memory of all language servers, with the processes they started (`cargo`
+  and `rustc` under rust-analyzer). Its tooltip has one line per server, for
+  example "rust-analyzer: checking · 5 compiler processes · 3.1 GB"; the
+  server's submenu shows the same.
+- **Per project.** In a server's submenu, under "In This Project": full
+  analysis; "Pause background analysis (open files only)" (rust-analyzer: no
+  `cargo check` on save and no background indexing; clangd: no background
+  index) for rust-analyzer and clangd; or off. The choice is remembered for the
+  project (in Solo's database, not in the repository) and applies after
+  restarts. Servers turned off are listed at the bottom of the menu to turn on
+  again.
+- **Large projects.** When a heavy server (rust-analyzer, clangd, roslyn,
+  jdtls, gopls…) starts in a project with more than 100,000 files, Solo asks
+  once how much it should analyze.
+- **Turn review and pausing.** When a turn ends, Solo still asks
+  rust-analyzer for one `cargo check` of the changed files, even while its
+  background analysis is paused, so the turn's diagnostics stay complete; with
+  the server off, Rust diagnostics aren't compared.
+- **When a server fails to start**, the status bar says why when Solo
+  recognizes the cause (for example a missing .NET runtime for roslyn, or a
+  download that failed); click it for the fix and a download link.
+
 ## 7. Supported agents
 
 | | Claude Code | Codex, Copilot CLI | gemini, opencode, qwen, amp, cursor-agent and others | aider, programs in `agent_commands` |
