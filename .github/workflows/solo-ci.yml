@@ -89,6 +89,10 @@ jobs:
           # would push it out of the 10 GB a repository gets.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # The feature checklist lists every action Solo adds (G11).
+      - name: Check the feature checklist
+        run: python script/solo-feature-audit.py
+
       - name: Check the solo binary
         run: cargo check --locked -p zed --bin solo
 

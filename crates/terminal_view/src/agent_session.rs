@@ -360,7 +360,11 @@ impl TerminalView {
         }
     }
 
-    fn agent_session_chosen(&mut self, location: SessionLocation, cx: &mut Context<Self>) {
+    pub(crate) fn agent_session_chosen(
+        &mut self,
+        location: SessionLocation,
+        cx: &mut Context<Self>,
+    ) {
         let location = SessionLocation {
             matched_by: MatchedBy::Chosen,
             ..location
