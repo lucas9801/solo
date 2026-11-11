@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration "installer": round 2 of signing in
+  .github/workflows/solo-package.yml. The artifact holds only
+  Solo-Setup-<version>.exe, the Inno Setup installer built from the files
+  signed in round 1 (exes.xml).
+
+  Paste it into the SignPath project as the artifact configuration with the
+  slug "installer".
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="Solo-Setup-*.exe" product-name="Solo">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

@@ -192,19 +192,31 @@ Solo checks [its GitHub releases](https://github.com/lucas9801/solo/releases)
 checks). When there's a newer version it offers to update: it downloads the
 installer, quits, installs it silently where Solo is, and starts again.
 
-To release a version, with Inno Setup and the [GitHub CLI](https://cli.github.com)
-signed in (`gh auth login`):
+Releases are built by GitHub Actions, not locally (local builds are for
+testing). To release a version:
 
 ```powershell
-script\release-solo.ps1 -NotesFile notes.md [-Version 1.2.3] [-Draft]
+script\release-solo.ps1 -NotesFile notes.md [-Version 1.2.3] [-DryRun]
 ```
 
 The notes start with a one-sentence summary in Chinese, then the same in
 English, plain text; the update notification shows the one in Solo's language.
-It raises the patch version unless given one, commits the version, builds the
-installer and zip from that commit, checks solo.exe was built from it, tags it,
-pushes, and creates the GitHub release with them. If building fails, the
-version commit and the tag are undone.
+It raises the patch version unless given one, commits the version with the
+notes (`docs/release-notes/<version>.md`), tags the commit and pushes both
+(`-DryRun` only shows what it would do). The tag starts the
+[Solo package workflow](.github/workflows/solo-package.yml), which builds
+Solo, checks solo.exe was built from the tagged commit, packages the installer
+and the zip, and creates a draft GitHub release with them; publish the draft
+once it looks right. Running copies of Solo only update to published releases.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io),
+certificate by [SignPath Foundation](https://signpath.org) — once Solo's
+application is approved; until then releases are unsigned. What is signed, who
+approves it, and what Solo sends over the network:
+[Code signing policy / 代码签名政策](docs/code-signing-policy.md). Every file
+in the packages and its license: [package contents](docs/package-contents.md).
 
 ## Credits and licensing
 

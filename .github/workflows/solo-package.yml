@@ -1,12 +1,27 @@
-# SOLO: builds Solo's release packages on GitHub-hosted runners when a version
-# tag (v*) is pushed, or by hand, with script/package-solo.ps1 (the solo-dist
-# profile, the licenses, the zip and the Inno Setup installer), and uploads
-# them as workflow artifacts, with the debug symbols (solo.pdb) beside them.
+# SOLO: builds Solo's releases on GitHub-hosted runners. Pushing a version tag
+# (v*, which script/release-solo.ps1 does) builds, packages and creates a
+# draft GitHub release; running it by hand only builds and packages.
 #
-# It doesn't create or change GitHub releases: script/release-solo.ps1 still
-# does that from a local build. Nothing is signed yet; once Solo has a signing
-# service, package-solo.ps1 signs when SOLO_SIGN_COMMAND is set (see there),
-# or the unsigned artifacts below can be submitted to SignPath.
+#   build:   builds Solo (script/package-solo.ps1 -Step Stage: the solo-dist
+#            profile and the licenses), checks solo.exe was built from this
+#            commit, and uploads the staged files and the debug symbols
+#            (solo.pdb, not in the packages: crashes' addresses in a released
+#            solo.exe map to lines with them).
+#   package: has Solo's own exes and Inno Setup's uninstaller signed, makes
+#            the zip and the installer from the signed files, has the
+#            installer signed, and uploads both.
+#   release: on a tag, creates the draft release with the zip, the installer
+#            and the notes from docs/release-notes/<version>.md (followed by
+#            a link to the code signing policy). It's published by hand.
+#
+# Signing goes through SignPath (docs/code-signing-policy.md) and is off
+# unless the repository variable SOLO_SIGNPATH_ENABLED is "true", and only
+# tag builds are signed; with it off everything else runs the same and the
+# packages are unsigned. Turning it on also needs the secret
+# SIGNPATH_API_TOKEN and the variable SIGNPATH_ORGANIZATION_ID (and, if they
+# differ from these defaults, SIGNPATH_PROJECT_SLUG "solo",
+# SIGNPATH_SIGNING_POLICY_SLUG "release-signing"), with the artifact
+# configurations in script/signpath/ set up in the SignPath project.
 #
 # See solo-ci.yml for why WebRTC is downloaded separately.
 
@@ -28,12 +43,14 @@ env:
   CARGO_TERM_COLOR: always
   WEBRTC_TAG: webrtc-0001d84-4
   WEBRTC_SHA256: b16f68e1fef8bd8089b9c7fc46c3c9b43ad5257c84460794a3668ec5accc1f13
+  # The signing switch, "true" or "false" (see above).
+  SIGN: ${{ vars.SOLO_SIGNPATH_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
-  package:
-    name: Build and package Solo (Windows x64)
+  build:
+    name: Build Solo (Windows x64)
     runs-on: windows-latest
-    timeout-minutes: 350
+    timeout-minutes: 340
     defaults:
       run:
         shell: pwsh
@@ -48,6 +65,15 @@ jobs:
         run: |
           $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} doesn't match crates/zed version $version" }
+
+      # Before building, so a release doesn't fail on them hours later.
+      - name: Check the release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $notes = "docs/release-notes/$version.md"
+          if (-not (Test-Path $notes)) { throw "$notes is missing; script/release-solo.ps1 writes it" }
+          ./script/check-solo-release-notes.ps1 -Path $notes
 
       - name: Show free disk space
         run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
@@ -83,6 +109,70 @@ jobs:
           shared-key: solo-package-windows
           cache-targets: false
 
+      - name: Build
+        run: ./script/package-solo.ps1 -OutDir dist -Step Stage
+
+      # Its product version is "<version>+stable.<run>.<commit>"
+      # (crates/windows_resources).
+      - name: Check that solo.exe was built from this commit
+        run: |
+          $productVersion = (Get-Item dist/Solo/solo.exe).VersionInfo.ProductVersion
+          if (-not $productVersion -or -not $productVersion.EndsWith(".${{ github.sha }}")) {
+            throw "solo.exe was built from another commit (product version $productVersion), not ${{ github.sha }}"
+          }
+          Write-Host "solo.exe $productVersion"
+
+      - name: Show free disk space
+        if: always()
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
+
+      # The unsigned files, as built; the package job packages them.
+      - name: Upload the built files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solo-windows-x64-files
+          path: dist/Solo/
+          if-no-files-found: error
+
+      # Each matches only the exes of this run.
+      - name: Upload the debug symbols
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solo-windows-x64-pdb
+          path: target/solo-dist/*.pdb
+          if-no-files-found: error
+
+  package:
+    name: Sign and package Solo (Windows x64)
+    needs: build
+    runs-on: windows-latest
+    # Includes waiting up to an hour for each signing request to be approved.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      # SignPath's action reads the job and downloads the artifact to sign.
+      actions: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read Solo's version
+        run: |
+          $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          "SOLO_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Host "Solo $version, signing: $env:SIGN"
+
+      - name: Download the built files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: solo-windows-x64-files
+          path: dist/Solo
+
       - name: Install Inno Setup
         run: |
           $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -94,42 +184,190 @@ jobs:
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
           "ISCC_PATH=$iscc" >> $env:GITHUB_ENV
 
-      - name: Build and package
-        run: ./script/package-solo.ps1 -OutDir dist -Iscc $env:ISCC_PATH
+      # Round 1: Solo's own exes, and Inno Setup's uninstaller, which goes into
+      # the installer signed (signed uninstaller mode, script/solo.iss). It's
+      # renamed to .exe for SignPath and back afterwards.
+      - name: Collect the files to sign
+        if: env.SIGN == 'true'
+        run: |
+          ./script/package-solo.ps1 -OutDir dist -Iscc $env:ISCC_PATH -Step Uninstaller -SignedUninstallerDir dist/uninstaller
+          $uninstaller = Get-ChildItem dist/uninstaller -Filter "uninst-*.e32" | Select-Object -First 1
+          "UNINSTALLER_NAME=$($uninstaller.Name)" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force dist/to-sign | Out-Null
+          foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-terminal-host.exe", "solo-cli.exe") {
+            Copy-Item "dist/Solo/$exe" dist/to-sign/
+          }
+          Copy-Item $uninstaller.FullName dist/to-sign/uninstaller.exe
 
-      - name: Show free disk space
-        if: always()
-        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
+      - name: Upload the files to sign
+        if: env.SIGN == 'true'
+        id: upload-to-sign
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solo-windows-x64-to-sign
+          path: dist/to-sign/
+          if-no-files-found: error
+
+      # Submits the files, waits for the signing request to be approved in
+      # SignPath, and downloads the signed files (script/signpath/exes.xml).
+      - name: Sign the exes with SignPath
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'solo' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: exes
+          github-artifact-id: ${{ steps.upload-to-sign.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: dist/signed
+          parameters: |
+            version: ${{ toJSON(env.SOLO_VERSION) }}
+
+      - name: Use the signed exes
+        if: env.SIGN == 'true'
+        run: |
+          foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-terminal-host.exe", "solo-cli.exe", "uninstaller.exe") {
+            $signature = Get-AuthenticodeSignature "dist/signed/$exe"
+            if ($signature.Status -ne "Valid") { throw "dist/signed/$exe isn't signed: $($signature.Status)" }
+            Write-Host "$exe signed by $($signature.SignerCertificate.Subject)"
+          }
+          foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-terminal-host.exe", "solo-cli.exe") {
+            Copy-Item -Force "dist/signed/$exe" dist/Solo/
+          }
+          Copy-Item -Force dist/signed/uninstaller.exe "dist/uninstaller/$env:UNINSTALLER_NAME"
+
+      - name: Package the zip and the installer
+        run: |
+          $packageArgs = @{ OutDir = "dist"; Iscc = $env:ISCC_PATH; Step = "Package" }
+          if ($env:SIGN -eq "true") { $packageArgs.SignedUninstallerDir = "dist/uninstaller" }
+          ./script/package-solo.ps1 @packageArgs
+
+      # Round 2: the installer, made from the signed files.
+      - name: Upload the installer to sign
+        if: env.SIGN == 'true'
+        id: upload-setup-to-sign
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solo-windows-x64-setup-to-sign
+          path: dist/Solo-Setup-${{ env.SOLO_VERSION }}.exe
+          if-no-files-found: error
+
+      - name: Sign the installer with SignPath
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'solo' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.upload-setup-to-sign.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: dist/signed-setup
+          parameters: |
+            version: ${{ toJSON(env.SOLO_VERSION) }}
+
+      - name: Use the signed installer
+        if: env.SIGN == 'true'
+        run: |
+          $setup = "Solo-Setup-$env:SOLO_VERSION.exe"
+          $signature = Get-AuthenticodeSignature "dist/signed-setup/$setup"
+          if ($signature.Status -ne "Valid") { throw "$setup isn't signed: $($signature.Status)" }
+          Write-Host "$setup signed by $($signature.SignerCertificate.Subject)"
+          Copy-Item -Force "dist/signed-setup/$setup" dist/
 
       - name: Upload the zip
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: solo-windows-x64-zip
-          path: dist/Solo-*-windows-x64.zip
+          path: dist/Solo-${{ env.SOLO_VERSION }}-windows-x64.zip
           if-no-files-found: error
 
       - name: Upload the installer
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: solo-windows-x64-setup
-          path: dist/Solo-Setup-*.exe
+          path: dist/Solo-Setup-${{ env.SOLO_VERSION }}.exe
           if-no-files-found: error
 
-      # What would go to a signing service (SignPath signs files inside the
-      # artifact it is given): the staged folder before zipping.
-      - name: Upload the unpacked files
+      # The notes from the version commit, then the link SignPath Foundation
+      # asks for on every release (and its attribution once releases are
+      # signed). The first two lines stay the summaries the update
+      # notification shows.
+      - name: Write the release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $notes = [IO.File]::ReadAllText((Resolve-Path "docs/release-notes/$env:SOLO_VERSION.md")).TrimEnd()
+          $policy = "${{ github.server_url }}/${{ github.repository }}/blob/main/docs/code-signing-policy.md"
+          $footer = "`n`n---`n`n[Code signing policy]($policy)"
+          if ($env:SIGN -eq "true") {
+            $footer += "`n`nFree code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)"
+          }
+          $utf8 = New-Object System.Text.UTF8Encoding $false
+          [IO.File]::WriteAllText((Join-Path $PWD "dist/release-notes.md"), ($notes + $footer + "`n").Replace("`r`n", "`n"), $utf8)
+          Get-Content dist/release-notes.md
+
+      - name: Upload the release notes
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: solo-windows-x64-files
-          path: dist/Solo/
+          name: solo-release-notes
+          path: dist/release-notes.md
           if-no-files-found: error
 
-      # Not in the packages: solo-dist keeps line tables in these, so a crash's
-      # addresses in a released solo.exe map to functions and lines. Each
-      # matches only the exes of this run.
-      - name: Upload the debug symbols
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+  release:
+    name: Create the draft release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Download the zip
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: solo-windows-x64-pdb
-          path: target/solo-dist/*.pdb
-          if-no-files-found: error
+          name: solo-windows-x64-zip
+          path: dist
+
+      - name: Download the installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: solo-windows-x64-setup
+          path: dist
+
+      - name: Download the release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: solo-release-notes
+          path: dist
+
+      # A draft: Solo's updater only sees published releases. Rerunning
+      # replaces the files of the draft, never of a published release.
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          files=("dist/Solo-Setup-$version.exe" "dist/Solo-$version-windows-x64.zip")
+          for file in "${files[@]}"; do
+            [ -f "$file" ] || { echo "::error::$file is missing"; exit 1; }
+          done
+          if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != "true" ]; then
+              echo "::error::Release $TAG is already published; it isn't changed"
+              exit 1
+            fi
+            gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file dist/release-notes.md
+          else
+            gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+              --title "Solo $version" --notes-file dist/release-notes.md
+          fi
+          echo "Draft release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases"
