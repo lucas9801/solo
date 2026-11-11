@@ -1,0 +1,84 @@
+{
+  "size": [1280, 800],
+  "fps": 30,
+  "font": "NotoSansSC",
+  "scenes": [
+    {
+      "card": {
+        "title": "Solo",
+        "subtitle": { "zh": "让 agent 写代码，你来读、判断和指挥", "en": "Let agents write the code. You read, judge and direct." }
+      },
+      "duration": 3
+    },
+    {
+      "shot": "v01-overview.png",
+      "duration": 5,
+      "caption": { "zh": "每个项目一个标签，终端、agent、编辑器各归各的", "en": "One tab per project, with its own terminals, agents and editors" },
+      "camera": [ { "t": 0, "rect": [0, 0, 1600, 1000] }, { "t": 5, "rect": [0, 0, 1120, 700] } ],
+      "highlight": [ { "from": 1.5, "to": 4.5, "rect": [40, 2, 760, 32] } ]
+    },
+    {
+      "shot": "v02-agent-working.png",
+      "duration": 6,
+      "caption": { "zh": "agent 在真终端里跑，标签显示它在干什么", "en": "Agents run in a real terminal; the tab shows what they're doing" },
+      "camera": [ { "t": 0, "rect": [0, 0, 1600, 1000] }, { "t": 2.5, "rect": [0, 20, 880, 550] } ],
+      "highlight": [ { "from": 2.5, "to": 5.8, "rect": [8, 40, 300, 30] } ]
+    },
+    {
+      "shots": [
+        { "file": "v02-agent-working.png", "until": 1.8 },
+        { "file": "v03-other-waiting.png", "until": 4.0 },
+        { "file": "v04-replied.png" }
+      ],
+      "duration": 6,
+      "caption": { "zh": "另一个项目的 agent 在等你，切过去回一句", "en": "An agent in another project is waiting; switch over and answer" },
+      "cursor": [ { "t": 0.3, "at": [820, 520] }, { "t": 1.5, "at": [430, 18], "click": true }, { "t": 2.6, "at": [400, 925] } ],
+      "highlight": [ { "from": 2.6, "to": 5.8, "rect": [20, 900, 780, 60] } ]
+    },
+    {
+      "shots": [ { "file": "v05-path-in-output.png", "until": 3.2 }, { "file": "v06-editor-open.png" } ],
+      "duration": 7,
+      "caption": { "zh": "终端里的路径一点就开，编辑器就在旁边", "en": "Click a path in the terminal; the editor opens beside it" },
+      "cursor": [ { "t": 0.5, "at": [900, 620] }, { "t": 2.6, "at": [412, 388], "click": true } ]
+    },
+    {
+      "shots": [ { "file": "v07-mermaid-output.png", "until": 2.8 }, { "file": "v08-mermaid-rendered.png" } ],
+      "duration": 6,
+      "caption": { "zh": "Mermaid 图直接看", "en": "See Mermaid diagrams, not their source" },
+      "cursor": [ { "t": 0.4, "at": [700, 700] }, { "t": 2.3, "at": [120, 420], "click": true } ]
+    },
+    {
+      "shot": "v09-turn-done.png",
+      "duration": 5,
+      "caption": { "zh": "一轮做完，改了什么一目了然", "en": "A turn is done: see what it changed at a glance" },
+      "camera": [ { "t": 0, "rect": [0, 0, 1600, 1000] }, { "t": 2.5, "rect": [0, 20, 800, 500] } ],
+      "highlight": [ { "from": 1.5, "to": 4.7, "rect": [230, 42, 200, 26] } ]
+    },
+    {
+      "shots": [ { "file": "v10-review.png", "until": 4.8 }, { "file": "v11-hunk-rejected.png" } ],
+      "duration": 9,
+      "caption": { "zh": "逐块留下或撤回，意见一次发回给 agent", "en": "Keep or reject each hunk, and send your comments back in one go" },
+      "highlight": [
+        { "from": 0.8, "to": 3.2, "rect": [820, 50, 500, 40] },
+        { "from": 5.4, "to": 8.7, "rect": [880, 520, 620, 120] }
+      ],
+      "cursor": [ { "t": 3.0, "at": [1300, 640] }, { "t": 4.4, "at": [1450, 300], "click": true } ]
+    },
+    {
+      "shots": [
+        { "card": { "title": { "zh": "关掉 Solo……", "en": "Quit Solo…" }, "subtitle": { "zh": "……再打开", "en": "…and open it again" } }, "until": 2.4 },
+        { "file": "v12-reopened.png" }
+      ],
+      "duration": 6,
+      "caption": { "zh": "关掉 Solo，agent 照样在跑", "en": "Agents keep running when Solo quits" },
+      "camera": [ { "t": 2.4, "rect": [0, 0, 1600, 1000] }, { "t": 6, "rect": [0, 20, 960, 600] } ]
+    },
+    {
+      "card": {
+        "title": "Solo",
+        "subtitle": { "zh": "开源免费 · Windows · github.com/lucas9801/solo", "en": "Free and open source · Windows · github.com/lucas9801/solo" }
+      },
+      "duration": 4
+    }
+  ]
+}
