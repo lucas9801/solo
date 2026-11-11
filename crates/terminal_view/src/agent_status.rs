@@ -30,7 +30,6 @@ use settings::Settings;
 use terminal::UserInput;
 use terminal::shell_integration::{AgentHook, AgentHookKind};
 use terminal::terminal_settings::TerminalSettings;
-use ui::{Color, IconName};
 use workspace::item::ItemEvent;
 
 use crate::agent_detection::{self, ScreenReading};
@@ -60,59 +59,21 @@ const QUIET_AFTER: Duration = Duration::from_secs(3);
 /// second for as long as an agent works.
 const SPINNER_STEP: Duration = Duration::from_millis(125);
 const SPINNER_STEPS_PER_TURN: u128 = 16;
+/// SOLO: the ring around an agent waiting for you breathes, in steps too, and
+/// slower; after a while it stops, so an agent left waiting doesn't keep
+/// redrawing.
+const BREATH_STEP: Duration = Duration::from_millis(250);
+const BREATH_STEPS: u128 = 8;
+const BREATHE_FOR: Duration = Duration::from_secs(120);
 /// Notify when an agent stops after working at least this long in the background.
 pub(crate) const NOTIFY_AFTER_WORKING: Duration = Duration::from_secs(10);
 /// An agent's screen isn't read for this long after you scroll it: it shows
 /// its history then, not what it's doing.
 const SCROLL_HOLD: Duration = Duration::from_secs(2);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentStatus {
-    Working,
-    /// The agent asked for permission or an answer (or, without hooks, rang
-    /// the bell or asked for a notification), and nothing has happened since.
-    NeedsInput,
-    /// Running but quiet, likely waiting for the next prompt.
-    Idle,
-    /// Still running, and finished a turn you haven't looked at yet.
-    Finished,
-    /// Exited.
-    Done,
-    Failed,
-}
-
-impl AgentStatus {
-    /// Whether the agent is still running.
-    pub(crate) fn is_running(self) -> bool {
-        matches!(
-            self,
-            AgentStatus::Working
-                | AgentStatus::NeedsInput
-                | AgentStatus::Idle
-                | AgentStatus::Finished
-        )
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            AgentStatus::Working => util::i18n::tr("Working", "工作中"),
-            AgentStatus::NeedsInput => util::i18n::tr("Needs your input", "需要你的输入"),
-            AgentStatus::Idle => util::i18n::tr("Idle", "空闲"),
-            AgentStatus::Finished | AgentStatus::Done => util::i18n::tr("Done", "已完成"),
-            AgentStatus::Failed => util::i18n::tr("Failed", "失败"),
-        }
-    }
-
-    pub(crate) fn icon(self) -> (IconName, Color) {
-        match self {
-            AgentStatus::Working => (IconName::LoadCircle, Color::Accent),
-            AgentStatus::NeedsInput => (IconName::Bell, Color::Warning),
-            AgentStatus::Idle => (IconName::Circle, Color::Muted),
-            AgentStatus::Finished | AgentStatus::Done => (IconName::Check, Color::Success),
-            AgentStatus::Failed => (IconName::XCircle, Color::Error),
-        }
-    }
-}
+/// SOLO: what the agent is doing; shown alike on its tab, its workspace's tab
+/// and the agent board.
+pub(crate) use workspace::agent_activity::AgentState as AgentStatus;
 
 #[derive(Default)]
 pub(crate) struct AgentActivity {
@@ -124,11 +85,14 @@ pub(crate) struct AgentActivity {
     /// saw it run (say, restored from the last session) isn't shown as done.
     started_at: Option<Instant>,
     working_since: Option<Instant>,
+    /// When the agent started waiting for you.
+    waiting_since: Option<Instant>,
     status: Option<(String, AgentStatus)>,
     /// When the pending recheck is due, and its timer.
     recheck: Option<(Instant, Task<()>)>,
-    /// Turns the working icon while the agent works.
-    spinner: Option<Task<()>>,
+    /// Animates the status icon while the agent works or waits for you, for
+    /// that status.
+    spinner: Option<(AgentStatus, Task<()>)>,
     /// What the agent last reported through a hook.
     hook: Option<HookReport>,
     /// Whether a turn reported by the agent's hooks is under way.
@@ -333,13 +297,27 @@ impl TerminalView {
         self.update_agent_status(window, cx);
     }
 
-    /// How far the working icon has turned, from 0 to 1.
-    pub(crate) fn agent_spinner_turn(&self) -> f32 {
-        let Some(since) = self.agent_activity.working_since else {
-            return 0.;
+    /// How far the working icon has turned, or the waiting ring has
+    /// breathed, from 0 to 1; `None` when the status icon stands still.
+    pub(crate) fn agent_status_phase(&self) -> Option<f32> {
+        let (_, status) = self.agent_status()?;
+        let (since, step, steps) = match status {
+            AgentStatus::Working => (
+                self.agent_activity.working_since?,
+                SPINNER_STEP,
+                SPINNER_STEPS_PER_TURN,
+            ),
+            AgentStatus::NeedsInput => {
+                let since = self.agent_activity.waiting_since?;
+                if since.elapsed() >= BREATHE_FOR {
+                    return None;
+                }
+                (since, BREATH_STEP, BREATH_STEPS)
+            }
+            _ => return None,
         };
-        let step = since.elapsed().as_millis() / SPINNER_STEP.as_millis();
-        (step % SPINNER_STEPS_PER_TURN) as f32 / SPINNER_STEPS_PER_TURN as f32
+        let step = since.elapsed().as_millis() / step.as_millis();
+        Some((step % steps) as f32 / steps as f32)
     }
 
     /// The agent's hook reported what it's doing.
@@ -447,6 +425,11 @@ impl TerminalView {
         if new == Some(AgentStatus::Working) {
             self.agent_activity.working_since.get_or_insert(now);
         }
+        if new == Some(AgentStatus::NeedsInput) {
+            self.agent_activity.waiting_since.get_or_insert(now);
+        } else {
+            self.agent_activity.waiting_since = None;
+        }
         if new.is_some_and(AgentStatus::is_running) {
             self.keep_agent_session(cx);
         }
@@ -477,22 +460,35 @@ impl TerminalView {
             self.agent_activity.status = status;
         }
 
-        if new == Some(AgentStatus::Working) {
-            if self.agent_activity.spinner.is_none() {
-                self.agent_activity.spinner = Some(cx.spawn(async move |this, cx| {
-                    loop {
-                        cx.background_executor().timer(SPINNER_STEP).await;
-                        if this
-                            .update(cx, |_, cx| cx.emit(ItemEvent::UpdateTab))
-                            .is_err()
-                        {
-                            break;
+        let animation_step = match new {
+            Some(AgentStatus::Working) => Some(SPINNER_STEP),
+            Some(AgentStatus::NeedsInput) => Some(BREATH_STEP),
+            _ => None,
+        };
+        match (new, animation_step) {
+            (Some(new), Some(step)) => {
+                if self
+                    .agent_activity
+                    .spinner
+                    .as_ref()
+                    .is_none_or(|(animated, _)| *animated != new)
+                {
+                    let task = cx.spawn(async move |this, cx| {
+                        loop {
+                            cx.background_executor().timer(step).await;
+                            let animating = this.update(cx, |this, cx| {
+                                cx.emit(ItemEvent::UpdateTab);
+                                this.agent_status_phase().is_some()
+                            });
+                            if !matches!(animating, Ok(true)) {
+                                break;
+                            }
                         }
-                    }
-                }));
+                    });
+                    self.agent_activity.spinner = Some((new, task));
+                }
             }
-        } else {
-            self.agent_activity.spinner = None;
+            _ => self.agent_activity.spinner = None,
         }
 
         // Look again once it has been quiet for long enough.

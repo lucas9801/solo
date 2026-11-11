@@ -99,9 +99,15 @@ Open a project folder and run `claude` (or `codex`, `gemini`, ...) in the
 terminal. Solo adds the following.
 
 ### Status in the tab
-The terminal's tab shows whether the agent is **working** (spinner), **needs
-your input**, is **idle**, **done** or **failed**, with the agent's name and
-session title. Hovering over the tab shows token use and context. While Solo is
+The terminal's tab shows the agent's icon (or initial) with its status on its
+corner, like a traffic light: red with a cross, **failed**; yellow in a
+breathing ring, **waiting for you**; green, **done, not seen yet** (a turn
+finished while you weren't looking); a turning blue ring, **working**; a gray
+hollow circle, **idle**; a gray dash, **exited**. The title is the session's
+(or the agent's name), followed by a ring and percentage of how full the
+context is: gray below 80%, yellow to 95%, red above. Hovering over the tab
+shows a card with the status, agent and model, the context, the directory,
+branch and command, and the tokens of the turn and the session. While Solo is
 in the background, you get a desktop notification when an agent needs you or
 stops after working for a while.
 
@@ -171,9 +177,9 @@ first; click one to go to its terminal.
 
 ### Workspace tabs in the title bar
 Each project folder is a workspace with its own tab in the title bar, holding
-its own terminals, agents, editors and file tree. Each tab counts the agents
-working, waiting for you, or failed in that workspace, so you can see an agent
-waiting in the background.
+its own terminals, agents, editors and file tree. Each tab counts its agents that
+failed, wait for you, are done but not seen yet, and work (red, yellow, green,
+blue, in that order), so you can see an agent waiting in the background.
 
 - `+` (or opening a folder) adds a workspace;
 - `ctrl-alt-1` … `ctrl-alt-9` switch to a workspace by position;
@@ -430,7 +436,7 @@ Solo's own settings, under `"terminal"`:
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
 | `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
-| `agent_usage_display` | `"always"` | a running agent's context and tokens in a bar at the bottom of its terminal (when narrow, the turn's tokens go first, then the session's) and its context percentage on the tab; `"tooltip"` shows them only in the tab's tooltip |
+| `agent_usage_display` | `"always"` | a running agent's context, model and tokens in a bar at the bottom of its terminal (when narrow, whole parts go: the session's tokens first, then the turn's, then the model, leaving the context's bar and percentage) and its context on the tab; `"tooltip"` shows them only in the tab's tooltip |
 | `agent_commands` | `[]` | more programs to treat as agents |
 | `agent_task_command` | `"claude"` | what a new agent task runs |
 | `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |

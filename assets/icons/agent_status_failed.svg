@@ -1,0 +1,1 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none"><defs><mask id="cross"><rect width="20" height="20" fill="#fff"/><path d="M7.6 7.6l4.8 4.8M12.4 7.6l-4.8 4.8" stroke="#000" stroke-width="2.2" stroke-linecap="round"/></mask></defs><circle cx="10" cy="10" r="7" fill="#000" mask="url(#cross)"/></svg>
