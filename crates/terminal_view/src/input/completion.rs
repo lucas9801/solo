@@ -78,6 +78,18 @@ impl ShellFlavor {
 /// How long a generator command may run.
 const GENERATOR_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How much work a completion request may do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompletionDepth {
+    /// SOLO: only what Solo knows without asking another process (specs'
+    /// static suggestions, paths and commands on `PATH`), shown while
+    /// PowerShell and generators are still working.
+    pub quick: bool,
+    /// SOLO: the request comes from typing rather than Tab, so an empty
+    /// token is only completed where a spec says what comes next.
+    pub as_you_type: bool,
+}
+
 /// Completes `input` at byte offset `cursor` in directory `cwd`. `shell` is
 /// the shell program the integration script reported.
 pub fn complete(
@@ -85,104 +97,198 @@ pub fn complete(
     input: String,
     cursor: usize,
     cwd: Option<PathBuf>,
+    depth: CompletionDepth,
     cx: &App,
 ) -> Task<Result<CompletionSet>> {
-    let executor = cx.background_executor().clone();
+    cx.background_executor()
+        .spawn(complete_async(shell, input, cursor, cwd, depth))
+}
+
+pub async fn complete_async(
+    shell: Option<String>,
+    input: String,
+    cursor: usize,
+    cwd: Option<PathBuf>,
+    depth: CompletionDepth,
+) -> Result<CompletionSet> {
     let flavor = ShellFlavor::from_shell(shell.as_deref());
-    executor.spawn(async move {
-        let cursor = cursor.min(input.len());
-        let tokens = command_tokens(&input[..cursor]);
-        let Some(current) = tokens.last() else {
-            return Ok(CompletionSet::default());
-        };
-        // The token continues past the cursor up to the next whitespace.
-        let end = cursor
-            + input[cursor..]
-                .find(char::is_whitespace)
-                .unwrap_or(input.len() - cursor);
-        let mut texts: Vec<&str> = tokens.iter().map(|token| token.text).collect();
-        // git aliases complete like the commands they stand for.
-        let is_git = spec::command_name(texts[0]).as_deref() == Some("git");
-        let git_aliases = if is_git && tokens.len() > 1 {
-            git_aliases(cwd.as_deref())
+    let cursor = cursor.min(input.len());
+    let tokens = command_tokens(&input[..cursor]);
+    let Some(current) = tokens.last() else {
+        return Ok(CompletionSet::default());
+    };
+    // The token continues past the cursor up to the next whitespace.
+    let end = cursor
+        + input[cursor..]
+            .find(char::is_whitespace)
+            .unwrap_or(input.len() - cursor);
+    let mut texts: Vec<&str> = tokens.iter().map(|token| token.text).collect();
+    // git aliases complete like the commands they stand for.
+    let is_git = spec::command_name(texts[0]).as_deref() == Some("git");
+    // Reading them runs git, which a quick request doesn't wait for.
+    let git_aliases = if is_git && tokens.len() > 1 && !depth.quick {
+        git_aliases(cwd.as_deref())
+    } else {
+        Vec::new()
+    };
+    if let Some((_, expansion)) = texts
+        .get(1)
+        .filter(|_| texts.len() > 2)
+        .and_then(|alias| git_aliases.iter().find(|(name, _)| name == alias))
+    {
+        texts.splice(1..2, expansion.split_whitespace());
+    }
+
+    if tokens.len() > 1
+        && let Some(plan) = spec::plan(&texts, flavor)
+    {
+        let start = current.start + plan.value_prefix_len;
+        let prefix = &current.text[plan.value_prefix_len..];
+        let mut items = plan.items;
+        let generators = if depth.quick {
+            &[][..]
         } else {
-            Vec::new()
+            &plan.generators[..]
         };
-        if let Some((_, expansion)) = texts
-            .get(1)
-            .filter(|_| texts.len() > 2)
-            .and_then(|alias| git_aliases.iter().find(|(name, _)| name == alias))
-        {
-            texts.splice(1..2, expansion.split_whitespace());
+        for run in generators {
+            match run_generator(&run.command, shell.as_deref(), flavor, cwd.as_deref()).await {
+                Some(output) => items.extend(run.results(&output)),
+                None => log::debug!("completion generator failed: {}", run.command),
+            }
         }
-
-        if tokens.len() > 1
-            && let Some(plan) = spec::plan(&texts, flavor)
-        {
-            let start = current.start + plan.value_prefix_len;
-            let prefix = &current.text[plan.value_prefix_len..];
-            let mut items = plan.items;
-            for run in &plan.generators {
-                match run_generator(&run.command, shell.as_deref(), flavor, cwd.as_deref()).await {
-                    Some(output) => items.extend(run.results(&output)),
-                    None => log::debug!("completion generator failed: {}", run.command),
-                }
-            }
-            if let Some(paths) = &plan.paths {
-                items.extend(
-                    path_completions(prefix, cwd.as_deref(), flavor, paths.folders_only)
-                        .into_iter()
-                        .filter_map(|item| paths.filter(item)),
-                );
-            }
-            if plan.commands {
-                items.extend(command_completions(prefix, shell.as_deref(), flavor));
-            }
-            if tokens.len() == 2 {
-                items.extend(
-                    git_aliases
-                        .iter()
-                        .filter(|(name, _)| name.starts_with(prefix))
-                        .map(|(name, expansion)| CompletionItem {
-                            text: name.clone(),
-                            label: name.clone(),
-                            kind: CompletionKind::Subcommand,
-                            detail: Some(if util::i18n::is_chinese() {
-                                format!("{expansion} 的别名")
-                            } else {
-                                format!("Alias for {expansion}")
-                            }),
+        if let Some(paths) = &plan.paths {
+            items.extend(
+                path_completions(prefix, cwd.as_deref(), flavor, paths.folders_only)
+                    .into_iter()
+                    .filter_map(|item| paths.filter(item)),
+            );
+        }
+        if plan.commands {
+            items.extend(command_completions(prefix, shell.as_deref(), flavor));
+        }
+        if tokens.len() == 2 {
+            items.extend(
+                git_aliases
+                    .iter()
+                    .filter(|(name, _)| name.starts_with(prefix))
+                    .map(|(name, expansion)| CompletionItem {
+                        text: name.clone(),
+                        label: name.clone(),
+                        kind: CompletionKind::Subcommand,
+                        detail: Some(if util::i18n::is_chinese() {
+                            format!("{expansion} 的别名")
+                        } else {
+                            format!("Alias for {expansion}")
                         }),
-                );
-            }
-            return Ok(CompletionSet {
-                start,
-                end,
-                items: dedup(items),
-            });
+                    }),
+            );
         }
+        return Ok(CompletionSet {
+            start,
+            end,
+            items: dedup(items),
+        });
+    }
 
-        let builtin = builtin_completions(&texts, current.start, end, cwd.as_deref(), flavor);
-        let powershell = (flavor == ShellFlavor::PowerShell)
-            .then(|| {
-                shell
-                    .as_deref()
-                    .filter(|shell| Path::new(shell).is_absolute())
-            })
-            .flatten()
-            .map(PowerShellCompleter::get);
-        let Some(powershell) = powershell else {
-            return Ok(builtin);
-        };
-        let from_shell = powershell
-            .complete(&input, cursor, cwd.as_deref())
-            .await
-            .unwrap_or_else(|error| {
-                log::warn!("PowerShell completion failed: {error:#}");
-                CompletionSet::default()
-            });
-        Ok(merge(from_shell, builtin))
-    })
+    // SOLO: typing a space after a command without a spec doesn't list the
+    // directory; Tab still does.
+    if depth.as_you_type && current.text.is_empty() {
+        return Ok(CompletionSet::default());
+    }
+    let builtin = builtin_completions(&texts, current.start, end, cwd.as_deref(), flavor);
+    let powershell = (flavor == ShellFlavor::PowerShell && !depth.quick)
+        .then(|| {
+            shell
+                .as_deref()
+                .filter(|shell| Path::new(shell).is_absolute())
+        })
+        .flatten()
+        .map(PowerShellCompleter::get);
+    let Some(powershell) = powershell else {
+        return Ok(builtin);
+    };
+    let from_shell = powershell
+        .complete(&input, cursor, cwd.as_deref())
+        .await
+        .unwrap_or_else(|error| {
+            log::warn!("PowerShell completion failed: {error:#}");
+            CompletionSet::default()
+        });
+    Ok(merge(from_shell, builtin))
+}
+
+/// SOLO: whether typing at `cursor` should open completions by itself: not
+/// on an empty line, in a `#` request for AI, or inside an open quote.
+pub fn should_complete_as_you_type(input: &str, cursor: usize) -> bool {
+    let Some(before) = input.get(..cursor) else {
+        return false;
+    };
+    !before.trim().is_empty() && !input.trim_start().starts_with('#') && !in_open_quote(before)
+}
+
+/// Whether `text` ends inside a quoted string.
+fn in_open_quote(text: &str) -> bool {
+    let mut quote = None;
+    for ch in text.chars() {
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None => {}
+        }
+    }
+    quote.is_some()
+}
+
+/// SOLO: the rest of the most likely spec suggestion for the token at the
+/// end of `input`, shown as a ghost suggestion when the history has none:
+/// `git ch` gives `eckout`. Specs list suggestions most important first.
+pub fn spec_suggestion(input: &str, flavor: ShellFlavor) -> Option<String> {
+    if input.contains('\n') || in_open_quote(input) {
+        return None;
+    }
+    let tokens = command_tokens(input);
+    let current = tokens.last()?;
+    if current.text.is_empty() {
+        return None;
+    }
+    if tokens.len() == 1 {
+        return command_suggestion(current.text);
+    }
+    let texts: Vec<&str> = tokens.iter().map(|token| token.text).collect();
+    let plan = spec::plan(&texts, flavor)?;
+    let typed = current.text.get(plan.value_prefix_len..)?;
+    if typed.is_empty() {
+        return None;
+    }
+    plan.items
+        .iter()
+        .find(|item| {
+            item.text.len() > typed.len()
+                && item.text.starts_with(typed)
+                && !item.text.contains(char::is_whitespace)
+        })
+        .map(|item| item.text[typed.len()..].to_string())
+}
+
+/// The rest of the shortest command on `PATH` with a spec (so a well-known
+/// one) that starts with `prefix`.
+fn command_suggestion(prefix: &str) -> Option<String> {
+    if prefix.len() < 2 || prefix.contains(['/', '\\', '.', '~', '$']) {
+        return None;
+    }
+    let descriptions = spec::command_descriptions()?;
+    let prefix_lower = prefix.to_lowercase();
+    path_commands()
+        .iter()
+        .filter(|command| {
+            command.len() > prefix.len()
+                && command.to_lowercase().starts_with(&prefix_lower)
+                && descriptions.contains_key(&command.to_lowercase())
+        })
+        .min_by_key(|command| (command.len(), command.to_lowercase()))
+        .and_then(|command| command.get(prefix.len()..))
+        .map(str::to_string)
 }
 
 /// PowerShell knows its cmdlets, functions and aliases; Solo adds descriptions
@@ -791,6 +897,90 @@ mod tests {
             .collect();
         scripts.sort();
         assert_eq!(scripts, vec!["build", "dev"]);
+    }
+
+    #[test]
+    fn test_should_complete_as_you_type() {
+        let at_end = |input: &str| should_complete_as_you_type(input, input.len());
+        assert!(at_end("git ch"));
+        assert!(at_end("docker "));
+        assert!(!at_end(""));
+        assert!(!at_end("   "));
+        assert!(!at_end("# list big files"));
+        assert!(!at_end("echo \"hello wor"));
+        assert!(!at_end("echo 'a b"));
+        assert!(at_end("echo 'a b' --"));
+    }
+
+    #[test]
+    fn test_spec_suggestion() {
+        let flavor = ShellFlavor::Posix;
+        assert_eq!(spec_suggestion("git ch", flavor).as_deref(), Some("eckout"));
+        assert_eq!(
+            spec_suggestion("cargo build --rel", flavor).as_deref(),
+            Some("ease")
+        );
+        // Nothing for an empty token, an unknown command or a quote.
+        assert_eq!(spec_suggestion("git ", flavor), None);
+        assert_eq!(spec_suggestion("no-such-command-xyz ab", flavor), None);
+        assert_eq!(spec_suggestion("git commit -m 'fi", flavor), None);
+    }
+
+    /// G20: how long completions take, by kind, with the real PowerShell.
+    /// Run with `cargo test -p terminal_view --lib measure_completion_latency
+    /// -- --ignored --nocapture`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn measure_completion_latency() {
+        const POWERSHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .unwrap()
+            .to_path_buf();
+        let npm_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            npm_dir.path().join("package.json"),
+            r#"{"scripts": {"dev": "vite", "build": "vite build"}}"#,
+        )
+        .unwrap();
+        let cases: &[(&str, &str, &Path, bool)] = &[
+            ("spec static", "git ch", &repo, false),
+            ("spec static (quick)", "git ch", &repo, true),
+            ("spec + generator", "git checkout ", &repo, false),
+            ("spec + generator (quick)", "git checkout ", &repo, true),
+            ("docker subcommands", "docker ", &repo, false),
+            ("docker generator", "docker stop ", &repo, false),
+            ("npm generator", "npm run ", npm_dir.path(), false),
+            ("cargo static", "cargo build --rel", &repo, false),
+            ("path (spec)", "cd cra", &repo, false),
+            ("TabExpansion2 cmdlet", "Get-ChildI", &repo, false),
+            ("TabExpansion2 path", "Get-Content Carg", &repo, false),
+            ("command position", "doc", &repo, false),
+            ("command position (quick)", "doc", &repo, true),
+        ];
+        for (name, input, cwd, quick) in cases {
+            let mut times = Vec::new();
+            let mut count = 0;
+            for _ in 0..5 {
+                let started = Instant::now();
+                let set = futures::executor::block_on(complete_async(
+                    Some(POWERSHELL.to_string()),
+                    input.to_string(),
+                    input.len(),
+                    Some(cwd.to_path_buf()),
+                    CompletionDepth {
+                        quick: *quick,
+                        as_you_type: true,
+                    },
+                ))
+                .unwrap();
+                times.push(started.elapsed().as_millis());
+                count = set.items.len();
+            }
+            println!("{name:28} {input:22} items {count:4}  ms {times:?}");
+        }
     }
 
     #[test]

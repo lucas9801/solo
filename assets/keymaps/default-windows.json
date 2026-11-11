@@ -1415,12 +1415,22 @@
   },
   {
     // SOLO: the terminal's input editor
+    // SOLO: in completions that opened as you type, Enter runs the command
+    // and Tab accepts; in ones opened with Tab (or ctrl-r), Enter accepts.
+    "context": "TerminalInput && !menu_requested > Editor && showing_completions",
+    "use_key_equivalents": true,
+    "bindings": {
+      "enter": "terminal::SubmitInput",
+    },
+  },
+  {
     "context": "TerminalInput > Editor && !showing_completions",
     "use_key_equivalents": true,
     "bindings": {
       "enter": "terminal::SubmitInput",
       "shift-enter": "editor::Newline",
       "tab": "terminal::CompleteInput",
+      "escape": "terminal::CancelCommandGeneration",
       "ctrl-r": "terminal::SearchInputHistory",
       "ctrl-shift-r": "terminal::SearchWorkflows",
       "up": "terminal::InputHistoryPrevious",
@@ -1454,6 +1464,7 @@
     "bindings": {
       "escape": "terminal::ClearCommandBlockSelection",
       "alt-enter": "terminal::SendCommandBlockToAgent",
+      "ctrl-i": "terminal::AskAiAboutCommandBlock",
       "ctrl-s": "terminal::SaveCommandBlockAsWorkflow",
       "enter": "terminal::RerunCommandBlock",
       "ctrl-c": "terminal::CopyCommandBlock",
