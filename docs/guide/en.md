@@ -223,7 +223,9 @@ connects to them, with the output they printed meanwhile. Idle shells end
 with Solo as before, and closing a terminal's tab ends what runs in it.
 
 - So quitting and updating don't ask about agents in terminals; closing a tab
-  or a window still does.
+  or a window still does. Closing Solo's last window counts as quitting.
+- Each background process logs what Solo told it and why it ended, in
+  `terminal-host-<date>.log` in Solo's logs folder (kept for a week).
 - To turn it off: `"terminal": {"keep_running_on_quit": false}` (new
   terminals then run inside Solo and end with it).
 - If a background process itself fails, its terminal ends; after a restart

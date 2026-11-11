@@ -136,6 +136,8 @@ actions!(
 pub struct RenameTerminal;
 
 pub fn init(cx: &mut App) {
+    // SOLO: terminal hosts outlive Solo going, see `terminal::init`.
+    terminal::init(cx);
     terminal_panel::init(cx);
     command_notifications::init(cx);
     follow_working_directory::init(cx);
@@ -376,7 +378,10 @@ impl TerminalView {
             cx.observe(&blink_manager, |_, _, cx| cx.notify()),
             cx.observe_global::<SettingsStore>(Self::settings_changed),
             cx.on_app_quit(|terminal_view, cx| {
-                terminal_view.update_keep_running(cx);
+                let keep = terminal_view.update_keep_running(cx);
+                if let Some(pipe) = terminal_view.terminal.read(cx).host_pipe() {
+                    log::debug!("quitting: terminal host {pipe} keeps running: {keep}");
+                }
                 let contents = terminal_view.contents_to_save(cx);
                 cx.background_spawn(async move {
                     if let Some(contents) = contents {
@@ -1405,11 +1410,18 @@ impl TerminalView {
     /// SOLO: tells the terminal's host whether to outlive Solo (quitting,
     /// closing the window or crashing): while the terminal runs an agent or a
     /// command, so the next Solo finds it still running.
-    fn update_keep_running(&self, cx: &App) {
+    fn update_keep_running(&self, cx: &App) -> bool {
         let terminal = self.terminal.read(cx);
+        // A terminal an earlier Solo left running was busy then; if its
+        // output kept for this Solo lost the shell's marks (it's long), what
+        // runs is unknown until the shell's next prompt: kept meanwhile.
+        let unknown = terminal.reconnected_to_host()
+            && terminal.shell_integration().blocks().is_empty();
         let keep = self.agent_status().is_some()
+            || unknown
             || matches!(running_program::running_command(terminal), Some((_, true)));
         terminal.keep_running_after_quit(keep);
+        keep
     }
 
     /// SOLO: the terminal moves to `workspace`, another tab of the window.
@@ -2596,6 +2608,10 @@ impl SerializableItem for TerminalView {
                         view.custom_title = custom_title;
                     }
                     view.restored_at_startup = true;
+                    // SOLO: a terminal an earlier Solo left running stays kept
+                    // from now on, also if Solo crashes before its tab shows
+                    // (output is processed, and keeping updated, as it does).
+                    view.update_keep_running(cx);
                     // The workspace saves restored terminals under a new id.
                     if had_contents {
                         view.restored_from = Some(item_id);
