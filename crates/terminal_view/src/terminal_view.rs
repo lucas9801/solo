@@ -21,6 +21,7 @@ mod output_perf_tests;
 mod persistence;
 mod running_program;
 mod session_contents;
+mod split_workspace_modal;
 mod tab_title;
 pub mod terminal_element;
 pub mod terminal_panel;
@@ -1845,6 +1846,10 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::show_agent_timeline))
             .on_action(cx.listener(TerminalView::save_command_block_as_workflow))
             .on_action(cx.listener(TerminalView::enable_remote_control))
+            // SOLO: moving the terminal to another workspace tab.
+            .on_action(cx.listener(TerminalView::move_to_own_tab))
+            .on_action(cx.listener(TerminalView::move_to_tab))
+            .on_action(cx.listener(TerminalView::move_to_new_tab))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 MouseButton::Right,
@@ -1888,6 +1893,8 @@ impl Render for TerminalView {
                     .child(
                         v_flex()
                             .size_full()
+                            // SOLO: when the terminal isn't in its tab's folders.
+                            .children(self.render_misplaced_bar(cx))
                             .children(self.render_agent_resume_bar(cx))
                             .child(
                                 div()
@@ -2016,9 +2023,34 @@ impl Item for TerminalView {
             .when(!params.selected, |this| {
                 this.track_focus(&self.focus_handle)
             })
-            .on_action(move |action: &RenameTerminal, window, cx| {
+            .on_action({
+                let self_handle = self_handle.clone();
+                move |action: &RenameTerminal, window, cx| {
+                    self_handle
+                        .update(cx, |this, cx| this.rename_terminal(action, window, cx))
+                        .ok();
+                }
+            })
+            // SOLO: from the tab's menu, while the terminal isn't shown.
+            .on_action({
+                let self_handle = self_handle.clone();
+                move |action: &workspace_grouping::MoveToOwnTab, window, cx| {
+                    self_handle
+                        .update(cx, |this, cx| this.move_to_own_tab(action, window, cx))
+                        .ok();
+                }
+            })
+            .on_action({
+                let self_handle = self_handle.clone();
+                move |action: &workspace_grouping::MoveToTab, window, cx| {
+                    self_handle
+                        .update(cx, |this, cx| this.move_to_tab(action, window, cx))
+                        .ok();
+                }
+            })
+            .on_action(move |action: &workspace_grouping::MoveToNewTab, window, cx| {
                 self_handle
-                    .update(cx, |this, cx| this.rename_terminal(action, window, cx))
+                    .update(cx, |this, cx| this.move_to_new_tab(action, window, cx))
                     .ok();
             })
             .child(
@@ -2059,8 +2091,10 @@ impl Item for TerminalView {
             .child(
                 div()
                     .relative()
-                    // SOLO: a narrow tab cuts only the title.
+                    // SOLO: a narrow tab cuts only the title, then the mark of
+                    // a terminal not in its tab's folders.
                     .min_w_0()
+                    .flex_shrink(1000.)
                     .child(
                         Label::new(title)
                             .single_line()
@@ -2097,6 +2131,8 @@ impl Item for TerminalView {
                         )
                     }),
             )
+            // SOLO: where a terminal not in its tab's folders is.
+            .children(self.render_misplaced_mark(cx))
             // SOLO: how full the running agent's context is.
             .when_some(self.agent_context_fraction(cx), |this, fraction| {
                 let colors = cx.theme().colors();
@@ -2302,6 +2338,16 @@ impl Item for TerminalView {
             ));
         }
         actions
+    }
+
+    // SOLO: moving the terminal to the tab of the folder it's in, when that
+    // isn't this one, or to any other workspace tab.
+    fn tab_extra_context_menu_group(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<workspace::item::TabContextEntry> {
+        self.move_menu_entries(cx)
     }
 
     fn buffer_kind(&self, _: &App) -> workspace::item::ItemBufferKind {

@@ -187,9 +187,25 @@ blue, in that order), so you can see an agent waiting in the background.
 - the tab's menu (its arrow, or right click) lists its terminals to jump to;
 - after a restart only the active workspace loads; the others load when you
   first switch to them;
-- when you `cd` into a project another tab has (its folder, or the same git
-  repository), Solo offers to move the terminal to that tab; **Keep It Here**
-  stops it asking about that tab for that terminal;
+- when a terminal's directory (its agent's, when the agent reports one) is in
+  a project another tab has (its folder, or the same git repository), or in no
+  folder of its tab, a bar on top of the terminal says so, with **Move to**
+  *tab* or **Open *name* in a New Tab and Move There** (named after the git
+  repository it's in). Moving doesn't interrupt what runs in it, agents
+  included, and the tab's other terminals going there move along. **Keep It
+  Here** stops it asking about that place for that terminal, also after a
+  restart; the × closes the bar until Solo starts again. A terminal in no
+  folder of its tab also gets a dashed mark on its tab naming the folder it's
+  in, and its hover card says so under its directory. Nothing moves on its
+  own;
+- a terminal tab's right-click menu has **Move to a New *name* Tab** (or
+  **Move to the *tab* Tab**) and **Move to Tab ›**, to move it to any tab of
+  the window at any time, or to a new tab of a folder you pick;
+- a workspace holding unrelated projects gets a **Split Workspace** dialog
+  listing the folders that stay and those that get a tab of their own; the
+  terminals in none of them each get a choice of where to go (by default a
+  new tab of their own). Nothing changes until you click **Split**; **Keep
+  Together** stops it asking;
 - the first time this version of Solo starts, terminals from before there
   were tabs move to the tab of their git repository, which opens in the
   background if needed. Agent task worktrees count as their repository.

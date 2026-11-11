@@ -7,7 +7,7 @@ use crate::{
     item::{
         ActivateOnClose, ClosePosition, Item, ItemBufferKind, ItemHandle, ItemSettings,
         PreviewTabsSettings, ProjectItemKind, SaveOptions, ShowCloseButton, ShowDiagnostics,
-        TabContentParams, TabTooltipContent, WeakItemHandle,
+        TabContentParams, TabContextEntry, TabTooltipContent, WeakItemHandle,
     },
     move_item,
     notifications::NotifyResultExt,
@@ -3238,6 +3238,8 @@ impl Pane {
                 let pane = pane.clone();
                 let menu_context = menu_context.clone();
                 let extra_actions = item_handle.tab_extra_context_menu_actions(window, cx);
+                // SOLO: and another group of them.
+                let extra_group = item_handle.tab_extra_context_menu_group(window, cx);
                 ContextMenu::build(window, cx, move |mut menu, window, cx| {
                     let close_active_item_action = CloseActiveItem {
                         save_intent: None,
@@ -3587,6 +3589,28 @@ impl Pane {
                         menu = menu.separator();
                         for (label, action) in extra_actions {
                             menu = menu.action(label, action);
+                        }
+                    }
+                    // SOLO: then the other group.
+                    if !extra_group.is_empty() {
+                        menu = menu.separator();
+                    }
+                    for entry in extra_group {
+                        match entry {
+                            TabContextEntry::Action(label, action) => {
+                                menu = menu.action(label, action);
+                            }
+                            TabContextEntry::Submenu(label, entries) => {
+                                let context = menu_context.clone();
+                                menu = menu.submenu(label, move |submenu, _, _| {
+                                    let mut submenu = submenu.context(context.clone());
+                                    for (label, action) in &entries {
+                                        submenu =
+                                            submenu.action(label.clone(), action.boxed_clone());
+                                    }
+                                    submenu
+                                });
+                            }
                         }
                     }
 

@@ -424,6 +424,24 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     ) -> Vec<(SharedString, Box<dyn Action>)> {
         Vec::new()
     }
+
+    /// SOLO: another group of entries for the tab's context menu, after
+    /// [`Item::tab_extra_context_menu_actions`].
+    fn tab_extra_context_menu_group(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Vec<TabContextEntry> {
+        Vec::new()
+    }
+}
+
+/// SOLO: an entry of [`Item::tab_extra_context_menu_group`].
+pub enum TabContextEntry {
+    /// A label and the action to dispatch.
+    Action(SharedString, Box<dyn Action>),
+    /// A label and its entries, each a label and the action to dispatch.
+    Submenu(SharedString, Vec<(SharedString, Box<dyn Action>)>),
 }
 
 pub trait SerializableItem: Item {
@@ -605,6 +623,11 @@ pub trait ItemHandle: 'static + Send {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<(SharedString, Box<dyn Action>)>;
+    fn tab_extra_context_menu_group(
+        &self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<TabContextEntry>;
     fn can_autosave(&self, cx: &App) -> bool {
         let is_deleted = self.project_entry_ids(cx).is_empty();
         self.is_dirty(cx) && !self.has_conflict(cx) && self.can_save(cx) && !is_deleted
@@ -1209,6 +1232,14 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.update(cx, |this, cx| {
             this.tab_extra_context_menu_actions(window, cx)
         })
+    }
+
+    fn tab_extra_context_menu_group(
+        &self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<TabContextEntry> {
+        self.update(cx, |this, cx| this.tab_extra_context_menu_group(window, cx))
     }
 }
 
