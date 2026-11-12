@@ -1301,10 +1301,11 @@ mod tests {
             vec![path!("/solo")],
         )
         .await;
+        // Inside a worktree, only the worktrees are searched, as before. (First:
+        // opening the file below adds it to the workspace.)
         for (working_directory, expected) in [
-            (path!("/godot"), Some(path!("/godot/core/object/object.h"))),
-            // Inside a worktree, only the worktrees are searched, as before.
             (path!("/solo"), None),
+            (path!("/godot"), Some(path!("/godot/core/object/object.h"))),
         ] {
             let (_, open_target) = test_path_like(
                 HoveredWord {
