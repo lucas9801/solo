@@ -112,6 +112,9 @@ struct Invocation {
     json: bool,
 }
 
+/// SOLO: The longest `wait --timeout`; without one, `wait` waits for good.
+const MAX_WAIT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
 pub const USAGE: &str = "\
 usage: solo-cli agent <command> [--json]
 
@@ -216,9 +219,16 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                     seconds
                         .parse::<f64>()
                         .ok()
-                        .filter(|seconds| seconds.is_finite() && *seconds >= 0.)
-                        .map(Duration::from_secs_f64)
-                        .ok_or_else(|| format!("--timeout {seconds:?} isn't a number of seconds"))
+                        // SOLO: checked: `from_secs_f64` panics on values
+                        // too large for a `Duration` (this runs in Solo).
+                        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+                        .filter(|timeout| *timeout <= MAX_WAIT_TIMEOUT)
+                        .ok_or_else(|| {
+                            format!(
+                                "--timeout {seconds:?} isn't a number of seconds up to {} (leave it out to wait without a limit)",
+                                MAX_WAIT_TIMEOUT.as_secs()
+                            )
+                        })
                 })
                 .transpose()?;
             Command::Wait { id, until, timeout }
@@ -419,6 +429,13 @@ pub async fn run(
     cwd: Option<PathBuf>,
     cx: &mut AsyncApp,
 ) -> AgentCliOutput {
+    // SOLO: nothing of the request is looked at while the CLI is off.
+    let control = cx.update(|cx| TerminalSettings::get_global(cx).agent_control);
+    if control == AgentControl::Off {
+        return AgentCliOutput::error(
+            "`solo-cli agent` is off (the terminal setting `agent_control` is \"off\")",
+        );
+    }
     let invocation = match parse(&args) {
         Ok(invocation) => invocation,
         Err(error) => {
@@ -429,13 +446,7 @@ pub async fn run(
             };
         }
     };
-    let control = cx.update(|cx| TerminalSettings::get_global(cx).agent_control);
     match control {
-        AgentControl::Off => {
-            return AgentCliOutput::error(
-                "`solo-cli agent` is off (the terminal setting `agent_control` is \"off\")",
-            );
-        }
         AgentControl::ReadOnly if invocation.command.acts() => {
             return AgentCliOutput::error(
                 "`send` and `new-task` are off (the terminal setting `agent_control` is \"read_only\")",
@@ -776,16 +787,25 @@ async fn new_task(
     let created = cx
         .background_spawn(async move { create_task(&directory, &name, base, &setting) })
         .await;
+    let mut new_task = match created {
+        Ok(new_task) => new_task,
+        Err(error) => return AgentCliOutput::error(format!("{error:#}")),
+    };
+    // SOLO: .solo/tasks.json's setup and variables only for a trusted project.
+    let trusted = cx.update(|cx| {
+        let project = workspace.read(cx).project().clone();
+        crate::agent_tasks::is_repository_trusted(&project, &new_task.task.repository_root, cx)
+    });
+    if !trusted {
+        crate::agent_tasks::drop_untrusted_config(&mut new_task);
+    }
     let crate::agent_tasks::NewTask {
         task,
         directory: _,
         env,
         setup,
         warnings,
-    } = match created {
-        Ok(new_task) => new_task,
-        Err(error) => return AgentCliOutput::error(format!("{error:#}")),
-    };
+    } = new_task;
     let Some(worktree) = task.worktree_path.clone() else {
         return AgentCliOutput::error("the task's worktree is gone");
     };
@@ -968,6 +988,11 @@ mod tests {
             &["wait", "x", "--until", "soon"][..],
             &["wait", "x", "--timeout", "-1"][..],
             &["wait", "x", "--timeout"][..],
+            // Too large for a `Duration`: an error, not a panic.
+            &["wait", "x", "--timeout", "1e20"][..],
+            &["wait", "x", "--timeout", "inf"][..],
+            &["wait", "x", "--timeout", "NaN"][..],
+            &["wait", "x", "--timeout", "86401"][..],
             &["output", "x", "--lines", "0"][..],
             &["ls", "--until", "idle"][..],
             &["ls", "extra"][..],
