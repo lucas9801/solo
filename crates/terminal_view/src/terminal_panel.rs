@@ -86,8 +86,11 @@ pub struct TerminalPanel {
     fs: Arc<dyn Fs>,
     workspace: WeakEntity<Workspace>,
     pending_serialization: Task<Option<()>>,
-    pending_terminals_to_add: usize,
-    restoring: bool,
+    // SOLO: crate-visible for a terminal moved here from another tab.
+    pub(crate) pending_terminals_to_add: usize,
+    // SOLO: crate-visible so a terminal moved here from another tab can wait
+    // for it (workspace_grouping).
+    pub(crate) restoring: bool,
     _restoration: Task<()>,
     deferred_tasks: HashMap<TaskId, Task<()>>,
     assistant_enabled: bool,
@@ -282,7 +285,7 @@ impl TerminalPanel {
         Ok(terminal_panel)
     }
 
-    fn finish_restoration(
+    pub(crate) fn finish_restoration(
         &mut self,
         restored: bool,
         window: &mut Window,
@@ -1079,6 +1082,21 @@ impl TerminalPanel {
     fn finish_pending_terminal(&mut self, cx: &mut Context<Self>) {
         self.pending_terminals_to_add = self.pending_terminals_to_add.saturating_sub(1);
         cx.notify();
+    }
+
+    /// SOLO: the pane a terminal moved here from another tab joins: the active
+    /// one when it holds terminals, else the first that does, so it becomes
+    /// another tab next to them rather than a pane of its own.
+    pub(crate) fn pane_for_moved_terminal(&self, cx: &App) -> Entity<Pane> {
+        if self.active_pane.read(cx).items_len() > 0 {
+            return self.active_pane.clone();
+        }
+        self.center
+            .panes()
+            .into_iter()
+            .find(|pane| pane.read(cx).items_len() > 0)
+            .unwrap_or(&self.active_pane)
+            .clone()
     }
 
     fn serialize(&mut self, cx: &mut Context<Self>) {
