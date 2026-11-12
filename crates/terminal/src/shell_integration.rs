@@ -282,24 +282,25 @@ pub fn integrate_claude_code(is_windows: bool, env: &mut HashMap<String, String>
 /// the first session shows its hook review once.
 ///
 /// The hooks run `solo-agent-hook`, which reads the event from Codex's input
-/// (the same events as Claude Code's). On Windows Codex runs a hook with
-/// `cmd /C`, and Windows PowerShell can't pass double quotes on to Codex, so
-/// the program's quoted path is in `SOLO_AGENT_HOOK_COMMAND` rather than in the
-/// arguments.
+/// (the same events as Claude Code's). Codex runs a hook command with the
+/// session's shell: `sh -c` elsewhere, but on Windows (since Codex 0.114)
+/// `powershell.exe -NoProfile -Command`, or `cmd /C` only if it finds no
+/// PowerShell. So on Windows the command names the program by its full path
+/// rather than through an environment variable: PowerShell doesn't expand
+/// `%VAR%`, and looking up the unknown command made it fail after seconds.
 pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
     let Some(hook) = agent_hook_executable() else {
         return;
     };
-    if is_windows {
-        env.insert(
-            "SOLO_AGENT_HOOK_COMMAND".to_string(),
-            format!("\"{}\"", hook.to_string_lossy()),
-        );
+    match codex_hook_args(is_windows, &hook.to_string_lossy()) {
+        Some(args) => {
+            env.insert("SOLO_CODEX_ARGS".to_string(), args.join("\n"));
+        }
+        None => log::warn!(
+            "Codex can't be given a hook command for {}: it won't report its status",
+            hook.display()
+        ),
     }
-    env.insert(
-        "SOLO_CODEX_ARGS".to_string(),
-        codex_hook_args(is_windows).join("\n"),
-    );
 }
 
 /// SOLO: Lets GitHub Copilot CLI started from the integrated shell report
@@ -520,22 +521,61 @@ const CODEX_HOOK_EVENTS: [&str; 5] = [
     "Interrupt",
 ];
 
-/// The `-c` arguments that add Solo's hooks to a Codex session. The values
-/// are TOML with literal (single-quoted) strings only: Codex reads a value
-/// that isn't valid TOML as a plain string, silently.
-fn codex_hook_args(is_windows: bool) -> Vec<String> {
+/// The `-c` arguments that add Solo's hooks, running the hook program at
+/// `hook`, to a Codex session; `None` if there's no command for that path.
+/// The values are TOML with literal (single-quoted) strings only: Codex reads
+/// a value that isn't valid TOML as a plain string, silently, and Windows
+/// PowerShell can't pass double quotes on to Codex.
+///
+/// Codex trusts a hook by a hash of its command and timeout, so changing
+/// either (or Solo's folder, on Windows) makes it ask to trust them again.
+fn codex_hook_args(is_windows: bool, hook: &str) -> Option<Vec<String>> {
     let command = if is_windows {
-        "%SOLO_AGENT_HOOK_COMMAND% --agent codex"
+        codex_windows_hook_command(hook)?
     } else {
-        "\"$SOLO_AGENT_HOOK\" --agent codex"
+        "'\"$SOLO_AGENT_HOOK\" --agent codex'".to_string()
     };
-    // Codex allows Interrupt hooks 3 seconds at most; the hook takes a few
-    // milliseconds.
-    let groups = format!("[{{hooks=[{{type='command',command='{command}',timeout=3}}]}}]");
-    CODEX_HOOK_EVENTS
-        .iter()
-        .flat_map(|event| ["-c".to_string(), format!("hooks.{event}={groups}")])
-        .collect()
+    Some(
+        CODEX_HOOK_EVENTS
+            .iter()
+            .flat_map(|event| {
+                // Codex allows Interrupt hooks 3 seconds at most. The hook
+                // takes a few milliseconds, but on Windows it's started by
+                // PowerShell, which can take a second or more to start.
+                let timeout = if *event == "Interrupt" { 3 } else { 10 };
+                [
+                    "-c".to_string(),
+                    format!(
+                        "hooks.{event}=[{{hooks=[{{type='command',command={command},timeout={timeout}}}]}}]"
+                    ),
+                ]
+            })
+            .collect(),
+    )
+}
+
+/// The hook command for Codex on Windows, as a TOML literal string: one that
+/// both PowerShell and `cmd /C` run (a bare path) if the path needs no
+/// quoting, otherwise PowerShell's call of a quoted path, in a TOML multi-line
+/// literal string since it has single quotes. `None` if TOML can't hold it.
+fn codex_windows_hook_command(hook: &str) -> Option<String> {
+    let plain = hook
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '\\' | ':' | '.' | '_' | '-'));
+    if plain && !hook.is_empty() {
+        return Some(format!("'{hook} --agent codex'"));
+    }
+    // PowerShell takes these as single quotes too.
+    let mut quoted = String::new();
+    for c in hook.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    let command = format!("& '{quoted}' --agent codex");
+    (!command.contains("'''") && !command.contains(['\n', '\r']))
+        .then(|| format!("'''{command}'''"))
 }
 
 fn write_claude_code_settings(is_windows: bool) -> std::io::Result<String> {
@@ -1484,8 +1524,37 @@ mod tests {
 
     #[test]
     fn codex_hook_args_are_valid_toml() {
-        for is_windows in [true, false] {
-            let args = codex_hook_args(is_windows);
+        let cases = [
+            (false, "/opt/solo/solo-agent-hook", r#""$SOLO_AGENT_HOOK" --agent codex"#),
+            // Runs in both PowerShell and cmd as is.
+            (
+                true,
+                r"C:\Users\Admin\AppData\Local\Programs\Solo\solo-agent-hook.exe",
+                r"C:\Users\Admin\AppData\Local\Programs\Solo\solo-agent-hook.exe --agent codex",
+            ),
+            (
+                true,
+                r"D:\工具\Solo_2.2-dev\solo-agent-hook.exe",
+                r"D:\工具\Solo_2.2-dev\solo-agent-hook.exe --agent codex",
+            ),
+            (
+                true,
+                r"C:\Program Files\Solo 测试\solo-agent-hook.exe",
+                r"& 'C:\Program Files\Solo 测试\solo-agent-hook.exe' --agent codex",
+            ),
+            (
+                true,
+                r"C:\Users\O'Brien\Solo\solo-agent-hook.exe",
+                r"& 'C:\Users\O''Brien\Solo\solo-agent-hook.exe' --agent codex",
+            ),
+            (
+                true,
+                "C:\\Users\\\u{2019}x\\100% $(x) & y\\solo-agent-hook.exe",
+                "& 'C:\\Users\\\u{2019}\u{2019}x\\100% $(x) & y\\solo-agent-hook.exe' --agent codex",
+            ),
+        ];
+        for (is_windows, hook, expected) in cases {
+            let args = codex_hook_args(is_windows, hook).unwrap();
             assert_eq!(args.len(), 2 * CODEX_HOOK_EVENTS.len());
             for (pair, event) in args.chunks(2).zip(CODEX_HOOK_EVENTS) {
                 assert_eq!(pair[0], "-c");
@@ -1495,13 +1564,19 @@ mod tests {
                 let parsed: toml::Table = toml::from_str(&format!("value = {value}")).unwrap();
                 let hook = &parsed["value"][0]["hooks"][0];
                 assert_eq!(hook["type"].as_str(), Some("command"));
-                assert_eq!(hook["timeout"].as_integer(), Some(3));
-                let command = hook["command"].as_str().unwrap();
-                assert!(command.ends_with(" --agent codex"), "{command}");
-                // Windows PowerShell drops double quotes from arguments.
+                let timeout = if event == "Interrupt" { 3 } else { 10 };
+                assert_eq!(hook["timeout"].as_integer(), Some(timeout));
+                assert_eq!(hook["command"].as_str(), Some(expected));
+                // Windows PowerShell drops double quotes from arguments, and
+                // cmd.exe (running a codex.cmd) expands `%VAR%`.
                 assert_eq!(pair[1].contains('"'), !is_windows, "{}", pair[1]);
+                if is_windows {
+                    assert!(!expected.contains("%SOLO"), "{expected}");
+                }
             }
         }
+        // A path TOML can't hold in a literal string.
+        assert_eq!(codex_hook_args(true, r"C:\a''b\solo-agent-hook.exe"), None);
     }
 
     #[test]

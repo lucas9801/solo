@@ -117,8 +117,9 @@ if ($env:SOLO_CODEX_ARGS -and -not (Get-Command -Name codex -CommandType Functio
             Write-Error "codex: command not found"
             return
         }
-        # cmd.exe would expand the %SOLO_AGENT_HOOK_COMMAND% in the hooks'
-        # command, so a .cmd shim (npm installs a .ps1 beside it) runs as typed.
+        # cmd.exe would expand % and treat & specially in the hooks' command
+        # (the hook's path), so a .cmd shim (npm installs a .ps1 beside it)
+        # runs as typed.
         $program = $programs | Where-Object { $_.Extension -notin @('.cmd', '.bat') } | Select-Object -First 1
         # Commands that don't run a session run as typed too.
         $hooks = @()
