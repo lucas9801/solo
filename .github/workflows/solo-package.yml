@@ -68,9 +68,13 @@ jobs:
 
       - name: Check that the tag matches Solo's version
         if: startsWith(github.ref, 'refs/tags/v')
+        # The tag through the environment: a ref name may hold $( ), which
+        # would run if it were put into the script.
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
-          if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} doesn't match crates/zed version $version" }
+          if ("v$version" -ne $env:REF_NAME) { throw "Tag $env:REF_NAME doesn't match crates/zed version $version" }
 
       # Before building, so a release doesn't fail on them hours later.
       - name: Check the release notes
