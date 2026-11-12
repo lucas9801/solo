@@ -223,6 +223,8 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     fn to_item_events(_event: &Self::Event, _f: &mut dyn FnMut(ItemEvent)) {}
 
     fn deactivated(&mut self, _window: &mut Window, _: &mut Context<Self>) {}
+    /// SOLO: the item became its pane's active item.
+    fn activated(&mut self, _window: &mut Window, _: &mut Context<Self>) {}
     fn discarded(&self, _project: Entity<Project>, _window: &mut Window, _cx: &mut Context<Self>) {}
     fn on_removed(&self, _cx: &mut Context<Self>) {}
     fn workspace_deactivated(&mut self, _window: &mut Window, _: &mut Context<Self>) {}
@@ -558,6 +560,8 @@ pub trait ItemHandle: 'static + Send {
         cx: &mut Context<Workspace>,
     );
     fn deactivated(&self, window: &mut Window, cx: &mut App);
+    /// SOLO: see `Item::activated`.
+    fn activated(&self, window: &mut Window, cx: &mut App);
     fn on_removed(&self, cx: &mut App);
     fn workspace_deactivated(&self, window: &mut Window, cx: &mut App);
     fn navigate(&self, data: Arc<dyn Any + Send>, window: &mut Window, cx: &mut App) -> bool;
@@ -1058,6 +1062,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn deactivated(&self, window: &mut Window, cx: &mut App) {
         self.update(cx, |this, cx| this.deactivated(window, cx));
+    }
+
+    fn activated(&self, window: &mut Window, cx: &mut App) {
+        self.update(cx, |this, cx| this.activated(window, cx));
     }
 
     fn on_removed(&self, cx: &mut App) {

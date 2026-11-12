@@ -747,6 +747,13 @@ impl TerminalView {
         cx.emit(ItemEvent::UpdateTab);
     }
 
+    /// SOLO: you switched to the terminal or focused it: its bell is seen.
+    fn bell_seen(&mut self, cx: &mut Context<TerminalView>) {
+        if self.has_bell {
+            self.clear_bell(cx);
+        }
+    }
+
     /// SOLO: updates the tab after output only if what it shows changed.
     /// Every update redraws the pane, and with it the terminal shown there,
     /// even when the output went to a terminal in a background tab.
@@ -1542,7 +1549,13 @@ fn subscribe_for_terminal_events(
                 Event::Bell => {
                     terminal_view.agent_wants_attention(window, cx);
                     terminal_view.notify_agent_bell(window, cx);
-                    terminal_view.has_bell = true;
+                    // SOLO: an agent's tab shows its status light instead of
+                    // the bell's dot, and a terminal you're looking at needs no dot.
+                    if terminal_view.agent_status().is_none()
+                        && !terminal_view.is_watched(window, cx)
+                    {
+                        terminal_view.has_bell = true;
+                    }
                     cx.emit(ItemEvent::UpdateTab);
                     if let TerminalBell::System = TerminalSettings::get_global(cx).bell {
                         window.play_system_bell();
@@ -1741,6 +1754,8 @@ impl TerminalView {
             .as_ref()
             .is_some_and(|input| input.read(cx).is_focused(window, cx))
         {
+            // SOLO: typing there still answers the bell.
+            self.bell_seen(cx);
             return;
         }
         self.clear_bell(cx);
@@ -1761,6 +1776,8 @@ impl TerminalView {
     fn focus_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         agent_context::record_terminal_focus(cx.entity_id(), cx);
         self.agent_seen(window, cx);
+        // SOLO: focusing the terminal or its input editor sees its bell.
+        self.bell_seen(cx);
         self.terminal.update(cx, |terminal, _| {
             terminal.set_cursor_shape(self.cursor_shape);
             if !self.read_only {
@@ -2415,8 +2432,14 @@ impl Item for TerminalView {
     fn is_dirty(&self, cx: &App) -> bool {
         match self.terminal.read(cx).task() {
             Some(task) => task.status == TaskStatus::Running,
-            None => self.has_bell(),
+            // SOLO: an agent's tab shows its status light, not the bell's dot.
+            None => self.has_bell() && self.agent_status().is_none(),
         }
+    }
+
+    fn activated(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // SOLO: switching to the terminal sees its bell.
+        self.bell_seen(cx);
     }
 
     fn keeps_running_after_quit(&self, cx: &App) -> bool {
@@ -4140,6 +4163,85 @@ mod tests {
         write(b"ls\r\n\x1b]633;E;ls\x07\x1b]133;C\x07", cx);
         assert_eq!(status(cx), None);
         assert!(turn_events.borrow().is_empty());
+    }
+
+    /// SOLO: the dot a bell puts on a terminal's tab (G16).
+    #[gpui::test]
+    async fn test_bell_dot(cx: &mut TestAppContext) {
+        let (project, _workspace, window_handle) = init_test_with_window(cx).await;
+        let (pane, plain_terminal, plain) =
+            add_display_only_terminal(&project, window_handle, false, false, cx);
+        let (_, agent_terminal, agent) =
+            add_display_only_terminal(&project, window_handle, false, false, cx);
+        let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
+        let cx = &mut cx;
+        let write = |terminal: &Entity<Terminal>, bytes: &[u8], cx: &mut VisualTestContext| {
+            terminal.update(cx, |terminal, cx| terminal.write_raw_output(bytes, cx));
+            cx.run_until_parked();
+        };
+        let has_dot = |view: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            pane.read_with(cx, |pane, cx| {
+                let item = pane
+                    .items()
+                    .find(|item| item.item_id() == view.entity_id())
+                    .unwrap();
+                item.is_dirty(cx)
+            })
+        };
+        let index_of = |view: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            pane.read_with(cx, |pane, _| pane.index_for_item(view).unwrap())
+        };
+
+        // An agent's tab shows its status light, not the bell's dot.
+        write(&agent_terminal, b"\x1b]133;A\x07$ \x1b]133;B\x07", cx);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        write(
+            &agent_terminal,
+            b"aider\r\n\x1b]633;E;aider\x07\x1b]133;C\x07spinner",
+            cx,
+        );
+        write(&agent_terminal, b"\x07", cx);
+        assert_eq!(
+            agent.read_with(cx, |view, _| view.agent_status().map(|(_, status)| status)),
+            Some(agent_status::AgentStatus::NeedsInput)
+        );
+        assert!(!has_dot(&agent, cx));
+
+        // A plain terminal in a background tab gets the dot, until you switch to it.
+        write(&plain_terminal, b"\x07", cx);
+        assert!(plain.read_with(cx, |view, _| view.has_bell()));
+        assert!(has_dot(&plain, cx));
+        let plain_index = index_of(&plain, cx);
+        pane.update_in(cx, |pane, window, cx| {
+            pane.activate_item(plain_index, false, false, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(!has_dot(&plain, cx));
+
+        // Active but not focused: the bell still shows, until it's focused.
+        write(&plain_terminal, b"\x07", cx);
+        assert!(has_dot(&plain, cx));
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            plain.read(cx).focus_handle.clone().focus(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(!has_dot(&plain, cx));
+
+        // A terminal you're looking at gets no dot.
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        write(&plain_terminal, b"\x07", cx);
+        assert!(!has_dot(&plain, cx));
+
+        // Back in a background tab, the bell shows again.
+        let agent_index = index_of(&agent, cx);
+        pane.update_in(cx, |pane, window, cx| {
+            pane.activate_item(agent_index, false, true, window, cx)
+        });
+        cx.run_until_parked();
+        write(&plain_terminal, b"\x07", cx);
+        assert!(has_dot(&plain, cx));
     }
 
     #[gpui::test]

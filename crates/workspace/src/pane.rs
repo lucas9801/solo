@@ -1499,6 +1499,10 @@ impl Pane {
             {
                 prev_item.deactivated(window, cx);
             }
+            // SOLO: lets a terminal clear its bell once you switch to it.
+            if let Some(item) = self.items.get(index) {
+                item.activated(window, cx);
+            }
             self.update_history(index);
             self.update_toolbar(window, cx);
             self.update_status_bar(window, cx);
