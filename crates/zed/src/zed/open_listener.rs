@@ -334,6 +334,22 @@ pub fn solo_url_as_zed(url: String) -> String {
     }
 }
 
+/// SOLO: a path argument as Explorer meant it. "Open with Solo" on a drive
+/// runs `solo.exe "G:\"`, and Windows' argument rules read `\"` as an escaped
+/// quote, so the argument arrives as `G:"` (as does a folder given with a
+/// trailing `\`). Windows paths can't contain `"`, so a trailing one stands
+/// for that `\`.
+pub fn repair_path_arg(arg: String) -> String {
+    if cfg!(windows)
+        && let Some(path) = arg.strip_suffix('"')
+        && !path.contains('"')
+    {
+        format!("{path}\\")
+    } else {
+        arg
+    }
+}
+
 fn parse_ssh_url(url: &str) -> Result<url::Url> {
     if let Ok(url) = url::Url::parse(url) {
         return Ok(url);
@@ -1561,8 +1577,14 @@ mod tests {
     fn test_parse_solo_settings_url(cx: &mut TestAppContext) {
         let _app_state = init_test(cx);
         for (url, expected) in [
-            ("solo://settings/terminal.font_size", Some("terminal.font_size")),
-            ("zed://settings/terminal.font_size", Some("terminal.font_size")),
+            (
+                "solo://settings/terminal.font_size",
+                Some("terminal.font_size"),
+            ),
+            (
+                "zed://settings/terminal.font_size",
+                Some("terminal.font_size"),
+            ),
             ("solo://settings", None),
         ] {
             let request = cx.update(|cx| {
@@ -3109,5 +3131,150 @@ mod tests {
         );
         // File opened in existing window
         assert_eq!(cx.windows().len(), 1);
+    }
+
+    // SOLO: what Explorer's "Open with Solo" passes on (G27).
+    #[test]
+    fn test_repair_path_arg() {
+        if cfg!(windows) {
+            // `solo.exe "G:\"` arrives as `G:"`.
+            assert_eq!(repair_path_arg(r#"G:""#.into()), r"G:\");
+            assert_eq!(repair_path_arg(r#"G:\龙之谷 x""#.into()), r"G:\龙之谷 x\");
+        } else {
+            assert_eq!(repair_path_arg(r#"a""#.into()), r#"a""#);
+        }
+        assert_eq!(
+            repair_path_arg(r"G:\GitWorkProject\龙之谷\DragonNest".into()),
+            r"G:\GitWorkProject\龙之谷\DragonNest"
+        );
+        assert_eq!(repair_path_arg("solo://settings".into()), "solo://settings");
+        assert_eq!(repair_path_arg(String::new()), "");
+    }
+
+    // SOLO: the paths a second Solo sends (canonicalized, so verbatim) don't
+    // lose anything to `path:row:column` parsing.
+    #[cfg(windows)]
+    #[test]
+    fn test_explorer_paths_parse_without_positions() {
+        for path in [
+            r"\\?\G:\GitWorkProject\龙之谷\DragonNest",
+            r"\\?\G:\GitWorkProject\龙之谷\DragonNest\a b.txt",
+            r"\\?\G:\",
+            r"G:\",
+            r"G:\GitWorkProject\龙之谷\DragonNest",
+        ] {
+            let parsed = PathWithPosition::parse_str(path);
+            assert_eq!(parsed.path, Path::new(path), "{path}");
+            assert_eq!(parsed.row, None, "{path}");
+        }
+    }
+
+    fn workspace_roots(
+        multi_workspace: &WindowHandle<MultiWorkspace>,
+        cx: &mut TestAppContext,
+    ) -> (Vec<Vec<PathBuf>>, Vec<PathBuf>) {
+        multi_workspace
+            .read_with(cx, |multi_workspace, cx| {
+                let roots = |workspace: &gpui::Entity<workspace::Workspace>| {
+                    workspace
+                        .read(cx)
+                        .root_paths(cx)
+                        .iter()
+                        .map(|path| path.to_path_buf())
+                        .collect::<Vec<_>>()
+                };
+                (
+                    multi_workspace.workspaces().map(roots).collect(),
+                    roots(multi_workspace.workspace()),
+                )
+            })
+            .unwrap()
+    }
+
+    fn open_file_names(
+        multi_workspace: &WindowHandle<MultiWorkspace>,
+        cx: &mut TestAppContext,
+    ) -> Vec<String> {
+        multi_workspace
+            .read_with(cx, |multi_workspace, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let project = workspace.project().read(cx);
+                workspace
+                    .items(cx)
+                    .filter_map(|item| {
+                        let path = project.absolute_path(&item.project_path(cx)?, cx)?;
+                        Some(path.file_name()?.to_string_lossy().into_owned())
+                    })
+                    .collect()
+            })
+            .unwrap()
+    }
+
+    // SOLO: "Open with Solo" while Solo runs: the second solo.exe sends the
+    // path through `handle_cli_connection`, answering the first-time prompt
+    // with the existing window (windows_only_instance::send_args_to_instance).
+    #[gpui::test]
+    async fn test_explorer_open_with_solo_uses_workspace_tabs(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        let fs = app_state.fs.as_fake();
+        fs.insert_tree(path!("/项目 b"), json!({ "lib.rs": "" }))
+            .await;
+        fs.insert_tree(
+            path!("/GitWorkProject/龙之谷/DragonNest"),
+            json!({ "src": { "main.rs": "" } }),
+        )
+        .await;
+        fs.insert_tree(path!("/其他 c"), json!({ "note.txt": "" }))
+            .await;
+
+        let project_b = PathBuf::from(path!("/项目 b"));
+        let dragon_nest = PathBuf::from(path!("/GitWorkProject/龙之谷/DragonNest"));
+
+        open_workspace_file(path!("/项目 b"), Default::default(), app_state.clone(), cx).await;
+        assert_eq!(cx.windows().len(), 1);
+        let window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+
+        let open = |path: &str, cx: &mut TestAppContext| {
+            let (status, _) = run_cli_with_zed_handler(
+                cx,
+                app_state.clone(),
+                make_cli_open_request(vec![path.to_string()], cli::OpenBehavior::Default),
+                None,
+            );
+            assert_eq!(status, 0, "opening {path}");
+            assert_eq!(cx.windows().len(), 1, "opening {path} kept one window");
+        };
+
+        // A folder that isn't open yet: a new workspace tab, switched to.
+        open(path!("/GitWorkProject/龙之谷/DragonNest"), cx);
+        let (all, active) = workspace_roots(&window, cx);
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert_eq!(active, vec![dragon_nest.clone()]);
+
+        // A folder that already has a tab: switched to, not opened again.
+        open(path!("/项目 b"), cx);
+        let (all, active) = workspace_roots(&window, cx);
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert_eq!(active, vec![project_b.clone()]);
+        open(path!("/GitWorkProject/龙之谷/DragonNest"), cx);
+        let (all, active) = workspace_roots(&window, cx);
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert_eq!(active, vec![dragon_nest.clone()]);
+
+        // A file: into the tab whose folder holds it.
+        open(path!("/项目 b/lib.rs"), cx);
+        let (all, active) = workspace_roots(&window, cx);
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert_eq!(active, vec![project_b.clone()]);
+        assert_eq!(open_file_names(&window, cx), vec!["lib.rs".to_string()]);
+
+        // A file no tab holds: into the current tab.
+        open(path!("/其他 c/note.txt"), cx);
+        let (all, active) = workspace_roots(&window, cx);
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert_eq!(active, vec![project_b.clone()]);
+        let mut names = open_file_names(&window, cx);
+        names.sort();
+        assert_eq!(names, vec!["lib.rs".to_string(), "note.txt".to_string()]);
     }
 }
