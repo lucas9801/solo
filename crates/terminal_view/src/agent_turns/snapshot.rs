@@ -22,6 +22,40 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context as _, Result, anyhow};
 
+/// SOLO: Whether `directory` is an absolute path on a local drive: not a
+/// network share (`\\server\share`), and on Windows not a drive letter
+/// mapped to one.
+pub(crate) fn is_local_directory(directory: &Path) -> bool {
+    if !directory.is_absolute() || terminal::shell_integration::is_network_path(directory) {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+        use std::path::{Component, Prefix};
+        use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+        use windows::core::PCWSTR;
+
+        let letter = match directory.components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => letter,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        let root: Vec<u16> = std::ffi::OsStr::new(&format!("{}:\\", letter as char))
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        const DRIVE_REMOTE: u32 = 4;
+        // SAFETY: `root` is a NUL-terminated wide string that outlives the call.
+        let drive_type = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
+        drive_type != DRIVE_REMOTE
+    }
+    #[cfg(not(windows))]
+    true
+}
+
 /// A tree object id.
 pub(crate) type TreeId = String;
 
@@ -65,6 +99,8 @@ pub(crate) enum SnapshotUnavailable {
     TooBroad(PathBuf),
     /// Not in a repository, and more files than the limit.
     TooManyFiles { work_tree: PathBuf, limit: usize },
+    /// On a network share, or not an absolute local path.
+    NotLocal(PathBuf),
 }
 
 impl std::fmt::Display for SnapshotUnavailable {
@@ -74,17 +110,34 @@ impl std::fmt::Display for SnapshotUnavailable {
             Self::TooManyFiles { work_tree, limit } => {
                 write!(f, "{work_tree:?} has more than {limit} files")
             }
+            Self::NotLocal(directory) => write!(f, "{directory:?} isn't on a local drive"),
         }
     }
 }
 
 impl std::error::Error for SnapshotUnavailable {}
 
+/// SOLO: The work tree changed after the user was shown what a rollback
+/// discards.
+#[derive(Debug)]
+pub(crate) struct WorkTreeChanged;
+
+impl std::fmt::Display for WorkTreeChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "files changed since the rollback was shown")
+    }
+}
+
+impl std::error::Error for WorkTreeChanged {}
+
 #[derive(Debug)]
 pub(crate) struct Restored {
     /// The state before restoring, to undo it.
     pub undo: TreeId,
     pub changed: Vec<ChangedFile>,
+    /// SOLO: Files left as they are because they're inside a linked directory
+    /// (a symlink or junction), which could lead out of the work tree.
+    pub skipped: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -104,6 +157,11 @@ impl SnapshotStore {
     /// The store for the repository containing `directory`, or for
     /// `directory` itself when it isn't in one. Stores live in `storage_root`.
     pub(crate) fn open(directory: &Path, storage_root: &Path) -> Result<Self> {
+        // SOLO: the directory can come from a report or the shell's OSC 7;
+        // git on a network share would connect to another machine.
+        if !is_local_directory(directory) {
+            return Err(SnapshotUnavailable::NotLocal(directory.to_path_buf()).into());
+        }
         let output = git_command(directory)
             .args([
                 "rev-parse",
@@ -128,6 +186,15 @@ impl SnapshotStore {
         };
 
         let (work_tree, git_dir, alternate_objects, seed_index) = match repository {
+            // A repository whose git dir (a `.git` file's `gitdir:`) is on
+            // another machine.
+            Some((top_level, git_dir, common_dir))
+                if ![&top_level, &git_dir, &common_dir]
+                    .into_iter()
+                    .all(|path| is_local_directory(path)) =>
+            {
+                return Err(SnapshotUnavailable::NotLocal(git_dir).into());
+            }
             Some((top_level, git_dir, common_dir)) => (
                 top_level,
                 git_dir.clone(),
@@ -292,16 +359,48 @@ impl SnapshotStore {
     /// contents back, and files that weren't there are removed. The current
     /// state is snapshotted first, to undo it.
     pub(crate) fn restore(&self, target: &str) -> Result<Restored> {
+        self.restore_checked(target, None)
+    }
+
+    /// SOLO: [`Self::restore`], unless the work tree changed since it was
+    /// `shown` (snapshotted for the user to confirm what restoring
+    /// discards): then nothing changes, and the error is [`WorkTreeChanged`].
+    pub(crate) fn restore_if_unchanged(&self, target: &str, shown: &str) -> Result<Restored> {
+        self.restore_checked(target, Some(shown))
+    }
+
+    fn restore_checked(&self, target: &str, shown: Option<&str>) -> Result<Restored> {
         let _lock = GIT_LOCK
             .lock()
             .map_err(|_| anyhow!("snapshot lock poisoned"))?;
         let _store_lock = self.lock_store()?;
         let current = self.snapshot_locked()?;
+        if shown.is_some_and(|shown| shown != current) {
+            return Err(WorkTreeChanged.into());
+        }
         let changed = self.changed_files(target, &current)?;
+
+        // SOLO: git (for Windows) takes a junction for a directory, so files
+        // through one are in snapshots; writing or deleting them would change
+        // files outside the work tree. They're left alone.
+        let skipped: Vec<String> = changed
+            .iter()
+            .filter(|file| linked_ancestor(&self.abs_path(&file.path), &self.work_tree).is_some())
+            .map(|file| file.path.clone())
+            .collect();
+        if !skipped.is_empty() {
+            log::warn!(
+                "not restoring {} files in linked directories of {:?}: {:?}",
+                skipped.len(),
+                self.work_tree,
+                skipped
+            );
+        }
+        let is_skipped = |file: &&ChangedFile| skipped.contains(&file.path);
 
         let to_check_out: Vec<&str> = changed
             .iter()
-            .filter(|file| file.change != FileChange::Added)
+            .filter(|file| file.change != FileChange::Added && !is_skipped(file))
             .map(|file| file.path.as_str())
             .collect();
         if !to_check_out.is_empty() {
@@ -334,7 +433,7 @@ impl SnapshotStore {
 
         for file in changed
             .iter()
-            .filter(|file| file.change == FileChange::Added)
+            .filter(|file| file.change == FileChange::Added && !is_skipped(file))
         {
             let path = self.abs_path(&file.path);
             match std::fs::remove_file(&path) {
@@ -349,6 +448,7 @@ impl SnapshotStore {
         Ok(Restored {
             undo: current,
             changed,
+            skipped,
         })
     }
 
@@ -515,6 +615,48 @@ fn is_older_than(path: &Path, age: Duration) -> bool {
 }
 
 /// Removes the directories left empty by removing `path`, up to `root`.
+/// SOLO: The first directory on the way from `root` to `path` (`path` itself
+/// excluded) that's a link: a symlink or, on Windows, a junction or another
+/// reparse point. Writing or deleting `path` would follow it, maybe out of
+/// `root`. A path outside `root`, or with `..`, counts as linked too.
+pub(crate) fn linked_ancestor(path: &Path, root: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+
+    let Ok(relative) = path.strip_prefix(root) else {
+        return Some(path.to_path_buf());
+    };
+    let mut current = root.to_path_buf();
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        if !matches!(component, Component::Normal(_)) {
+            return Some(current);
+        }
+        if components.peek().is_none() {
+            break;
+        }
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if is_link(&metadata) => return Some(current),
+            Ok(_) => {}
+            // Nothing there to follow.
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn is_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    metadata.file_type().is_symlink()
+}
+
 fn remove_empty_parents(path: &Path, root: &Path) {
     let mut directory = path.parent();
     while let Some(current) = directory {
@@ -670,6 +812,23 @@ mod tests {
         assert_eq!(restored.changed.len(), 3);
         // The user's index and HEAD don't change: the restored files are clean.
         assert_eq!(git(&repository, &["status", "--porcelain"]), "");
+
+        // A rollback confirmed on a state that changed since does nothing.
+        let shown = store.snapshot().unwrap();
+        fs::write(repository.join("a.txt"), "changed after it was shown\n").unwrap();
+        let error = store
+            .restore_if_unchanged(&second_turn, &shown)
+            .unwrap_err();
+        assert!(
+            error.downcast_ref::<WorkTreeChanged>().is_some(),
+            "{error:#}"
+        );
+        assert_eq!(
+            read("a.txt").as_deref(),
+            Some("changed after it was shown\n")
+        );
+        fs::write(repository.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        assert_eq!(store.snapshot().unwrap(), shown);
 
         // Undo.
         store.restore(&restored.undo).unwrap();
@@ -887,6 +1046,105 @@ mod tests {
             error.downcast_ref::<SnapshotUnavailable>(),
             Some(SnapshotUnavailable::TooManyFiles { limit: 2, .. })
         ));
+    }
+
+    /// A junction the agent made to a folder outside the repository: git
+    /// takes it for a directory, so the files through it show as added, and
+    /// rolling back must not delete them (or write through it).
+    #[cfg(windows)]
+    #[test]
+    fn test_restore_leaves_junctions_alone() {
+        let (temp, repository, storage) = repository();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "keep me\n").unwrap();
+        let other = temp.path().join("other");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("secret.txt"), "other\n").unwrap();
+        let junction = |link: &Path, target: &Path| {
+            let status = Command::new("cmd")
+                .arg("/c")
+                .arg("mklink")
+                .arg("/J")
+                .arg(link)
+                .arg(target)
+                .stdout(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let before = store.snapshot().unwrap();
+        junction(&repository.join("link"), &outside);
+        fs::write(repository.join("new.txt"), "new\n").unwrap();
+        let after = store.snapshot().unwrap();
+        // What git does with a junction (Git for Windows): it follows it.
+        assert_eq!(
+            sorted(store.changed_files(&before, &after).unwrap()),
+            vec![
+                ("link/secret.txt".to_string(), FileChange::Added),
+                ("new.txt".to_string(), FileChange::Added),
+            ]
+        );
+        assert_eq!(
+            linked_ancestor(&repository.join("link").join("secret.txt"), &repository),
+            Some(repository.join("link"))
+        );
+        assert_eq!(
+            linked_ancestor(&repository.join("new.txt"), &repository),
+            None
+        );
+
+        let restored = store.restore(&before).unwrap();
+        assert_eq!(restored.skipped, vec!["link/secret.txt".to_string()]);
+        assert!(!repository.join("new.txt").exists());
+        assert_eq!(
+            fs::read_to_string(outside.join("secret.txt")).unwrap(),
+            "keep me\n"
+        );
+
+        // The junction there before, and pointed elsewhere since: checking
+        // the old contents out would overwrite the other folder's files.
+        fs::remove_dir(repository.join("link")).unwrap();
+        junction(&repository.join("link"), &outside);
+        let with_link = store.snapshot().unwrap();
+        fs::remove_dir(repository.join("link")).unwrap();
+        junction(&repository.join("link"), &other);
+        let restored = store.restore(&with_link).unwrap();
+        assert_eq!(restored.skipped, vec!["link/secret.txt".to_string()]);
+        assert_eq!(
+            fs::read_to_string(other.join("secret.txt")).unwrap(),
+            "other\n"
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("secret.txt")).unwrap(),
+            "keep me\n"
+        );
+        fs::remove_dir(repository.join("link")).unwrap();
+    }
+
+    #[test]
+    fn test_network_directories_are_not_snapshotted() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = temp.path().join("storage");
+        let mut network = vec![Path::new("//attacker/share/repo"), Path::new("relative")];
+        if cfg!(windows) {
+            network.push(Path::new(r"\\attacker\share\repo"));
+            network.push(Path::new(r"\\?\UNC\attacker\share\repo"));
+        }
+        for directory in network {
+            let error = SnapshotStore::open(directory, &storage).unwrap_err();
+            assert!(
+                matches!(
+                    error.downcast_ref::<SnapshotUnavailable>(),
+                    Some(SnapshotUnavailable::NotLocal(_))
+                ),
+                "{directory:?}: {error:#}"
+            );
+        }
+        assert!(!storage.exists());
+        assert!(is_local_directory(temp.path()));
     }
 
     #[test]

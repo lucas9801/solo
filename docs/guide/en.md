@@ -117,7 +117,10 @@ and ends (for which agents, see section 7). After a turn, the tab shows
 **"N files changed"** (command: `terminal: review agent turn`). In the review
 you can:
 
-- **Keep** or **Reject** each hunk, or **Keep All** / **Reject All**;
+- **Keep** or **Reject** each hunk, or **Keep All** / **Reject All**.
+  Rejecting a file the turn created moves it to the recycle bin; a file that
+  was already there before the turn (ignored by `.gitignore` then, say) is
+  left alone;
 - comment on lines and send the comments to the agent;
 - **Roll Back** the work tree to before any recorded turn;
 - see what the turn did to the language servers' diagnostics: the errors and
@@ -128,6 +131,9 @@ you can:
 
 Snapshots are kept in Solo's data folder. They never touch your branch, HEAD,
 index, stash list or git object database, and ignored files aren't included.
+Folders on network drives aren't snapshotted. Rolling back leaves files inside
+linked folders (junctions, symlinks) alone, since they may be outside the
+project, and stops if files changed after the confirmation was shown.
 
 When the folder can't be snapshotted (say, it isn't a git repository and has
 more than 20000 files), Solo notes the files in the project that change during
@@ -164,6 +170,9 @@ Local projects only.
   repository's part is merged, opened as a pull request or deleted on its own;
   the folder goes with the last one. Setup commands from `.solo/tasks.json`
   don't run for such tasks.
+- **Trust:** the `setup` and `teardown` commands and `env` variables of a
+  repository's `.solo/tasks.json` are used only once you trust the project
+  (Zed's restricted mode); until then tasks are made without them.
 - **Committing:** merging and pull requests take the task's commits. When it
   has uncommitted changes, **Ask the Agent to Commit** pastes a request into
   the task's agent to commit them, with a message it writes from the diff;
