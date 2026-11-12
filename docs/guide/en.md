@@ -370,7 +370,9 @@ To treat another program as an agent:
   session; **your `~/.codex/config.toml` and `hooks.json` are not changed by
   Solo**. Codex runs hooks only once you trust them, so the first time it asks:
   trust them and Codex remembers it (Codex writes that to its own config). The
-  hooks run `solo-agent-hook.exe`. Subcommands that don't start a session
+  hooks run `solo-agent-hook.exe` by its full path in Solo's folder (Codex runs
+  hooks with PowerShell on Windows), so Codex asks again when Solo is in
+  another folder or a new Solo changes the hooks. Subcommands that don't start a session
   (`codex login`, `codex mcp`, ...) run as typed, and so does a `codex.cmd`
   without a `codex.ps1` or `codex.exe` beside it. To turn them off:
   `"terminal": {"codex_hooks": false}` (takes effect in new terminals).
