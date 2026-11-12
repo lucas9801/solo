@@ -10,14 +10,16 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
 
 两种方式都只为当前用户安装，不需要管理员权限，默认装到 `%LOCALAPPDATA%\Programs\Solo`。
 
-- **安装包** `Solo-Setup-<版本>.exe`：安装界面有中文和英文，会创建开始菜单项，桌面图标可选（默认不勾选），并在“设置 → 应用”里加上卸载入口。
+- **安装包** `Solo-Setup-<版本>.exe`：安装界面有中文和英文，会创建开始菜单项，桌面图标可选（默认不勾选），在资源管理器右键菜单里加上“通过 Solo 打开”（默认勾选），并在“设置 → 应用”里加上卸载入口。
 - **便携 zip** `Solo-<版本>-windows-x64.zip`：解压后可以直接运行 `solo.exe`；也可以运行
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File install.ps1
   ```
 
-  这会把文件复制到 `%LOCALAPPDATA%\Programs\Solo`，并创建开始菜单和桌面快捷方式。
+  这会把文件复制到 `%LOCALAPPDATA%\Programs\Solo`，创建开始菜单和桌面快捷方式，并在右键菜单里加上“通过 Solo 打开”（加 `-NoContextMenu` 就不加右键菜单）。
+
+**右键菜单“通过 Solo 打开”**：在文件、文件夹、文件夹空白处和驱动器上都有（Windows 11 上在“显示更多选项”里）。打开文件夹时，Solo 没在运行就启动并打开它；已在运行就在现有窗口里加一个工作区标签并切过去，这个文件夹已经有标签时直接切到那个标签。打开文件时，放进包含它的那个标签，没有就放进当前标签，不会新开窗口。卸载时（包括 `install.ps1 -Uninstall`）右键菜单会一起删掉；不想要的话，安装时取消勾选这一项。
 
 安装目录里有 `solo.exe`、`solo-agent-hook.exe`（Claude Code 用它上报状态）、`solo-update-helper.exe`（安装更新用）、`solo-terminal-host.exe`（运行终端的 shell，让它能在 Solo 关掉后继续跑）、`OpenConsole.exe` 和 `conpty.dll`（终端运行时），以及几份许可证文件。
 

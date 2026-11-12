@@ -121,13 +121,13 @@ Solo 目前只有 Windows x64 版。两种方式都只为当前用户安装，�
 **方式一：安装包（推荐）**
 
 1. 从 [Releases](https://github.com/lucas9801/solo/releases/latest) 下载 `Solo-Setup-<版本>.exe`。
-2. 运行安装包（有中文和英文界面）。它会创建开始菜单项，桌面图标可选（默认不勾），并在"设置 → 应用"里加上卸载入口。
+2. 运行安装包（有中文和英文界面）。它会创建开始菜单项，桌面图标可选（默认不勾），在资源管理器右键菜单里加上"通过 Solo 打开"（默认勾选，Windows 11 上在"显示更多选项"里），并在"设置 → 应用"里加上卸载入口。
 3. 安装包还没有代码签名（见下面的[代码签名政策](#code-signing-policy)），第一次运行时 Windows 可能提示"已保护你的电脑"，点"更多信息 → 仍要运行"。
 
 **方式二：便携 zip**
 
 1. 下载 `Solo-<版本>-windows-x64.zip` 并解压。
-2. 直接运行里面的 `solo.exe`；或者在解压出的文件夹里运行下面的命令，把它装到 `%LOCALAPPDATA%\Programs\Solo` 并创建开始菜单和桌面快捷方式：
+2. 直接运行里面的 `solo.exe`；或者在解压出的文件夹里运行下面的命令，把它装到 `%LOCALAPPDATA%\Programs\Solo`，创建开始菜单和桌面快捷方式，并在右键菜单里加上"通过 Solo 打开"（不要右键菜单就加 `-NoContextMenu`）：
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File install.ps1
