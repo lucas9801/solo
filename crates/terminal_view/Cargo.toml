@@ -61,6 +61,9 @@ which.workspace = true
 workspace.workspace = true
 zed_actions.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
 [dev-dependencies]
 editor = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }

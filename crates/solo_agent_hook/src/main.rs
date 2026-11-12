@@ -1,8 +1,10 @@
 //! SOLO: A Claude Code, Codex and Copilot CLI hook (and the command
 //! OpenCode's plugin runs) that tells the Solo terminal the agent runs in
 //! what it's doing, with
-//! `OSC 6973 ; agent ; <kind> ; <ms since the epoch> ; <session id> [; <agent>
-//! [; <working directory>]]` (parsed by `terminal::shell_integration::AgentHook`).
+//! `OSC 6973 ; agent ; nonce=<nonce> ; <kind> ; <ms since the epoch> ; <session id>
+//! [; <agent> [; <working directory>]]` (parsed by
+//! `terminal::shell_integration::AgentHook`). The nonce is the terminal's
+//! (`SOLO_SHELL_NONCE`), without which the terminal ignores the report.
 //! The working directory, where the agent works (which can differ from the
 //! shell's, say for a resumed session), is percent-encoded UTF-8.
 //!
@@ -25,8 +27,9 @@ fn main() {
         .map(|elapsed| elapsed.as_millis().to_string())
         .unwrap_or_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let nonce = terminal_nonce();
     if args.first().map(String::as_str) == Some("report") {
-        match report_sequence(&args[1..], &sent_at_ms) {
+        match report_sequence(&args[1..], &sent_at_ms, &nonce) {
             Ok(sequence) => {
                 if let Err(error) = write_to_terminal(sequence.as_bytes()) {
                     eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
@@ -60,13 +63,15 @@ fn main() {
         working_directory_of(&input, project_directory.as_deref()),
     ) {
         (agent, Some(directory)) => format!(
-            "\x1b]6973;agent;{kind};{sent_at_ms};{session_id};{};{directory}\x07",
+            "\x1b]6973;agent;nonce={nonce};{kind};{sent_at_ms};{session_id};{};{directory}\x07",
             agent.unwrap_or_default()
         ),
         (Some(agent), None) => {
-            format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id};{agent}\x07")
+            format!("\x1b]6973;agent;nonce={nonce};{kind};{sent_at_ms};{session_id};{agent}\x07")
         }
-        (None, None) => format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id}\x07"),
+        (None, None) => {
+            format!("\x1b]6973;agent;nonce={nonce};{kind};{sent_at_ms};{session_id}\x07")
+        }
     };
     if let Err(error) = write_to_terminal(sequence.as_bytes()) {
         eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
@@ -76,9 +81,30 @@ fn main() {
 const REPORT_USAGE: &str = "usage: solo-agent-hook report --state <working|blocked|idle> \
 [--agent <name>] [--session <id>] [--seq <n>] [--directory <path>]";
 
+/// The terminal's nonce (`SOLO_SHELL_NONCE`), which tells the terminal a
+/// report comes from a program started in it rather than from output posing
+/// as one. Empty (and the report ignored) if it's missing or could end the
+/// escape sequence.
+fn terminal_nonce() -> String {
+    std::env::var("SOLO_SHELL_NONCE")
+        .ok()
+        .map(|nonce| nonce.trim().to_string())
+        .filter(|nonce| is_nonce(nonce))
+        .unwrap_or_default()
+}
+
+/// Whether `nonce` can go into the escape sequence: up to 128 ASCII letters
+/// and digits.
+fn is_nonce(nonce: &str) -> bool {
+    nonce.len() <= 128
+        && nonce
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+}
+
 /// The escape sequence for `solo-agent-hook report ...`: the public form of
 /// the protocol (docs/agent-status-protocol.md), for agents and scripts.
-fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> {
+fn report_sequence(args: &[String], sent_at_ms: &str, nonce: &str) -> Result<String, String> {
     let mut state = None;
     let mut agent = String::new();
     let mut session = String::new();
@@ -128,7 +154,7 @@ fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> 
         .map(|directory| format!(";{}", percent_encode(&directory)))
         .unwrap_or_default();
     Ok(format!(
-        "\x1b]6973;agent;{kind};{order};{session};{agent}{directory}\x07"
+        "\x1b]6973;agent;nonce={nonce};{kind};{order};{session};{agent}{directory}\x07"
     ))
 }
 
@@ -398,9 +424,10 @@ mod tests {
         assert_eq!(
             report_sequence(
                 &args(&["--state", "working", "--agent", "my agent", "--seq", "7"]),
-                "123"
+                "123",
+                "n0nce"
             ),
-            Ok("\x1b]6973;agent;prompt;7;;my agent\x07".to_string())
+            Ok("\x1b]6973;agent;nonce=n0nce;prompt;7;;my agent\x07".to_string())
         );
         assert_eq!(
             report_sequence(
@@ -410,13 +437,17 @@ mod tests {
                     "--session",
                     "0f6ed4b2-755b-4e18-8bd1-f60252548036"
                 ]),
-                "123"
+                "123",
+                "n0nce"
             ),
-            Ok("\x1b]6973;agent;input;123;0f6ed4b2-755b-4e18-8bd1-f60252548036;\x07".to_string())
+            Ok(
+                "\x1b]6973;agent;nonce=n0nce;input;123;0f6ed4b2-755b-4e18-8bd1-f60252548036;\x07"
+                    .to_string()
+            )
         );
         assert_eq!(
-            report_sequence(&args(&["--state", "idle"]), "5"),
-            Ok("\x1b]6973;agent;stop;5;;\x07".to_string())
+            report_sequence(&args(&["--state", "idle"]), "5", ""),
+            Ok("\x1b]6973;agent;nonce=;stop;5;;\x07".to_string())
         );
         // What OpenCode's plugin runs.
         assert_eq!(
@@ -433,9 +464,13 @@ mod tests {
                     "--directory",
                     r"C:\work dir",
                 ]),
-                "123"
+                "123",
+                "n0nce"
             ),
-            Ok("\x1b]6973;agent;input;8;ses_4f2a1cB9;opencode;C:\\work dir\x07".to_string())
+            Ok(
+                "\x1b]6973;agent;nonce=n0nce;input;8;ses_4f2a1cB9;opencode;C:\\work dir\x07"
+                    .to_string()
+            )
         );
         for bad in [
             &["--state", "dancing"][..],
@@ -446,7 +481,19 @@ mod tests {
             &["--state", "idle", "--session", "x;y"][..],
             &["--state", "idle", "--what", "x"][..],
         ] {
-            assert!(report_sequence(&args(bad), "1").is_err(), "{bad:?}");
+            assert!(
+                report_sequence(&args(bad), "1", "n0nce").is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonces_that_could_end_the_sequence_are_left_out() {
+        assert!(is_nonce("0123456789abcdef"));
+        assert!(is_nonce(""));
+        for bad in ["a;b", "a\x07", "a\x1b\\", "é"] {
+            assert!(!is_nonce(bad), "{bad:?}");
         }
     }
 
@@ -546,12 +593,18 @@ mod tests {
         );
         // Unless it's an event under a name this doesn't know.
         assert_eq!(
-            kind_of(r#"{"hook_event_name":"userPromptSubmitted"}"#, Some("prompt")),
+            kind_of(
+                r#"{"hook_event_name":"userPromptSubmitted"}"#,
+                Some("prompt")
+            ),
             Some("prompt")
         );
         // A known event this doesn't report stays unreported.
         assert_eq!(
-            kind_of(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#, Some("input")),
+            kind_of(
+                r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#,
+                Some("input")
+            ),
             None
         );
     }

@@ -674,9 +674,14 @@ impl AgentHookKind {
     }
 }
 
+/// SOLO: The first parameter of an agent report, before the terminal's nonce.
+pub const AGENT_REPORT_NONCE_PREFIX: &str = "nonce=";
+
 /// SOLO: A report from an AI agent's hook, sent as
-/// `OSC 6973 ; agent ; <kind> [; <order> [; <session id> [; <agent>]]]`
-/// (documented in docs/agent-status-protocol.md).
+/// `OSC 6973 ; agent ; nonce=<nonce> ; <kind> [; <order> [; <session id> [; <agent>]]]`
+/// (documented in docs/agent-status-protocol.md). [`AgentHook::parse`] takes
+/// the parameters after the nonce, see
+/// [`ShellIntegration::authenticate_agent_report`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentHook {
     pub kind: AgentHookKind,
@@ -724,11 +729,12 @@ impl AgentHook {
             })
             .map(str::to_string);
         // Percent-encoded, and last, so a `;` in it can't move the others.
+        // Not a network path: Solo runs git there.
         let working_directory = (rest.len() > 3)
             .then(|| rest[3..].join(";"))
             .and_then(|encoded| percent_decode(&encoded))
             .map(PathBuf::from)
-            .filter(|directory| directory.is_absolute());
+            .filter(|directory| directory.is_absolute() && !is_network_path(directory));
         Some(Self {
             kind,
             sent_at_ms,
@@ -737,6 +743,28 @@ impl AgentHook {
             agent,
             working_directory,
         })
+    }
+}
+
+/// SOLO: Whether `path` names a network location (`\\server\share`,
+/// `//server/share`, `\\?\UNC\...`) or a device (`\\.\...`), where looking
+/// at it could connect to another machine. Drive letters mapped to network
+/// shares aren't detected here.
+pub fn is_network_path(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    let bytes = text.as_bytes();
+    let is_separator = |byte: u8| byte == b'\\' || byte == b'/';
+    if bytes.len() < 2 || !is_separator(bytes[0]) || !is_separator(bytes[1]) {
+        return false;
+    }
+    // `\\?\C:\...` is a local path in verbatim form.
+    let rest = &text[2..];
+    match rest.strip_prefix("?\\").or_else(|| rest.strip_prefix("?/")) {
+        Some(verbatim) => {
+            let verbatim = verbatim.as_bytes();
+            !(verbatim.len() >= 2 && verbatim[0].is_ascii_alphabetic() && verbatim[1] == b':')
+        }
+        None => true,
     }
 }
 
@@ -901,6 +929,18 @@ impl ShellIntegration {
     /// Whether a sequence came from the shell Solo integrated.
     fn from_integration(&self, nonce: Option<&str>) -> bool {
         self.nonce.is_some() && self.nonce.as_deref() == nonce
+    }
+
+    /// SOLO: The parameters of an agent report (`OSC 6973 ; agent ; nonce=<nonce>
+    /// ; ...`) after its nonce, if it carries the terminal's
+    /// ([`SHELL_NONCE_ENV`]). Anything the terminal shows can print the
+    /// sequence, but only programs started in it know the nonce; reports
+    /// start turns (git snapshots) and let `solo-cli agent send` type into
+    /// the terminal, so others are ignored.
+    pub fn authenticate_agent_report<'a>(&self, params: &'a [String]) -> Option<&'a [String]> {
+        let (first, rest) = params.split_first()?;
+        let nonce = first.trim().strip_prefix(AGENT_REPORT_NONCE_PREFIX)?;
+        self.from_integration(Some(nonce)).then_some(rest)
     }
 
     /// Whether the shell has sent any marks, i.e. integration is working.
@@ -1364,6 +1404,61 @@ mod tests {
                 Some(kind)
             );
         }
+    }
+
+    #[test]
+    fn agent_reports_need_the_nonce() {
+        let params = |params: &[&str]| -> Vec<String> {
+            params.iter().map(|param| param.to_string()).collect()
+        };
+        let integration = ShellIntegration::new(Some("abc123".to_string()));
+        let report = params(&["nonce=abc123", "prompt", "1"]);
+        assert_eq!(
+            integration.authenticate_agent_report(&report),
+            Some(&report[1..])
+        );
+        for bad in [
+            &["prompt", "1"][..],
+            &["nonce=abc124", "prompt"][..],
+            &["nonce=", "prompt"][..],
+            &["abc123", "prompt"][..],
+            &[][..],
+        ] {
+            assert_eq!(
+                integration.authenticate_agent_report(&params(bad)),
+                None,
+                "{bad:?}"
+            );
+        }
+        // A terminal Solo didn't give a nonce trusts no report.
+        assert_eq!(
+            ShellIntegration::new(None).authenticate_agent_report(&params(&["nonce=", "prompt"])),
+            None
+        );
+    }
+
+    #[test]
+    fn network_paths_are_no_working_directories() {
+        for network in [
+            r"\\attacker\share",
+            "//attacker/share",
+            r"\\?\UNC\attacker\share",
+            r"\\.\pipe\x",
+        ] {
+            assert!(is_network_path(Path::new(network)), "{network}");
+        }
+        for local in [r"C:\work", r"\\?\C:\work", "/home/me", "relative"] {
+            assert!(!is_network_path(Path::new(local)), "{local}");
+        }
+        let hook = AgentHook::parse(&[
+            "prompt".to_string(),
+            "1".to_string(),
+            String::new(),
+            String::new(),
+            r"%5C%5Cattacker%5Cshare".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(hook.working_directory, None);
     }
 
     #[test]

@@ -1431,7 +1431,14 @@ impl TerminalView {
 
 /// The current git branch of the repository containing `dir`, or a short
 /// commit id for a detached HEAD.
+///
+/// SOLO: Read on the UI thread, so never on a network share (`\\server\...`,
+/// which the shell's reported directory or a `.git` file could name): that
+/// could hang and would connect to another machine.
 pub(crate) fn git_branch(dir: &Path) -> Option<String> {
+    if terminal::shell_integration::is_network_path(dir) {
+        return None;
+    }
     let mut dir = Some(dir);
     while let Some(current) = dir {
         let dot_git = current.join(".git");
@@ -1446,6 +1453,12 @@ pub(crate) fn git_branch(dir: &Path) -> Option<String> {
         } else {
             None
         };
+        if git_dir
+            .as_deref()
+            .is_some_and(terminal::shell_integration::is_network_path)
+        {
+            return None;
+        }
         if let Some(git_dir) = git_dir {
             let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
             let head = head.trim();
@@ -1837,6 +1850,22 @@ mod tests {
     use gpui::{TestAppContext, VisualTestContext};
     use terminal::TerminalBuilder;
     use util::paths::PathStyle;
+
+    #[test]
+    fn test_git_branch_reads_local_repositories_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        std::fs::create_dir_all(repository.join(".git")).unwrap();
+        std::fs::create_dir_all(repository.join("src")).unwrap();
+        std::fs::write(repository.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert_eq!(git_branch(&repository.join("src")).as_deref(), Some("main"));
+        // A `.git` file pointing at a network share isn't followed.
+        let linked = temp.path().join("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(linked.join(".git"), "gitdir: //attacker/share/.git\n").unwrap();
+        assert_eq!(git_branch(&linked), None);
+        assert_eq!(git_branch(Path::new("//attacker/share/repo")), None);
+    }
 
     /// A shell with no history file, so the user's own history stays out.
     const SHELL_PROMPT: &[u8] =
