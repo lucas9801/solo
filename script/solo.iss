@@ -63,8 +63,20 @@ SignedUninstallerDir={#SignedUninstallerDir}
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinese"; MessagesFile: "{#ResourcesDir}\messages\Default.zh-cn.isl"
 
+[CustomMessages]
+english.AddContextMenu=Add "Open with Solo" to the Explorer context menu
+chinese.AddContextMenu=在资源管理器右键菜单中添加“通过 Solo 打开”
+english.OpenWithSolo=Open with Solo
+chinese.OpenWithSolo=通过 Solo 打开
+english.OtherTasks=Other:
+chinese.OtherTasks=其他：
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+; Checked by default. An update (silent, UsePreviousTasks) keeps what the
+; user chose last time, and a task the last install didn't have yet gets
+; its default, so updating from an older Solo adds the menu.
+Name: "contextmenu"; Description: "{cm:AddContextMenu}"; GroupDescription: "{cm:OtherTasks}"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "install.ps1"; Flags: ignoreversion recursesubdirs
@@ -80,6 +92,27 @@ Root: HKCU; Subkey: "Software\Classes\solo"; ValueType: string; ValueName: ""; V
 Root: HKCU; Subkey: "Software\Classes\solo"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\solo\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\solo.exe,0"
 Root: HKCU; Subkey: "Software\Classes\solo\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\solo.exe"" ""%1"""
+
+; "Open with Solo" in Explorer's context menu (on Windows 11 under "Show more
+; options"): on files, folders, a folder's background and drives, for this
+; user, like other editors do. Removed on uninstall, and when the task is
+; unchecked on a later install.
+Root: HKCU; Subkey: "Software\Classes\*\shell\Solo"; ValueType: string; ValueName: ""; ValueData: "{cm:OpenWithSolo}"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\*\shell\Solo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\solo.exe"; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\*\shell\Solo\command"; ValueType: string; ValueName: ""; ValueData: """{app}\solo.exe"" ""%1"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\Solo"; ValueType: string; ValueName: ""; ValueData: "{cm:OpenWithSolo}"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\Solo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\solo.exe"; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\Solo\command"; ValueType: string; ValueName: ""; ValueData: """{app}\solo.exe"" ""%V"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\Solo"; ValueType: string; ValueName: ""; ValueData: "{cm:OpenWithSolo}"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\Solo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\solo.exe"; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\Solo\command"; ValueType: string; ValueName: ""; ValueData: """{app}\solo.exe"" ""%V"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Drive\shell\Solo"; ValueType: string; ValueName: ""; ValueData: "{cm:OpenWithSolo}"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Drive\shell\Solo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\solo.exe"; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Drive\shell\Solo\command"; ValueType: string; ValueName: ""; ValueData: """{app}\solo.exe"" ""%V"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\*\shell\Solo"; ValueType: none; Flags: deletekey; Tasks: not contextmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\Solo"; ValueType: none; Flags: deletekey; Tasks: not contextmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\Solo"; ValueType: none; Flags: deletekey; Tasks: not contextmenu
+Root: HKCU; Subkey: "Software\Classes\Drive\shell\Solo"; ValueType: none; Flags: deletekey; Tasks: not contextmenu
 
 [Run]
 Filename: "{app}\solo.exe"; Description: "{cm:LaunchProgram,Solo}"; Flags: nowait postinstall skipifsilent

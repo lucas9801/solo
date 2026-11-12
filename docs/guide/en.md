@@ -16,8 +16,9 @@ Both ways install Solo for the current user only (no administrator rights) into
 `%LOCALAPPDATA%\Programs\Solo`.
 
 - **Installer** `Solo-Setup-<version>.exe`: English or Chinese setup, a Start
-  menu entry, an optional desktop icon (unchecked by default), and an uninstall
-  entry in Settings → Apps.
+  menu entry, an optional desktop icon (unchecked by default), "Open with Solo"
+  in Explorer's context menu (checked by default), and an uninstall entry in
+  Settings → Apps.
 - **Portable zip** `Solo-<version>-windows-x64.zip`: run `solo.exe` straight
   from the unpacked folder, or run
 
@@ -26,7 +27,16 @@ Both ways install Solo for the current user only (no administrator rights) into
   ```
 
   to copy it to `%LOCALAPPDATA%\Programs\Solo` with Start menu and desktop
-  shortcuts.
+  shortcuts and "Open with Solo" in the context menu (`-NoContextMenu` leaves
+  that out).
+
+**"Open with Solo"** is on files, folders, a folder's background and drives (on
+Windows 11 under "Show more options"). A folder opens in Solo, started if it
+isn't running; a running Solo adds a workspace tab for it to its window and
+switches to it, or switches to the folder's tab if it has one already. A file
+opens in the tab whose folder holds it, or else in the current tab, never in a
+new window. Uninstalling (`install.ps1 -Uninstall` too) removes the menu; to
+go without it, uncheck it in setup.
 
 The install folder holds `solo.exe`, `solo-agent-hook.exe` (which Claude Code
 runs to report its status), `solo-update-helper.exe` (which installs updates),
