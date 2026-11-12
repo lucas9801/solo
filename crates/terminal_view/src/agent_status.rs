@@ -381,7 +381,7 @@ impl TerminalView {
         }
     }
 
-    fn is_watched(&self, window: &Window, cx: &Context<Self>) -> bool {
+    pub(crate) fn is_watched(&self, window: &Window, cx: &Context<Self>) -> bool {
         window.is_window_active() && self.focus_handle.contains_focused(window, cx)
     }
 
