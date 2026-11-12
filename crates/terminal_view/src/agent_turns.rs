@@ -604,6 +604,14 @@ fn snapshot_unavailable_reason(error: &anyhow::Error) -> SharedString {
             )
             .into()
         }
+        Some(SnapshotUnavailable::NotLocal(_)) => {
+            log::info!("no snapshot for an agent turn: {error:#}");
+            util::i18n::tr(
+                "The folder isn't on a local drive",
+                "这个文件夹不在本地磁盘上",
+            )
+            .into()
+        }
         None => {
             log::error!("failed to snapshot for an agent turn: {error:#}");
             util::i18n::tr("The snapshot failed (see the log)", "快照失败（详见日志）").into()
@@ -1199,7 +1207,7 @@ mod tests {
             turns.max_files_outside_repository = Some(1);
         });
         let terminal = cx.new(|cx| {
-            terminal::TerminalBuilder::new_display_only(
+            let mut terminal = terminal::TerminalBuilder::new_display_only(
                 Default::default(),
                 terminal::terminal_settings::AlternateScroll::On,
                 None,
@@ -1207,7 +1215,9 @@ mod tests {
                 cx.background_executor(),
                 util::paths::PathStyle::local(),
             )
-            .subscribe(cx)
+            .subscribe(cx);
+            terminal.set_shell_nonce("n");
+            terminal
         });
         let window = cx.add_window(|window, cx| {
             TerminalView::new(
@@ -1231,10 +1241,10 @@ mod tests {
 
         // Claude Code runs in the terminal, and its hooks report a prompt.
         write(b"\x1b]133;A\x07$ \x1b]133;B\x07", cx);
-        write(b"claude\r\n\x1b]633;E;claude\x07\x1b]133;C\x07", cx);
+        write(b"claude\r\n\x1b]633;E;claude;n\x07\x1b]133;C\x07", cx);
         let directory = agent_directory.to_string_lossy().replace('%', "%25");
         write(
-            format!("\x1b]6973;agent;prompt;1;;claude;{directory}\x07").as_bytes(),
+            format!("\x1b]6973;agent;nonce=n;prompt;1;;claude;{directory}\x07").as_bytes(),
             cx,
         );
         turns.read_with(cx, |turns, _| {
@@ -1286,7 +1296,7 @@ mod tests {
         // Nothing is offered while the turn is under way.
         assert!(!tab_entry(cx));
 
-        write(b"\x1b]6973;agent;stop;2\x07", cx);
+        write(b"\x1b]6973;agent;nonce=n;stop;2\x07", cx);
         cx.executor().advance_clock(WATCH_AFTER_TURN);
         cx.run_until_parked();
 

@@ -1,5 +1,6 @@
 # Solo: a Claude Code hook that tells the terminal what Claude is doing, with
-# OSC 6973 ; agent ; <kind> ; <ms since the epoch the hook started at> ; <session id>.
+# OSC 6973 ; agent ; nonce=<the terminal's nonce> ; <kind> ; <ms since the epoch the hook started at> ;
+# <session id>. The terminal ignores reports without its nonce (SOLO_SHELL_NONCE).
 #
 # Claude Code may start hooks in a hidden console of their own, so this attaches
 # to the console of the shell Claude was started from (SOLO_AGENT_CONSOLE_PID),
@@ -39,7 +40,9 @@ try {
     $handle = $console::CreateFileW('CONOUT$', 0x40000000, 3, [IntPtr]::Zero, 3, 0, [IntPtr]::Zero)
     if ($handle -eq [IntPtr]::Zero -or $handle -eq [IntPtr]-1) { exit 0 }
     $output = [IO.FileStream]::new([Microsoft.Win32.SafeHandles.SafeFileHandle]::new($handle, $true), 'Write')
-    $bytes = [Text.Encoding]::ASCII.GetBytes("$([char]27)]6973;agent;$kind;$startedAt;$sessionId$([char]7)")
+    $nonce = "$env:SOLO_SHELL_NONCE"
+    if ($nonce -notmatch '^[0-9A-Za-z]*$') { $nonce = '' }
+    $bytes = [Text.Encoding]::ASCII.GetBytes("$([char]27)]6973;agent;nonce=$nonce;$kind;$startedAt;$sessionId$([char]7)")
     $output.Write($bytes, 0, $bytes.Length)
     $output.Dispose()
 } catch {

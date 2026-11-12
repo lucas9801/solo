@@ -1965,7 +1965,13 @@ impl Terminal {
             }
             TerminalBackendEvent::ReplayEnd => self.replaying_until = None,
             TerminalBackendEvent::AgentHook(params) => {
-                match shell_integration::AgentHook::parse(&params) {
+                // SOLO: only reports from programs started in this terminal,
+                // which know its nonce.
+                let Some(params) = self.shell_integration.authenticate_agent_report(&params) else {
+                    log::debug!("agent report without this terminal's nonce, ignored");
+                    return;
+                };
+                match shell_integration::AgentHook::parse(params) {
                     Some(hook) => {
                         log::debug!("agent hook {hook:?}");
                         cx.emit(Event::AgentHook(hook));
@@ -7498,10 +7504,12 @@ mod tests {
             .detach();
         });
         // As the hooks write them, also while the agent is on the alternate
-        // screen; unknown kinds are dropped.
+        // screen; unknown kinds are dropped, and so are reports without the
+        // terminal's nonce (anything printed can pose as a report).
         terminal.update(cx, |terminal, cx| {
+            terminal.set_shell_nonce("n1");
             terminal.write_raw_output(
-                b"\x1b]6973;agent;prompt;1793624689993\x07\x1b[?1049h\x1b]6973;agent;input;1793624690000\x07\x1b]6973;agent;dance\x07\x1b]6973;agent;stop;\x1b\\",
+                b"\x1b]6973;agent;nonce=n1;prompt;1793624689993\x07\x1b[?1049h\x1b]6973;agent;nonce=n1;input;1793624690000\x07\x1b]6973;agent;nonce=n1;dance\x07\x1b]6973;agent;prompt;5\x07\x1b]6973;agent;nonce=n2;prompt;6\x07\x1b]6973;agent;nonce=;prompt;7\x07\x1b]6973;agent;nonce=n1;stop;\x1b\\",
                 cx,
             )
         });

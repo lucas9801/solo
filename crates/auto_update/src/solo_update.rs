@@ -345,6 +345,14 @@ pub(crate) async fn download_asset(
     target: &Path,
     mut on_progress: impl FnMut(u8),
 ) -> Result<()> {
+    // SOLO: fails closed: nothing is downloaded to be run without the hash
+    // GitHub reports for it.
+    let Some(expected) = installer.sha256.clone() else {
+        anyhow::bail!(
+            "GitHub reported no SHA-256 for {}, so the {what} can't be checked and wasn't downloaded; download it from the release page instead",
+            installer.name
+        );
+    };
     let request = Request::get(installer.url.as_str())
         .header("Accept", "application/octet-stream")
         .header("User-Agent", user_agent(current))
@@ -404,21 +412,11 @@ pub(crate) async fn download_asset(
             installer.size
         );
     }
-    match &installer.sha256 {
-        Some(expected) => {
-            let path = target.to_path_buf();
-            let actual = smol::unblock(move || sha256_of_file(&path)).await?;
-            if &actual != expected {
-                smol::fs::remove_file(target).await.ok();
-                anyhow::bail!(
-                    "the downloaded {what} is corrupt: its SHA-256 is {actual}, not {expected}"
-                );
-            }
-        }
-        None => log::warn!(
-            "solo update: GitHub reported no SHA-256 for {}",
-            installer.name
-        ),
+    let path = target.to_path_buf();
+    let actual = smol::unblock(move || sha256_of_file(&path)).await?;
+    if actual != expected {
+        smol::fs::remove_file(target).await.ok();
+        anyhow::bail!("the downloaded {what} is corrupt: its SHA-256 is {actual}, not {expected}");
     }
     Ok(())
 }
@@ -1797,10 +1795,26 @@ mod tests {
         assert!(!target.exists());
 
         installer.size = 2000;
+        let error = download_installer(
+            http.clone(),
+            &installer,
+            &version("1.28.1"),
+            &target,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("incomplete"), "{error:#}");
+        assert!(!target.exists());
+
+        // No hash from GitHub: nothing to check it against, so not
+        // downloaded (and never run).
+        installer.size = 1000;
+        installer.sha256 = None;
         let error = download_installer(http, &installer, &version("1.28.1"), &target, |_| {})
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("incomplete"), "{error:#}");
+        assert!(error.to_string().contains("no SHA-256"), "{error:#}");
         assert!(!target.exists());
     }
 

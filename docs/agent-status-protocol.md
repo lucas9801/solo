@@ -19,9 +19,18 @@ Solo's terminals are started with these environment variables:
 | Variable | What it is |
 |---|---|
 | `SOLO_AGENT_HOOK` | The path of `solo-agent-hook`, which sends reports (only with an installed Solo, where it's next to `solo.exe`) |
+| `SOLO_SHELL_NONCE` | The terminal's secret, which every report must carry (`solo-agent-hook` adds it) |
 
 If `SOLO_AGENT_HOOK` isn't set, the program isn't running in a Solo terminal
 (or one started before Solo 1.28.4), and there's no one to report to.
+
+Solo ignores reports without the terminal's `SOLO_SHELL_NONCE` (since Solo
+2.3.0): anything the terminal shows (a `cat`ed file, ssh or `curl` output)
+could print the escape sequence, and a report starts a turn (Solo runs git
+in the reported directory) and lets `solo-cli agent send` type into the
+terminal. Programs started in the terminal inherit the variable; keep it out
+of logs and output. Terminals started with custom shell arguments have no
+nonce, and take no reports.
 
 ## The command
 
@@ -61,9 +70,11 @@ The command writes an OSC escape sequence to its terminal. Programs can write
 it themselves instead:
 
 ```
-ESC ] 6973 ; agent ; <kind> ; <order> ; <session id> ; <agent> ; <directory> BEL
+ESC ] 6973 ; agent ; nonce=<nonce> ; <kind> ; <order> ; <session id> ; <agent> ; <directory> BEL
 ```
 
+- `<nonce>`: the value of `SOLO_SHELL_NONCE`. Reports without it, or with
+  another terminal's, are ignored.
 - `<kind>`: `prompt` (or `working`), `input` (or `blocked`), `stop`,
   `idle` (still waiting after a stop), `start`.
 - `<order>`: the `--seq` above, decimal; may be empty.
@@ -73,17 +84,19 @@ ESC ] 6973 ; agent ; <kind> ; <order> ; <session id> ; <agent> ; <directory> BEL
   before a directory.
 - `<directory>`: where the agent works, as an absolute path in UTF-8 with
   every byte that isn't printable ASCII, and `;` and `%`, written as `%XX`;
-  may be left out. Solo uses it instead of the shell's directory.
+  may be left out. Solo uses it instead of the shell's directory. A network
+  path (`\\server\share`) is ignored, and Solo doesn't snapshot folders on
+  network drives.
 
 Fields at the end can be left out along with their `;`. For example, with
 `printf`:
 
 ```sh
-printf '\033]6973;agent;working;1;;my-agent\a'
+printf '\033]6973;agent;nonce=%s;working;1;;my-agent\a' "$SOLO_SHELL_NONCE"
 ```
 
 Solo's own hook for Claude Code, Codex and Copilot CLI sends
-`ESC ] 6973 ; agent ; <kind> ; <ms since the epoch> ; <session id> ; <agent> ; <directory> BEL`,
+`ESC ] 6973 ; agent ; nonce=<nonce> ; <kind> ; <ms since the epoch> ; <session id> ; <agent> ; <directory> BEL`,
 with the directory from the hook's `cwd`, which is the same format.
 
 ## OpenCode

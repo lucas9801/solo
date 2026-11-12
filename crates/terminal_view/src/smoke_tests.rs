@@ -50,8 +50,8 @@ const NONCE: &str = "smoke-nonce";
 /// Claude Code started at a prompt and reported a turn through its hooks.
 const AGENT_OUTPUT: &[u8] = b"\x1b]633;P;Shell=solo-test-shell;smoke-nonce\x07\
 \x1b]133;A\x07$ \x1b]133;B\x07claude\r\n\x1b]633;E;claude;smoke-nonce\x07\x1b]133;C\x07\
-\x1b[?2004h\x1b]6973;agent;working;1;;Claude Code\x07Working\r\n\
-\x1b]6973;agent;stop;2;;Claude Code\x07Done\r\n";
+\x1b[?2004h\x1b]6973;agent;nonce=smoke-nonce;working;1;;Claude Code\x07Working\r\n\
+\x1b]6973;agent;nonce=smoke-nonce;stop;2;;Claude Code\x07Done\r\n";
 
 /// A failed build, a command that printed a Mermaid diagram, and the shell
 /// waiting at its prompt (so the input editor shows).

@@ -254,6 +254,37 @@ mod tests {
         assert_eq!(std::fs::read_dir(&platform_dir).unwrap().count(), 0);
     }
 
+    /// SOLO: without a hash from GitHub, the remote server isn't downloaded
+    /// (it would be run on the remote machine unchecked).
+    #[gpui::test]
+    async fn rejects_a_remote_server_without_a_hash(cx: &mut TestAppContext) {
+        cx.background_executor.allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let platform_dir = dir.path().join("linux-x86_64");
+        let requests = Arc::new(AtomicUsize::new(0));
+        // Not `sha256:<64 hex digits>`: as good as none.
+        let http = fake_github("not-a-hash".to_string(), requests.clone());
+
+        let error = download(
+            http,
+            &version("2.3.0"),
+            Some(&version("2.3.0")),
+            "linux",
+            "x86_64",
+            &platform_dir,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("no SHA-256"), "{error:#}");
+        // Only the release was asked for.
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(
+            std::fs::read_dir(&platform_dir)
+                .map(|entries| entries.count() == 0)
+                .unwrap_or(true)
+        );
+    }
+
     #[gpui::test]
     async fn says_what_a_release_lacks(cx: &mut TestAppContext) {
         cx.background_executor.allow_parking();
