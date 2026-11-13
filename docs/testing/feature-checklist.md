@@ -39,7 +39,9 @@
 | `terminal::OpenWorkflowsFile` | Workflow 选择器底部"Edit workflows…"；命令面板 | | 打开 `%APPDATA%\Solo\workflows.json`（不存在就创建示例） | — | 人工（写真实配置目录，冒烟跳过） |
 | `terminal::CopyOrClearInput` | 输入框里 `ctrl-c` | 有选中文字 / 没有 | 有选中就复制，没有就清空输入（像 shell 的 ctrl-c） | — | 冒烟、单测 |
 | `terminal::CopyInputOrTerminal` | `ctrl-shift-c` / `ctrl-insert` | | 复制输入框或终端里选中的文字 | — | 冒烟 |
-| 输入 `#` 生成命令 | 输入框开头输入 `# 描述` 回车 | | 用配置的模型生成命令填进输入框（pending G21） | — | 人工 |
+| 输入 `#` 生成命令 | 输入框开头输入 `# 描述` 回车 | | 用 Claude Code 或 Codex（`ai_command_agent`）生成命令填进输入框；不能运行任何工具；显示"正在生成命令… N 秒" | CC Cx | 单测（假 agent）、人工 |
+| `terminal::CancelCommandGeneration` | 生成命令时 `escape` | 输入 `# 描述` 回车后按 | 结束 agent 的进程树，结果不再填进输入框 | CC Cx | 单测 |
+| `terminal::AskAiAboutCommandBlock` | 选中块时 `ctrl-i`；块右键菜单 | 选中一个命令块后按，再输入 `# 描述` | 输入框上方出现这个块的小标签，生成命令时一起发给 agent；点 × 去掉 | CC Cx | 单测 |
 
 ### 1.3 终端：agent
 
@@ -60,6 +62,9 @@
 | --- | --- | --- | --- | --- | --- |
 | `agent_task::NewAgentTask` | 命令面板"New Agent Task"；工作区标签菜单"New Agent Task…" | 输入任务名 | 建分支和 worktree（`git.worktree_directory`，默认 `../worktrees`），开终端跑 `terminal.agent_task_command`；多仓库工作区可同时给其它仓库建；`.solo/tasks.json` 的 setup 命令先跑 | 默认 CC，可设成任意 | 冒烟、单测 |
 | `agent_task::ManageAgentTasks` | 命令面板；工作区标签菜单"Manage Agent Tasks…" | | 任务列表：打开终端、View Diff、Merge、Push and Open PR、Send PR Feedback to Agent、Ask the Agent to Commit、Delete | CC Cx Cp 屏 | 冒烟、单测 |
+| `terminal::MoveToOwnTab` | 终端标签右键"移到 <名字> 的新标签 / 移到 <标签名> 的标签"；顶部提示条的按钮 | 终端目录不在本标签的文件夹里时 | 移到包含它目录（或仓库）的标签，没有就新建；程序和 agent 不中断；目录就在本标签里时这一项不出现 | CC Cx Cp 屏 | 冒烟、单测（G10、G29） |
+| `terminal::MoveToTab` | 终端标签右键"移到标签 ›"子菜单里的标签 | | 移到选中的标签，并入那个标签已有终端的窗格，不新开分屏 | — | 冒烟（带参数）、单测（G29） |
+| `terminal::MoveToNewTab` | "移到标签 ›"子菜单"新标签…" | 选一个文件夹 | 以这个文件夹新开工作区标签并把终端移过去 | — | 冒烟、单测 |
 | `agent_board::ToggleFocus` | 左侧活动栏"Agent Board"；命令面板 | | 看板列出跑过 agent 的终端和任务：状态、分支、改动、时长、最后一句；需要输入的排前面；点击跳到终端 | CC Cx Cp 屏 | 冒烟 |
 | `solo::ActivateWorkspace` | `ctrl-alt-1`…`ctrl-alt-9` | 有几个工作区标签时按 | 切到第 N 个工作区；未加载的此时加载；没有第 N 个就不动 | — | 单测（title_bar `test_switch_workspaces_with_actions`） |
 | `solo::NextWorkspace` / `solo::PreviousWorkspace` | `ctrl-alt-pagedown` / `ctrl-alt-pageup` | | 切到下 / 上一个工作区，循环 | — | 单测（同上） |
