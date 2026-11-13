@@ -18008,6 +18008,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "sha2",
  "sysinfo 0.39.6",
  "task",
  "tempfile",

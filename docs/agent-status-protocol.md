@@ -19,12 +19,12 @@ Solo's terminals are started with these environment variables:
 | Variable | What it is |
 |---|---|
 | `SOLO_AGENT_HOOK` | The path of `solo-agent-hook`, which sends reports (only with an installed Solo, where it's next to `solo.exe`) |
-| `SOLO_SHELL_NONCE` | The terminal's secret, which every report must carry (`solo-agent-hook` adds it) |
+| `SOLO_AGENT_TOKEN` | The terminal's secret, which every report must carry (`solo-agent-hook` adds it) |
 
 If `SOLO_AGENT_HOOK` isn't set, the program isn't running in a Solo terminal
 (or one started before Solo 1.28.4), and there's no one to report to.
 
-Solo ignores reports without the terminal's `SOLO_SHELL_NONCE` (since Solo
+Solo ignores reports without the terminal's `SOLO_AGENT_TOKEN` (since Solo
 2.3.0): anything the terminal shows (a `cat`ed file, ssh or `curl` output)
 could print the escape sequence, and a report starts a turn (Solo runs git
 in the reported directory) and lets `solo-cli agent send` type into the
@@ -73,7 +73,7 @@ it themselves instead:
 ESC ] 6973 ; agent ; nonce=<nonce> ; <kind> ; <order> ; <session id> ; <agent> ; <directory> BEL
 ```
 
-- `<nonce>`: the value of `SOLO_SHELL_NONCE`. Reports without it, or with
+- `<nonce>`: the value of `SOLO_AGENT_TOKEN`. Reports without it, or with
   another terminal's, are ignored.
 - `<kind>`: `prompt` (or `working`), `input` (or `blocked`), `stop`,
   `idle` (still waiting after a stop), `start`.
@@ -92,7 +92,7 @@ Fields at the end can be left out along with their `;`. For example, with
 `printf`:
 
 ```sh
-printf '\033]6973;agent;nonce=%s;working;1;;my-agent\a' "$SOLO_SHELL_NONCE"
+printf '\033]6973;agent;nonce=%s;working;1;;my-agent\a' "$SOLO_AGENT_TOKEN"
 ```
 
 Solo's own hook for Claude Code, Codex and Copilot CLI sends

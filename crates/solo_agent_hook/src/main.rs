@@ -4,7 +4,8 @@
 //! `OSC 6973 ; agent ; nonce=<nonce> ; <kind> ; <ms since the epoch> ; <session id>
 //! [; <agent> [; <working directory>]]` (parsed by
 //! `terminal::shell_integration::AgentHook`). The nonce is the terminal's
-//! (`SOLO_SHELL_NONCE`), without which the terminal ignores the report.
+//! agent key (`SOLO_AGENT_TOKEN`), without which the terminal ignores the
+//! report.
 //! The working directory, where the agent works (which can differ from the
 //! shell's, say for a resumed session), is percent-encoded UTF-8.
 //!
@@ -81,12 +82,15 @@ fn main() {
 const REPORT_USAGE: &str = "usage: solo-agent-hook report --state <working|blocked|idle> \
 [--agent <name>] [--session <id>] [--seq <n>] [--directory <path>]";
 
-/// The terminal's nonce (`SOLO_SHELL_NONCE`), which tells the terminal a
+/// The terminal's agent key (`SOLO_AGENT_TOKEN`), which tells the terminal a
 /// report comes from a program started in it rather than from output posing
 /// as one. Empty (and the report ignored) if it's missing or could end the
 /// escape sequence.
 fn terminal_nonce() -> String {
-    std::env::var("SOLO_SHELL_NONCE")
+    // SOLO_SHELL_NONCE: only what the shell itself has (the integration
+    // scripts take it out of programs' environment), kept as a fallback.
+    std::env::var("SOLO_AGENT_TOKEN")
+        .or_else(|_| std::env::var("SOLO_SHELL_NONCE"))
         .ok()
         .map(|nonce| nonce.trim().to_string())
         .filter(|nonce| is_nonce(nonce))
@@ -314,7 +318,13 @@ fn write_to_terminal(bytes: &[u8]) -> std::io::Result<()> {
             overlapped: *mut c_void,
         ) -> i32;
         fn CloseHandle(handle: *mut c_void) -> i32;
+        fn GetConsoleMode(console: *mut c_void, mode: *mut u32) -> i32;
+        fn SetConsoleMode(console: *mut c_void, mode: u32) -> i32;
     }
+    // SOLO: without it the console prints the escape sequence as text (and
+    // the terminal never sees it); Windows PowerShell turns it off while it
+    // runs a program, which is when hooks run.
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
     const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
     const GENERIC_WRITE: u32 = 0x4000_0000;
     const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
@@ -346,6 +356,11 @@ fn write_to_terminal(bytes: &[u8]) -> std::io::Result<()> {
         if console.is_null() || console == INVALID_HANDLE_VALUE {
             return Err(Error::last_os_error());
         }
+        let mut mode = 0u32;
+        let restore_mode = (GetConsoleMode(console, &mut mode) != 0
+            && mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING == 0
+            && SetConsoleMode(console, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0)
+            .then_some(mode);
         let mut remaining = bytes;
         let mut result = Ok(());
         while !remaining.is_empty() {
@@ -364,6 +379,9 @@ fn write_to_terminal(bytes: &[u8]) -> std::io::Result<()> {
                 break;
             }
             remaining = remaining.get(written as usize..).unwrap_or_default();
+        }
+        if let Some(mode) = restore_mode {
+            SetConsoleMode(console, mode);
         }
         CloseHandle(console);
         result

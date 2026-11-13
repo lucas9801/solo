@@ -37,6 +37,24 @@ const ZSH_STARTUP_FILES: [(&str, &str); 3] = [
 /// too, but can't know the nonce.
 pub const SHELL_NONCE_ENV: &str = "SOLO_SHELL_NONCE";
 
+/// SOLO: The environment variable with the key agent status reports carry
+/// (`OSC 6973 ; agent ; nonce=<key>`). The integration scripts take the shell
+/// nonce out of the environment so programs can't fake prompt marks, but the
+/// hooks agents run must report, so they get this instead: derived one-way
+/// from the nonce, so it can't be turned back into it, and computed again
+/// from the nonce when Solo reconnects to the terminal.
+pub const AGENT_TOKEN_ENV: &str = "SOLO_AGENT_TOKEN";
+
+/// The agent report key of a terminal started with `nonce`.
+pub fn agent_token(nonce: &str) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::new()
+        .chain_update(b"solo-agent-report\0")
+        .chain_update(nonce.as_bytes())
+        .finalize();
+    digest[..16].iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// The environment variable with the terminal's id, which `solo-cli agent`
 /// names terminals by.
 pub const TERMINAL_ID_ENV: &str = "SOLO_TERMINAL_ID";
@@ -83,7 +101,9 @@ pub fn integrate_shell(
         Shell::WithArguments { .. } => return shell,
     };
     // Unused by shells that aren't integrated below.
-    env.insert(SHELL_NONCE_ENV.to_string(), new_nonce());
+    let nonce = new_nonce();
+    env.insert(AGENT_TOKEN_ENV.to_string(), agent_token(&nonce));
+    env.insert(SHELL_NONCE_ENV.to_string(), nonce);
     // How agents and scripts report their status (docs/agent-status-protocol.md).
     if let Some(hook) = agent_hook_executable() {
         env.insert(
@@ -979,8 +999,11 @@ impl ShellIntegration {
     /// the terminal, so others are ignored.
     pub fn authenticate_agent_report<'a>(&self, params: &'a [String]) -> Option<&'a [String]> {
         let (first, rest) = params.split_first()?;
-        let nonce = first.trim().strip_prefix(AGENT_REPORT_NONCE_PREFIX)?;
-        self.from_integration(Some(nonce)).then_some(rest)
+        let key = first.trim().strip_prefix(AGENT_REPORT_NONCE_PREFIX)?;
+        let nonce = self.nonce.as_deref()?;
+        // SOLO: the agent key ([`AGENT_TOKEN_ENV`]) is what hooks have; the
+        // nonce itself only the integration scripts.
+        (key == agent_token(nonce) || key == nonce).then_some(rest)
     }
 
     /// Whether the shell has sent any marks, i.e. integration is working.
@@ -1246,7 +1269,9 @@ mod tests {
         // these shells take their scripts as arguments.
         assert!(
             env.keys()
-                .all(|key| key == SHELL_NONCE_ENV || key == AGENT_HOOK_ENV),
+                .all(|key| key == SHELL_NONCE_ENV
+                    || key == AGENT_TOKEN_ENV
+                    || key == AGENT_HOOK_ENV),
             "{env:?}"
         );
 
@@ -1475,6 +1500,39 @@ mod tests {
             ShellIntegration::new(None).authenticate_agent_report(&params(&["nonce=", "prompt"])),
             None
         );
+    }
+
+    // SOLO: the integration scripts take the nonce out of the environment, so
+    // hooks (run by agents run in the shell) report with the agent key, which
+    // the shell's programs do have.
+    #[test]
+    fn hooks_report_with_the_agent_key() {
+        let mut env = HashMap::default();
+        integrate_shell(
+            Shell::Program("powershell.exe".into()),
+            "powershell.exe",
+            true,
+            &mut env,
+        );
+        let nonce = env.get(SHELL_NONCE_ENV).cloned().unwrap();
+        let token = env.get(AGENT_TOKEN_ENV).cloned().unwrap();
+        assert_ne!(token, nonce);
+        assert_eq!(token, agent_token(&nonce));
+        // The key can't stand in for the nonce in prompt marks.
+        assert_ne!(agent_token(&token), nonce);
+
+        let integration = ShellIntegration::new(Some(nonce));
+        let report: Vec<String> = [format!("nonce={token}"), "prompt".into()].into();
+        assert_eq!(
+            integration.authenticate_agent_report(&report),
+            Some(&report[1..])
+        );
+        let other: Vec<String> = [
+            format!("nonce={}", agent_token("another terminal")),
+            "prompt".into(),
+        ]
+        .into();
+        assert_eq!(integration.authenticate_agent_report(&other), None);
     }
 
     #[test]

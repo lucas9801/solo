@@ -1,7 +1,7 @@
 #!/bin/sh
 # Solo: a Claude Code hook that tells the terminal what Claude is doing, with
 # OSC 6973 ; agent ; nonce=<the terminal's nonce> ; <kind> ; <ms since the epoch>.
-# The terminal ignores reports without its nonce (SOLO_SHELL_NONCE). Written to
+# The terminal ignores reports without its agent key (SOLO_AGENT_TOKEN). Written to
 # the terminal of the shell Claude was started from (SOLO_AGENT_TTY), or else the
 # controlling one.
 
@@ -13,7 +13,7 @@ sent_at=$(date +%s%3N)
 case $sent_at in
     '' | *[!0-9]*) sent_at= ;;
 esac
-nonce=${SOLO_SHELL_NONCE:-}
+nonce=${SOLO_AGENT_TOKEN:-}
 case $nonce in
     *[!0-9A-Za-z]*) nonce= ;;
 esac
