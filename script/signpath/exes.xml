@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration "exes": round 1 of signing in
+  .github/workflows/solo-package.yml. The artifact is the folder dist/to-sign:
+  Solo's own exes, built from this repository, and Inno Setup's uninstaller
+  (uninstaller.exe, renamed from uninst-*.e32), which the installer then
+  carries signed. conpty.dll and OpenConsole.exe aren't here: Microsoft
+  signs them.
+
+  Paste it into the SignPath project as the artifact configuration with the
+  slug "exes". The version parameter is Solo's version (crates/zed/Cargo.toml).
+  Product name and file version are only checked on the exes that have them
+  (crates/windows_resources); the helpers have no version resource yet, see
+  docs/code-signing-policy.md.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="solo.exe" product-name="Solo" file-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="solo-cli.exe" product-name="Solo">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="solo-agent-hook.exe">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="solo-update-helper.exe">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="solo-terminal-host.exe">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="uninstaller.exe">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

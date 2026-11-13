@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use gpui::{
-    Action, AnyElement, App, ClickEvent, Entity, Focusable as _, MouseButton, SharedString,
+    Action, AnyElement, App, ClickEvent, Entity, Focusable as _, Hsla, MouseButton, SharedString,
     WeakEntity, Window, actions,
 };
 use schemars::JsonSchema;
@@ -18,7 +18,9 @@ use ui::{ContextMenu, ContextMenuEntry, PopoverMenu, Tooltip, prelude::*, right_
 use util::i18n::tr;
 use workspace::{
     MultiWorkspace, OpenMode, ProjectGroupKey, RemovalIntent, Workspace,
-    agent_activity::{self, AgentCounts, AgentState, WorkspaceTask, WorkspaceTerminal},
+    agent_activity::{
+        self, AgentCounts, AgentState, AgentStateIcon, WorkspaceTask, WorkspaceTerminal,
+    },
 };
 use zed_actions::agent_task::{ManageAgentTasks, NewAgentTask};
 
@@ -148,7 +150,15 @@ impl TitleBar {
                         })
                         .untranslated(),
                 )
-                .children(render_counts(counts))
+                .children(render_counts(
+                    counts,
+                    if is_active {
+                        selected
+                    } else {
+                        colors.title_bar_background
+                    },
+                    cx,
+                ))
                 .when(is_active, |element| element.children(branch.take()))
                 .child(div().visible_on_hover(group).child(render_menu_button(
                     ix,
@@ -168,8 +178,8 @@ impl TitleBar {
                         ));
                     }
                     meta.push_str(tr(
-                        "🔔 waiting for you · ⟳ working · ✓ finished, not seen yet · ✗ failed",
-                        "🔔 等你回复 · ⟳ 工作中 · ✓ 已完成、还没看 · ✗ 失败",
+                        "Agents: red failed · yellow waiting for you · green done, not seen yet · blue working",
+                        "agent：红 失败 · 黄 等你回复 · 绿 完成待看 · 蓝 工作中",
                     ));
                     let path = path.to_string_lossy().into_owned();
                     element.tooltip(move |_, cx| {
@@ -320,26 +330,37 @@ fn render_menu_button(
         .anchor(gpui::Anchor::TopLeft)
 }
 
-/// How many agents work, wait for an answer and failed, as colored counts.
-fn render_counts(counts: AgentCounts) -> impl Iterator<Item = AnyElement> {
+/// How many agents failed, wait for you, finished a turn you haven't seen
+/// (gone once you look at the terminal) and work, in that order, as counts
+/// with their status shapes.
+fn render_counts(
+    counts: AgentCounts,
+    background: Hsla,
+    cx: &App,
+) -> impl Iterator<Item = AnyElement> {
     [
-        (counts.needs_input, IconName::Bell, Color::Warning),
-        (counts.working, IconName::LoadCircle, Color::Accent),
-        // SOLO: turns that finished while you weren't looking; gone once you
-        // look at the terminal.
-        (counts.finished, IconName::Check, Color::Success),
-        (counts.failed, IconName::XCircle, Color::Error),
+        (counts.failed, AgentState::Failed),
+        (counts.needs_input, AgentState::NeedsInput),
+        (counts.finished, AgentState::Finished),
+        (counts.working, AgentState::Working),
     ]
     .into_iter()
-    .filter(|(count, ..)| *count > 0)
-    .map(|(count, icon, color)| {
+    .filter(|(count, _)| *count > 0)
+    .map(move |(count, state)| {
         h_flex()
             .gap_0p5()
-            .child(Icon::new(icon).size(IconSize::XSmall).color(color))
+            .child(
+                AgentStateIcon::new(state)
+                    .size(IconSize::XSmall)
+                    .on(background),
+            )
             .child(
                 Label::new(count.to_string())
                     .size(LabelSize::XSmall)
-                    .color(color)
+                    .color(Color::Custom(agent_activity::legible_on(
+                        state.color().color(cx),
+                        background,
+                    )))
                     .untranslated(),
             )
             .into_any_element()
@@ -381,13 +402,16 @@ fn terminal_entry(
     multi_workspace: &Entity<MultiWorkspace>,
     tab: &WorkspaceTab,
     indent: bool,
+    cx: &App,
 ) -> ContextMenuEntry {
     let (icon, color) = match terminal.agent {
-        Some(AgentState::Working) => (IconName::LoadCircle, Color::Accent),
-        Some(AgentState::NeedsInput) => (IconName::Bell, Color::Warning),
-        Some(AgentState::Idle) => (IconName::Circle, Color::Muted),
-        Some(AgentState::Finished | AgentState::Done) => (IconName::Check, Color::Success),
-        Some(AgentState::Failed) => (IconName::XCircle, Color::Error),
+        Some(state) => (
+            state.icon(),
+            Color::Custom(agent_activity::legible_on(
+                state.color().color(cx),
+                cx.theme().colors().elevated_surface_background,
+            )),
+        ),
         None => (IconName::Terminal, Color::Muted),
     };
     let multi_workspace = multi_workspace.downgrade();
@@ -476,7 +500,7 @@ fn build_workspace_menu(
         }
     }
     for terminal in terminals.iter().filter(|terminal| !in_a_task(terminal)) {
-        menu = menu.item(terminal_entry(terminal, multi_workspace, tab, false));
+        menu = menu.item(terminal_entry(terminal, multi_workspace, tab, false, cx));
     }
     if let Some(workspace) = &tab.workspace {
         if !tasks.is_empty() {
@@ -501,7 +525,7 @@ fn build_workspace_menu(
                 .iter()
                 .filter(|terminal| task.terminals.contains(&terminal.id))
             {
-                menu = menu.item(terminal_entry(terminal, multi_workspace, tab, true));
+                menu = menu.item(terminal_entry(terminal, multi_workspace, tab, true, cx));
             }
         }
         menu = menu.separator();
@@ -633,6 +657,68 @@ mod tests {
                 "Empty"
             ]
         );
+    }
+
+    /// The workspace switching actions (G11's smoke test covers the
+    /// terminal's; these live here, with the workspace tabs).
+    #[gpui::test]
+    async fn test_switch_workspaces_with_actions(cx: &mut gpui::TestAppContext) {
+        use fs::Fs as _;
+        use gpui::VisualTestContext;
+        use project::Project;
+        use util::path;
+
+        let app_state = cx.update(workspace::AppState::test);
+        let fs = app_state.fs.as_fake();
+        for dir in [path!("/a"), path!("/b")] {
+            fs.create_dir(dir.as_ref()).await.unwrap();
+        }
+        let project_a = Project::test(app_state.fs.clone(), [path!("/a").as_ref()], cx).await;
+        let project_b = Project::test(app_state.fs.clone(), [path!("/b").as_ref()], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let multi_workspace = window_handle.root(cx).unwrap();
+        let workspace_a =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.test_add_workspace(project_b, window, cx)
+        });
+        for workspace in [&workspace_a, &workspace_b] {
+            workspace.update(cx, |workspace, _| register_actions(workspace));
+        }
+        cx.run_until_parked();
+        let active = |cx: &mut VisualTestContext| {
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        };
+        let dispatch = |action: &dyn Action, cx: &mut VisualTestContext| {
+            let focus = active(cx).read_with(cx, |workspace, cx| workspace.focus_handle(cx));
+            cx.update(|window, cx| {
+                window.focus(&focus, cx);
+                window.dispatch_action(action.boxed_clone(), cx);
+            });
+            cx.run_until_parked();
+        };
+        assert_eq!(active(cx), workspace_b);
+
+        dispatch(&NextWorkspace, cx);
+        assert_eq!(active(cx), workspace_a, "wraps around");
+        dispatch(&PreviousWorkspace, cx);
+        assert_eq!(active(cx), workspace_b);
+        // In the order the tabs show.
+        let tabs = cx.update(|_, cx| {
+            workspace_tabs(&multi_workspace, cx)
+                .into_iter()
+                .filter_map(|tab| tab.workspace)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(tabs.len(), 2);
+        for (index, workspace) in tabs.iter().enumerate().rev() {
+            dispatch(&ActivateWorkspace { index }, cx);
+            assert_eq!(&active(cx), workspace);
+        }
+        dispatch(&ActivateWorkspace { index: 8 }, cx);
+        assert_eq!(active(cx), tabs[0], "no ninth tab: stays");
     }
 
     #[test]

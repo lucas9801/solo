@@ -352,6 +352,26 @@ fn resolve_open_target_internal(
     }
 
     let project = workspace.read(cx).project().clone();
+    // SOLO: a terminal (or the agent in it) working in a folder no worktree
+    // holds has its bare file names (`object.h:163`) looked for there too.
+    let outside_folder_search = (matching == PathMatching::Heuristic
+        && project.read(cx).is_local())
+    .then(|| cwd.map(Path::to_path_buf))
+    .flatten()
+    .filter(|cwd| {
+        !worktree_candidates
+            .iter()
+            .any(|worktree| cwd.starts_with(worktree.read(cx).abs_path()))
+    })
+    .map(|cwd| {
+        let names = potential_paths
+            .iter()
+            .filter(|path| path.path.is_relative() && looks_like_a_path(&path.path))
+            .cloned()
+            .collect::<Vec<_>>();
+        (cwd, names, project.read(cx).fs().clone())
+    });
+
     let background_path_checks = background_path_checks.unwrap_or_else(|| {
         if project.read(cx).is_local() {
             BackgroundPathChecks::LocalFileSystem
@@ -443,6 +463,86 @@ fn resolve_open_target_internal(
             return None;
         }
 
+        let in_worktrees = scan_worktrees(cx, worktree_paths_to_check, context_paths).await;
+        if in_worktrees.is_some() {
+            return in_worktrees;
+        }
+        let (cwd, names, fs) = outside_folder_search?;
+        cx.background_spawn(async move { find_under(fs.as_ref(), &cwd, &names).await })
+            .await
+    })
+}
+
+/// SOLO: how many entries, and for how long, a terminal's own folder outside
+/// the worktrees is searched for a file name.
+const MAX_OUTSIDE_ENTRIES: usize = 50_000;
+const MAX_OUTSIDE_TIME: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// SOLO: the first file under `root` (breadth first, skipping build and
+/// dependency folders) whose path ends with one of `names`.
+async fn find_under(
+    fs: &dyn fs::Fs,
+    root: &Path,
+    names: &[PathWithPosition],
+) -> Option<OpenTarget> {
+    use futures::StreamExt as _;
+    if names.is_empty() {
+        return None;
+    }
+    let started = std::time::Instant::now();
+    let mut seen = 0;
+    let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
+    while let Some(dir) = queue.pop_front() {
+        let Ok(mut entries) = fs.read_dir(&dir).await else {
+            continue;
+        };
+        while let Some(entry) = entries.next().await {
+            seen += 1;
+            if seen > MAX_OUTSIDE_ENTRIES || started.elapsed() > MAX_OUTSIDE_TIME {
+                return None;
+            }
+            let Ok(path) = entry else { continue };
+            let Some(metadata) = fs.metadata(&path).await.ok().flatten() else {
+                continue;
+            };
+            if metadata.is_dir {
+                let skip = path.file_name().is_some_and(|name| {
+                    matches!(
+                        name.to_str(),
+                        Some(".git" | "node_modules" | "target" | ".cache" | ".venv")
+                    )
+                });
+                if !skip && !metadata.is_symlink {
+                    queue.push_back(path);
+                }
+                continue;
+            }
+            if let Some(name) = names.iter().find(|name| path.ends_with(&name.path)) {
+                return Some(OpenTarget::Path(
+                    PathWithPosition {
+                        path,
+                        row: name.row,
+                        column: name.column,
+                    },
+                    false,
+                    #[cfg(any(test, feature = "test-support"))]
+                    OpenTargetFoundBy::BackgroundPathResolution,
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// The worktree scan for a path's trailing components, the file nearest to
+/// `context_paths` winning.
+async fn scan_worktrees(
+    cx: &mut gpui::AsyncApp,
+    worktree_paths_to_check: Vec<(Entity<Worktree>, Vec<PathWithPosition>)>,
+    context_paths: Vec<String>,
+) -> Option<OpenTarget> {
+    {
+
         let worktree_paths_to_check = worktree_paths_to_check
             .into_iter()
             .map(|(worktree, paths_to_check)| {
@@ -533,7 +633,7 @@ fn resolve_open_target_internal(
             None
         })
         .await
-    })
+    }
 }
 
 /// SOLO: how many files of the name a scanned path ends with are compared

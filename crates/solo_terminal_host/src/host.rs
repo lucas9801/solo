@@ -19,6 +19,7 @@ use windows_sys::Win32::System::LibraryLoader::*;
 use windows_sys::Win32::System::Pipes::*;
 use windows_sys::Win32::System::Threading::*;
 
+use crate::log::Log;
 use crate::{HEADER, PROTOCOL, REPLAY_END, RING_CAPACITY, Spec};
 
 /// Only the user who made the pipes (Solo's user) may open them.
@@ -35,18 +36,33 @@ pub fn main() {
     if spec.protocol != PROTOCOL {
         std::process::exit(2);
     }
+    let log = Arc::new(Log::new(spec.log_dir.as_deref(), &spec.pipe));
     // The pipes first, so Solo can open them while the program starts (which
     // can take seconds with many terminals starting at once, or security
     // software scanning). Solo then waits for the header, which follows once
     // the program runs, or for the pipes to break if it can't start.
     let Some(first) = Pipes::make(&spec.pipe, true) else {
-        std::process::exit(4);
+        exit(
+            &log,
+            4,
+            "couldn't make the pipes (someone else has the name)",
+        );
     };
     let console = match Console::spawn(&spec) {
         Ok(console) => Arc::new(console),
-        Err(_) => std::process::exit(3),
+        Err(error) => exit(
+            &log,
+            3,
+            &format!("couldn't start {}: {error}", spec.command_line),
+        ),
     };
-    serve(spec, console, first);
+    log.write(&format!(
+        "started {} (pid {}) in {}",
+        spec.command_line,
+        console.pid,
+        spec.working_directory.as_deref().unwrap_or("-")
+    ));
+    serve(spec, console, first, log);
 }
 
 fn wide(text: impl AsRef<OsStr>) -> Vec<u16> {
@@ -407,7 +423,13 @@ fn make_retrying(name: &str, outbound: bool, first: bool) -> Option<HANDLE> {
     None
 }
 
-fn serve(spec: Spec, console: Arc<Console>, first: Pipes) {
+/// Exits the host, saying why in its log.
+fn exit(log: &Log, code: i32, why: &str) -> ! {
+    log.write(&format!("ending: {why}"));
+    std::process::exit(code);
+}
+
+fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
     let shared = Arc::new(Mutex::new(Shared {
         ring: VecDeque::new(),
         truncated: false,
@@ -447,9 +469,12 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes) {
     // The host ends with the program.
     {
         let console = console.clone();
+        let log = log.clone();
         thread::spawn(move || {
+            let mut code = 0u32;
             unsafe {
                 WaitForSingleObject(console.process, INFINITE);
+                GetExitCodeProcess(console.process, &mut code);
             }
             // Its last output reaches the client first.
             thread::sleep(Duration::from_millis(300));
@@ -457,7 +482,7 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes) {
                 (console.api.close)(console.handle);
             }
             thread::sleep(Duration::from_millis(200));
-            std::process::exit(0);
+            exit(&log, 0, &format!("the program exited ({code:#x})"));
         });
     }
 
@@ -471,6 +496,7 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes) {
     // Whether a client said to keep running: then the host waits for the
     // next client, even past one that opened the pipes and went.
     let mut kept = false;
+    let mut clients = 0u32;
     while let Some(next) = pipes.take().or_else(|| Pipes::make(&spec.pipe, false)) {
         // Only the first client is waited for at most so long; after a
         // client said to keep running, the next may come any time.
@@ -481,16 +507,27 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes) {
         };
         let Some((mut out, input, control)) = connected else {
             if kept {
+                log.write("a client failed to connect; waiting for the next");
                 continue;
             }
-            break;
+            console.kill();
+            exit(
+                &log,
+                4,
+                "no client connected in time (Solo crashed or ended after starting the host)",
+            );
         };
+        clients += 1;
         // Whether to keep running when the client goes: a new client starts
         // from "end with me", and says otherwise.
         let mut keep = false;
         {
             let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
             let replay = shared.replay();
+            log.write(&format!(
+                "client {clients} connected; replaying {} bytes",
+                replay.len()
+            ));
             if out.write_all(header.as_bytes()).is_ok()
                 && out.write_all(&replay).is_ok()
                 && out.write_all(REPLAY_END).is_ok()
@@ -511,48 +548,62 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes) {
             })
         };
         let mut control = BufReader::new(control);
-        loop {
+        let gone = loop {
             let mut kind = [0u8; 1];
-            if control.read_exact(&mut kind).is_err() {
-                break;
+            if let Err(error) = control.read_exact(&mut kind) {
+                break format!("its control pipe closed ({error})");
             }
             match kind[0] {
                 b'R' => {
                     let mut size = [0u8; 4];
-                    if control.read_exact(&mut size).is_err() {
-                        break;
+                    if let Err(error) = control.read_exact(&mut size) {
+                        break format!("its control pipe closed mid-message ({error})");
                     }
                     let columns = u16::from_le_bytes([size[0], size[1]]);
                     let rows = u16::from_le_bytes([size[2], size[3]]);
+                    log.write(&format!("got R {columns}x{rows}"));
                     console.resize(columns, rows);
                 }
-                b'P' => keep = true,
-                b'E' => keep = false,
+                b'P' => {
+                    log.write("got P");
+                    keep = true;
+                }
+                b'E' => {
+                    log.write("got E");
+                    keep = false;
+                }
                 b'K' => {
+                    log.write("got K");
                     console.kill();
                     thread::sleep(Duration::from_millis(200));
-                    std::process::exit(0);
+                    exit(&log, 0, "Solo said to end (K)");
                 }
-                _ => break,
+                other => break format!("it sent an unknown control byte {other:#04x}"),
             }
-        }
+        };
+        log.write(&format!(
+            "client {clients} gone: {gone}; keep running: {keep}"
+        ));
         // The client went: end with it, unless the program is busy; then
         // keep running for the next one, once its pipe instances are closed.
         if !keep {
             console.kill();
             thread::sleep(Duration::from_millis(200));
-            std::process::exit(0);
+            exit(
+                &log,
+                0,
+                "the client went while the terminal wasn't to keep running",
+            );
         }
         kept = true;
         drop(control);
         shared.lock().unwrap_or_else(|e| e.into_inner()).client = None;
         forward_input.join().ok();
     }
-    // The pipes can't be made (someone else holds the name), no first client
-    // came in time, or a client failed before saying to keep running: end
-    // rather than run on unreachable.
+    // The pipes can't be made (someone else holds the name): end rather than
+    // run on unreachable.
     console.kill();
-    std::process::exit(4);
+    exit(&log, 4, "couldn't make the pipes for the next client");
 }
 
 #[cfg(test)]

@@ -2572,8 +2572,8 @@ impl Workspace {
 
     pub fn finish_dock_restoration(&self, cx: &mut App) {
         for dock in [&self.left_dock, &self.bottom_dock, &self.right_dock] {
-            dock.update(cx, |dock, _| {
-                dock.finish_restoration();
+            dock.update(cx, |dock, cx| {
+                dock.finish_restoration(cx);
             });
         }
     }
@@ -9307,8 +9307,16 @@ impl Workspace {
                         let center = div()
                             .flex()
                             .h_full()
+                            .relative()
                             .overflow_hidden()
-                            .child(self.render_center(render_cx, window, cx));
+                            .child(self.render_center(render_cx, window, cx))
+                            // SOLO: the terminal column is closed and the
+                            // editor area empty: show the ways back to a
+                            // terminal instead of a blank window.
+                            .when(
+                                !terminal_open && !bottom_zoomed && !has_open_items,
+                                |this| this.children(self.render_terminal_column_hints(cx)),
+                            );
                         this.child(if side_by_side {
                             flex_share(center, 1. - split)
                         } else {
@@ -9319,8 +9327,55 @@ impl Workspace {
             .children(self.render_dock(DockPosition::Right, &self.right_dock, window, cx))
     }
 
-    /// In the terminal-first layout the editor area disappears once its last item
-    /// closes, so hand focus to the terminal instead of leaving it on a hidden pane.
+    /// SOLO: what the empty editor area of the terminal-first layout shows while
+    /// the terminal column is closed: clickable hints to show the column, open a
+    /// new terminal or find a file. None without a project folder, where the
+    /// pane shows the welcome page instead.
+    fn render_terminal_column_hints(&self, cx: &App) -> Option<AnyElement> {
+        self.project.read(cx).visible_worktrees(cx).next()?;
+        let hints = [
+            cx.build_action("terminal_panel::Toggle", None)
+                .ok()
+                .map(|action| (util::i18n::tr("Show Terminal", "显示终端栏"), action)),
+            Some((
+                util::i18n::tr("New Terminal", "新建终端"),
+                NewTerminal::default().boxed_clone(),
+            )),
+            Some((
+                util::i18n::tr("Find File", "查找文件"),
+                ToggleFileFinder::default().boxed_clone(),
+            )),
+        ];
+        let rows = hints
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(ix, (label, action))| {
+                let key_binding = ui::KeyBinding::for_action(&*action, cx);
+                ui::ButtonLike::new(("terminal-column-hint", ix))
+                    .size(ui::ButtonSize::Large)
+                    .full_width()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .gap_4()
+                            .child(Label::new(label))
+                            .child(key_binding),
+                    )
+                    .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+            });
+        Some(
+            h_flex()
+                .debug_selector(|| "terminal-column-hints".into())
+                .absolute()
+                .inset_0()
+                .justify_center()
+                .child(v_flex().w(px(260.)).gap_1().children(rows))
+                .into_any_element(),
+        )
+    }
+
     /// Sets the terminal's share of the terminal-first layout and saves it once
     /// dragging settles.
     fn set_terminal_first_split(&mut self, split: f32, cx: &mut Context<Self>) {
@@ -21027,6 +21082,43 @@ mod tests {
         });
     }
 
+    // SOLO: a dock last showing a panel Solo no longer registers (the agent
+    // panel) doesn't come back open and empty.
+    #[gpui::test]
+    async fn test_dock_waiting_for_missing_panel_closes_when_loading_finishes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.right_dock().update(cx, |dock, cx| {
+                dock.restore_serialized_state(
+                    DockData {
+                        visible: true,
+                        active_panel: Some("AgentPanel".to_string()),
+                        zoom: false,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.right_dock().read(cx).is_open());
+        });
+
+        workspace.update(cx, |workspace, cx| {
+            workspace.finish_dock_restoration(cx);
+        });
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(!workspace.right_dock().read(cx).is_open());
+        });
+    }
+
     #[gpui::test]
     async fn test_stale_serialized_dock_state_discarded_when_panel_loading_finishes(
         cx: &mut gpui::TestAppContext,
@@ -21406,6 +21498,54 @@ mod tests {
         other.update(cx, |_, cx| cx.emit(PanelEvent::Close));
         cx.run_until_parked();
         assert!(bottom_dock_shows(&workspace, terminal.entity_id(), cx));
+    }
+
+    // SOLO (G25): with the terminal column closed and no files open, the empty
+    // editor area shows the ways back to a terminal.
+    #[gpui::test]
+    async fn test_terminal_column_hints_in_empty_editor_area(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ "one": "" })).await;
+        let project = Project::test(fs, ["root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        add_fake_terminal_panel(&workspace, cx);
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("terminal-column-hints").is_none(),
+            "the terminal column is open"
+        );
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Bottom, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(!workspace.read_with(cx, |workspace, cx| {
+            workspace.bottom_dock().read(cx).is_open()
+        }));
+        assert!(cx.debug_bounds("terminal-column-hints").is_some());
+
+        // Not while a file is open.
+        let item = cx.new(TestItem::new);
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_item_to_active_pane(Box::new(item), None, true, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("terminal-column-hints").is_none());
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        pane.update_in(cx, |pane, window, cx| {
+            pane.close_all_items(&Default::default(), window, cx)
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("terminal-column-hints").is_some());
+
+        // Nor in other layouts.
+        set_bottom_dock_layout(BottomDockLayout::Contained, cx);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("terminal-column-hints").is_none());
     }
 
     struct FakeTerminalPanel {

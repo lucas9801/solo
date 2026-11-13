@@ -27,6 +27,11 @@
   });
   ```
 
+# Fixing bugs (Solo)
+
+* Every fix for a bug a user reported comes with a test that fails before the fix and passes after it. Check that it does fail: run it with the fix undone. Prefer a GPUI test that goes the way the user did (dispatch the action from the focus the menu or key binding has, open the real view) over one that only calls a pure function: the Agent Timeline crash (G1) shipped because the timeline's tests only covered pure functions.
+* A new action, menu entry, setting or notification goes into `docs/testing/feature-checklist.md`; `python script/solo-feature-audit.py` (run in CI) fails when a Solo action is missing there. `crates/terminal_view/src/smoke_tests.rs` dispatches every new action automatically; if one needs data or touches real files, add it there explicitly.
+
 # Timers in tests
 
 * In GPUI tests, prefer GPUI executor timers over `smol::Timer::after(...)` when you need timeouts, delays, or to drive `run_until_parked()`:

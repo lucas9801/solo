@@ -9,6 +9,15 @@ use strum::{EnumIter, EnumString, IntoStaticStr};
 #[strum(serialize_all = "snake_case")]
 pub enum IconName {
     AcpRegistry,
+    // SOLO: an agent's status (see `workspace::agent_activity::AgentState`).
+    AgentStatusExited,
+    AgentStatusFailed,
+    AgentStatusFinished,
+    AgentStatusIdle,
+    AgentStatusNeedsInput,
+    AgentStatusNeedsInputDot,
+    AgentStatusNeedsInputRing,
+    AgentStatusWorking,
     AiAnthropic,
     AiAnthropicCompat,
     AiBedrock,

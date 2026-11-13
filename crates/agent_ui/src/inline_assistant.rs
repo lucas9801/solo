@@ -223,12 +223,11 @@ impl InlineAssistant {
             model_registry.configuration_error(model_registry.inline_assistant_model(), cx)
         };
 
-        let Some(agent_panel) = workspace.panel::<AgentPanel>(cx) else {
+        // SOLO: the agent panel isn't registered in Solo; it was built on this
+        // same global store, so the inline assistant uses it directly.
+        let Some(thread_store) = ThreadStore::try_global(cx) else {
             return;
         };
-        let agent_panel = agent_panel.read(cx);
-
-        let thread_store = agent_panel.thread_store().clone();
 
         let handle_assist =
             |window: &mut Window, cx: &mut Context<Workspace>| match inline_assist_target {

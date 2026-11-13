@@ -37,6 +37,24 @@ const ZSH_STARTUP_FILES: [(&str, &str); 3] = [
 /// too, but can't know the nonce.
 pub const SHELL_NONCE_ENV: &str = "SOLO_SHELL_NONCE";
 
+/// SOLO: The environment variable with the key agent status reports carry
+/// (`OSC 6973 ; agent ; nonce=<key>`). The integration scripts take the shell
+/// nonce out of the environment so programs can't fake prompt marks, but the
+/// hooks agents run must report, so they get this instead: derived one-way
+/// from the nonce, so it can't be turned back into it, and computed again
+/// from the nonce when Solo reconnects to the terminal.
+pub const AGENT_TOKEN_ENV: &str = "SOLO_AGENT_TOKEN";
+
+/// The agent report key of a terminal started with `nonce`.
+pub fn agent_token(nonce: &str) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::new()
+        .chain_update(b"solo-agent-report\0")
+        .chain_update(nonce.as_bytes())
+        .finalize();
+    digest[..16].iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// The environment variable with the terminal's id, which `solo-cli agent`
 /// names terminals by.
 pub const TERMINAL_ID_ENV: &str = "SOLO_TERMINAL_ID";
@@ -83,7 +101,9 @@ pub fn integrate_shell(
         Shell::WithArguments { .. } => return shell,
     };
     // Unused by shells that aren't integrated below.
-    env.insert(SHELL_NONCE_ENV.to_string(), new_nonce());
+    let nonce = new_nonce();
+    env.insert(AGENT_TOKEN_ENV.to_string(), agent_token(&nonce));
+    env.insert(SHELL_NONCE_ENV.to_string(), nonce);
     // How agents and scripts report their status (docs/agent-status-protocol.md).
     if let Some(hook) = agent_hook_executable() {
         env.insert(
@@ -282,24 +302,25 @@ pub fn integrate_claude_code(is_windows: bool, env: &mut HashMap<String, String>
 /// the first session shows its hook review once.
 ///
 /// The hooks run `solo-agent-hook`, which reads the event from Codex's input
-/// (the same events as Claude Code's). On Windows Codex runs a hook with
-/// `cmd /C`, and Windows PowerShell can't pass double quotes on to Codex, so
-/// the program's quoted path is in `SOLO_AGENT_HOOK_COMMAND` rather than in the
-/// arguments.
+/// (the same events as Claude Code's). Codex runs a hook command with the
+/// session's shell: `sh -c` elsewhere, but on Windows (since Codex 0.114)
+/// `powershell.exe -NoProfile -Command`, or `cmd /C` only if it finds no
+/// PowerShell. So on Windows the command names the program by its full path
+/// rather than through an environment variable: PowerShell doesn't expand
+/// `%VAR%`, and looking up the unknown command made it fail after seconds.
 pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
     let Some(hook) = agent_hook_executable() else {
         return;
     };
-    if is_windows {
-        env.insert(
-            "SOLO_AGENT_HOOK_COMMAND".to_string(),
-            format!("\"{}\"", hook.to_string_lossy()),
-        );
+    match codex_hook_args(is_windows, &hook.to_string_lossy()) {
+        Some(args) => {
+            env.insert("SOLO_CODEX_ARGS".to_string(), args.join("\n"));
+        }
+        None => log::warn!(
+            "Codex can't be given a hook command for {}: it won't report its status",
+            hook.display()
+        ),
     }
-    env.insert(
-        "SOLO_CODEX_ARGS".to_string(),
-        codex_hook_args(is_windows).join("\n"),
-    );
 }
 
 /// SOLO: Lets GitHub Copilot CLI started from the integrated shell report
@@ -374,6 +395,142 @@ fn copilot_hooks(hook: &str) -> serde_json::Value {
     })
 }
 
+/// SOLO: Lets OpenCode started from the integrated shell report what it's
+/// doing, so its turns are tracked like Claude Code's.
+///
+/// OpenCode has no command hooks, only JavaScript plugins, so Solo writes
+/// plugins (beside the shell scripts) that run `solo-agent-hook report` on
+/// OpenCode's events. The shell scripts wrap `opencode` to load them for that
+/// session only, unless the user set the variable themselves; nothing is
+/// written to OpenCode's own config:
+/// - OpenCode 2 runs a shared server for all its clients, so the plugin is a
+///   TUI plugin (it runs in the terminal) listed in
+///   `OPENCODE_CLI_CONFIG_CONTENT`, from `SOLO_OPENCODE_CLI_CONFIG`
+///   (<https://opencode.ai/docs/cli/config/#inline-config>). That list
+///   replaces the one in the user's `cli.json`, so it's theirs plus Solo's.
+/// - OpenCode 1 loads plugins from the extra config folder in
+///   `OPENCODE_CONFIG_DIR`, from `SOLO_OPENCODE_CONFIG_DIR`
+///   (<https://docs.opencode.ai/docs/config/#custom-directory>).
+pub fn integrate_opencode(env: &mut HashMap<String, String>) {
+    if agent_hook_executable().is_none() {
+        return;
+    }
+    let (plugin, config_dir) = match write_opencode_plugins() {
+        Ok(paths) => paths,
+        Err(error) => {
+            log::warn!("failed to write the OpenCode plugins: {error}");
+            return;
+        }
+    };
+    env.insert("SOLO_OPENCODE_CONFIG_DIR".to_string(), config_dir);
+    let path = opencode_cli_config_path(env);
+    let user_settings = std::fs::read_to_string(&path).ok();
+    let user_settings = user_settings
+        .as_deref()
+        .map(|contents| (contents, path.parent().unwrap_or(Path::new("/"))));
+    match opencode_cli_config(&plugin, user_settings) {
+        Some(config) => {
+            env.insert("SOLO_OPENCODE_CLI_CONFIG".to_string(), config);
+        }
+        None => log::warn!(
+            "{} isn't JSON Solo can read: OpenCode 2 won't report its status",
+            path.display()
+        ),
+    }
+}
+
+const OPENCODE_SHARED: &str = include_str!("shell_integration/opencode/solo-opencode.js");
+const OPENCODE_TUI_PLUGIN: &str = include_str!("shell_integration/opencode/tui.js");
+const OPENCODE_V1_PLUGIN: &str = include_str!("shell_integration/opencode/solo-v1.js");
+
+/// Writes the OpenCode 2 plugin folder and OpenCode 1's config folder (whose
+/// plugin imports from the former); returns the plugin's file URL and the
+/// config folder.
+fn write_opencode_plugins() -> std::io::Result<(String, String)> {
+    write_script("opencode-plugin/solo-opencode.js", OPENCODE_SHARED)?;
+    let tui = write_script("opencode-plugin/tui.js", OPENCODE_TUI_PLUGIN)?;
+    let v1 = write_script("opencode-config/plugins/solo.js", OPENCODE_V1_PLUGIN)?;
+    let plugin_dir = native_path(Path::new(&tui).parent().unwrap_or(Path::new("")));
+    let plugin = url::Url::from_file_path(&plugin_dir).map_err(|()| {
+        std::io::Error::other(format!("{} isn't an absolute path", plugin_dir.display()))
+    })?;
+    let config_dir = native_path(
+        Path::new(&v1)
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(Path::new("")),
+    );
+    Ok((
+        plugin.to_string(),
+        config_dir.to_string_lossy().into_owned(),
+    ))
+}
+
+/// `path` with the platform's separators (the scripts' paths use `/`).
+fn native_path(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(path.to_string_lossy().replace('/', "\\"))
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Where OpenCode 2 keeps the user's CLI settings
+/// (<https://opencode.ai/docs/cli/config/#configuration-file>).
+fn opencode_cli_config_path(env: &HashMap<String, String>) -> PathBuf {
+    env.get("XDG_CONFIG_HOME")
+        .cloned()
+        .or_else(|| std::env::var("XDG_CONFIG_HOME").ok())
+        .filter(|dir| !dir.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths::home_dir().join(".config"))
+        .join("opencode")
+        .join("cli.json")
+}
+
+/// OpenCode 2 CLI settings that load the plugin at `plugin` (a file URL) as
+/// well as the user's own plugins, from their `cli.json` (its contents and
+/// folder) if they have one, since an inline `plugins` list replaces theirs.
+/// `None` if their `cli.json` can't be read as JSON: their plugins would be
+/// lost.
+fn opencode_cli_config(plugin: &str, user: Option<(&str, &Path)>) -> Option<String> {
+    let mut plugins = Vec::new();
+    if let Some((contents, dir)) = user.filter(|(contents, _)| !contents.trim().is_empty()) {
+        let settings: serde_json::Value = serde_json::from_str(contents).ok()?;
+        let user_plugins = settings
+            .get("plugins")
+            .and_then(|plugins| plugins.as_array())
+            .cloned()
+            .unwrap_or_default();
+        // Relative paths are relative to cli.json's folder.
+        let absolute = |package: &str| -> serde_json::Value {
+            if ["./", "../", ".\\", "..\\"]
+                .iter()
+                .any(|prefix| package.starts_with(prefix))
+            {
+                dir.join(package).to_string_lossy().into_owned().into()
+            } else {
+                package.into()
+            }
+        };
+        for entry in user_plugins {
+            plugins.push(match entry {
+                serde_json::Value::String(package) => absolute(&package),
+                serde_json::Value::Object(mut entry) => {
+                    let package = entry.get("package").and_then(|package| package.as_str());
+                    if let Some(package) = package.map(absolute) {
+                        entry.insert("package".to_string(), package);
+                    }
+                    serde_json::Value::Object(entry)
+                }
+                other => other,
+            });
+        }
+    }
+    plugins.push(serde_json::json!({ "package": plugin }));
+    Some(serde_json::json!({ "plugins": plugins }).to_string())
+}
+
 /// The Codex events Solo reports, as in its `hooks` config.
 const CODEX_HOOK_EVENTS: [&str; 5] = [
     "SessionStart",
@@ -384,22 +541,61 @@ const CODEX_HOOK_EVENTS: [&str; 5] = [
     "Interrupt",
 ];
 
-/// The `-c` arguments that add Solo's hooks to a Codex session. The values
-/// are TOML with literal (single-quoted) strings only: Codex reads a value
-/// that isn't valid TOML as a plain string, silently.
-fn codex_hook_args(is_windows: bool) -> Vec<String> {
+/// The `-c` arguments that add Solo's hooks, running the hook program at
+/// `hook`, to a Codex session; `None` if there's no command for that path.
+/// The values are TOML with literal (single-quoted) strings only: Codex reads
+/// a value that isn't valid TOML as a plain string, silently, and Windows
+/// PowerShell can't pass double quotes on to Codex.
+///
+/// Codex trusts a hook by a hash of its command and timeout, so changing
+/// either (or Solo's folder, on Windows) makes it ask to trust them again.
+fn codex_hook_args(is_windows: bool, hook: &str) -> Option<Vec<String>> {
     let command = if is_windows {
-        "%SOLO_AGENT_HOOK_COMMAND% --agent codex"
+        codex_windows_hook_command(hook)?
     } else {
-        "\"$SOLO_AGENT_HOOK\" --agent codex"
+        "'\"$SOLO_AGENT_HOOK\" --agent codex'".to_string()
     };
-    // Codex allows Interrupt hooks 3 seconds at most; the hook takes a few
-    // milliseconds.
-    let groups = format!("[{{hooks=[{{type='command',command='{command}',timeout=3}}]}}]");
-    CODEX_HOOK_EVENTS
-        .iter()
-        .flat_map(|event| ["-c".to_string(), format!("hooks.{event}={groups}")])
-        .collect()
+    Some(
+        CODEX_HOOK_EVENTS
+            .iter()
+            .flat_map(|event| {
+                // Codex allows Interrupt hooks 3 seconds at most. The hook
+                // takes a few milliseconds, but on Windows it's started by
+                // PowerShell, which can take a second or more to start.
+                let timeout = if *event == "Interrupt" { 3 } else { 10 };
+                [
+                    "-c".to_string(),
+                    format!(
+                        "hooks.{event}=[{{hooks=[{{type='command',command={command},timeout={timeout}}}]}}]"
+                    ),
+                ]
+            })
+            .collect(),
+    )
+}
+
+/// The hook command for Codex on Windows, as a TOML literal string: one that
+/// both PowerShell and `cmd /C` run (a bare path) if the path needs no
+/// quoting, otherwise PowerShell's call of a quoted path, in a TOML multi-line
+/// literal string since it has single quotes. `None` if TOML can't hold it.
+fn codex_windows_hook_command(hook: &str) -> Option<String> {
+    let plain = hook
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '\\' | ':' | '.' | '_' | '-'));
+    if plain && !hook.is_empty() {
+        return Some(format!("'{hook} --agent codex'"));
+    }
+    // PowerShell takes these as single quotes too.
+    let mut quoted = String::new();
+    for c in hook.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    let command = format!("& '{quoted}' --agent codex");
+    (!command.contains("'''") && !command.contains(['\n', '\r']))
+        .then(|| format!("'''{command}'''"))
 }
 
 fn write_claude_code_settings(is_windows: bool) -> std::io::Result<String> {
@@ -538,9 +734,14 @@ impl AgentHookKind {
     }
 }
 
+/// SOLO: The first parameter of an agent report, before the terminal's nonce.
+pub const AGENT_REPORT_NONCE_PREFIX: &str = "nonce=";
+
 /// SOLO: A report from an AI agent's hook, sent as
-/// `OSC 6973 ; agent ; <kind> [; <order> [; <session id> [; <agent>]]]`
-/// (documented in docs/agent-status-protocol.md).
+/// `OSC 6973 ; agent ; nonce=<nonce> ; <kind> [; <order> [; <session id> [; <agent>]]]`
+/// (documented in docs/agent-status-protocol.md). [`AgentHook::parse`] takes
+/// the parameters after the nonce, see
+/// [`ShellIntegration::authenticate_agent_report`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentHook {
     pub kind: AgentHookKind,
@@ -551,6 +752,9 @@ pub struct AgentHook {
     /// The agent's session (Claude Code's `session_id`), which tells which
     /// transcript is this terminal's.
     pub session_id: Option<AgentSessionId>,
+    /// SOLO: The session id as reported, for agents whose ids aren't UUIDs
+    /// (OpenCode's `ses_...`): up to 128 letters, digits, `-` or `_`.
+    pub raw_session_id: Option<String>,
     /// What the agent calls itself, for programs Solo doesn't know as agents.
     pub agent: Option<String>,
     /// Where the agent works, which can differ from where the shell is (a
@@ -567,7 +771,12 @@ impl AgentHook {
         let (kind, rest) = params.split_first()?;
         let kind = AgentHookKind::parse(kind)?;
         let sent_at_ms = rest.first().and_then(|sent_at| sent_at.trim().parse().ok());
-        let session_id = rest.get(1).and_then(|id| AgentSessionId::parse(id));
+        let raw_session_id = rest
+            .get(1)
+            .map(|id| id.trim())
+            .filter(|id| is_session_id(id))
+            .map(str::to_string);
+        let session_id = raw_session_id.as_deref().and_then(AgentSessionId::parse);
         let agent = rest
             .get(2)
             .map(|name| name.trim())
@@ -580,19 +789,52 @@ impl AgentHook {
             })
             .map(str::to_string);
         // Percent-encoded, and last, so a `;` in it can't move the others.
+        // Not a network path: Solo runs git there.
         let working_directory = (rest.len() > 3)
             .then(|| rest[3..].join(";"))
             .and_then(|encoded| percent_decode(&encoded))
             .map(PathBuf::from)
-            .filter(|directory| directory.is_absolute());
+            .filter(|directory| directory.is_absolute() && !is_network_path(directory));
         Some(Self {
             kind,
             sent_at_ms,
             session_id,
+            raw_session_id,
             agent,
             working_directory,
         })
     }
+}
+
+/// SOLO: Whether `path` names a network location (`\\server\share`,
+/// `//server/share`, `\\?\UNC\...`) or a device (`\\.\...`), where looking
+/// at it could connect to another machine. Drive letters mapped to network
+/// shares aren't detected here.
+pub fn is_network_path(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    let bytes = text.as_bytes();
+    let is_separator = |byte: u8| byte == b'\\' || byte == b'/';
+    if bytes.len() < 2 || !is_separator(bytes[0]) || !is_separator(bytes[1]) {
+        return false;
+    }
+    // `\\?\C:\...` is a local path in verbatim form.
+    let rest = &text[2..];
+    match rest.strip_prefix("?\\").or_else(|| rest.strip_prefix("?/")) {
+        Some(verbatim) => {
+            let verbatim = verbatim.as_bytes();
+            !(verbatim.len() >= 2 && verbatim[0].is_ascii_alphabetic() && verbatim[1] == b':')
+        }
+        None => true,
+    }
+}
+
+/// SOLO: Whether `id` can be an agent's session id: up to 128 letters,
+/// digits, `-` or `_`.
+pub fn is_session_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
 /// SOLO: `%XX` bytes back, as UTF-8; `None` if it isn't valid.
@@ -747,6 +989,21 @@ impl ShellIntegration {
     /// Whether a sequence came from the shell Solo integrated.
     fn from_integration(&self, nonce: Option<&str>) -> bool {
         self.nonce.is_some() && self.nonce.as_deref() == nonce
+    }
+
+    /// SOLO: The parameters of an agent report (`OSC 6973 ; agent ; nonce=<nonce>
+    /// ; ...`) after its nonce, if it carries the terminal's
+    /// ([`SHELL_NONCE_ENV`]). Anything the terminal shows can print the
+    /// sequence, but only programs started in it know the nonce; reports
+    /// start turns (git snapshots) and let `solo-cli agent send` type into
+    /// the terminal, so others are ignored.
+    pub fn authenticate_agent_report<'a>(&self, params: &'a [String]) -> Option<&'a [String]> {
+        let (first, rest) = params.split_first()?;
+        let key = first.trim().strip_prefix(AGENT_REPORT_NONCE_PREFIX)?;
+        let nonce = self.nonce.as_deref()?;
+        // SOLO: the agent key ([`AGENT_TOKEN_ENV`]) is what hooks have; the
+        // nonce itself only the integration scripts.
+        (key == agent_token(nonce) || key == nonce).then_some(rest)
     }
 
     /// Whether the shell has sent any marks, i.e. integration is working.
@@ -1012,7 +1269,9 @@ mod tests {
         // these shells take their scripts as arguments.
         assert!(
             env.keys()
-                .all(|key| key == SHELL_NONCE_ENV || key == AGENT_HOOK_ENV),
+                .all(|key| key == SHELL_NONCE_ENV
+                    || key == AGENT_TOKEN_ENV
+                    || key == AGENT_HOOK_ENV),
             "{env:?}"
         );
 
@@ -1119,6 +1378,7 @@ mod tests {
                 kind: AgentHookKind::PromptSubmitted,
                 sent_at_ms: Some(1793624689993),
                 session_id: None,
+                raw_session_id: None,
                 agent: None,
                 working_directory: None,
             })
@@ -1130,6 +1390,7 @@ mod tests {
                 kind: AgentHookKind::Stopped,
                 sent_at_ms: None,
                 session_id: None,
+                raw_session_id: None,
                 agent: None,
                 working_directory: None,
             })
@@ -1211,6 +1472,94 @@ mod tests {
     }
 
     #[test]
+    fn agent_reports_need_the_nonce() {
+        let params = |params: &[&str]| -> Vec<String> {
+            params.iter().map(|param| param.to_string()).collect()
+        };
+        let integration = ShellIntegration::new(Some("abc123".to_string()));
+        let report = params(&["nonce=abc123", "prompt", "1"]);
+        assert_eq!(
+            integration.authenticate_agent_report(&report),
+            Some(&report[1..])
+        );
+        for bad in [
+            &["prompt", "1"][..],
+            &["nonce=abc124", "prompt"][..],
+            &["nonce=", "prompt"][..],
+            &["abc123", "prompt"][..],
+            &[][..],
+        ] {
+            assert_eq!(
+                integration.authenticate_agent_report(&params(bad)),
+                None,
+                "{bad:?}"
+            );
+        }
+        // A terminal Solo didn't give a nonce trusts no report.
+        assert_eq!(
+            ShellIntegration::new(None).authenticate_agent_report(&params(&["nonce=", "prompt"])),
+            None
+        );
+    }
+
+    // SOLO: the integration scripts take the nonce out of the environment, so
+    // hooks (run by agents run in the shell) report with the agent key, which
+    // the shell's programs do have.
+    #[test]
+    fn hooks_report_with_the_agent_key() {
+        let mut env = HashMap::default();
+        integrate_shell(
+            Shell::Program("powershell.exe".into()),
+            "powershell.exe",
+            true,
+            &mut env,
+        );
+        let nonce = env.get(SHELL_NONCE_ENV).cloned().unwrap();
+        let token = env.get(AGENT_TOKEN_ENV).cloned().unwrap();
+        assert_ne!(token, nonce);
+        assert_eq!(token, agent_token(&nonce));
+        // The key can't stand in for the nonce in prompt marks.
+        assert_ne!(agent_token(&token), nonce);
+
+        let integration = ShellIntegration::new(Some(nonce));
+        let report: Vec<String> = [format!("nonce={token}"), "prompt".into()].into();
+        assert_eq!(
+            integration.authenticate_agent_report(&report),
+            Some(&report[1..])
+        );
+        let other: Vec<String> = [
+            format!("nonce={}", agent_token("another terminal")),
+            "prompt".into(),
+        ]
+        .into();
+        assert_eq!(integration.authenticate_agent_report(&other), None);
+    }
+
+    #[test]
+    fn network_paths_are_no_working_directories() {
+        for network in [
+            r"\\attacker\share",
+            "//attacker/share",
+            r"\\?\UNC\attacker\share",
+            r"\\.\pipe\x",
+        ] {
+            assert!(is_network_path(Path::new(network)), "{network}");
+        }
+        for local in [r"C:\work", r"\\?\C:\work", "/home/me", "relative"] {
+            assert!(!is_network_path(Path::new(local)), "{local}");
+        }
+        let hook = AgentHook::parse(&[
+            "prompt".to_string(),
+            "1".to_string(),
+            String::new(),
+            String::new(),
+            r"%5C%5Cattacker%5Cshare".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(hook.working_directory, None);
+    }
+
+    #[test]
     fn copilot_hooks_report_each_event() {
         let hooks = copilot_hooks(r"C:\Program Files\it's\solo-agent-hook.exe");
         let command = |event: &str, shell: &str| {
@@ -1238,9 +1587,127 @@ mod tests {
     }
 
     #[test]
+    fn opencode_cli_config_keeps_the_users_plugins() {
+        let plugin =
+            "file:///C:/Users/me/AppData/Local/Temp/solo-shell-integration/opencode-plugin";
+        let parse = |config: Option<String>| -> serde_json::Value {
+            serde_json::from_str(&config.expect("a config")).expect("JSON")
+        };
+        let solo = serde_json::json!({ "package": plugin });
+        assert_eq!(
+            parse(opencode_cli_config(plugin, None)),
+            serde_json::json!({ "plugins": [solo] })
+        );
+        assert_eq!(
+            parse(opencode_cli_config(
+                plugin,
+                Some((
+                    r#"{"theme":{"name":"x"}}"#,
+                    Path::new("/home/me/.config/opencode")
+                ))
+            )),
+            serde_json::json!({ "plugins": [solo] })
+        );
+        // Their list, in order, with relative paths made absolute, then Solo's.
+        let dir = Path::new("/home/me/.config/opencode");
+        let user = r#"{"plugins": ["-opencode.notifications", "./plugins/status",
+            {"package": "../shared", "options": {"compact": true}}, "@acme/tui@1.0.0"]}"#;
+        assert_eq!(
+            parse(opencode_cli_config(plugin, Some((user, dir)))),
+            serde_json::json!({ "plugins": [
+                "-opencode.notifications",
+                dir.join("./plugins/status").to_string_lossy(),
+                { "package": dir.join("../shared").to_string_lossy(), "options": { "compact": true } },
+                "@acme/tui@1.0.0",
+                solo,
+            ] })
+        );
+        // Their plugins can't be kept: Solo's isn't added.
+        assert_eq!(
+            opencode_cli_config(plugin, Some(("{ // comment", dir))),
+            None
+        );
+    }
+
+    #[test]
+    fn opencode_plugins_are_written() {
+        let (plugin, config_dir) = write_opencode_plugins().expect("writes the plugins");
+        let plugin_dir = url::Url::parse(&plugin)
+            .expect("a URL")
+            .to_file_path()
+            .expect("a file URL");
+        assert_eq!(
+            std::fs::read_to_string(plugin_dir.join("tui.js")).unwrap(),
+            OPENCODE_TUI_PLUGIN
+        );
+        let v1 = Path::new(&config_dir).join("plugins").join("solo.js");
+        assert_eq!(std::fs::read_to_string(&v1).unwrap(), OPENCODE_V1_PLUGIN);
+        // What the OpenCode 1 plugin imports.
+        let import = "../../opencode-plugin/solo-opencode.js";
+        assert!(OPENCODE_V1_PLUGIN.contains(import));
+        let shared = v1.parent().unwrap().join(import);
+        assert_eq!(std::fs::read_to_string(shared).unwrap(), OPENCODE_SHARED);
+        assert!(OPENCODE_TUI_PLUGIN.contains("\"./solo-opencode.js\""));
+    }
+
+    #[test]
+    fn opencode_session_ids_are_kept_raw() {
+        let params = |params: &[&str]| -> Vec<String> {
+            params.iter().map(|param| param.to_string()).collect()
+        };
+        let hook = AgentHook::parse(&params(&["prompt", "1", "ses_4f2a1cB9", "opencode"])).unwrap();
+        assert_eq!(hook.raw_session_id.as_deref(), Some("ses_4f2a1cB9"));
+        assert_eq!(hook.session_id, None);
+        assert_eq!(hook.agent.as_deref(), Some("opencode"));
+        let uuid = "0f6ed4b2-755b-4e18-8bd1-f60252548036";
+        let hook = AgentHook::parse(&params(&["start", "1", uuid])).unwrap();
+        assert_eq!(hook.raw_session_id.as_deref(), Some(uuid));
+        assert!(hook.session_id.is_some());
+        let too_long = "x".repeat(129);
+        for bad in ["a b", "a/b", "", too_long.as_str()] {
+            assert_eq!(
+                AgentHook::parse(&params(&["stop", "1", bad]))
+                    .unwrap()
+                    .raw_session_id,
+                None,
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
     fn codex_hook_args_are_valid_toml() {
-        for is_windows in [true, false] {
-            let args = codex_hook_args(is_windows);
+        let cases = [
+            (false, "/opt/solo/solo-agent-hook", r#""$SOLO_AGENT_HOOK" --agent codex"#),
+            // Runs in both PowerShell and cmd as is.
+            (
+                true,
+                r"C:\Users\Admin\AppData\Local\Programs\Solo\solo-agent-hook.exe",
+                r"C:\Users\Admin\AppData\Local\Programs\Solo\solo-agent-hook.exe --agent codex",
+            ),
+            (
+                true,
+                r"D:\工具\Solo_2.2-dev\solo-agent-hook.exe",
+                r"D:\工具\Solo_2.2-dev\solo-agent-hook.exe --agent codex",
+            ),
+            (
+                true,
+                r"C:\Program Files\Solo 测试\solo-agent-hook.exe",
+                r"& 'C:\Program Files\Solo 测试\solo-agent-hook.exe' --agent codex",
+            ),
+            (
+                true,
+                r"C:\Users\O'Brien\Solo\solo-agent-hook.exe",
+                r"& 'C:\Users\O''Brien\Solo\solo-agent-hook.exe' --agent codex",
+            ),
+            (
+                true,
+                "C:\\Users\\\u{2019}x\\100% $(x) & y\\solo-agent-hook.exe",
+                "& 'C:\\Users\\\u{2019}\u{2019}x\\100% $(x) & y\\solo-agent-hook.exe' --agent codex",
+            ),
+        ];
+        for (is_windows, hook, expected) in cases {
+            let args = codex_hook_args(is_windows, hook).unwrap();
             assert_eq!(args.len(), 2 * CODEX_HOOK_EVENTS.len());
             for (pair, event) in args.chunks(2).zip(CODEX_HOOK_EVENTS) {
                 assert_eq!(pair[0], "-c");
@@ -1250,13 +1717,19 @@ mod tests {
                 let parsed: toml::Table = toml::from_str(&format!("value = {value}")).unwrap();
                 let hook = &parsed["value"][0]["hooks"][0];
                 assert_eq!(hook["type"].as_str(), Some("command"));
-                assert_eq!(hook["timeout"].as_integer(), Some(3));
-                let command = hook["command"].as_str().unwrap();
-                assert!(command.ends_with(" --agent codex"), "{command}");
-                // Windows PowerShell drops double quotes from arguments.
+                let timeout = if event == "Interrupt" { 3 } else { 10 };
+                assert_eq!(hook["timeout"].as_integer(), Some(timeout));
+                assert_eq!(hook["command"].as_str(), Some(expected));
+                // Windows PowerShell drops double quotes from arguments, and
+                // cmd.exe (running a codex.cmd) expands `%VAR%`.
                 assert_eq!(pair[1].contains('"'), !is_windows, "{}", pair[1]);
+                if is_windows {
+                    assert!(!expected.contains("%SOLO"), "{expected}");
+                }
             }
         }
+        // A path TOML can't hold in a literal string.
+        assert_eq!(codex_hook_args(true, r"C:\a''b\solo-agent-hook.exe"), None);
     }
 
     #[test]

@@ -9,11 +9,11 @@ use editor::{Editor, EditorEvent};
 use futures::{StreamExt, channel::mpsc};
 use fuzzy::StringMatchCandidate;
 use gpui::{
-    Action, App, AsyncApp, AvailableSpace, ClipboardItem, DEFAULT_ADDITIONAL_WINDOW_SIZE, Div,
-    Entity, FocusHandle, Focusable, Global, KeyContext, ListState, ReadGlobal as _, Role,
-    ScrollHandle, Stateful, Subscription, Task, TitlebarOptions, UniformListScrollHandle,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, actions, container_query, div,
-    list, point, prelude::*, px, uniform_list,
+    Action, App, AsyncApp, AvailableSpace, DEFAULT_ADDITIONAL_WINDOW_SIZE, Div, Entity,
+    FocusHandle, Focusable, Global, KeyContext, ListState, ReadGlobal as _, Role, ScrollHandle,
+    Stateful, Subscription, Task, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window,
+    WindowBounds, WindowHandle, WindowOptions, actions, container_query, div, list, point,
+    prelude::*, px, uniform_list,
 };
 
 use language::Buffer;
@@ -986,7 +986,6 @@ pub struct SettingsWindow {
     pub(crate) hidden_deleted_skill_directory_paths: HashSet<PathBuf>,
     pub(crate) regex_validation_error: Option<String>,
     pub(crate) sandbox_host_validation_error: Option<String>,
-    last_copied_link_path: Option<&'static str>,
     /// Cached configuration views per provider, created lazily.
     pub(crate) provider_configuration_views:
         HashMap<language_model::LanguageModelProviderId, gpui::AnyView>,
@@ -1282,14 +1281,7 @@ impl SettingsPageItem {
                                     this.push_sub_page(sub_page_link.clone(), header, window, cx)
                                 })
                             }),
-                        )
-                        .child(render_settings_item_link(
-                            sub_page_link.title.clone(),
-                            sub_page_link.json_path,
-                            false,
-                            settings_window,
-                            cx,
-                        )),
+                        ),
                 )
                 .when(bottom_border, |this| this.child(Divider::horizontal()))
                 .into_any_element(),
@@ -1407,17 +1399,19 @@ impl SettingsPageItem {
 /// Shared layout for both JSON-backed and non-JSON-backed setting items.
 ///
 /// Renders title + description on the left, control on the right, with
-/// optional reset button and copy-link icon.
+/// optional reset button.
+// SOLO: the hover "Copy Link" button was removed (G24); the now-unused
+// parameters are kept so call sites stay identical to upstream.
 fn render_settings_item_layout(
-    settings_window: &SettingsWindow,
+    _settings_window: &SettingsWindow,
     title: &'static str,
     description: &'static str,
     control: AnyElement,
     reset_fn: Option<Box<dyn Fn(&mut Window, &mut App)>>,
     modified_in: Option<String>,
-    json_path: Option<&'static str>,
-    sub_field: bool,
-    cx: &mut Context<'_, SettingsWindow>,
+    _json_path: Option<&'static str>,
+    _sub_field: bool,
+    _cx: &mut Context<'_, SettingsWindow>,
 ) -> Stateful<Div> {
     // Note: the row itself is intentionally not exposed as a labeled group.
     // Each control names and describes itself (via the setting title and
@@ -1466,15 +1460,6 @@ fn render_settings_item_layout(
                 ),
         )
         .child(control)
-        .when(settings_window.sub_page_stack.is_empty(), |this| {
-            this.child(render_settings_item_link(
-                description,
-                json_path,
-                sub_field,
-                settings_window,
-                cx,
-            ))
-        })
 }
 
 fn render_settings_item(
@@ -1540,54 +1525,6 @@ fn render_settings_item(
         sub_field,
         cx,
     )
-}
-
-fn render_settings_item_link(
-    id: impl Into<ElementId>,
-    json_path: Option<&'static str>,
-    sub_field: bool,
-    settings_window: &SettingsWindow,
-    cx: &mut Context<'_, SettingsWindow>,
-) -> impl IntoElement {
-    let copied_link_matches =
-        json_path.is_some() && json_path == settings_window.last_copied_link_path;
-
-    let (link_icon, link_icon_color) = if copied_link_matches {
-        (IconName::Check, Color::Success)
-    } else {
-        (IconName::Link, Color::Muted)
-    };
-
-    div()
-        .absolute()
-        .top(rems_from_px(18_f32))
-        .map(|this| {
-            if sub_field {
-                this.visible_on_hover("setting-sub-item")
-                    .left(rems_from_px(-8.5_f32))
-            } else {
-                this.visible_on_hover("setting-item")
-                    .left(rems_from_px(-22.0_f32))
-            }
-        })
-        .child(
-            IconButton::new((id.into(), "copy-link-btn"), link_icon)
-                .icon_color(link_icon_color)
-                .icon_size(IconSize::Small)
-                .shape(IconButtonShape::Square)
-                .aria_label("Copy Link")
-                .tooltip(Tooltip::text("Copy Link"))
-                .when_some(json_path, |this, path| {
-                    this.on_click(cx.listener(move |this, _, _, cx| {
-                        // SOLO: Solo's own scheme, which its installer
-                        // registers; `zed://` would open Zed.
-                        let link = format!("solo://settings/{}", path);
-                        cx.write_to_clipboard(ClipboardItem::new_string(link));
-                        this.last_copied_link_path = Some(path);
-                        cx.notify();
-                    }))
-                }),
-        )
 }
 
 struct SettingItem {
@@ -2027,7 +1964,6 @@ impl SettingsWindow {
             sandbox_host_validation_error: None,
             list_state,
             bottom_spacer_height: px(0.),
-            last_copied_link_path: None,
             provider_configuration_views: HashMap::default(),
             configuring_provider: None,
             last_copied_skill_directory_path: None,
@@ -2988,9 +2924,9 @@ impl SettingsWindow {
             .and_then(|window| window.read(cx).ok())
             .map(|multi_workspace| multi_workspace.workspace().read(cx).project().clone());
         let in_active_project = |worktree_id: WorktreeId| {
-            active_project.as_ref().is_some_and(|project| {
-                project.read(cx).worktree_for_id(worktree_id, cx).is_some()
-            })
+            active_project
+                .as_ref()
+                .is_some_and(|project| project.read(cx).worktree_for_id(worktree_id, cx).is_some())
         };
         let folder = |file: &SettingsUiFile| -> Option<(std::path::PathBuf, WorktreeId)> {
             let SettingsUiFile::Project((worktree_id, path)) = file else {
@@ -5610,7 +5546,6 @@ pub mod test {
                 hidden_deleted_skill_directory_paths: HashSet::default(),
                 regex_validation_error: None,
                 sandbox_host_validation_error: None,
-                last_copied_link_path: None,
                 provider_configuration_views: HashMap::default(),
                 configuring_provider: None,
                 last_copied_skill_directory_path: None,
@@ -5750,7 +5685,6 @@ pub mod test {
             hidden_deleted_skill_directory_paths: HashSet::default(),
             regex_validation_error: None,
             sandbox_host_validation_error: None,
-            last_copied_link_path: None,
             provider_configuration_views: HashMap::default(),
             configuring_provider: None,
             last_copied_skill_directory_path: None,

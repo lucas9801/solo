@@ -5,6 +5,7 @@ mod agent_detection;
 mod agent_resume;
 mod agent_session;
 mod agent_status;
+mod agent_tab;
 pub mod agent_tasks;
 mod agent_timeline;
 mod agent_turns;
@@ -20,6 +21,9 @@ mod output_perf_tests;
 mod persistence;
 mod running_program;
 mod session_contents;
+#[cfg(test)]
+mod smoke_tests;
+mod split_workspace_modal;
 mod tab_title;
 pub mod terminal_element;
 pub mod terminal_panel;
@@ -74,7 +78,7 @@ use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
 use ui::{
-    ContextMenu, Divider, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
+    ContextMenu, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
     prelude::*,
     scrollbars::{self, ScrollbarVisibility},
 };
@@ -136,6 +140,8 @@ actions!(
 pub struct RenameTerminal;
 
 pub fn init(cx: &mut App) {
+    // SOLO: terminal hosts outlive Solo going, see `terminal::init`.
+    terminal::init(cx);
     terminal_panel::init(cx);
     command_notifications::init(cx);
     follow_working_directory::init(cx);
@@ -376,7 +382,10 @@ impl TerminalView {
             cx.observe(&blink_manager, |_, _, cx| cx.notify()),
             cx.observe_global::<SettingsStore>(Self::settings_changed),
             cx.on_app_quit(|terminal_view, cx| {
-                terminal_view.update_keep_running(cx);
+                let keep = terminal_view.update_keep_running(cx);
+                if let Some(pipe) = terminal_view.terminal.read(cx).host_pipe() {
+                    log::debug!("quitting: terminal host {pipe} keeps running: {keep}");
+                }
                 let contents = terminal_view.contents_to_save(cx);
                 cx.background_spawn(async move {
                     if let Some(contents) = contents {
@@ -738,6 +747,13 @@ impl TerminalView {
         cx.emit(ItemEvent::UpdateTab);
     }
 
+    /// SOLO: you switched to the terminal or focused it: its bell is seen.
+    fn bell_seen(&mut self, cx: &mut Context<TerminalView>) {
+        if self.has_bell {
+            self.clear_bell(cx);
+        }
+    }
+
     /// SOLO: updates the tab after output only if what it shows changed.
     /// Every update redraws the pane, and with it the terminal shown there,
     /// even when the output went to a terminal in a background tab.
@@ -822,6 +838,13 @@ impl TerminalView {
                         .action(
                             util::i18n::tr("Save Command as Workflow", "把命令存为 Workflow"),
                             Box::new(SaveCommandBlockAsWorkflow),
+                        )
+                        .action(
+                            util::i18n::tr(
+                                "Ask AI for a Command About This",
+                                "带上这个命令块让 AI 生成命令",
+                            ),
+                            Box::new(command_blocks::AskAiAboutCommandBlock),
                         )
                 })
                 .when(has_mermaid_diagram, |menu| {
@@ -1405,11 +1428,18 @@ impl TerminalView {
     /// SOLO: tells the terminal's host whether to outlive Solo (quitting,
     /// closing the window or crashing): while the terminal runs an agent or a
     /// command, so the next Solo finds it still running.
-    fn update_keep_running(&self, cx: &App) {
+    fn update_keep_running(&self, cx: &App) -> bool {
         let terminal = self.terminal.read(cx);
+        // A terminal an earlier Solo left running was busy then; if its
+        // output kept for this Solo lost the shell's marks (it's long), what
+        // runs is unknown until the shell's next prompt: kept meanwhile.
+        let unknown = terminal.reconnected_to_host()
+            && terminal.shell_integration().blocks().is_empty();
         let keep = self.agent_status().is_some()
+            || unknown
             || matches!(running_program::running_command(terminal), Some((_, true)));
         terminal.keep_running_after_quit(keep);
+        keep
     }
 
     /// SOLO: the terminal moves to `workspace`, another tab of the window.
@@ -1519,7 +1549,13 @@ fn subscribe_for_terminal_events(
                 Event::Bell => {
                     terminal_view.agent_wants_attention(window, cx);
                     terminal_view.notify_agent_bell(window, cx);
-                    terminal_view.has_bell = true;
+                    // SOLO: an agent's tab shows its status light instead of
+                    // the bell's dot, and a terminal you're looking at needs no dot.
+                    if terminal_view.agent_status().is_none()
+                        && !terminal_view.is_watched(window, cx)
+                    {
+                        terminal_view.has_bell = true;
+                    }
                     cx.emit(ItemEvent::UpdateTab);
                     if let TerminalBell::System = TerminalSettings::get_global(cx).bell {
                         window.play_system_bell();
@@ -1718,6 +1754,8 @@ impl TerminalView {
             .as_ref()
             .is_some_and(|input| input.read(cx).is_focused(window, cx))
         {
+            // SOLO: typing there still answers the bell.
+            self.bell_seen(cx);
             return;
         }
         self.clear_bell(cx);
@@ -1738,6 +1776,8 @@ impl TerminalView {
     fn focus_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         agent_context::record_terminal_focus(cx.entity_id(), cx);
         self.agent_seen(window, cx);
+        // SOLO: focusing the terminal or its input editor sees its bell.
+        self.bell_seen(cx);
         self.terminal.update(cx, |terminal, _| {
             terminal.set_cursor_shape(self.cursor_shape);
             if !self.read_only {
@@ -1838,12 +1878,17 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::copy_command_block))
             .on_action(cx.listener(TerminalView::rerun_command_block))
             .on_action(cx.listener(TerminalView::send_command_block_to_agent))
+            .on_action(cx.listener(TerminalView::ask_ai_about_command_block))
             .on_action(cx.listener(TerminalView::send_failures_to_agent))
             .on_action(cx.listener(TerminalView::preview_mermaid_diagram))
             .on_action(cx.listener(TerminalView::choose_agent_session))
             .on_action(cx.listener(TerminalView::show_agent_timeline))
             .on_action(cx.listener(TerminalView::save_command_block_as_workflow))
             .on_action(cx.listener(TerminalView::enable_remote_control))
+            // SOLO: moving the terminal to another workspace tab.
+            .on_action(cx.listener(TerminalView::move_to_own_tab))
+            .on_action(cx.listener(TerminalView::move_to_tab))
+            .on_action(cx.listener(TerminalView::move_to_new_tab))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 MouseButton::Right,
@@ -1887,6 +1932,8 @@ impl Render for TerminalView {
                     .child(
                         v_flex()
                             .size_full()
+                            // SOLO: when the terminal isn't in its tab's folders.
+                            .children(self.render_misplaced_bar(cx))
                             .children(self.render_agent_resume_bar(cx))
                             .child(
                                 div()
@@ -1960,53 +2007,28 @@ impl Item for TerminalView {
             .detach();
     }
 
+    // SOLO: a card on who runs in the terminal and what it's doing, how full
+    // its context is, where it runs and its tokens (see `agent_tab`).
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent> {
-        const HOST_FAILED: &str =
-            "Ends when Solo quits: its background process couldn't be started";
-        Some(TabTooltipContent::Custom(Box::new(Tooltip::element({
-            let terminal = self.terminal().read(cx);
-            let title = self.smart_title(0, false, cx);
-            let pid = terminal.pid_getter()?.fallback_pid();
-            let agent_status = self
-                .agent_status()
-                .map(|(name, status)| format!("{name} · {}", status.label()));
-            let details = self.title_details(cx);
-            let host_failed = terminal.host_failed();
-
-            move |_, _| {
-                v_flex()
-                    .gap_1()
-                    .child(Label::new(title.clone()))
-                    .when_some(agent_status.clone(), |this, agent_status| {
-                        this.child(Label::new(agent_status).size(LabelSize::Small))
-                    })
-                    // SOLO: see `Terminal::host_failed`.
-                    .when(host_failed, |this| {
-                        this.child(
-                            Label::new(HOST_FAILED)
-                                .color(Color::Warning)
-                                .size(LabelSize::Small),
-                        )
-                    })
-                    .children(details.iter().map(|detail| {
-                        Label::new(detail.clone())
-                            .color(Color::Muted)
-                            .size(LabelSize::Small)
-                    }))
-                    .child(h_flex().flex_grow_1().child(Divider::horizontal()))
-                    .child(
-                        Label::new(format!("Process ID (PID): {}", pid))
-                            .color(Color::Muted)
-                            .size(LabelSize::Small),
-                    )
-                    .into_any_element()
-            }
-        }))))
+        let card = self.tab_card(cx)?;
+        Some(TabTooltipContent::Custom(Box::new(Tooltip::element(
+            move |_, cx| card.render(cx),
+        ))))
     }
 
     fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
         let terminal = self.terminal().read(cx);
-        let title = self.smart_title(params.detail.unwrap_or(0), true, cx);
+        // SOLO: an agent shows as its mark with its status on it, beside its
+        // session's title.
+        let agent = terminal
+            .task()
+            .is_none()
+            .then(|| self.agent_status())
+            .flatten();
+        let title = match agent {
+            Some(_) => self.tab_label_title(params.detail.unwrap_or(0), cx),
+            None => self.smart_title(params.detail.unwrap_or(0), true, cx),
+        };
 
         let (icon, icon_color, rerun_button) = match terminal.task() {
             Some(terminal_task) => match &terminal_task.status {
@@ -2030,19 +2052,8 @@ impl Item for TerminalView {
                     }
                 }
             },
-            None => match self.agent_status() {
-                Some((_, status)) => {
-                    let (icon, color) = status.icon();
-                    (icon, color, None)
-                }
-                None => (IconName::Terminal, Color::Muted, None),
-            },
+            None => (IconName::Terminal, Color::Muted, None),
         };
-        let working = terminal.task().is_none()
-            && matches!(
-                self.agent_status(),
-                Some((_, agent_status::AgentStatus::Working))
-            );
 
         let self_handle = self.self_handle.clone();
         h_flex()
@@ -2051,9 +2062,34 @@ impl Item for TerminalView {
             .when(!params.selected, |this| {
                 this.track_focus(&self.focus_handle)
             })
-            .on_action(move |action: &RenameTerminal, window, cx| {
+            .on_action({
+                let self_handle = self_handle.clone();
+                move |action: &RenameTerminal, window, cx| {
+                    self_handle
+                        .update(cx, |this, cx| this.rename_terminal(action, window, cx))
+                        .ok();
+                }
+            })
+            // SOLO: from the tab's menu, while the terminal isn't shown.
+            .on_action({
+                let self_handle = self_handle.clone();
+                move |action: &workspace_grouping::MoveToOwnTab, window, cx| {
+                    self_handle
+                        .update(cx, |this, cx| this.move_to_own_tab(action, window, cx))
+                        .ok();
+                }
+            })
+            .on_action({
+                let self_handle = self_handle.clone();
+                move |action: &workspace_grouping::MoveToTab, window, cx| {
+                    self_handle
+                        .update(cx, |this, cx| this.move_to_tab(action, window, cx))
+                        .ok();
+                }
+            })
+            .on_action(move |action: &workspace_grouping::MoveToNewTab, window, cx| {
                 self_handle
-                    .update(cx, |this, cx| this.rename_terminal(action, window, cx))
+                    .update(cx, |this, cx| this.move_to_new_tab(action, window, cx))
                     .ok();
             })
             .child(
@@ -2064,16 +2100,22 @@ impl Item for TerminalView {
                             .when(rerun_button.is_some(), |this| {
                                 this.hover(|style| style.invisible().w_0())
                             })
-                            .map(|this| {
-                                let icon = Icon::new(icon).color(icon_color);
-                                if working {
-                                    let turn = gpui::Transformation::rotate(gpui::percentage(
-                                        self.agent_spinner_turn(),
-                                    ));
-                                    this.child(ui::Transformable::transform(icon, turn))
-                                } else {
-                                    this.child(icon)
+                            .map(|this| match agent {
+                                Some((name, status)) => {
+                                    let colors = cx.theme().colors();
+                                    this.child(agent_tab::render_agent_badge(
+                                        name,
+                                        status,
+                                        self.agent_status_phase(),
+                                        if params.selected {
+                                            colors.tab_active_background
+                                        } else {
+                                            colors.tab_inactive_background
+                                        },
+                                        cx,
+                                    ))
                                 }
+                                None => this.child(Icon::new(icon).color(icon_color)),
                             }),
                     )
                     .when_some(rerun_button, |this, rerun_button| {
@@ -2088,9 +2130,14 @@ impl Item for TerminalView {
             .child(
                 div()
                     .relative()
+                    // SOLO: a narrow tab cuts only the title, then the mark of
+                    // a terminal not in its tab's folders.
+                    .min_w_0()
+                    .flex_shrink(1000.)
                     .child(
                         Label::new(title)
                             .single_line()
+                            .truncate()
                             // SOLO: a folder or program name, like "Admin".
                             .untranslated()
                             .color(params.text_color())
@@ -2123,22 +2170,18 @@ impl Item for TerminalView {
                         )
                     }),
             )
+            // SOLO: where a terminal not in its tab's folders is.
+            .children(self.render_misplaced_mark(cx))
             // SOLO: how full the running agent's context is.
-            .when_some(
-                self.agent_context_percent(cx),
-                |this, (percent, nearly_full)| {
-                    this.child(
-                        Label::new(format!("{percent}%"))
-                            .untranslated()
-                            .size(LabelSize::XSmall)
-                            .color(if nearly_full {
-                                Color::Warning
-                            } else {
-                                Color::Muted
-                            }),
-                    )
-                },
-            )
+            .when_some(self.agent_context_fraction(cx), |this, fraction| {
+                let colors = cx.theme().colors();
+                let background = if params.selected {
+                    colors.tab_active_background
+                } else {
+                    colors.tab_inactive_background
+                };
+                this.child(agent_tab::render_context_meter(fraction, background, cx))
+            })
             // SOLO: a terminal that won't outlive Solo though it should.
             .when(terminal.host_failed(), |this| {
                 this.child(
@@ -2336,6 +2379,16 @@ impl Item for TerminalView {
         actions
     }
 
+    // SOLO: moving the terminal to the tab of the folder it's in, when that
+    // isn't this one, or to any other workspace tab.
+    fn tab_extra_context_menu_group(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<workspace::item::TabContextEntry> {
+        self.move_menu_entries(cx)
+    }
+
     fn buffer_kind(&self, _: &App) -> workspace::item::ItemBufferKind {
         workspace::item::ItemBufferKind::Singleton
     }
@@ -2379,8 +2432,14 @@ impl Item for TerminalView {
     fn is_dirty(&self, cx: &App) -> bool {
         match self.terminal.read(cx).task() {
             Some(task) => task.status == TaskStatus::Running,
-            None => self.has_bell(),
+            // SOLO: an agent's tab shows its status light, not the bell's dot.
+            None => self.has_bell() && self.agent_status().is_none(),
         }
+    }
+
+    fn activated(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // SOLO: switching to the terminal sees its bell.
+        self.bell_seen(cx);
     }
 
     fn keeps_running_after_quit(&self, cx: &App) -> bool {
@@ -2596,6 +2655,10 @@ impl SerializableItem for TerminalView {
                         view.custom_title = custom_title;
                     }
                     view.restored_at_startup = true;
+                    // SOLO: a terminal an earlier Solo left running stays kept
+                    // from now on, also if Solo crashes before its tab shows
+                    // (output is processed, and keeping updated, as it does).
+                    view.update_keep_running(cx);
                     // The workspace saves restored terminals under a new id.
                     if had_contents {
                         view.restored_from = Some(item_id);
@@ -4100,6 +4163,85 @@ mod tests {
         write(b"ls\r\n\x1b]633;E;ls\x07\x1b]133;C\x07", cx);
         assert_eq!(status(cx), None);
         assert!(turn_events.borrow().is_empty());
+    }
+
+    /// SOLO: the dot a bell puts on a terminal's tab (G16).
+    #[gpui::test]
+    async fn test_bell_dot(cx: &mut TestAppContext) {
+        let (project, _workspace, window_handle) = init_test_with_window(cx).await;
+        let (pane, plain_terminal, plain) =
+            add_display_only_terminal(&project, window_handle, false, false, cx);
+        let (_, agent_terminal, agent) =
+            add_display_only_terminal(&project, window_handle, false, false, cx);
+        let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
+        let cx = &mut cx;
+        let write = |terminal: &Entity<Terminal>, bytes: &[u8], cx: &mut VisualTestContext| {
+            terminal.update(cx, |terminal, cx| terminal.write_raw_output(bytes, cx));
+            cx.run_until_parked();
+        };
+        let has_dot = |view: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            pane.read_with(cx, |pane, cx| {
+                let item = pane
+                    .items()
+                    .find(|item| item.item_id() == view.entity_id())
+                    .unwrap();
+                item.is_dirty(cx)
+            })
+        };
+        let index_of = |view: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            pane.read_with(cx, |pane, _| pane.index_for_item(view).unwrap())
+        };
+
+        // An agent's tab shows its status light, not the bell's dot.
+        write(&agent_terminal, b"\x1b]133;A\x07$ \x1b]133;B\x07", cx);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        write(
+            &agent_terminal,
+            b"aider\r\n\x1b]633;E;aider\x07\x1b]133;C\x07spinner",
+            cx,
+        );
+        write(&agent_terminal, b"\x07", cx);
+        assert_eq!(
+            agent.read_with(cx, |view, _| view.agent_status().map(|(_, status)| status)),
+            Some(agent_status::AgentStatus::NeedsInput)
+        );
+        assert!(!has_dot(&agent, cx));
+
+        // A plain terminal in a background tab gets the dot, until you switch to it.
+        write(&plain_terminal, b"\x07", cx);
+        assert!(plain.read_with(cx, |view, _| view.has_bell()));
+        assert!(has_dot(&plain, cx));
+        let plain_index = index_of(&plain, cx);
+        pane.update_in(cx, |pane, window, cx| {
+            pane.activate_item(plain_index, false, false, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(!has_dot(&plain, cx));
+
+        // Active but not focused: the bell still shows, until it's focused.
+        write(&plain_terminal, b"\x07", cx);
+        assert!(has_dot(&plain, cx));
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            plain.read(cx).focus_handle.clone().focus(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(!has_dot(&plain, cx));
+
+        // A terminal you're looking at gets no dot.
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        write(&plain_terminal, b"\x07", cx);
+        assert!(!has_dot(&plain, cx));
+
+        // Back in a background tab, the bell shows again.
+        let agent_index = index_of(&agent, cx);
+        pane.update_in(cx, |pane, window, cx| {
+            pane.activate_item(agent_index, false, true, window, cx)
+        });
+        cx.run_until_parked();
+        write(&plain_terminal, b"\x07", cx);
+        assert!(has_dot(&plain, cx));
     }
 
     #[gpui::test]

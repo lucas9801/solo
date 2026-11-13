@@ -38,6 +38,10 @@ pub(crate) struct HyperlinkMatch {
     /// SOLO: file paths written near a path link, which tell which of several
     /// files of its name it means (see [`path_with_context`]).
     pub(crate) context_paths: Vec<String>,
+    /// SOLO: for a bare position (`:3788`), the same position in the other
+    /// files named before it, nearest first; `text` is it in the nearest
+    /// (see [`path_with_context`]).
+    pub(crate) position_files: Vec<String>,
 }
 
 impl From<(String, bool, Match)> for HyperlinkMatch {
@@ -47,6 +51,7 @@ impl From<(String, bool, Match)> for HyperlinkMatch {
             is_url,
             range: Range::from_alacritty(range),
             context_paths: Vec::new(),
+            position_files: Vec::new(),
         }
     }
 }
@@ -161,13 +166,14 @@ pub(crate) fn find_from_grid_point<T: EventListener>(
     };
 
     found_word.map(|(text, is_url, word_match)| {
-        let (text, context_paths) = if is_url {
-            (text, Vec::new())
+        let (text, context_paths, position_files) = if is_url {
+            (text, Vec::new(), Vec::new())
         } else {
             path_with_context(term, text, &word_match)
         };
         let mut hyperlink = normalize_found_word((text, is_url, word_match), path_style);
         hyperlink.context_paths = context_paths;
+        hyperlink.position_files = position_files;
         hyperlink
     })
 }
@@ -175,6 +181,8 @@ pub(crate) fn find_from_grid_point<T: EventListener>(
 /// SOLO: how many lines above a bare position (`:403-405`) to look for the
 /// file it's in.
 const POSITION_FILE_LINES: i32 = 200;
+/// SOLO: how many different files named before a bare position are tried.
+const MAX_POSITION_FILES: usize = 8;
 /// SOLO: how many lines around a path link to look for other paths in.
 const CONTEXT_LINES_ABOVE: i32 = 40;
 const CONTEXT_LINES_BELOW: i32 = 10;
@@ -183,20 +191,26 @@ const MAX_CONTEXT_PATHS: usize = 20;
 /// SOLO: a path link with the paths written near it. A bare position, like
 /// the `:403-405` of "(:403-405)" in an agent's answer, is in the file named
 /// last before it (`DnActionSignalImp.cpp:410-445` a few lines up), so it
-/// becomes `DnActionSignalImp.cpp:403`.
-fn path_with_context<T>(term: &Term<T>, text: String, word_match: &Match) -> (String, Vec<String>) {
+/// becomes `DnActionSignalImp.cpp:403`. The files named further up come
+/// along as the position in each of them, nearest first, for when the
+/// nearest doesn't exist or is too short to have that line.
+fn path_with_context<T>(
+    term: &Term<T>,
+    text: String,
+    word_match: &Match,
+) -> (String, Vec<String>, Vec<String>) {
     let start = *word_match.start();
+    let mut position_files = Vec::new();
     let text = match bare_position(&text) {
         Some(position) => {
-            let previous_file = (0..=POSITION_FILE_LINES)
-                .map(|lines_up| start.line - lines_up)
-                .take_while(|line| *line >= term.topmost_line())
-                .find_map(|line| {
-                    let end = (line == start.line).then_some(start.column);
-                    paths_in(&row_text(term, line, end)).pop()
-                });
-            match previous_file {
-                Some(file) => format!("{file}{position}"),
+            let mut previous_files = previous_files(term, start)
+                .into_iter()
+                .map(|file| format!("{file}{position}"));
+            match previous_files.next() {
+                Some(nearest) => {
+                    position_files.extend(previous_files);
+                    nearest
+                }
                 None => text,
             }
         }
@@ -217,7 +231,29 @@ fn path_with_context<T>(term: &Term<T>, text: String, word_match: &Match) -> (St
     }
     let excess = context_paths.len().saturating_sub(MAX_CONTEXT_PATHS);
     context_paths.drain(..excess);
-    (text, context_paths)
+    (text, context_paths, position_files)
+}
+
+/// SOLO: the different files named before `start`, nearest first: on its row
+/// before it, then on each row up to [`POSITION_FILE_LINES`] above, each row
+/// read from right to left.
+fn previous_files<T>(term: &Term<T>, start: AlacPoint) -> Vec<String> {
+    let mut files = Vec::new();
+    let lines = (0..=POSITION_FILE_LINES)
+        .map(|lines_up| start.line - lines_up)
+        .take_while(|line| *line >= term.topmost_line());
+    for line in lines {
+        let end = (line == start.line).then_some(start.column);
+        for file in paths_in(&row_text(term, line, end)).into_iter().rev() {
+            if !files.contains(&file) {
+                files.push(file);
+                if files.len() == MAX_POSITION_FILES {
+                    return files;
+                }
+            }
+        }
+    }
+    files
 }
 
 /// SOLO: the line and column of `text` when it's a position without a file,
@@ -308,6 +344,7 @@ fn normalize_hyperlink_match(
                         is_url: false,
                         range,
                         context_paths: Vec::new(),
+                        position_files: Vec::new(),
                     };
                 } else if let Some(path) = try_osc8_url_to_path(url)
                     && path_style.is_posix()
@@ -317,6 +354,7 @@ fn normalize_hyperlink_match(
                         is_url: false,
                         range,
                         context_paths: Vec::new(),
+                        position_files: Vec::new(),
                     };
                 }
             }
@@ -329,6 +367,7 @@ fn normalize_hyperlink_match(
                 is_url: false,
                 range,
                 context_paths: Vec::new(),
+                position_files: Vec::new(),
             }
         } else {
             HyperlinkMatch {
@@ -336,6 +375,7 @@ fn normalize_hyperlink_match(
                 is_url: true,
                 range,
                 context_paths: Vec::new(),
+                position_files: Vec::new(),
             }
         }
     } else {
@@ -344,6 +384,7 @@ fn normalize_hyperlink_match(
             is_url: false,
             range,
             context_paths: Vec::new(),
+            position_files: Vec::new(),
         }
     }
 }
@@ -973,7 +1014,7 @@ mod tests {
             }
             let point = AlacPoint::new(Line(hovered.0), Column(hovered.1));
             find_from_grid_point(&term, point, &mut searches, PathStyle::local())
-                .map(|found| (found.text, found.context_paths))
+                .map(|found| (found.text, found.context_paths, found.position_files))
         };
 
         let lines = [
@@ -996,7 +1037,7 @@ mod tests {
         // Nothing named before it.
         assert_eq!(
             check(&["just (:12) here"], (0, 7)),
-            Some((":12".to_string(), Vec::new()))
+            Some((":12".to_string(), Vec::new(), Vec::new()))
         );
 
         let lines = [
@@ -1007,8 +1048,89 @@ mod tests {
             check(&lines, (1, 50)),
             Some((
                 "register_types.cpp:19".to_string(),
-                vec!["dynamic_bone_collider_3d.h".to_string()]
+                vec!["dynamic_bone_collider_3d.h".to_string()],
+                Vec::new(),
             ))
+        );
+
+        // G26: the cells before the end of `prefix`, wide characters taking two.
+        let column = |prefix: &str| {
+            prefix
+                .chars()
+                .map(|c| if c.is_ascii() { 1 } else { 2 })
+                .sum::<usize>()
+        };
+        let candidates = |found: Option<(String, Vec<String>, Vec<String>)>| {
+            found.map(|(text, _, position_files)| {
+                std::iter::once(text)
+                    .chain(position_files)
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        // Case one: the position is in main.cpp, named before the
+        // gdscript.cpp of a code block in between; both are candidates,
+        // nearest first.
+        let lines = [
+            "所有类登记完之后，main.cpp:3863 调用 ScriptServer::init_languages()：",
+            "    for (const StringName &name : classes) {",
+            "    // gdscript.cpp:2181-2189",
+            "所以脚本里能直接写 DynamicBoneCollider3D。这一步在模块登记 (:3788) 之后执行。",
+        ];
+        let hovered = column("所以脚本里能直接写 DynamicBoneCollider3D。这一步在模块登记 (:");
+        assert_eq!(
+            candidates(check(&lines, (3, hovered))),
+            Some(vec![
+                "gdscript.cpp:3788".to_string(),
+                "main.cpp:3788".to_string()
+            ])
+        );
+
+        // Case two: `classes.getptr` looks like a file name too; it's tried
+        // first, and skipped when resolving, as no such file exists.
+        let lines = [
+            "└ ClassDB::_instantiate_internal(...)        class_db.cpp:577-656",
+            "_instantiate_internal 按以下顺序执行：",
+            "1. 加读锁，按名字查表 (:580-581)：ti = classes.getptr(\"DynamicBoneCollider3D\")。",
+            "2. 依次检查：",
+            "- 类是否被禁用 (:588)",
+            "- 是否 exposed (:596)",
+        ];
+        assert_eq!(
+            candidates(check(&lines, (4, column("- 类是否被禁用 (:")))),
+            Some(vec![
+                "classes.getptr:588".to_string(),
+                "class_db.cpp:588".to_string()
+            ])
+        );
+        assert_eq!(
+            candidates(check(&lines, (5, column("- 是否 exposed (:")))),
+            Some(vec![
+                "classes.getptr:596".to_string(),
+                "class_db.cpp:596".to_string()
+            ])
+        );
+        // `classes.getptr` comes after `:580-581` on its row.
+        assert_eq!(
+            candidates(check(&lines, (2, column("1. 加读锁，按名字查表 (:")))),
+            Some(vec!["class_db.cpp:580".to_string()])
+        );
+
+        // At most MAX_POSITION_FILES, each once, nearest first, each row
+        // from right to left.
+        let mut lines = (0..12)
+            .map(|ix| format!("see f{ix}.rs and g{ix}.rs, f{ix}.rs"))
+            .collect::<Vec<_>>();
+        lines.push("here (:5)".to_string());
+        let lines = lines.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(
+            candidates(check(&lines, (12, column("here (:")))),
+            Some(
+                (8..12)
+                    .rev()
+                    .flat_map(|ix| [format!("f{ix}.rs:5"), format!("g{ix}.rs:5")])
+                    .collect()
+            )
         );
         Ok(())
     }

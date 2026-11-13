@@ -36,6 +36,7 @@ release_channel.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 settings.workspace = true
 sysinfo.workspace = true
 task.workspace = true

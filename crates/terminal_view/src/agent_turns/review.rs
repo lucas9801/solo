@@ -4,8 +4,9 @@
 
 use std::any::{Any, TypeId};
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunkStatus};
 use collections::HashSet;
@@ -34,7 +35,9 @@ use workspace::{
 };
 
 use super::diagnostics::{TurnDiagnostic, TurnDiagnostics};
-use super::snapshot::{ChangedFile, FileChange, SnapshotStore, TreeId};
+use super::snapshot::{
+    ChangedFile, FileChange, SnapshotStore, TreeId, WorkTreeChanged, linked_ancestor,
+};
 use super::{AgentTurn, AgentTurns};
 use crate::TerminalView;
 
@@ -108,6 +111,18 @@ pub(crate) struct AgentTurnReview {
     scope_blocks: HashSet<CustomBlockId>,
     load_task: Task<()>,
     action_task: Task<()>,
+    /// SOLO: When the turn shown started: rejecting a file the turn's first
+    /// snapshot doesn't have deletes it only if it was created after this.
+    /// `None` (unknown): it isn't deleted.
+    turn_started_at: Option<SystemTime>,
+    /// SOLO: The work tree of the turn shown: files reached through a link
+    /// in it (a junction, say) may be outside it, and aren't deleted.
+    work_tree: Option<PathBuf>,
+    /// SOLO: Moving rejected new files to the recycle bin.
+    trash_task: Task<()>,
+    /// SOLO: The work tree the rollback confirmation shows; rolling back
+    /// stops if it changed since.
+    confirmed_tree: Option<TreeId>,
 }
 
 impl AgentTurnReview {
@@ -195,6 +210,10 @@ impl AgentTurnReview {
             scope_blocks: HashSet::default(),
             load_task: Task::ready(()),
             action_task: Task::ready(()),
+            turn_started_at: None,
+            work_tree: None,
+            trash_task: Task::ready(()),
+            confirmed_tree: None,
         };
         if number.is_some() {
             this.load(window, cx);
@@ -232,7 +251,10 @@ impl AgentTurnReview {
             self.status = Some(tr("This turn is no longer available.", "这一轮已不可用。").into());
             return;
         };
+        self.turn_started_at = Some(SystemTime::from(turn.started_at));
+        self.work_tree = Some(turn.store.work_tree().to_path_buf());
         let confirming = matches!(self.mode, Mode::ConfirmRollback(_));
+        self.confirmed_tree = None;
         self.loading = true;
         let project = self.project.clone();
         self.load_task = cx.spawn_in(window, async move |this, cx| {
@@ -249,9 +271,17 @@ impl AgentTurnReview {
                     } else {
                         (turn.after.clone(), turn.changed.clone())
                     };
-                    anyhow::Ok(load_bases(&store, &before, &after, changed))
+                    let shown = confirming.then(|| after.clone());
+                    anyhow::Ok((load_bases(&store, &before, &after, changed), shown))
                 })
                 .await;
+            let loaded = match loaded {
+                Ok((loaded, shown)) => {
+                    this.update(cx, |this, _| this.confirmed_tree = shown).ok();
+                    Ok(loaded)
+                }
+                Err(error) => Err(error),
+            };
             let (bases, mut skipped) = match loaded {
                 Ok(loaded) => loaded,
                 Err(error) => {
@@ -515,7 +545,7 @@ impl AgentTurnReview {
         if !matches!(self.mode, Mode::Turn(_)) {
             return;
         }
-        let mut deleted = Vec::new();
+        let mut created = Vec::new();
         let mut changed_since = Vec::new();
         for (ix, hunks) in self.hunks_by_file(&ranges, cx) {
             let file = &self.files[ix];
@@ -524,21 +554,9 @@ impl AgentTurnReview {
                 continue;
             }
             if file.base.is_none() {
-                // The turn created the file.
-                deleted.push(ix);
-                let fs = self.project.read(cx).fs().clone();
-                let abs_path = file.abs_path.clone();
-                cx.background_spawn(async move {
-                    fs.remove_file(
-                        &abs_path,
-                        RemoveOptions {
-                            recursive: false,
-                            ignore_if_not_exists: true,
-                        },
-                    )
-                    .await
-                })
-                .detach_and_log_err(cx);
+                // The turn's first snapshot doesn't have the file: the turn
+                // created it, or it was ignored (or locked) then.
+                created.push((file.abs_path.clone(), file.path_key.clone()));
                 continue;
             }
             let base = file.diff.read(cx).base_text(cx);
@@ -580,13 +598,83 @@ impl AgentTurnReview {
                 .into(),
             )
         };
-        for ix in deleted.into_iter().rev() {
-            let file = self.files.remove(ix);
-            self.multibuffer.update(cx, |multibuffer, cx| {
-                multibuffer.remove_excerpts_for_paths(vec![file.path_key], cx)
-            });
+        if !created.is_empty() {
+            self.trash_created_files(created, cx);
         }
         cx.notify();
+    }
+
+    /// SOLO: Moves files the turn created to the recycle bin, rather than
+    /// deleting them for good, and stops showing them. Files that were there
+    /// before the turn although its first snapshot doesn't have them (ignored
+    /// then, say, by a rule the turn took out of .gitignore) are left alone.
+    fn trash_created_files(&mut self, files: Vec<(PathBuf, PathKey)>, cx: &mut Context<Self>) {
+        let fs = self.project.read(cx).fs().clone();
+        let started_at = self.turn_started_at;
+        let work_tree = self.work_tree.clone();
+        let previous = std::mem::replace(&mut self.trash_task, Task::ready(()));
+        self.trash_task = cx.spawn(async move |this, cx| {
+            previous.await;
+            let mut removed = Vec::new();
+            let mut kept = Vec::new();
+            for (abs_path, path_key) in files {
+                let existed = cx
+                    .background_spawn({
+                        let abs_path = abs_path.clone();
+                        let work_tree = work_tree.clone();
+                        async move {
+                            work_tree.is_some_and(|work_tree| {
+                                linked_ancestor(&abs_path, &work_tree).is_some()
+                            }) || existed_before_turn(&abs_path, started_at)
+                        }
+                    })
+                    .await;
+                if existed {
+                    kept.push(path_key.path.as_unix_str().to_string());
+                    continue;
+                }
+                let options = RemoveOptions {
+                    recursive: false,
+                    ignore_if_not_exists: true,
+                };
+                match fs.trash(&abs_path, options).await {
+                    Ok(_) => removed.push(path_key),
+                    Err(error) => {
+                        log::warn!("failed to move {abs_path:?} to the recycle bin: {error:#}");
+                        kept.push(path_key.path.as_unix_str().to_string());
+                    }
+                }
+            }
+            this.update(cx, |this, cx| {
+                for path_key in removed {
+                    if let Some(ix) = this.files.iter().position(|file| file.path_key == path_key) {
+                        this.files.remove(ix);
+                    }
+                    this.multibuffer.update(cx, |multibuffer, cx| {
+                        multibuffer.remove_excerpts_for_paths(vec![path_key], cx)
+                    });
+                }
+                if !kept.is_empty() {
+                    let message = if is_chinese() {
+                        format!(
+                            "{} 可能在这一轮之前就已存在（例如当时被 .gitignore 忽略），所以没有删除。请手动处理。",
+                            kept.join("、")
+                        )
+                    } else {
+                        format!(
+                            "{} may have existed before the turn (ignored by .gitignore then, say), so it wasn't deleted. Remove it by hand if you want.",
+                            kept.join(", ")
+                        )
+                    };
+                    this.status = Some(match this.status.take() {
+                        Some(status) => format!("{status} {message}").into(),
+                        None => message.into(),
+                    });
+                }
+                cx.notify();
+            })
+            .ok();
+        });
     }
 
     /// Takes the hunks as they are now: they stop showing as changes.
@@ -626,6 +714,10 @@ impl AgentTurnReview {
         let Some(turn) = self.turn(number, cx) else {
             return;
         };
+        // SOLO: only what the page shows: not before it's loaded.
+        let Some(shown) = self.confirmed_tree.clone() else {
+            return;
+        };
         let store = turn.store.clone();
         let target = turn.before;
         self.status = Some(tr("Rolling back…", "正在回滚…").into());
@@ -633,7 +725,7 @@ impl AgentTurnReview {
             let result = cx
                 .background_spawn({
                     let store = store.clone();
-                    async move { store.restore(&target) }
+                    async move { store.restore_if_unchanged(&target, &shown) }
                 })
                 .await;
             this.update_in(cx, |this, window, cx| match result {
@@ -648,6 +740,18 @@ impl AgentTurnReview {
                         },
                         window,
                         cx,
+                    );
+                    this.status = skipped_message(&restored.skipped);
+                }
+                Err(error) if error.downcast_ref::<WorkTreeChanged>().is_some() => {
+                    // Show what rolling back would discard now.
+                    this.set_mode(Mode::ConfirmRollback(number), window, cx);
+                    this.status = Some(
+                        tr(
+                            "Files changed since this page was shown, so nothing was rolled back. Check the changes below and confirm again.",
+                            "这个页面显示之后又有文件改动，所以没有回滚。请检查下面的改动后再确认。",
+                        )
+                        .into(),
                     );
                 }
                 Err(error) => {
@@ -671,13 +775,17 @@ impl AgentTurnReview {
                 .background_spawn(async move { store.restore(&undo) })
                 .await;
             this.update_in(cx, |this, window, cx| match result {
-                Ok(_) => {
+                Ok(restored) => {
                     let latest = AgentTurns::try_global(cx)
                         .and_then(|turns| turns.read(cx).turns(this.terminal_id).last())
                         .map(|turn| turn.number)
                         .unwrap_or_default();
                     this.set_mode(Mode::Turn(latest), window, cx);
-                    this.status = Some(tr("The rollback was undone.", "已撤销回滚。").into());
+                    let undone = tr("The rollback was undone.", "已撤销回滚。");
+                    this.status = Some(match skipped_message(&restored.skipped) {
+                        Some(skipped) => format!("{undone} {skipped}").into(),
+                        None => undone.into(),
+                    });
                 }
                 Err(error) => {
                     this.status =
@@ -1267,6 +1375,53 @@ impl AgentTurnReview {
     }
 }
 
+/// SOLO: What to tell about files a rollback left alone because they're in
+/// a linked folder (a junction or symlink).
+fn skipped_message(skipped: &[String]) -> Option<SharedString> {
+    if skipped.is_empty() {
+        return None;
+    }
+    const MAX_NAMED: usize = 5;
+    let mut names = skipped.iter().take(MAX_NAMED).cloned().collect::<Vec<_>>();
+    if skipped.len() > MAX_NAMED {
+        names.push("…".to_string());
+    }
+    Some(if is_chinese() {
+        format!(
+            "{} 个文件位于链接的文件夹（目录联接或符号链接）中，可能指向项目之外，所以没有动：{}",
+            skipped.len(),
+            names.join("、")
+        )
+        .into()
+    } else {
+        format!(
+            "{} files are in a linked folder (a junction or symlink) that may lead outside the project, so they were left alone: {}",
+            skipped.len(),
+            names.join(", ")
+        )
+        .into()
+    })
+}
+
+/// SOLO: Whether the file at `abs_path`, which the turn's first snapshot
+/// doesn't have, was there before the turn started at `started_at` (or that
+/// can't be told): it was ignored or couldn't be read then, and the turn
+/// didn't create it.
+fn existed_before_turn(abs_path: &Path, started_at: Option<SystemTime>) -> bool {
+    let Some(started_at) = started_at else {
+        return true;
+    };
+    match std::fs::symlink_metadata(abs_path) {
+        // Nothing to delete.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+        Ok(metadata) => match metadata.created() {
+            Ok(created) => created < started_at,
+            Err(_) => true,
+        },
+    }
+}
+
 impl ReviewFile {
     /// Whether nothing but the review changed the file since the turn, and
     /// its buffer has no unsaved edits.
@@ -1837,7 +1992,12 @@ mod tests {
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.add_item_to_active_pane(Box::new(review.clone()), None, true, window, cx)
         });
-        review.update(cx, |review, cx| review.set_files(files, 0, cx));
+        review.update(cx, |review, cx| {
+            // The turn started now: these files aren't on disk, so none was
+            // there before it.
+            review.turn_started_at = Some(SystemTime::now());
+            review.set_files(files, 0, cx)
+        });
         cx.run_until_parked();
         (workspace, review, cx)
     }
@@ -2026,6 +2186,11 @@ mod tests {
         review.update(cx, |review, cx| review.reject_hunks(vec![c_hunk], cx));
         cx.run_until_parked();
         assert!(!fs.is_file(path!("/project/c.txt").as_ref()).await);
+        // To the recycle bin, not deleted for good.
+        assert_eq!(
+            fs.trashed_paths(),
+            vec![PathBuf::from(path!("/project/c.txt"))]
+        );
         assert_eq!(hunk_count(&review, cx), 1);
 
         // Changes made after the review opened show up.
@@ -2054,6 +2219,78 @@ mod tests {
             "b changed\nand more\n"
         );
         assert_eq!(hunk_count(&review, cx), 1);
+    }
+
+    /// A `.env` that was there all along, ignored, until the turn took it out
+    /// of .gitignore: the turn's first snapshot doesn't have it, so it shows
+    /// as created. Rejecting everything must not delete it.
+    #[gpui::test]
+    async fn test_rejecting_keeps_files_that_were_ignored_before_the_turn(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        // On disk, from before the turn.
+        std::fs::write(temp.path().join(".env"), "SECRET=1\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let turn_started_at = SystemTime::now();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Created by the turn.
+        std::fs::write(temp.path().join("new.txt"), "new\n").unwrap();
+
+        let (fs, review, cx) = open_review(
+            cx,
+            json!({
+                ".env": "SECRET=1\n",
+                "new.txt": "new\n",
+            }),
+            &[(".env", None), ("new.txt", None)],
+        )
+        .await;
+        // The project's files are fake; when the turn started is told by the
+        // real ones.
+        let real = |name: &str| temp.path().join(name);
+        review.update(cx, |review, cx| {
+            review.turn_started_at = Some(turn_started_at);
+            for file in &mut review.files {
+                let name = file.abs_path.file_name().unwrap().to_owned();
+                file.abs_path = real(&name.to_string_lossy());
+            }
+            cx.notify();
+        });
+        fs.insert_tree(
+            temp.path(),
+            json!({ ".env": "SECRET=1\n", "new.txt": "new\n" }),
+        )
+        .await;
+
+        review.update(cx, |review, cx| {
+            review.reject_hunks(AgentTurnReview::all_hunks(), cx)
+        });
+        cx.run_until_parked();
+        assert!(fs.is_file(&real(".env")).await);
+        assert!(!fs.is_file(&real("new.txt")).await);
+        assert_eq!(fs.trashed_paths(), vec![real("new.txt")]);
+        review.read_with(cx, |review, _| {
+            assert_eq!(review.files.len(), 1);
+            assert!(
+                review
+                    .status
+                    .as_ref()
+                    .is_some_and(|status| status.contains(".env")),
+                "{:?}",
+                review.status
+            );
+        });
+
+        // Without knowing when the turn started, nothing is deleted.
+        assert!(existed_before_turn(&real(".env"), None));
+        assert!(existed_before_turn(&real("new.txt"), None));
+        assert!(!existed_before_turn(
+            &real("new.txt"),
+            Some(turn_started_at)
+        ));
+        assert!(!existed_before_turn(
+            &real("gone.txt"),
+            Some(turn_started_at)
+        ));
     }
 
     #[gpui::test]

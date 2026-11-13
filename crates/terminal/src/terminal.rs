@@ -723,6 +723,10 @@ pub struct PathLikeTarget {
     /// SOLO: file paths written near this one, which tell which of several
     /// files of its name it means.
     pub context_paths: Vec<String>,
+    /// SOLO: when `maybe_path` is a bare position put in the file named
+    /// nearest before it, that position in the other files named before it,
+    /// nearest first, to try when that file doesn't have the line.
+    pub position_files: Vec<String>,
 }
 
 /// A string inside terminal, potentially useful as a URI that can be opened.
@@ -1050,6 +1054,16 @@ const REPLAY_TIMEOUT: Duration = Duration::from_secs(3);
 /// shell; Solo sets it when it restores a terminal. It isn't passed on.
 pub const HOST_RECONNECT_ENV: &str = "SOLO_TERMINAL_HOST_RECONNECT";
 
+/// SOLO: has terminal hosts keep what runs in them when Solo goes (quits,
+/// closes its last window), and end otherwise when Solo lets go of their
+/// terminal. Without it (in tests), they always end then.
+pub fn init(cx: &mut App) {
+    #[cfg(windows)]
+    host::init(cx);
+    #[cfg(not(windows))]
+    let _ = cx;
+}
+
 #[cfg(windows)]
 type HostLinkField = Option<host::HostLink>;
 #[cfg(not(windows))]
@@ -1164,6 +1178,8 @@ impl TerminalBuilder {
             host: None,
             reconnected_to_host: false,
             host_failed: false,
+            #[cfg(windows)]
+            _host_claim: None,
             replaying_until: None,
             cwd_history: Vec::new(),
             pending_cwd_boundary: None,
@@ -1207,6 +1223,8 @@ impl TerminalBuilder {
         #[cfg(windows)]
         let use_host = cx.has_global::<settings::SettingsStore>()
             && TerminalSettings::get_global(cx).keep_running_on_quit;
+        #[cfg(windows)]
+        let solo_going = host::solo_going(cx);
         #[cfg(not(windows))]
         let child_signal_mask = match current_child_signal_mask()
             .context("failed to capture terminal child signal mask")
@@ -1244,6 +1262,12 @@ impl TerminalBuilder {
             let mut reconnected_to_host = false;
             #[cfg_attr(not(windows), allow(unused_mut))]
             let mut host_failed = false;
+            // SOLO: a saved terminal is restored once; see `host::claim_saved_pipe`.
+            #[cfg(windows)]
+            let mut host_claim = match host_reconnect.as_deref() {
+                Some(pipe) if use_host => Some(host::claim_saved_pipe(pipe)?),
+                _ => None,
+            };
 
             // If the parent environment doesn't have a locale set
             // (As is the case when launched from a .app on MacOS),
@@ -1404,6 +1428,7 @@ impl TerminalBuilder {
                         window_size_from_terminal_bounds(TerminalBounds::default()),
                         shell_nonce.as_deref(),
                         terminal_id.as_deref(),
+                        solo_going,
                     )
                 } else {
                     None
@@ -1416,6 +1441,8 @@ impl TerminalBuilder {
                             shell_nonce = connected.nonce;
                             terminal_id = connected.terminal_id;
                         }
+                        let claim = host_claim.get_or_insert_default();
+                        host::add_to_claim(claim, connected.link.pipe());
                         host_link = Some(connected.link);
                         reconnected_to_host = reconnected;
                         Ok(connected.pty)
@@ -1513,6 +1540,8 @@ impl TerminalBuilder {
                 host: host_link,
                 reconnected_to_host,
                 host_failed,
+                #[cfg(windows)]
+                _host_claim: host_claim,
                 replaying_until: reconnected_to_host.then(|| Instant::now() + REPLAY_TIMEOUT),
                 background_executor,
                 path_style,
@@ -1730,6 +1759,10 @@ pub struct Terminal {
     /// SOLO: whether a terminal host was wanted but couldn't be started, so
     /// the terminal ends with Solo.
     host_failed: bool,
+    /// SOLO: the host pipes this terminal has, its own and the one it was
+    /// restored from, for no other terminal to be restored from them.
+    #[cfg(windows)]
+    _host_claim: Option<host::PipeClaim>,
     /// SOLO: until when a terminal host reconnected to may still be replaying
     /// its output, whose queries mustn't be answered again; it says when it's
     /// done (hosts from Solo 2.0.0 don't, hence the time).
@@ -1932,7 +1965,13 @@ impl Terminal {
             }
             TerminalBackendEvent::ReplayEnd => self.replaying_until = None,
             TerminalBackendEvent::AgentHook(params) => {
-                match shell_integration::AgentHook::parse(&params) {
+                // SOLO: only reports from programs started in this terminal,
+                // which know its nonce.
+                let Some(params) = self.shell_integration.authenticate_agent_report(&params) else {
+                    log::debug!("agent report without this terminal's nonce, ignored");
+                    return;
+                };
+                match shell_integration::AgentHook::parse(params) {
                     Some(hook) => {
                         log::debug!("agent hook {hook:?}");
                         cx.emit(Event::AgentHook(hook));
@@ -2376,6 +2415,7 @@ impl Terminal {
             is_url,
             range,
             context_paths,
+            position_files,
         } = hyperlink;
         let prev_hovered_word = self.last_content.last_hovered_word.take();
         let match_line = range.start().line;
@@ -2391,6 +2431,7 @@ impl Terminal {
                     maybe_path: decoded_path,
                     working_directory,
                     context_paths,
+                    position_files,
                 })
             } else {
                 MaybeNavigationTarget::Url(maybe_url_or_path.clone())
@@ -2400,6 +2441,7 @@ impl Terminal {
                 maybe_path: maybe_url_or_path.clone(),
                 working_directory,
                 context_paths,
+                position_files,
             })
         };
 
@@ -3740,6 +3782,13 @@ impl Terminal {
         self.output_processor = None;
 
         pty_tx.shutdown();
+        // SOLO: a terminal host's program isn't ended here (it may be meant
+        // to keep running, if Solo is going): the host decides.
+        #[cfg(windows)]
+        if let Some(host) = &self.host {
+            host.release();
+            return;
+        }
         info.terminate_child_process();
 
         let timer = self.background_executor.timer(Duration::from_millis(100));
@@ -7455,10 +7504,12 @@ mod tests {
             .detach();
         });
         // As the hooks write them, also while the agent is on the alternate
-        // screen; unknown kinds are dropped.
+        // screen; unknown kinds are dropped, and so are reports without the
+        // terminal's nonce (anything printed can pose as a report).
         terminal.update(cx, |terminal, cx| {
+            terminal.set_shell_nonce("n1");
             terminal.write_raw_output(
-                b"\x1b]6973;agent;prompt;1793624689993\x07\x1b[?1049h\x1b]6973;agent;input;1793624690000\x07\x1b]6973;agent;dance\x07\x1b]6973;agent;stop;\x1b\\",
+                b"\x1b]6973;agent;nonce=n1;prompt;1793624689993\x07\x1b[?1049h\x1b]6973;agent;nonce=n1;input;1793624690000\x07\x1b]6973;agent;nonce=n1;dance\x07\x1b]6973;agent;prompt;5\x07\x1b]6973;agent;nonce=n2;prompt;6\x07\x1b]6973;agent;nonce=;prompt;7\x07\x1b]6973;agent;nonce=n1;stop;\x1b\\",
                 cx,
             )
         });
@@ -7470,6 +7521,7 @@ mod tests {
                     kind: AgentHookKind::PromptSubmitted,
                     sent_at_ms: Some(1793624689993),
                     session_id: None,
+                    raw_session_id: None,
                     agent: None,
                     working_directory: None,
                 },
@@ -7477,6 +7529,7 @@ mod tests {
                     kind: AgentHookKind::NeedsInput,
                     sent_at_ms: Some(1793624690000),
                     session_id: None,
+                    raw_session_id: None,
                     agent: None,
                     working_directory: None,
                 },
@@ -7484,6 +7537,7 @@ mod tests {
                     kind: AgentHookKind::Stopped,
                     sent_at_ms: None,
                     session_id: None,
+                    raw_session_id: None,
                     agent: None,
                     working_directory: None,
                 },
