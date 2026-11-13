@@ -1,7 +1,11 @@
-//! SOLO: A Claude Code and Codex hook that tells the Solo terminal the agent
-//! runs in what it's doing, with
-//! `OSC 6973 ; agent ; <kind> ; <ms since the epoch> ; <session id> [; <agent>
-//! [; <working directory>]]` (parsed by `terminal::shell_integration::AgentHook`).
+//! SOLO: A Claude Code, Codex and Copilot CLI hook (and the command
+//! OpenCode's plugin runs) that tells the Solo terminal the agent runs in
+//! what it's doing, with
+//! `OSC 6973 ; agent ; nonce=<nonce> ; <kind> ; <ms since the epoch> ; <session id>
+//! [; <agent> [; <working directory>]]` (parsed by
+//! `terminal::shell_integration::AgentHook`). The nonce is the terminal's
+//! agent key (`SOLO_AGENT_TOKEN`), without which the terminal ignores the
+//! report.
 //! The working directory, where the agent works (which can differ from the
 //! shell's, say for a resumed session), is percent-encoded UTF-8.
 //!
@@ -24,8 +28,9 @@ fn main() {
         .map(|elapsed| elapsed.as_millis().to_string())
         .unwrap_or_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let nonce = terminal_nonce();
     if args.first().map(String::as_str) == Some("report") {
-        match report_sequence(&args[1..], &sent_at_ms) {
+        match report_sequence(&args[1..], &sent_at_ms, &nonce) {
             Ok(sequence) => {
                 if let Err(error) = write_to_terminal(sequence.as_bytes()) {
                     eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
@@ -59,13 +64,15 @@ fn main() {
         working_directory_of(&input, project_directory.as_deref()),
     ) {
         (agent, Some(directory)) => format!(
-            "\x1b]6973;agent;{kind};{sent_at_ms};{session_id};{};{directory}\x07",
+            "\x1b]6973;agent;nonce={nonce};{kind};{sent_at_ms};{session_id};{};{directory}\x07",
             agent.unwrap_or_default()
         ),
         (Some(agent), None) => {
-            format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id};{agent}\x07")
+            format!("\x1b]6973;agent;nonce={nonce};{kind};{sent_at_ms};{session_id};{agent}\x07")
         }
-        (None, None) => format!("\x1b]6973;agent;{kind};{sent_at_ms};{session_id}\x07"),
+        (None, None) => {
+            format!("\x1b]6973;agent;nonce={nonce};{kind};{sent_at_ms};{session_id}\x07")
+        }
     };
     if let Err(error) = write_to_terminal(sequence.as_bytes()) {
         eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
@@ -75,9 +82,33 @@ fn main() {
 const REPORT_USAGE: &str = "usage: solo-agent-hook report --state <working|blocked|idle> \
 [--agent <name>] [--session <id>] [--seq <n>] [--directory <path>]";
 
+/// The terminal's agent key (`SOLO_AGENT_TOKEN`), which tells the terminal a
+/// report comes from a program started in it rather than from output posing
+/// as one. Empty (and the report ignored) if it's missing or could end the
+/// escape sequence.
+fn terminal_nonce() -> String {
+    // SOLO_SHELL_NONCE: only what the shell itself has (the integration
+    // scripts take it out of programs' environment), kept as a fallback.
+    std::env::var("SOLO_AGENT_TOKEN")
+        .or_else(|_| std::env::var("SOLO_SHELL_NONCE"))
+        .ok()
+        .map(|nonce| nonce.trim().to_string())
+        .filter(|nonce| is_nonce(nonce))
+        .unwrap_or_default()
+}
+
+/// Whether `nonce` can go into the escape sequence: up to 128 ASCII letters
+/// and digits.
+fn is_nonce(nonce: &str) -> bool {
+    nonce.len() <= 128
+        && nonce
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+}
+
 /// The escape sequence for `solo-agent-hook report ...`: the public form of
 /// the protocol (docs/agent-status-protocol.md), for agents and scripts.
-fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> {
+fn report_sequence(args: &[String], sent_at_ms: &str, nonce: &str) -> Result<String, String> {
     let mut state = None;
     let mut agent = String::new();
     let mut session = String::new();
@@ -111,11 +142,10 @@ fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> 
         return Err(format!("--seq {order:?} isn't a number"));
     }
     // Everything goes into an escape sequence: nothing that could end it.
-    if !session
-        .chars()
-        .all(|character| character.is_ascii_hexdigit() || character == '-')
-    {
-        return Err(format!("--session {session:?} isn't a UUID"));
+    if !session.is_empty() && !is_session_id(&session) {
+        return Err(format!(
+            "--session {session:?} must be up to 128 letters, digits, '-' or '_'"
+        ));
     }
     if !is_agent_name(&agent) {
         return Err(format!(
@@ -128,7 +158,7 @@ fn report_sequence(args: &[String], sent_at_ms: &str) -> Result<String, String> 
         .map(|directory| format!(";{}", percent_encode(&directory)))
         .unwrap_or_default();
     Ok(format!(
-        "\x1b]6973;agent;{kind};{order};{session};{agent}{directory}\x07"
+        "\x1b]6973;agent;nonce={nonce};{kind};{order};{session};{agent}{directory}\x07"
     ))
 }
 
@@ -213,10 +243,17 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
 fn session_id_of(input: &str) -> Option<String> {
     let event = serde_json::from_str::<serde_json::Value>(input).ok()?;
     let session_id = event.get("session_id")?.as_str()?;
-    session_id
-        .chars()
-        .all(|character| character.is_ascii_hexdigit() || character == '-')
-        .then(|| session_id.to_string())
+    is_session_id(session_id).then(|| session_id.to_string())
+}
+
+/// Whether `id` can go into the escape sequence as a session id: a UUID, or
+/// another agent's id such as OpenCode's `ses_...`: up to 128 letters,
+/// digits, '-' or '_'.
+fn is_session_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
 /// Where the agent works, percent-encoded for the escape sequence: Claude
@@ -281,7 +318,13 @@ fn write_to_terminal(bytes: &[u8]) -> std::io::Result<()> {
             overlapped: *mut c_void,
         ) -> i32;
         fn CloseHandle(handle: *mut c_void) -> i32;
+        fn GetConsoleMode(console: *mut c_void, mode: *mut u32) -> i32;
+        fn SetConsoleMode(console: *mut c_void, mode: u32) -> i32;
     }
+    // SOLO: without it the console prints the escape sequence as text (and
+    // the terminal never sees it); Windows PowerShell turns it off while it
+    // runs a program, which is when hooks run.
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
     const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
     const GENERIC_WRITE: u32 = 0x4000_0000;
     const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
@@ -313,6 +356,11 @@ fn write_to_terminal(bytes: &[u8]) -> std::io::Result<()> {
         if console.is_null() || console == INVALID_HANDLE_VALUE {
             return Err(Error::last_os_error());
         }
+        let mut mode = 0u32;
+        let restore_mode = (GetConsoleMode(console, &mut mode) != 0
+            && mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING == 0
+            && SetConsoleMode(console, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0)
+            .then_some(mode);
         let mut remaining = bytes;
         let mut result = Ok(());
         while !remaining.is_empty() {
@@ -331,6 +379,9 @@ fn write_to_terminal(bytes: &[u8]) -> std::io::Result<()> {
                 break;
             }
             remaining = remaining.get(written as usize..).unwrap_or_default();
+        }
+        if let Some(mode) = restore_mode {
+            SetConsoleMode(console, mode);
         }
         CloseHandle(console);
         result
@@ -391,9 +442,10 @@ mod tests {
         assert_eq!(
             report_sequence(
                 &args(&["--state", "working", "--agent", "my agent", "--seq", "7"]),
-                "123"
+                "123",
+                "n0nce"
             ),
-            Ok("\x1b]6973;agent;prompt;7;;my agent\x07".to_string())
+            Ok("\x1b]6973;agent;nonce=n0nce;prompt;7;;my agent\x07".to_string())
         );
         assert_eq!(
             report_sequence(
@@ -403,13 +455,40 @@ mod tests {
                     "--session",
                     "0f6ed4b2-755b-4e18-8bd1-f60252548036"
                 ]),
-                "123"
+                "123",
+                "n0nce"
             ),
-            Ok("\x1b]6973;agent;input;123;0f6ed4b2-755b-4e18-8bd1-f60252548036;\x07".to_string())
+            Ok(
+                "\x1b]6973;agent;nonce=n0nce;input;123;0f6ed4b2-755b-4e18-8bd1-f60252548036;\x07"
+                    .to_string()
+            )
         );
         assert_eq!(
-            report_sequence(&args(&["--state", "idle"]), "5"),
-            Ok("\x1b]6973;agent;stop;5;;\x07".to_string())
+            report_sequence(&args(&["--state", "idle"]), "5", ""),
+            Ok("\x1b]6973;agent;nonce=;stop;5;;\x07".to_string())
+        );
+        // What OpenCode's plugin runs.
+        assert_eq!(
+            report_sequence(
+                &args(&[
+                    "--state",
+                    "blocked",
+                    "--agent",
+                    "opencode",
+                    "--seq",
+                    "8",
+                    "--session",
+                    "ses_4f2a1cB9",
+                    "--directory",
+                    r"C:\work dir",
+                ]),
+                "123",
+                "n0nce"
+            ),
+            Ok(
+                "\x1b]6973;agent;nonce=n0nce;input;8;ses_4f2a1cB9;opencode;C:\\work dir\x07"
+                    .to_string()
+            )
         );
         for bad in [
             &["--state", "dancing"][..],
@@ -420,7 +499,19 @@ mod tests {
             &["--state", "idle", "--session", "x;y"][..],
             &["--state", "idle", "--what", "x"][..],
         ] {
-            assert!(report_sequence(&args(bad), "1").is_err(), "{bad:?}");
+            assert!(
+                report_sequence(&args(bad), "1", "n0nce").is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonces_that_could_end_the_sequence_are_left_out() {
+        assert!(is_nonce("0123456789abcdef"));
+        assert!(is_nonce(""));
+        for bad in ["a;b", "a\x07", "a\x1b\\", "é"] {
+            assert!(!is_nonce(bad), "{bad:?}");
         }
     }
 
@@ -432,6 +523,12 @@ mod tests {
         );
         assert_eq!(session_id_of("{\"session_id\":\"a\\u0007b\"}"), None);
         assert_eq!(session_id_of("not json"), None);
+        assert_eq!(
+            session_id_of(r#"{"session_id":"ses_4f2a1cB9"}"#).as_deref(),
+            Some("ses_4f2a1cB9")
+        );
+        assert_eq!(session_id_of(r#"{"session_id":"a;b"}"#), None);
+        assert_eq!(session_id_of(r#"{"session_id":""}"#), None);
     }
 
     #[test]
@@ -514,12 +611,18 @@ mod tests {
         );
         // Unless it's an event under a name this doesn't know.
         assert_eq!(
-            kind_of(r#"{"hook_event_name":"userPromptSubmitted"}"#, Some("prompt")),
+            kind_of(
+                r#"{"hook_event_name":"userPromptSubmitted"}"#,
+                Some("prompt")
+            ),
             Some("prompt")
         );
         // A known event this doesn't report stays unreported.
         assert_eq!(
-            kind_of(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#, Some("input")),
+            kind_of(
+                r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#,
+                Some("input")
+            ),
             None
         );
     }

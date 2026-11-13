@@ -2262,8 +2262,21 @@
     // an arrow) in shells with Solo's integration; the input editor shows the
     // full path and git branch.
     "compact_prompt": true,
-    // Open completions in the input editor as you type, rather than only on Tab.
-    "completions_as_you_type": false,
+    // Open completions in the input editor as you type (after a short pause),
+    // rather than only on Tab. A menu that opened by itself leaves Enter to
+    // run the command; Tab accepts the selected completion.
+    "completions_as_you_type": true,
+    // Which agent CLI turns "# what you want" in the input editor into a
+    // command: "auto" (Claude Code if installed, else Codex), "claude_code"
+    // or "codex". It runs with its tools turned off, so it can only answer.
+    "ai_command_agent": "auto",
+    // The model Claude Code generates commands with.
+    "ai_command_claude_model": "haiku",
+    // The model Codex generates commands with; empty uses Codex's default.
+    "ai_command_codex_model": "",
+    // Also send the last failed command and the end of its output with a
+    // "# request", so "# fix that error" works.
+    "ai_command_include_last_failure": true,
     // Underline file paths and URLs on hover and open them with a plain click
     // (files open in the editor), rather than only with ctrl/cmd held.
     "open_links_on_click": true,
@@ -2300,6 +2313,12 @@
     // session with `copilot --plugin-dir`, so its turns can be reviewed like
     // Claude Code's. Takes effect in new terminals.
     "copilot_hooks": true,
+    // Let OpenCode started in a terminal with shell integration report what
+    // it's doing through a plugin Solo loads for that session (with
+    // OPENCODE_CLI_CONFIG_CONTENT for OpenCode 2, OPENCODE_CONFIG_DIR for
+    // OpenCode 1), so its turns can be reviewed like Claude Code's. Nothing is
+    // written to OpenCode's own config. Takes effect in new terminals.
+    "opencode_hooks": true,
     // On Windows, terminals run their shell in a small background process
     // (solo-terminal-host). When Solo quits, or restarts for an update,
     // terminals that are running a command or an agent keep running there,
@@ -2850,6 +2869,29 @@
   },
   // LSP Specific settings.
   "lsp": {
+    // SOLO: lighter defaults, so that large repositories don't take all the
+    // memory and CPU. Set these back in your settings to undo them.
+    //
+    // rust-analyzer runs `cargo check` on save and to build proc macros;
+    // by default cargo starts as many `rustc` as there are logical cores, each
+    // up to ~1.5 GB on a large workspace. "auto" means a quarter of the
+    // logical cores, at least 2; "default" lets cargo decide again.
+    "rust-analyzer": {
+      "initialization_options": {
+        "cargo": {
+          "extraEnv": {
+            "CARGO_BUILD_JOBS": "auto",
+          },
+        },
+      },
+    },
+    // clangd builds its background index with 2 workers at a low priority,
+    // and keeps precompiled headers on disk instead of in memory.
+    "clangd": {
+      "binary": {
+        "arguments": ["-j=2", "--background-index-priority=background", "--pch-storage=disk"],
+      },
+    },
     // Specify the LSP name as a key here.
     // "rust-analyzer": {
     //     // A special flag for rust-analyzer integration, to use server-provided tasks

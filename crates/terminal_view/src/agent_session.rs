@@ -25,7 +25,12 @@ use terminal::shell_integration::AgentSessionId;
 use ui::{ListItem, ListItemSpacing, prelude::*};
 use workspace::ModalView;
 
-use crate::TerminalView;
+use crate::{
+    TerminalView,
+    agent_tab::{
+        context_color, context_hsla, format_tokens_short, render_context_bar, short_model,
+    },
+};
 
 actions!(
     terminal,
@@ -51,8 +56,6 @@ pub(crate) struct AgentSessionBinding {
     chosen: Option<SessionLocation>,
     last_attempt: Option<Instant>,
     finding: bool,
-    /// Whether the user was told the context is nearly full.
-    warned_context_full: bool,
     _subscription: Option<Subscription>,
 }
 
@@ -87,26 +90,16 @@ impl TerminalView {
     }
 
     /// SOLO: the thin bar at the bottom of an agent's terminal with its
-    /// context and token usage. When narrow, it's cut from the end: the
-    /// turn's tokens first, then the session's.
+    /// context and token usage (see [`usage_bar`]).
     pub(crate) fn render_agent_usage_bar(&self, cx: &App) -> Option<AnyElement> {
         let usage = self.shown_agent_usage(cx)?;
-        let parts = usage_bar_parts(&usage, util::i18n::is_chinese());
-        if parts.is_empty() {
-            return None;
-        }
-        Some(usage_bar(parts, cx).into_any_element())
+        let contents = UsageBar::new(&usage)?;
+        Some(usage_bar(&contents, cx).into_any_element())
     }
 
-    /// SOLO: how full the running agent's context is, for its tab: the
-    /// percentage, and whether it's nearly full.
-    pub(crate) fn agent_context_percent(&self, cx: &App) -> Option<(u32, bool)> {
-        let usage = self.shown_agent_usage(cx)?;
-        let fraction = usage.context_fraction()?;
-        Some((
-            (fraction * 100.).round() as u32,
-            usage.context_nearly_full(),
-        ))
+    /// SOLO: how full the running agent's context is, for its tab.
+    pub(crate) fn agent_context_fraction(&self, cx: &App) -> Option<f64> {
+        self.shown_agent_usage(cx)?.context_fraction()
     }
 
     /// Whether an AI agent runs or ran in this terminal, so it may have a
@@ -231,25 +224,17 @@ impl TerminalView {
         let session = cx.new(|cx| AgentSession::new(location, cx));
         self.agent_session._subscription = Some(cx.subscribe(&session, Self::agent_session_event));
         self.agent_session.session = Some(session.clone());
-        self.agent_session.warned_context_full = false;
         session
     }
 
+    /// The session changed: its usage shows on the tab and the usage bar.
     fn agent_session_event(
         &mut self,
-        session: Entity<AgentSession>,
+        _: Entity<AgentSession>,
         _: &AgentSessionEvent,
         cx: &mut Context<Self>,
     ) {
-        let nearly_full = session.read(cx).state().usage.context_nearly_full();
-        if nearly_full && !self.agent_session.warned_context_full {
-            self.agent_session.warned_context_full = true;
-            let state = session.read(cx).state();
-            let (agent, usage) = (state.agent(), state.usage.clone());
-            self.warn_context_nearly_full(agent, &usage, cx);
-        } else if !nearly_full {
-            self.agent_session.warned_context_full = false;
-        }
+        cx.notify();
     }
 
     /// The agent's hook reported its session id.
@@ -295,44 +280,6 @@ impl TerminalView {
             let session = find.await?;
             agent_answers(&session, 1, cx).await?.into_iter().next()
         })
-    }
-
-    fn warn_context_nearly_full(
-        &self,
-        agent_kind: agent_sessions::AgentKind,
-        usage: &agent_sessions::UsageSummary,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(percent) = usage
-            .context_fraction()
-            .map(|fraction| (fraction * 100.).round())
-        else {
-            return;
-        };
-        let agent = agent_kind.name();
-        let model = usage.model.clone().unwrap_or_default();
-        let compact_hint = match agent_kind {
-            agent_sessions::AgentKind::ClaudeCode | agent_sessions::AgentKind::Codex => {
-                " (/compact)"
-            }
-        };
-        let message = if util::i18n::is_chinese() {
-            format!("{agent} 的上下文已用 {percent}%（{model}），建议压缩{compact_hint}或开新会话")
-        } else {
-            format!(
-                "{agent}'s context is {percent}% full ({model}). Consider compacting it{compact_hint} or starting a new session."
-            )
-        };
-        let Some(workspace) = self.workspace.upgrade() else {
-            return;
-        };
-        let id = workspace::notifications::NotificationId::composite::<ChooseAgentSession>((
-            "agent-context-full",
-            cx.entity_id(),
-        ));
-        workspace.update(cx, |workspace, cx| {
-            workspace.show_toast(workspace::Toast::new(id, message), cx)
-        });
     }
 
     pub(crate) fn choose_agent_session(
@@ -413,7 +360,11 @@ impl TerminalView {
         }
     }
 
-    fn agent_session_chosen(&mut self, location: SessionLocation, cx: &mut Context<Self>) {
+    pub(crate) fn agent_session_chosen(
+        &mut self,
+        location: SessionLocation,
+        cx: &mut Context<Self>,
+    ) {
         let location = SessionLocation {
             matched_by: MatchedBy::Chosen,
             ..location
@@ -455,209 +406,187 @@ pub(crate) async fn agent_answers(
         .ok()
 }
 
-/// A token count, briefly: 950, 12.3k, 4.5M.
-fn format_tokens(tokens: u64) -> String {
-    match tokens {
-        0..1_000 => tokens.to_string(),
-        1_000..1_000_000 => format!("{:.1}k", tokens as f64 / 1_000.),
-        _ => format!("{:.1}M", tokens as f64 / 1_000_000.),
+/// SOLO: what an agent's usage bar shows, its numbers to three significant
+/// digits; the exact ones are on the tab's card.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct UsageBar {
+    /// The context's tokens out of the window ("542k / 1M"), and how full
+    /// it is.
+    context: Option<(String, Option<f64>)>,
+    model: Option<String>,
+    /// The turn's and the session's tokens, in and out.
+    turn: Option<(String, String)>,
+    session: Option<(String, String)>,
+}
+
+impl UsageBar {
+    fn new(usage: &agent_sessions::UsageSummary) -> Option<Self> {
+        let context = usage.context_tokens.map(|tokens| {
+            let text = match usage.context_window {
+                Some(window) => format!(
+                    "{} / {}",
+                    format_tokens_short(tokens),
+                    format_tokens_short(window)
+                ),
+                None => format_tokens_short(tokens),
+            };
+            (text, usage.context_fraction())
+        });
+        let tokens = |usage: &agent_sessions::TokenUsage| {
+            (
+                format_tokens_short(usage.total_input()),
+                format_tokens_short(usage.output),
+            )
+        };
+        let (turn, session) = if usage.session.is_empty() {
+            (None, None)
+        } else {
+            (Some(tokens(&usage.turn)), Some(tokens(&usage.session)))
+        };
+        let bar = Self {
+            context,
+            model: usage
+                .model
+                .as_deref()
+                .filter(|model| !model.is_empty())
+                .map(|model| short_model(model).to_string()),
+            turn,
+            session,
+        };
+        (bar.context.is_some() || bar.model.is_some() || bar.session.is_some()).then_some(bar)
     }
 }
 
-/// SOLO: the usage bar for [`usage_bar_parts`]. Parts that don't fit wrap to a
-/// second line, which is cut off, so whole parts go when it's narrow, from
-/// the last; the first (context and model) always stays, cut if need be.
-fn usage_bar(parts: Vec<(String, bool)>, cx: &App) -> Stateful<Div> {
-    let line_height = rems_from_px(16_f32);
+/// SOLO: the usage bar: the context (a short bar, its percentage and
+/// tokens), the model, the turn's tokens and the session's. When narrow,
+/// whole parts go: the session's tokens first, then the turn's, then the
+/// model; last, only the context's bar and percentage stay.
+///
+/// Parts that don't fit wrap to a second line, which is cut off. They come
+/// after an empty first part, so even the context can wrap away; then the
+/// short context drawn below them shows.
+fn usage_bar(contents: &UsageBar, cx: &App) -> Stateful<Div> {
+    let line_height = rems_from_px(22_f32);
+    let background = cx.theme().colors().terminal_background;
+    let muted = |text: &str| {
+        Label::new(text.to_string())
+            .untranslated()
+            .single_line()
+            .size(LabelSize::Small)
+            .color(Color::Muted)
+    };
+    let number = |text: String| {
+        Label::new(text)
+            .untranslated()
+            .single_line()
+            .size(LabelSize::Small)
+            .buffer_font(cx)
+    };
+    let part = |name: &'static str| {
+        h_flex()
+            .debug_selector(move || format!("agent-usage-{name}"))
+            .flex_none()
+            .h(line_height)
+            .gap_2()
+            .bg(background)
+    };
+    let meter = |fraction: f64| {
+        let color = match context_color(fraction) {
+            Color::Muted => Color::Default,
+            _ => Color::Custom(context_hsla(fraction, background, cx)),
+        };
+        h_flex()
+            .flex_none()
+            .gap_2()
+            .child(render_context_bar(
+                fraction,
+                px(72.),
+                px(5.),
+                background,
+                cx,
+            ))
+            .child(number(format!("{:.0}%", fraction * 100.)).color(color))
+    };
+    let tokens = |name: &'static str, what: &str, (input, output): (String, String)| {
+        part(name)
+            .ml_3()
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(1.))
+                    .h(rems_from_px(14_f32))
+                    .mr_1()
+                    .bg(cx.theme().colors().border),
+            )
+            .child(muted(what))
+            .child(muted(util::i18n::tr("in", "输入")))
+            .child(number(input))
+            .child(muted(util::i18n::tr("out", "输出")))
+            .child(number(output))
+    };
+
+    let minimal = contents
+        .context
+        .as_ref()
+        .and_then(|(_, fraction)| *fraction)
+        .map(|fraction| part("minimal").child(meter(fraction)));
+    let mut parts = div()
+        .debug_selector(|| "agent-usage-parts".into())
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .w_full()
+        .h(line_height)
+        .overflow_hidden()
+        .child(div().flex_none().w_0().h(line_height));
+    if let Some((text, fraction)) = contents.context.clone() {
+        parts = parts.child(
+            part("context")
+                .child(muted(util::i18n::tr("Context", "上下文")))
+                .when_some(fraction, |this, fraction| this.child(meter(fraction)))
+                .child(number(text).color(Color::Muted)),
+        );
+    }
+    if let Some(model) = contents.model.clone() {
+        parts = parts.child(
+            part("model").ml_3().child(
+                div()
+                    .px_1p5()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(cx.theme().colors().border)
+                    .child(number(model)),
+            ),
+        );
+    }
+    if let Some(turn) = contents.turn.clone() {
+        parts = parts.child(tokens("turn", util::i18n::tr("Turn", "本轮"), turn));
+    }
+    if let Some(session) = contents.session.clone() {
+        parts = parts.child(tokens(
+            "session",
+            util::i18n::tr("Session", "本会话"),
+            session,
+        ));
+    }
     div()
         .id("agent-usage-bar")
         .w_full()
-        .px_2()
+        .px_3()
         .border_t_1()
         .border_color(cx.theme().colors().border_variant)
-        .bg(cx.theme().colors().terminal_background)
+        .bg(background)
         .child(
             div()
-                .debug_selector(|| "agent-usage-parts".into())
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .gap_x_3()
+                .relative()
                 .w_full()
                 .h(line_height)
-                .line_height(line_height)
                 .overflow_hidden()
-                .children(
-                    parts
-                        .into_iter()
-                        .enumerate()
-                        .map(|(ix, (text, nearly_full))| {
-                            div()
-                                .debug_selector(|| format!("agent-usage-part-{ix}"))
-                                .flex_none()
-                                .child(
-                                    Label::new(text)
-                                        .untranslated()
-                                        .single_line()
-                                        .size(LabelSize::XSmall)
-                                        .color(if nearly_full {
-                                            Color::Warning
-                                        } else {
-                                            Color::Muted
-                                        }),
-                                )
-                        }),
-                ),
+                .when_some(minimal, |this, minimal| {
+                    this.child(div().absolute().top_0().left_0().child(minimal))
+                })
+                .child(parts),
         )
-}
-
-/// SOLO: the parts of an agent's usage bar, most important first, each with
-/// whether to warn: the context (and model), the session's tokens, the
-/// turn's tokens. Cache details stay in the tooltip.
-pub(crate) fn usage_bar_parts(
-    usage: &agent_sessions::UsageSummary,
-    chinese: bool,
-) -> Vec<(String, bool)> {
-    let mut parts = Vec::new();
-    if let Some(context_tokens) = usage.context_tokens {
-        let context = match (usage.context_window, usage.context_fraction()) {
-            (Some(window), Some(fraction)) => format!(
-                "{} / {} ({:.0}%)",
-                format_tokens(context_tokens),
-                format_tokens(window),
-                fraction * 100.
-            ),
-            _ => format_tokens(context_tokens),
-        };
-        let mut text = if chinese {
-            format!("上下文 {context}")
-        } else {
-            format!("Context {context}")
-        };
-        if let Some(model) = usage.model.as_deref().filter(|model| !model.is_empty()) {
-            text.push_str(&format!(" · {model}"));
-        }
-        parts.push((text, usage.context_nearly_full()));
-    }
-    if !usage.session.is_empty() {
-        let session = &usage.session;
-        parts.push((
-            if chinese {
-                format!(
-                    "本会话 输入 {} · 输出 {}",
-                    format_tokens(session.total_input()),
-                    format_tokens(session.output)
-                )
-            } else {
-                format!(
-                    "Session {} in · {} out",
-                    format_tokens(session.total_input()),
-                    format_tokens(session.output)
-                )
-            },
-            false,
-        ));
-        let turn = &usage.turn;
-        parts.push((
-            if chinese {
-                format!(
-                    "本轮 输入 {} · 输出 {}",
-                    format_tokens(turn.total_input()),
-                    format_tokens(turn.output)
-                )
-            } else {
-                format!(
-                    "Turn {} in · {} out",
-                    format_tokens(turn.total_input()),
-                    format_tokens(turn.output)
-                )
-            },
-            false,
-        ));
-    }
-    parts
-}
-
-/// The lines about a session in its terminal's tab tooltip: its title, token
-/// usage and how full its context is. Costs aren't shown: the only one known
-/// is the agent's own estimate at API prices, written now and then.
-pub(crate) fn session_tooltip_lines(
-    state: &SessionState,
-    matched_by: MatchedBy,
-    chinese: bool,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    let guessed = matches!(matched_by, MatchedBy::Recent { ambiguous: true });
-    if let Some(title) = &state.title {
-        lines.push(match (chinese, guessed) {
-            (false, false) => format!("Session: {title}"),
-            (false, true) => format!("Session (guessed): {title}"),
-            (true, false) => format!("会话：{title}"),
-            (true, true) => format!("会话（推测）：{title}"),
-        });
-    }
-    let usage = &state.usage;
-    if !usage.session.is_empty() {
-        let session = &usage.session;
-        lines.push(if chinese {
-            format!(
-                "本会话 token：输入 {} · 输出 {}（缓存读 {} · 缓存写 {} · 未缓存 {}）",
-                format_tokens(session.total_input()),
-                format_tokens(session.output),
-                format_tokens(session.cache_read),
-                format_tokens(session.cache_creation),
-                format_tokens(session.input),
-            )
-        } else {
-            format!(
-                "Session tokens: {} in · {} out ({} cache read · {} cache write · {} uncached)",
-                format_tokens(session.total_input()),
-                format_tokens(session.output),
-                format_tokens(session.cache_read),
-                format_tokens(session.cache_creation),
-                format_tokens(session.input),
-            )
-        });
-        let turn = &usage.turn;
-        lines.push(if chinese {
-            format!(
-                "本轮 token：输入 {} · 输出 {}",
-                format_tokens(turn.total_input()),
-                format_tokens(turn.output)
-            )
-        } else {
-            format!(
-                "Turn tokens: {} in · {} out",
-                format_tokens(turn.total_input()),
-                format_tokens(turn.output)
-            )
-        });
-    }
-    if let Some(context_tokens) = usage.context_tokens {
-        let model = usage.model.as_deref().unwrap_or_default();
-        let context = match (usage.context_window, usage.context_fraction()) {
-            (Some(window), Some(fraction)) => format!(
-                "{} / {} ({:.0}%)",
-                format_tokens(context_tokens),
-                format_tokens(window),
-                fraction * 100.
-            ),
-            _ => format_tokens(context_tokens),
-        };
-        let mut line = if chinese {
-            format!("上下文：{context}  {model}")
-        } else {
-            format!("Context: {context}  {model}")
-        };
-        if usage.context_nearly_full() {
-            line.push_str(util::i18n::tr(
-                " — nearly full, compact it or start a new session",
-                " — 快满了，建议压缩或开新会话",
-            ));
-        }
-        lines.push(line.trim_end().to_string());
-    }
-    lines
 }
 
 struct AgentSessionPicker {
@@ -819,52 +748,40 @@ impl PickerDelegate for AgentSessionPickerDelegate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_sessions::{AgentKind, ClaudeCode};
 
-    #[test]
-    fn test_format_tokens() {
-        assert_eq!(format_tokens(950), "950");
-        assert_eq!(format_tokens(12_345), "12.3k");
-        assert_eq!(format_tokens(4_520_000), "4.5M");
-    }
-
-    #[test]
-    fn test_usage_bar_parts() {
+    fn usage() -> agent_sessions::UsageSummary {
         use agent_sessions::{TokenUsage, UsageSummary};
-        // Nothing known: no bar.
-        assert!(usage_bar_parts(&UsageSummary::default(), false).is_empty());
-        let usage = UsageSummary {
+        UsageSummary {
             session: TokenUsage {
                 input: 1_000,
                 output: 30_000,
-                cache_read: 1_200_000,
+                cache_read: 211_400_000,
                 cache_creation: 0,
             },
             turn: TokenUsage {
                 input: 500,
-                output: 2_000,
-                cache_read: 50_000,
+                output: 482,
+                cache_read: 541_500,
                 cache_creation: 0,
             },
-            context_tokens: Some(170_000),
-            model: Some("claude-opus".into()),
-            context_window: Some(200_000),
-        };
-        // Context first (cut last when narrow), warned of past 80%.
+            context_tokens: Some(850_000),
+            model: Some("claude-opus-5-5".into()),
+            context_window: Some(1_000_000),
+        }
+    }
+
+    #[test]
+    fn test_usage_bar_contents() {
+        // Nothing known: no bar.
+        assert_eq!(UsageBar::new(&Default::default()), None);
         assert_eq!(
-            usage_bar_parts(&usage, false),
-            vec![
-                (
-                    "Context 170.0k / 200.0k (85%) · claude-opus".to_string(),
-                    true
-                ),
-                ("Session 1.2M in · 30.0k out".to_string(), false),
-                ("Turn 50.5k in · 2.0k out".to_string(), false),
-            ]
-        );
-        assert_eq!(
-            usage_bar_parts(&usage, true)[1].0,
-            "本会话 输入 1.2M · 输出 30.0k"
+            UsageBar::new(&usage()),
+            Some(UsageBar {
+                context: Some(("850k / 1M".to_string(), Some(0.85))),
+                model: Some("opus-5-5".to_string()),
+                turn: Some(("542k".to_string(), "482".to_string())),
+                session: Some(("211M".to_string(), "30k".to_string())),
+            })
         );
     }
 
@@ -876,20 +793,13 @@ mod tests {
         }
         impl Render for Bar {
             fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                let parts = vec![
-                    (
-                        "Context 170.0k / 200.0k (85%) · claude-opus".to_string(),
-                        true,
-                    ),
-                    ("Session 1.2M in · 30.0k out".to_string(), false),
-                    ("Turn 50.5k in · 2.0k out".to_string(), false),
-                ];
-                div().w(self.width).child(usage_bar(parts, cx))
+                let contents = UsageBar::new(&usage()).unwrap();
+                div().w(self.width).child(usage_bar(&contents, cx))
             }
         }
         crate::tests::init_test(cx).await;
         let (bar, cx) = cx.add_window_view(|_, _| Bar { width: px(2000.) });
-        // Which parts show at `width`, with each part's bounds.
+        // Which parts show at `width`: those on the first line.
         let mut shown_at = |width: Pixels| {
             bar.update(cx, |bar, cx| {
                 bar.width = width;
@@ -898,73 +808,47 @@ mod tests {
             cx.run_until_parked();
             let line = cx.debug_bounds("agent-usage-parts").expect("the bar");
             [
-                "agent-usage-part-0",
-                "agent-usage-part-1",
-                "agent-usage-part-2",
+                "agent-usage-context",
+                "agent-usage-model",
+                "agent-usage-turn",
+                "agent-usage-session",
             ]
             .into_iter()
-            .map(|selector| {
-                let part = cx.debug_bounds(selector).expect("a part");
-                (part.top() < line.bottom(), part)
+            .map(|part| {
+                let bounds = cx.debug_bounds(part).expect("a part");
+                (bounds.top() < line.bottom(), bounds)
             })
             .collect::<Vec<_>>()
         };
+        let shown = |parts: &[(bool, Bounds<Pixels>)]| {
+            parts.iter().map(|(shown, _)| *shown).collect::<Vec<_>>()
+        };
         let wide = shown_at(px(2000.));
-        assert!(wide.iter().all(|(shown, _)| *shown), "{wide:?}");
-        let [(_, context), (_, session), (_, turn)] = [wide[0], wide[1], wide[2]];
-        let padding = context.left();
-        let gap = session.left() - context.right();
-        let end_of = |part: Bounds<Pixels>| part.right() + padding;
+        assert_eq!(shown(&wide), [true, true, true, true]);
+        let padding = wide[0].1.left();
+        let end_of = |ix: usize| wide[ix].1.right() + padding;
 
-        // One pixel short of the turn's tokens: they go, the rest stays.
-        let shown: Vec<bool> = shown_at(end_of(turn) - px(1.))
-            .iter()
-            .map(|(shown, _)| *shown)
-            .collect();
-        assert_eq!(shown, [true, true, false]);
-        // Short of the session's: only the context and model.
-        let shown: Vec<bool> = shown_at(end_of(session) - px(1.))
-            .iter()
-            .map(|(shown, _)| *shown)
-            .collect();
-        assert_eq!(shown, [true, false, false]);
-        // Narrower than the context: it stays, cut.
-        let shown: Vec<bool> = shown_at(end_of(context) - gap)
-            .iter()
-            .map(|(shown, _)| *shown)
-            .collect();
-        assert_eq!(shown, [true, false, false]);
-    }
-
-    #[test]
-    fn test_session_tooltip_lines() {
-        let mut state = SessionState::new(AgentKind::ClaudeCode);
-        assert!(session_tooltip_lines(&state, MatchedBy::Reported, false).is_empty());
-        for line in [
-            r#"{"type":"user","message":{"content":"Go"}}"#,
-            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5","id":"m1","content":[],"usage":{"input_tokens":10,"output_tokens":2000,"cache_read_input_tokens":150000,"cache_creation_input_tokens":20000}}}"#,
-            r#"{"type":"ai-title","aiTitle":"Fix the build"}"#,
-        ] {
-            state.apply_all(ClaudeCode.parse_line(line));
-        }
+        // One pixel short of the session's tokens: they go, the rest stays.
         assert_eq!(
-            session_tooltip_lines(&state, MatchedBy::Recent { ambiguous: true }, false),
-            [
-                "Session (guessed): Fix the build",
-                "Session tokens: 170.0k in · 2.0k out (150.0k cache read · 20.0k cache write · 10 uncached)",
-                "Turn tokens: 170.0k in · 2.0k out",
-                &format!(
-                    "Context: 170.0k / 200.0k (85%)  claude-haiku-4-5{}",
-                    util::i18n::tr(
-                        " — nearly full, compact it or start a new session",
-                        " — 快满了，建议压缩或开新会话",
-                    )
-                ),
-            ]
+            shown(&shown_at(end_of(3) - px(1.))),
+            [true, true, true, false]
+        );
+        // Then the turn's, then the model.
+        assert_eq!(
+            shown(&shown_at(end_of(2) - px(1.))),
+            [true, true, false, false]
         );
         assert_eq!(
-            session_tooltip_lines(&state, MatchedBy::Reported, true)[2],
-            "本轮 token：输入 170.0k · 输出 2.0k"
+            shown(&shown_at(end_of(1) - px(1.))),
+            [true, false, false, false]
         );
+        // Then the context with its label and tokens goes too, and only its
+        // bar and percentage, drawn below, show.
+        let narrow = shown_at(end_of(0) - px(1.));
+        assert_eq!(shown(&narrow), [false, false, false, false]);
+        let minimal = cx
+            .debug_bounds("agent-usage-minimal")
+            .expect("the short context");
+        assert!(minimal.right() <= end_of(0) - px(1.), "{minimal:?}");
     }
 }

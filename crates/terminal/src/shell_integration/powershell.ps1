@@ -75,8 +75,8 @@ function Global:prompt {
     "$marks$userPrompt$esc]133;B$bel"
 }
 
-# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this console.
-if ($env:SOLO_CLAUDE_SETTINGS -or $env:SOLO_CODEX_ARGS -or $env:SOLO_COPILOT_PLUGIN) {
+# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's) write to this console.
+if ($env:SOLO_CLAUDE_SETTINGS -or $env:SOLO_CODEX_ARGS -or $env:SOLO_COPILOT_PLUGIN -or $env:SOLO_OPENCODE_CONFIG_DIR) {
     $env:SOLO_AGENT_CONSOLE_PID = "$PID"
 }
 
@@ -117,8 +117,9 @@ if ($env:SOLO_CODEX_ARGS -and -not (Get-Command -Name codex -CommandType Functio
             Write-Error "codex: command not found"
             return
         }
-        # cmd.exe would expand the %SOLO_AGENT_HOOK_COMMAND% in the hooks'
-        # command, so a .cmd shim (npm installs a .ps1 beside it) runs as typed.
+        # cmd.exe would expand % and treat & specially in the hooks' command
+        # (the hook's path), so a .cmd shim (npm installs a .ps1 beside it)
+        # runs as typed.
         $program = $programs | Where-Object { $_.Extension -notin @('.cmd', '.bat') } | Select-Object -First 1
         # Commands that don't run a session run as typed too.
         $hooks = @()
@@ -160,6 +161,36 @@ if ($env:SOLO_COPILOT_PLUGIN -and -not (Get-Command -Name copilot -CommandType F
             & $program @plugin @args
         }
         $Global:__SoloWrappedExitCode = $Global:LASTEXITCODE
+    }
+}
+
+# OpenCode reports what it's doing through plugins Solo loads for the session:
+# OpenCode 2's from SOLO_OPENCODE_CLI_CONFIG, OpenCode 1's from the folder in
+# SOLO_OPENCODE_CONFIG_DIR. Variables of the user's own stay.
+# An opencode function or alias of the user's own stays.
+if ($env:SOLO_OPENCODE_CONFIG_DIR -and -not (Get-Command -Name opencode -CommandType Function, Alias -ErrorAction SilentlyContinue)) {
+    function Global:opencode {
+        $program = Get-Command -Name opencode -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $program) {
+            Write-Error "opencode: command not found"
+            return
+        }
+        $setCliConfig = $env:SOLO_OPENCODE_CLI_CONFIG -and -not (Test-Path Env:OPENCODE_CLI_CONFIG_CONTENT)
+        $setConfigDir = -not (Test-Path Env:OPENCODE_CONFIG_DIR) -and (Test-Path -LiteralPath $env:SOLO_OPENCODE_CONFIG_DIR)
+        if ($setCliConfig) { $env:OPENCODE_CLI_CONFIG_CONTENT = $env:SOLO_OPENCODE_CLI_CONFIG }
+        if ($setConfigDir) { $env:OPENCODE_CONFIG_DIR = $env:SOLO_OPENCODE_CONFIG_DIR }
+        try {
+            $Global:LASTEXITCODE = 0
+            if ($MyInvocation.ExpectingInput) {
+                $input | & $program @args
+            } else {
+                & $program @args
+            }
+            $Global:__SoloWrappedExitCode = $Global:LASTEXITCODE
+        } finally {
+            if ($setCliConfig) { Remove-Item Env:OPENCODE_CLI_CONFIG_CONTENT -ErrorAction SilentlyContinue }
+            if ($setConfigDir) { Remove-Item Env:OPENCODE_CONFIG_DIR -ErrorAction SilentlyContinue }
+        }
     }
 }
 

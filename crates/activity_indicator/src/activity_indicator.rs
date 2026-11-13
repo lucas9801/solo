@@ -288,9 +288,14 @@ impl ActivityIndicator {
             LanguageServerStatusUpdate::Binary(BinaryStatus::Failed { error })
                 if !status_message_shown =>
             {
+                // SOLO: the cause and the fix first, when known.
+                let status_text = match failure_hint(error) {
+                    Some(hint) => SharedString::from(hint.explain(error)),
+                    None => SharedString::from(error),
+                };
                 cx.emit(Event::ShowStatus {
                     server_name: status.name.clone(),
-                    status: SharedString::from(error),
+                    status: status_text,
                 });
                 status_message_shown = true;
                 false
@@ -488,6 +493,7 @@ impl ActivityIndicator {
         let mut downloading = SmallVec::<[_; 3]>::new();
         let mut checking_for_update = SmallVec::<[_; 3]>::new();
         let mut failed = SmallVec::<[_; 3]>::new();
+        let mut failure_with_hint: Option<(LanguageServerName, FailureHint)> = None;
         let mut health_messages = SmallVec::<[_; 3]>::new();
         let mut servers_to_clear_statuses = HashSet::<LanguageServerName>::default();
         for status in &self.statuses {
@@ -504,8 +510,14 @@ impl ActivityIndicator {
                 LanguageServerStatusUpdate::Binary(BinaryStatus::Downloading) => {
                     downloading.push(status.name.clone());
                 }
-                LanguageServerStatusUpdate::Binary(BinaryStatus::Failed { .. }) => {
+                LanguageServerStatusUpdate::Binary(BinaryStatus::Failed { error }) => {
                     failed.push(status.name.clone());
+                    // SOLO: the first failure whose cause is known is explained.
+                    if failure_with_hint.is_none()
+                        && let Some(hint) = failure_hint(error)
+                    {
+                        failure_with_hint = Some((status.name.clone(), hint));
+                    }
                 }
                 LanguageServerStatusUpdate::Binary(BinaryStatus::None) => {}
                 LanguageServerStatusUpdate::Health(health, server_status) => match server_status {
@@ -572,6 +584,30 @@ impl ActivityIndicator {
                     this.statuses
                         .retain(|status| !checking_for_update.contains(&status.name));
                     this.dismiss_message(&DismissMessage, window, cx)
+                })),
+                tooltip_message: None,
+            });
+        }
+
+        if let Some((server_name, hint)) = failure_with_hint {
+            let others = failed.len().saturating_sub(1);
+            let mut message = format!(
+                "{server_name}: {}. {}",
+                hint.reason,
+                util::i18n::tr("Click to see how to fix it", "点击查看解决办法"),
+            );
+            if others > 0 {
+                message.push_str(&if util::i18n::is_chinese() {
+                    format!("（另有 {others} 个语言服务启动失败）")
+                } else {
+                    format!(" ({others} more failed)")
+                });
+            }
+            return Some(Content {
+                icon: ActivityIcon::Icon(IconName::Warning),
+                message,
+                on_click: Some(Arc::new(|this, window, cx| {
+                    this.show_error_message(&ShowErrorMessage, window, cx)
                 })),
                 tooltip_message: None,
             });
@@ -728,6 +764,183 @@ impl ActivityIndicator {
     }
 }
 
+/// SOLO: why a language server failed to start and what to do about it,
+/// recognized from its error output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FailureHint {
+    reason: String,
+    fix: String,
+    url: Option<String>,
+}
+
+impl FailureHint {
+    fn explain(&self, error: &str) -> String {
+        let (reason, fix, link, details) = if util::i18n::is_chinese() {
+            ("原因", "办法", "下载", "原始错误")
+        } else {
+            ("Reason", "Fix", "Download", "Error")
+        };
+        let mut text = format!("{reason}: {}\n{fix}: {}\n", self.reason, self.fix);
+        if let Some(url) = &self.url {
+            text.push_str(&format!("{link}: {url}\n"));
+        }
+        text.push_str(&format!("\n-- {details} --\n{error}"));
+        text
+    }
+}
+
+fn leading_number(text: &str) -> Option<u32> {
+    let digits: String = text
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+/// The .NET version an error asks for: "Framework: 'Microsoft.NETCore.App',
+/// version '10.0.0'", or ".NET 10" in the message.
+fn dotnet_major_version(error: &str) -> Option<u32> {
+    let from_framework = error.find("Microsoft.NETCore.App").and_then(|index| {
+        let rest = &error[index..];
+        let start = rest.find("version '")? + "version '".len();
+        leading_number(&rest[start..])
+    });
+    from_framework
+        .or_else(|| {
+            let start = error.find(".NET ")? + ".NET ".len();
+            leading_number(&error[start..])
+        })
+        .filter(|version| (5..100).contains(version))
+}
+
+fn failure_hint(error: &str) -> Option<FailureHint> {
+    use util::i18n::{is_chinese, tr};
+    let lower = error.to_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
+
+    if has(&[
+        "you must install or update .net",
+        "you must install .net",
+        "hostfxr",
+        "the framework 'microsoft.netcore.app'",
+        "dotnet: not found",
+        "'dotnet' is not recognized",
+    ]) {
+        let (reason, url) = match dotnet_major_version(error) {
+            Some(version) => (
+                if is_chinese() {
+                    format!("没有安装 .NET {version} 运行时")
+                } else {
+                    format!("the .NET {version} runtime is not installed")
+                },
+                format!("https://dotnet.microsoft.com/download/dotnet/{version}.0"),
+            ),
+            None => (
+                tr(
+                    "the .NET runtime it needs is not installed",
+                    "没有安装它需要的 .NET 运行时",
+                )
+                .to_string(),
+                "https://dotnet.microsoft.com/download".to_string(),
+            ),
+        };
+        return Some(FailureHint {
+            reason,
+            fix: tr(
+                "install the .NET runtime (or SDK) from the link below, then restart Solo",
+                "从下面的链接安装 .NET 运行时（或 SDK），然后重启 Solo",
+            )
+            .to_string(),
+            url: Some(url),
+        });
+    }
+
+    if has(&[
+        "error sending request",
+        "dns error",
+        "operation timed out",
+        "connection refused",
+        "connection reset",
+        "failed to fetch",
+        "rate limit",
+        "tls handshake",
+    ]) {
+        return Some(FailureHint {
+            reason: tr(
+                "it could not be downloaded (network problem)",
+                "无法下载（网络问题）",
+            )
+            .to_string(),
+            fix: tr(
+                "check the network or proxy and restart the server; or install it yourself and set `lsp.<name>.binary.path` in the settings",
+                "检查网络或代理后重启该语言服务；或者自己安装，在设置里填写 `lsp.<名称>.binary.path`",
+            )
+            .to_string(),
+            url: None,
+        });
+    }
+
+    if has(&[
+        "node.js",
+        "node executable",
+        "failed to install node",
+        "npm err",
+        "npm error",
+    ]) {
+        return Some(FailureHint {
+            reason: tr(
+                "Node.js, which it runs on, is missing or failed to install",
+                "它依赖的 Node.js 不存在或没装上",
+            )
+            .to_string(),
+            fix: tr(
+                "install Node.js from the link below (or set `node.path` in the settings), then restart Solo",
+                "从下面的链接安装 Node.js（或在设置里填写 `node.path`），然后重启 Solo",
+            )
+            .to_string(),
+            url: Some("https://nodejs.org/en/download".to_string()),
+        });
+    }
+
+    if has(&[
+        "no module named",
+        "python: not found",
+        "'python' is not recognized",
+    ]) {
+        return Some(FailureHint {
+            reason: tr(
+                "the Python it needs is missing",
+                "缺少它需要的 Python 或 Python 包",
+            )
+            .to_string(),
+            fix: tr(
+                "install Python (and the server's package), or pick another interpreter",
+                "安装 Python（以及该语言服务的包），或者换一个解释器",
+            )
+            .to_string(),
+            url: Some("https://www.python.org/downloads/".to_string()),
+        });
+    }
+
+    if has(&[
+        "os error 2",
+        "program not found",
+        "cannot find the file specified",
+        "系统找不到指定的文件",
+    ]) {
+        return Some(FailureHint {
+            reason: tr("its program was not found", "找不到它的程序").to_string(),
+            fix: tr(
+                "install the language server, or set `lsp.<name>.binary.path` in the settings",
+                "安装这个语言服务，或者在设置里填写 `lsp.<名称>.binary.path`",
+            )
+            .to_string(),
+            url: None,
+        });
+    }
+    None
+}
+
 impl EventEmitter<Event> for ActivityIndicator {}
 
 const MAX_MESSAGE_LEN: usize = 50;
@@ -864,5 +1077,42 @@ impl StatusItemView for ActivityIndicator {
     fn hide_setting(&self, _: &App) -> Option<workspace::HideStatusItem> {
         // Activity indicator auto-hides when there's no work to display.
         None
+    }
+}
+
+#[cfg(test)]
+mod solo_failure_hint_tests {
+    use super::*;
+
+    #[test]
+    fn explains_missing_dotnet() {
+        let error = "server shut down\n-- stderr --\nYou must install or update .NET to run this application.\n\nApp: C:\\roslyn\\Microsoft.CodeAnalysis.LanguageServer.exe\nArchitecture: x64\nFramework: 'Microsoft.NETCore.App', version '10.0.0' (x64)\n.NET location: Not found";
+        let hint = failure_hint(error).unwrap();
+        assert!(hint.reason.contains(".NET 10"), "{hint:?}");
+        assert_eq!(
+            hint.url.as_deref(),
+            Some("https://dotnet.microsoft.com/download/dotnet/10.0")
+        );
+        let explained = hint.explain(error);
+        assert!(explained.contains("https://dotnet.microsoft.com/download/dotnet/10.0"));
+        assert!(explained.ends_with(error));
+    }
+
+    #[test]
+    fn explains_other_failures_and_leaves_unknown_ones() {
+        let network =
+            failure_hint("error sending request for url (https://registry.npmjs.org/basedpyright)")
+                .unwrap();
+        assert!(network.url.is_none());
+        assert_eq!(
+            failure_hint("failed to install node: archive is invalid")
+                .unwrap()
+                .url
+                .as_deref(),
+            Some("https://nodejs.org/en/download")
+        );
+        assert!(failure_hint("program not found").is_some());
+        assert_eq!(failure_hint("server crashed with exit code 3"), None);
+        assert_eq!(dotnet_major_version("requires .NET 8 or later"), Some(8));
     }
 }

@@ -7,7 +7,6 @@ use gpui::{
     Task, TaskExt, Window, actions,
 };
 use http_client::{HttpClient, HttpClientWithUrl};
-use paths::remote_servers_dir;
 use release_channel::{AppCommitSha, ReleaseChannel};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -32,6 +31,7 @@ use std::{
 use util::command::new_command;
 use workspace::Workspace;
 
+pub mod solo_remote_server;
 pub mod solo_update;
 
 const SHOULD_SHOW_UPDATE_NOTIFICATION_KEY: &str = "auto-updater-should-show-updated-notification";
@@ -110,10 +110,6 @@ actions!(
         ViewReleaseNotes,
     ]
 );
-
-/// SOLO: whether a remote server can be downloaded, see
-/// `recent_projects::remote_development`.
-const SOLO_REMOTE_SERVER: bool = false;
 
 #[derive(Serialize, Debug)]
 pub struct AssetQuery<'a> {
@@ -601,46 +597,17 @@ impl AutoUpdater {
         set_status: impl Fn(&str, &mut AsyncApp) + Send + 'static,
         cx: &mut AsyncApp,
     ) -> Result<PathBuf> {
-        // SOLO: Zed's servers have no remote server for Solo; remote
-        // development is turned off until Solo builds its own.
-        if !SOLO_REMOTE_SERVER {
-            anyhow::bail!("Solo has no remote server to download yet");
-        }
-        let this = cx.update(|cx| {
-            cx.default_global::<GlobalAutoUpdate>()
-                .0
-                .clone()
-                .context("auto-update not initialized")
-        })?;
-
-        set_status("Fetching remote server release", cx);
-        let release = Self::get_release_asset(
-            &this,
-            release_channel,
-            version,
-            "zed-remote-server",
-            os,
-            arch,
-            cx,
-        )
-        .await?;
-
-        let servers_dir = paths::remote_servers_dir();
-        let channel_dir = servers_dir.join(release_channel.dev_name());
-        let platform_dir = channel_dir.join(format!("{}-{}", os, arch));
-        let version_path = platform_dir.join(format!("{}.gz", release.version));
-        smol::fs::create_dir_all(&platform_dir).await.ok();
-
-        let client = this.read_with(cx, |this, _| this.client.http_client());
-
-        if smol::fs::metadata(&version_path).await.is_err() {
-            log::info!(
-                "downloading zed-remote-server {os} {arch} version {}",
-                release.version
-            );
-            set_status("Downloading remote server", cx);
-            download_remote_server_binary(&version_path, release, client).await?;
-        }
+        // SOLO: from Solo's own GitHub release, checked against the SHA-256
+        // GitHub reports, never from Zed's servers (see `solo_remote_server`).
+        let (http, current) =
+            cx.update(|cx| (cx.http_client(), release_channel::AppVersion::global(cx)));
+        set_status("Downloading remote server", cx);
+        let platform_dir = paths::remote_servers_dir()
+            .join(release_channel.dev_name())
+            .join(format!("{}-{}", os, arch));
+        let version_path =
+            solo_remote_server::download(http, &current, version.as_ref(), os, arch, &platform_dir)
+                .await?;
 
         if let Err(error) =
             cleanup_remote_server_cache(&platform_dir, &version_path, REMOTE_SERVER_CACHE_LIMIT)
@@ -655,28 +622,17 @@ impl AutoUpdater {
         Ok(version_path)
     }
 
+    /// SOLO: always `None`: the remote side would download the remote server
+    /// without checking it, so Solo downloads and checks it, then uploads it
+    /// (see `solo_remote_server`).
     pub async fn get_remote_server_release_url(
-        channel: ReleaseChannel,
-        version: Option<Version>,
-        os: &str,
-        arch: &str,
-        cx: &mut AsyncApp,
+        _channel: ReleaseChannel,
+        _version: Option<Version>,
+        _os: &str,
+        _arch: &str,
+        _cx: &mut AsyncApp,
     ) -> Result<Option<String>> {
-        if !SOLO_REMOTE_SERVER {
-            anyhow::bail!("Solo has no remote server to download yet");
-        }
-        let this = cx.update(|cx| {
-            cx.default_global::<GlobalAutoUpdate>()
-                .0
-                .clone()
-                .context("auto-update not initialized")
-        })?;
-
-        let release =
-            Self::get_release_asset(&this, channel, version, "zed-remote-server", os, arch, cx)
-                .await?;
-
-        Ok(Some(release.url))
+        Ok(None)
     }
 
     async fn get_release_asset(
@@ -999,26 +955,6 @@ impl AutoUpdater {
             Ok(kvp.read_kvp(SHOULD_SHOW_UPDATE_NOTIFICATION_KEY)?.is_some())
         })
     }
-}
-
-async fn download_remote_server_binary(
-    target_path: &PathBuf,
-    release: ReleaseAsset,
-    client: Arc<HttpClientWithUrl>,
-) -> Result<()> {
-    let temp = tempfile::Builder::new().tempfile_in(remote_servers_dir())?;
-    let mut temp_file = File::create(&temp).await?;
-
-    let mut response = client.get(&release.url, Default::default(), true).await?;
-    anyhow::ensure!(
-        response.status().is_success(),
-        "failed to download remote server release: {:?}",
-        response.status()
-    );
-    smol::io::copy(response.body_mut(), &mut temp_file).await?;
-    smol::fs::rename(&temp, &target_path).await?;
-
-    Ok(())
 }
 
 async fn cleanup_remote_server_cache(

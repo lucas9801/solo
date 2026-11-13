@@ -25,6 +25,9 @@ pub(crate) struct TitleSource<'a> {
     pub custom_title: Option<&'a str>,
     /// The running agent's name, with the title it gave its session.
     pub agent: Option<(&'a str, Option<&'a str>)>,
+    /// Whether the agent's mark shows beside the title (on its tab), so the
+    /// title needn't name it unless its session has no title.
+    pub agent_marked: bool,
     pub running_command: Option<&'a str>,
     pub working_directory: Option<&'a Path>,
     pub git_branch: Option<&'a str>,
@@ -47,7 +50,10 @@ pub(crate) fn tab_title(source: &TitleSource, detail: usize, truncate: bool) -> 
 
     let activity = if let Some((name, session_title)) = source.agent {
         Some(match session_title {
-            Some(session_title) if session_title.to_lowercase().contains(&name.to_lowercase()) => {
+            Some(session_title)
+                if source.agent_marked
+                    || session_title.to_lowercase().contains(&name.to_lowercase()) =>
+            {
                 truncated(session_title, MAX_SESSION_TITLE_CHARS)
             }
             Some(session_title) => format!(
@@ -129,6 +135,22 @@ pub(crate) struct TitleState {
 impl TerminalView {
     /// The tab title; see the module docs.
     pub(crate) fn smart_title(&self, detail: usize, truncate: bool, cx: &App) -> String {
+        self.title_with(detail, truncate, false, cx)
+    }
+
+    /// The title on the tab itself, beside the agent's mark: the agent's
+    /// session title alone.
+    pub(crate) fn tab_label_title(&self, detail: usize, cx: &App) -> String {
+        self.title_with(detail, true, true, cx)
+    }
+
+    pub(crate) fn title_with(
+        &self,
+        detail: usize,
+        truncate: bool,
+        agent_marked: bool,
+        cx: &App,
+    ) -> String {
         let terminal = self.terminal.read(cx);
         if terminal.task().is_some() {
             return terminal.title(truncate);
@@ -161,6 +183,7 @@ impl TerminalView {
         let working_directory = working_directory.filter(|_| integration.is_active());
         let source = TitleSource {
             custom_title: self.custom_title.as_deref(),
+            agent_marked: agent_marked && agent.is_some(),
             agent,
             running_command,
             working_directory: working_directory.as_deref(),
@@ -175,29 +198,15 @@ impl TerminalView {
             .unwrap_or_else(|| terminal.title(truncate && detail == 0))
     }
 
-    /// The tab's tooltip lines below its title: the full command, directory
-    /// and branch.
-    pub(crate) fn title_details(&self, cx: &App) -> Vec<String> {
+    /// Where the terminal runs, for its tab's card: (what, value) for its
+    /// directory, branch and command, and where its agent works if elsewhere.
+    pub(crate) fn title_details(&self, cx: &App) -> Vec<(&'static str, String)> {
         let terminal = self.terminal.read(cx);
         let mut details = Vec::new();
-        if let Some(command) = terminal
-            .shell_integration()
-            .blocks()
-            .last()
-            .filter(|block| block.is_running())
-            .and_then(|block| block.command.as_deref())
-        {
-            details.push(format!(
-                "{}{}",
-                util::i18n::tr("Command: ", "命令："),
-                command.trim()
-            ));
-        }
         if let Some(directory) = self.title_working_directory(cx) {
-            details.push(format!(
-                "{}{}",
-                util::i18n::tr("Directory: ", "目录："),
-                directory.display()
+            details.push((
+                util::i18n::tr("Directory", "目录"),
+                directory.display().to_string(),
             ));
             if let Some((_, _, Some(branch))) = self
                 .tab_title
@@ -205,7 +214,7 @@ impl TerminalView {
                 .as_ref()
                 .filter(|(cached, _, _)| *cached == directory)
             {
-                details.push(format!("{}{branch}", util::i18n::tr("Branch: ", "分支：")));
+                details.push((util::i18n::tr("Branch", "分支"), branch.clone()));
             }
         }
         // SOLO: an agent working somewhere other than its shell.
@@ -213,19 +222,21 @@ impl TerminalView {
             self.title_working_directory(cx)
                 .is_none_or(|directory| !same_directory(&directory, agent_directory))
         }) {
-            details.push(format!(
-                "{}{}",
-                util::i18n::tr("The agent works in: ", "agent 的工作目录："),
-                agent_directory.display()
+            details.push((
+                util::i18n::tr("Agent in", "agent 在"),
+                agent_directory.display().to_string(),
             ));
         }
-        // SOLO: the agent session's usage, from its records.
-        if let Some(session) = self.agent_session() {
-            let session = session.read(cx);
-            details.extend(crate::agent_session::session_tooltip_lines(
-                session.state(),
-                session.location().matched_by,
-                util::i18n::is_chinese(),
+        if let Some(command) = terminal
+            .shell_integration()
+            .blocks()
+            .last()
+            .filter(|block| block.is_running())
+            .and_then(|block| block.command.as_deref())
+        {
+            details.push((
+                util::i18n::tr("Command", "命令"),
+                command.trim().to_string(),
             ));
         }
         details
@@ -320,6 +331,7 @@ mod tests {
             running_command: Some("claude"),
             working_directory: Some(&directory),
             git_branch: Some("main"),
+            agent_marked: false,
         };
         assert_eq!(tab_title(&source, 0, true).as_deref(), Some("server"));
         assert_eq!(tab_title(&source, 2, true).as_deref(), Some("server"));
@@ -371,6 +383,24 @@ mod tests {
             ..source
         };
         assert_eq!(tab_title(&untitled, 0, true).as_deref(), Some("codex"));
+
+        // Beside the agent's mark, only the session's title.
+        let marked = TitleSource {
+            agent_marked: true,
+            ..source
+        };
+        assert_eq!(
+            tab_title(&marked, 0, true).as_deref(),
+            Some("Fix the build")
+        );
+        let marked_untitled = TitleSource {
+            agent_marked: true,
+            ..untitled
+        };
+        assert_eq!(
+            tab_title(&marked_untitled, 0, true).as_deref(),
+            Some("codex")
+        );
 
         let long = TitleSource {
             agent: Some((

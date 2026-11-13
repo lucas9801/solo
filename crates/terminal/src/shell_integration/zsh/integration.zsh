@@ -47,8 +47,8 @@ __solo_precmd_prompt() {
     fi
 }
 
-# Agents' hooks (Claude Code's, Codex's, Copilot's) write to this terminal.
-if [[ -n ${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-} && -n ${TTY-} ]]; then
+# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's) write to this terminal.
+if [[ -n ${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-}${SOLO_OPENCODE_CONFIG_DIR-} && -n ${TTY-} ]]; then
     export SOLO_AGENT_TTY=$TTY
 fi
 
@@ -114,6 +114,24 @@ if [[ -n "${SOLO_COPILOT_PLUGIN-}" ]] && (( ! ${+functions[copilot]} )); then
         else
             command copilot "$@"
         fi
+    }
+fi
+
+# OpenCode reports what it's doing through plugins Solo loads for the session:
+# OpenCode 2's from SOLO_OPENCODE_CLI_CONFIG, OpenCode 1's from the folder in
+# SOLO_OPENCODE_CONFIG_DIR. Variables of the user's own stay.
+# An opencode function of the user's own stays.
+if [[ -n "${SOLO_OPENCODE_CONFIG_DIR-}" ]] && (( ! ${+functions[opencode]} )); then
+    opencode() {
+        (
+            if [[ -z "${OPENCODE_CLI_CONFIG_CONTENT+set}" && -n "${SOLO_OPENCODE_CLI_CONFIG-}" ]]; then
+                export OPENCODE_CLI_CONFIG_CONTENT="$SOLO_OPENCODE_CLI_CONFIG"
+            fi
+            if [[ -z "${OPENCODE_CONFIG_DIR+set}" && -d "$SOLO_OPENCODE_CONFIG_DIR" ]]; then
+                export OPENCODE_CONFIG_DIR="$SOLO_OPENCODE_CONFIG_DIR"
+            fi
+            command opencode "$@"
+        )
     }
 fi
 

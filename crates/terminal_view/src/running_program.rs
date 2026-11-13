@@ -178,7 +178,7 @@ mod tests {
         write(&terminal, b"\x07", cx);
         assert_eq!(
             program(cx).and_then(|program| program.status),
-            Some("Needs your input".into())
+            Some("Waiting for you".into())
         );
 
         set_confirm_close(TerminalConfirmClose::Never, cx);

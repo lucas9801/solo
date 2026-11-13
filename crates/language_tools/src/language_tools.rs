@@ -2,6 +2,8 @@ mod highlights_tree_view;
 mod key_context_view;
 pub mod lsp_button;
 pub mod lsp_log_view;
+// SOLO: language server resources and per-project analysis modes.
+mod server_resources;
 mod syntax_tree_view;
 
 #[cfg(test)]
@@ -20,6 +22,7 @@ pub fn init(cx: &mut App) {
     lsp_log_view::init(false, cx);
     syntax_tree_view::init(cx);
     key_context_view::init(cx);
+    server_resources::init(cx);
 }
 
 fn get_or_create_tool<T>(

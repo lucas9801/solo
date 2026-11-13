@@ -18,10 +18,13 @@
 //! can connect, and resizing makes the console repaint the whole screen for
 //! it. The host ends with the program it runs, and ends it if no first
 //! client connects within a minute (Solo crashed or was ended after starting
-//! the host).
+//! the host). What it's told and why it ends goes to its log in Solo's logs
+//! folder.
 
 #[cfg(windows)]
 mod host;
+#[cfg(windows)]
+mod log;
 
 /// Bumped when the pipes or the spec change; Solo only talks to hosts of its
 /// own protocol.
@@ -56,6 +59,10 @@ pub struct Spec {
     /// and know the terminal's id after reconnecting.
     pub nonce: Option<String>,
     pub terminal_id: Option<String>,
+    /// Solo's logs folder, for the host's log (see `log.rs`); none from
+    /// Solo before 2.3.
+    #[serde(default)]
+    pub log_dir: Option<String>,
 }
 
 fn main() {

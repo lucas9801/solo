@@ -23,6 +23,7 @@ use ui::{Tab, Tooltip, prelude::*};
 use util::i18n::{is_chinese, tr};
 use workspace::{
     Workspace,
+    agent_activity::AgentStateIcon,
     dock::{DockPosition, Panel, PanelEvent},
     item::ItemEvent,
 };
@@ -475,10 +476,6 @@ impl AgentBoard {
 
     fn render_row(&self, index: usize, row: &BoardRow, cx: &mut Context<Self>) -> AnyElement {
         let chinese = is_chinese();
-        let (icon, color) = match row.status {
-            Some(status) => status.icon(),
-            None => (IconName::GitBranch, Color::Muted),
-        };
         let status_label = match row.status {
             Some(status) => status.label(),
             None => tr("No agent running", "没有运行的 agent"),
@@ -525,7 +522,16 @@ impl AgentBoard {
                 h_flex()
                     .w_full()
                     .gap_1p5()
-                    .child(Icon::new(icon).size(IconSize::Small).color(color))
+                    .child(match row.status {
+                        Some(status) => AgentStateIcon::new(status)
+                            .size(IconSize::Small)
+                            .on(cx.theme().colors().panel_background)
+                            .into_any_element(),
+                        None => Icon::new(IconName::GitBranch)
+                            .size(IconSize::Small)
+                            .color(Color::Muted)
+                            .into_any_element(),
+                    })
                     .child(
                         div()
                             .flex_1()

@@ -816,6 +816,16 @@ fn start_claude_with_remote_control(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    start_in_new_terminal(workspace, "claude --remote-control", window, cx);
+}
+
+/// Opens a terminal in the panel and runs `command` in it once its shell is up.
+pub(crate) fn start_in_new_terminal(
+    workspace: &mut Workspace,
+    command: &str,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let Some(panel) = workspace.panel::<TerminalPanel>(cx) else {
         return;
     };
@@ -823,9 +833,10 @@ fn start_claude_with_remote_control(
     let new_terminal = panel.update(cx, |panel, cx| {
         panel.add_terminal_shell(false, working_directory, RevealStrategy::Always, window, cx)
     });
+    let input = format!("{command}\r").into_bytes();
+    let command = command.to_owned();
     cx.spawn(async move |_, cx| {
         let terminal = new_terminal.await?;
-        let input = b"claude --remote-control\r".to_vec();
         let is_pty = terminal.read_with(cx, |terminal, _| terminal.is_pty())?;
         if !is_pty {
             terminal.update(cx, |terminal, _| terminal.write_init_command(input))?;
@@ -841,7 +852,7 @@ fn start_claude_with_remote_control(
         }
         terminal.update(cx, |terminal, cx| {
             if !terminal.write_init_command_after_startup(input, cx) {
-                log::debug!("not starting Claude Code: the terminal got input first");
+                log::debug!("not running {command:?}: the terminal got input first");
             }
         })?;
         anyhow::Ok(())

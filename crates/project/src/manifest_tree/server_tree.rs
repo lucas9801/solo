@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 use util::rel_path::RelPath;
 
 use crate::{
-    LanguageServerId, ProjectPath, project_settings::LspSettings,
+    LanguageServerId, ProjectPath, lsp_store::solo_server_modes, project_settings::LspSettings,
     toolchain_store::LocalToolchainStore,
 };
 
@@ -267,6 +267,13 @@ impl LanguageServerTree {
             .map(|lsp_adapter| lsp_adapter.name.clone())
             .collect::<Vec<_>>();
 
+        let project_root = self
+            .manifest_tree
+            .read(cx)
+            .worktree_store
+            .read(cx)
+            .worktree_for_id(manifest_location.worktree_id, cx)
+            .map(|worktree| worktree.read(cx).abs_path());
         let desired_language_servers =
             settings.customized_language_servers(&available_language_servers);
         let adapters_with_settings = desired_language_servers
@@ -286,13 +293,22 @@ impl LanguageServerTree {
                 } else {
                     None
                 }?;
-                let adapter_settings = crate::lsp_store::language_server_settings_for(
+                let mut adapter_settings = crate::lsp_store::language_server_settings_for(
                     settings_location,
                     &adapter.name,
                     cx,
                 )
                 .cloned()
                 .unwrap_or_default();
+                // SOLO: the analysis mode the user chose for this server in
+                // this project.
+                let mode = project_root
+                    .as_deref()
+                    .map(|root| solo_server_modes::mode_for(root, &adapter.name, cx))
+                    .unwrap_or_default();
+                if !solo_server_modes::apply_mode(&adapter.name, mode, &mut adapter_settings) {
+                    return None;
+                }
                 Some((adapter.name(), (adapter_settings, adapter)))
             })
             .collect::<IndexMap<_, _>>();

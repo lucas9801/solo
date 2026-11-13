@@ -317,8 +317,17 @@ pub(crate) async fn check_turn(
             // files itself. Without rust-analyzer, this does nothing.
             checked_on_disk = true;
             unchanged_since = Instant::now();
+            // A changed Rust file is passed: given no file, rust-analyzer
+            // checks the whole workspace, but with `check.workspace` off it
+            // then checks nothing; given one, it checks its package.
             cx.update(|cx| {
-                project::lsp_store::rust_analyzer_ext::run_flycheck(project.clone(), None, cx)
+                let rust_file = buffers
+                    .iter()
+                    .filter(|(path, _)| path.extension().is_some_and(|extension| extension == "rs"))
+                    .find_map(|(path, _)| {
+                        project.read(cx).project_path_for_absolute_path(path, cx)
+                    });
+                project::lsp_store::rust_analyzer_ext::run_flycheck(project.clone(), rust_file, cx)
                     .detach_and_log_err(cx)
             });
         }

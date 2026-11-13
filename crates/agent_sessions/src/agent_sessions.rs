@@ -304,6 +304,8 @@ pub struct UsageSummary {
 
 /// From this much of the context window on, it's nearly full.
 pub const CONTEXT_NEARLY_FULL: f64 = 0.8;
+/// From this much of the context window on, it's about to run out.
+pub const CONTEXT_ALMOST_OUT: f64 = 0.95;
 
 impl UsageSummary {
     /// How much of the context window the last request took, from 0 to 1.

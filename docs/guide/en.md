@@ -16,8 +16,9 @@ Both ways install Solo for the current user only (no administrator rights) into
 `%LOCALAPPDATA%\Programs\Solo`.
 
 - **Installer** `Solo-Setup-<version>.exe`: English or Chinese setup, a Start
-  menu entry, an optional desktop icon (unchecked by default), and an uninstall
-  entry in Settings → Apps.
+  menu entry, an optional desktop icon (unchecked by default), "Open with Solo"
+  in Explorer's context menu (checked by default), and an uninstall entry in
+  Settings → Apps.
 - **Portable zip** `Solo-<version>-windows-x64.zip`: run `solo.exe` straight
   from the unpacked folder, or run
 
@@ -26,7 +27,16 @@ Both ways install Solo for the current user only (no administrator rights) into
   ```
 
   to copy it to `%LOCALAPPDATA%\Programs\Solo` with Start menu and desktop
-  shortcuts.
+  shortcuts and "Open with Solo" in the context menu (`-NoContextMenu` leaves
+  that out).
+
+**"Open with Solo"** is on files, folders, a folder's background and drives (on
+Windows 11 under "Show more options"). A folder opens in Solo, started if it
+isn't running; a running Solo adds a workspace tab for it to its window and
+switches to it, or switches to the folder's tab if it has one already. A file
+opens in the tab whose folder holds it, or else in the current tab, never in a
+new window. Uninstalling (`install.ps1 -Uninstall` too) removes the menu; to
+go without it, uncheck it in setup.
 
 The install folder holds `solo.exe`, `solo-agent-hook.exe` (which Claude Code
 runs to report its status), `solo-update-helper.exe` (which installs updates),
@@ -99,9 +109,15 @@ Open a project folder and run `claude` (or `codex`, `gemini`, ...) in the
 terminal. Solo adds the following.
 
 ### Status in the tab
-The terminal's tab shows whether the agent is **working** (spinner), **needs
-your input**, is **idle**, **done** or **failed**, with the agent's name and
-session title. Hovering over the tab shows token use and context. While Solo is
+The terminal's tab shows the agent's icon (or initial) with its status on its
+corner, like a traffic light: red with a cross, **failed**; yellow in a
+breathing ring, **waiting for you**; green, **done, not seen yet** (a turn
+finished while you weren't looking); a turning blue ring, **working**; a gray
+hollow circle, **idle**; a gray dash, **exited**. The title is the session's
+(or the agent's name), followed by a ring and percentage of how full the
+context is: gray below 80%, yellow to 95%, red above. Hovering over the tab
+shows a card with the status, agent and model, the context, the directory,
+branch and command, and the tokens of the turn and the session. While Solo is
 in the background, you get a desktop notification when an agent needs you or
 stops after working for a while.
 
@@ -111,7 +127,10 @@ and ends (for which agents, see section 7). After a turn, the tab shows
 **"N files changed"** (command: `terminal: review agent turn`). In the review
 you can:
 
-- **Keep** or **Reject** each hunk, or **Keep All** / **Reject All**;
+- **Keep** or **Reject** each hunk, or **Keep All** / **Reject All**.
+  Rejecting a file the turn created moves it to the recycle bin; a file that
+  was already there before the turn (ignored by `.gitignore` then, say) is
+  left alone;
 - comment on lines and send the comments to the agent;
 - **Roll Back** the work tree to before any recorded turn;
 - see what the turn did to the language servers' diagnostics: the errors and
@@ -122,6 +141,9 @@ you can:
 
 Snapshots are kept in Solo's data folder. They never touch your branch, HEAD,
 index, stash list or git object database, and ignored files aren't included.
+Folders on network drives aren't snapshotted. Rolling back leaves files inside
+linked folders (junctions, symlinks) alone, since they may be outside the
+project, and stops if files changed after the confirmation was shown.
 
 When the folder can't be snapshotted (say, it isn't a git repository and has
 more than 20000 files), Solo notes the files in the project that change during
@@ -158,6 +180,9 @@ Local projects only.
   repository's part is merged, opened as a pull request or deleted on its own;
   the folder goes with the last one. Setup commands from `.solo/tasks.json`
   don't run for such tasks.
+- **Trust:** the `setup` and `teardown` commands and `env` variables of a
+  repository's `.solo/tasks.json` are used only once you trust the project
+  (Zed's restricted mode); until then tasks are made without them.
 - **Committing:** merging and pull requests take the task's commits. When it
   has uncommitted changes, **Ask the Agent to Commit** pastes a request into
   the task's agent to commit them, with a message it writes from the diff;
@@ -171,9 +196,9 @@ first; click one to go to its terminal.
 
 ### Workspace tabs in the title bar
 Each project folder is a workspace with its own tab in the title bar, holding
-its own terminals, agents, editors and file tree. Each tab counts the agents
-working, waiting for you, or failed in that workspace, so you can see an agent
-waiting in the background.
+its own terminals, agents, editors and file tree. Each tab counts its agents that
+failed, wait for you, are done but not seen yet, and work (red, yellow, green,
+blue, in that order), so you can see an agent waiting in the background.
 
 - `+` (or opening a folder) adds a workspace;
 - `ctrl-alt-1` … `ctrl-alt-9` switch to a workspace by position;
@@ -181,9 +206,25 @@ waiting in the background.
 - the tab's menu (its arrow, or right click) lists its terminals to jump to;
 - after a restart only the active workspace loads; the others load when you
   first switch to them;
-- when you `cd` into a project another tab has (its folder, or the same git
-  repository), Solo offers to move the terminal to that tab; **Keep It Here**
-  stops it asking about that tab for that terminal;
+- when a terminal's directory (its agent's, when the agent reports one) is in
+  a project another tab has (its folder, or the same git repository), or in no
+  folder of its tab, a bar on top of the terminal says so, with **Move to**
+  *tab* or **Open *name* in a New Tab and Move There** (named after the git
+  repository it's in). Moving doesn't interrupt what runs in it, agents
+  included, and the tab's other terminals going there move along. **Keep It
+  Here** stops it asking about that place for that terminal, also after a
+  restart; the × closes the bar until Solo starts again. A terminal in no
+  folder of its tab also gets a dashed mark on its tab naming the folder it's
+  in, and its hover card says so under its directory. Nothing moves on its
+  own;
+- a terminal tab's right-click menu has **Move to a New *name* Tab** (or
+  **Move to the *tab* Tab**) and **Move to Tab ›**, to move it to any tab of
+  the window at any time, or to a new tab of a folder you pick;
+- a workspace holding unrelated projects gets a **Split Workspace** dialog
+  listing the folders that stay and those that get a tab of their own; the
+  terminals in none of them each get a choice of where to go (by default a
+  new tab of their own). Nothing changes until you click **Split**; **Keep
+  Together** stops it asking;
 - the first time this version of Solo starts, terminals from before there
   were tabs move to the tab of their git repository, which opens in the
   background if needed. Agent task worktrees count as their repository.
@@ -223,27 +264,103 @@ connects to them, with the output they printed meanwhile. Idle shells end
 with Solo as before, and closing a terminal's tab ends what runs in it.
 
 - So quitting and updating don't ask about agents in terminals; closing a tab
-  or a window still does.
+  or a window still does. Closing Solo's last window counts as quitting.
+- Each background process logs what Solo told it and why it ended, in
+  `terminal-host-<date>.log` in Solo's logs folder (kept for a week).
 - To turn it off: `"terminal": {"keep_running_on_quit": false}` (new
   terminals then run inside Solo and end with it).
 - If a background process itself fails, its terminal ends; after a restart
   the terminal offers to continue the agent's session as below.
+
+### The command input
+While the shell waits at its prompt (with shell integration), commands are
+typed in an editor at the bottom of the terminal.
+
+- **Completions open as you type**, after a short pause: subcommands, options
+  and their values (git branches, npm scripts, docker containers, ...) for
+  about 500 well-known commands, PowerShell's own completions, commands on
+  `PATH` and paths. Not on an empty line, inside quotes or in a `#` request.
+  In a menu that opened by itself, **Tab** accepts and **Enter runs the
+  command** as typed; in a menu opened with Tab (or `ctrl-r`), Enter accepts.
+  **Esc** closes it. Results that take longer (PowerShell, branch lists)
+  follow the quick ones without holding up typing. To open completions only
+  with Tab: `"terminal": {"completions_as_you_type": false}`.
+- **Grey suggestions** after the cursor come from commands you ran (here
+  first), else from the command's spec (`git ch` suggests `eckout`); `right`
+  or Tab takes one.
+- **`# what you want`** and Enter asks AI for a command, which fills the input
+  for you to check; nothing runs until you press Enter again. It uses your own
+  Claude Code (`claude -p`, model `haiku` by default) or Codex (`codex exec`),
+  whichever is installed (Claude Code first; `terminal.ai_command_agent`
+  picks one), with their tools turned off: Claude Code gets no tools at all,
+  Codex a read-only sandbox without its shell, so generating can't run
+  commands or change files. They run in an empty folder of Solo's, so your
+  project's hooks, MCP servers and CLAUDE.md/AGENTS.md don't load. **Esc**
+  cancels; the time taken shows meanwhile.
+- **What is sent:** the request, the shell, the system and the current folder,
+  plus the last failed command and the end of its output (up to 4000
+  characters; `terminal.ai_command_include_last_failure`), so
+  `# fix that error` works. Select a command block and press `ctrl-i` (or
+  **Ask AI for a Command About This** in its context menu) to add it too. The
+  blocks being sent show as chips above the input; click their × to leave one
+  out. They go to Claude Code or Codex, under your account, like anything you
+  type there.
+- Solo doesn't guess whether what you type is a command or a request (as
+  Warp's Agent Mode does): requests start with `#`. Solo's terminals mostly
+  run agents, and sending a command to an AI by mistake costs more than
+  typing `#`.
 
 ### Also
 - Closing a terminal or a window while an agent runs asks first
   (`terminal.confirm_close`, `"agents"` by default).
 - After a restart, a terminal that was running an agent and couldn't be kept
   offers to continue its session (for example `claude --continue`).
+- Closing the last terminal keeps the terminal column open, with buttons for a
+  new terminal (Ctrl+Shift+`), one running Claude Code or Codex (whichever is
+  on the `PATH`) and the file finder. With the column hidden (Ctrl+`) and no
+  files open, the editor area shows the same shortcuts.
+
+### Language servers on large repositories
+Language servers (rust-analyzer, clangd and others) analyze the project in
+the background; on a large repository that can take several GB of memory.
+- **Lighter defaults.** rust-analyzer's `cargo check` runs at most a quarter
+  of the logical cores' worth of `rustc` at a time (at least 2); clangd
+  indexes with 2 workers at low priority and keeps precompiled headers on
+  disk. To undo: in your settings, set
+  `"lsp": {"rust-analyzer": {"initialization_options": {"cargo": {"extraEnv": {"CARGO_BUILD_JOBS": "default"}}}}}`,
+  and give `lsp.clangd.binary.arguments` your own list (`[]` for none).
+- **What they cost.** The number next to the ⚡ button in the status bar is the
+  memory of all language servers, with the processes they started (`cargo`
+  and `rustc` under rust-analyzer). Its tooltip has one line per server, for
+  example "rust-analyzer: checking · 5 compiler processes · 3.1 GB"; the
+  server's submenu shows the same.
+- **Per project.** In a server's submenu, under "In This Project": full
+  analysis; "Pause background analysis (open files only)" (rust-analyzer: no
+  `cargo check` on save and no background indexing; clangd: no background
+  index) for rust-analyzer and clangd; or off. The choice is remembered for the
+  project (in Solo's database, not in the repository) and applies after
+  restarts. Servers turned off are listed at the bottom of the menu to turn on
+  again.
+- **Large projects.** When a heavy server (rust-analyzer, clangd, roslyn,
+  jdtls, gopls…) starts in a project with more than 100,000 files, Solo asks
+  once how much it should analyze.
+- **Turn review and pausing.** When a turn ends, Solo still asks
+  rust-analyzer for one `cargo check` of the changed files, even while its
+  background analysis is paused, so the turn's diagnostics stay complete; with
+  the server off, Rust diagnostics aren't compared.
+- **When a server fails to start**, the status bar says why when Solo
+  recognizes the cause (for example a missing .NET runtime for roslyn, or a
+  download that failed); click it for the fix and a download link.
 
 ## 7. Supported agents
 
-| | Claude Code | Codex, Copilot CLI | gemini, opencode, qwen, amp, cursor-agent and others | aider, programs in `agent_commands` |
+| | Claude Code | Codex, Copilot CLI, OpenCode | gemini, qwen, amp, cursor-agent and others | aider, programs in `agent_commands` |
 | --- | --- | --- | --- | --- |
 | Recognized as an agent (status, close confirmation, sending command blocks) | yes | yes | yes | yes |
-| Where the status comes from | hooks; exact | hooks; exact (Codex: after you trust them once) | its screen, with per-agent rules; may lag a moment | its output |
+| Where the status comes from | hooks; exact | hooks (OpenCode: a plugin); exact (Codex: after you trust them once) | its screen, with per-agent rules; may lag a moment | its output |
 | Per-turn review and roll back | yes | yes | yes, turns read from the screen | no |
-| Timeline, session title, token use | yes | Codex: yes (its first prompt as the title); Copilot CLI: no | no | no |
-| Continue the session after a restart | yes (`--continue`) | yes (`codex resume --last`, `copilot --continue`) | yes, with each one's resume option (not qwen or amp) | no |
+| Timeline, session title, token use | yes | Codex: yes (its first prompt as the title); Copilot CLI, OpenCode: no | no | no |
+| Continue the session after a restart | yes (`--continue`) | yes (`codex resume --last`, `copilot --continue`, `opencode --session <id>`) | yes, with each one's resume option (not qwen or amp) | no |
 | Agent tasks | the default command | set `agent_task_command` to it | same | same |
 
 For agents without hooks, Solo reads the status from the terminal: a spinner
@@ -272,7 +389,9 @@ To treat another program as an agent:
   session; **your `~/.codex/config.toml` and `hooks.json` are not changed by
   Solo**. Codex runs hooks only once you trust them, so the first time it asks:
   trust them and Codex remembers it (Codex writes that to its own config). The
-  hooks run `solo-agent-hook.exe`. Subcommands that don't start a session
+  hooks run `solo-agent-hook.exe` by its full path in Solo's folder (Codex runs
+  hooks with PowerShell on Windows), so Codex asks again when Solo is in
+  another folder or a new Solo changes the hooks. Subcommands that don't start a session
   (`codex login`, `codex mcp`, ...) run as typed, and so does a `codex.cmd`
   without a `codex.ps1` or `codex.exe` beside it. To turn them off:
   `"terminal": {"codex_hooks": false}` (takes effect in new terminals).
@@ -283,6 +402,21 @@ To treat another program as an agent:
   `solo-agent-hook.exe`) with PowerShell. Subcommands that don't start a
   session (`copilot login`, `copilot plugin`, ...) run as typed. To turn them
   off: `"terminal": {"copilot_hooks": false}` (takes effect in new terminals).
+- **OpenCode's status plugin applies to one session only, too.** OpenCode
+  has no command hooks, so Solo writes a small JavaScript plugin to
+  `%TEMP%\solo-shell-integration\opencode-plugin` (and, for OpenCode 1,
+  `opencode-config\plugins`); its `opencode` wrapper loads it for that
+  session through environment variables: `OPENCODE_CLI_CONFIG_CONTENT` for
+  OpenCode 2 (your `cli.json` plugins plus Solo's; your `cli.json` is read,
+  not changed) and `OPENCODE_CONFIG_DIR` for OpenCode 1. **Nothing is written
+  to `~/.config/opencode`**. If you set either variable yourself, Solo leaves
+  it alone (and that OpenCode version then shows the status read from the
+  screen). The plugin runs `solo-agent-hook.exe report` when a turn starts,
+  asks for a permission or an answer, and ends; it reports only the session
+  the OpenCode window shows. After a restart, "Continue Session" types
+  `opencode --session <id>`. OpenCode 1 installs its plugin package into
+  `opencode-config` the first time. To turn it off:
+  `"terminal": {"opencode_hooks": false}` (takes effect in new terminals).
 - **Shell integration**: PowerShell, bash, zsh and fish started without custom
   arguments load Solo's integration script from `%TEMP%\solo-shell-integration`,
   after your own profile. PowerShell runs it with `-NoExit -Command`, which
@@ -300,8 +434,9 @@ To treat another program as an agent:
 - **Updates** are installed only when you choose to, by
   `solo-update-helper.exe` after Solo exits.
 - **`solo://` links:** the installer registers Solo for `solo://` links,
-  for your user only (`HKCU\Software\Classes\solo`), so a link copied from
-  the settings window opens in Solo. Uninstalling removes it. Solo doesn't
+  for your user only (`HKCU\Software\Classes\solo`), so links such as
+  `solo://settings/terminal.font_size` (jumps to that setting) or a shared
+  skill link open in Solo. Uninstalling removes it. Solo doesn't
   register `zed://`, which stays Zed's, but still opens such links passed to
   it.
 - **Terminal hosts:** each terminal's shell runs in its own
@@ -351,11 +486,17 @@ collaboration and Zed's own auto-update are off or hidden.
 - the agents you run in the terminal (Claude Code, Codex, ...) make their own
   connections, not through Solo.
 
-**No remote development yet:** SSH, WSL and Docker (dev container) remote
-development run a server on the remote side. Solo doesn't build its own yet,
-and Zed's servers have none matching Solo, so those entries are hidden, and
-using one says it isn't supported, without contacting Zed's servers. `ssh`
-and `wsl` in the terminal work as usual.
+**Remote development is off for now:** SSH, WSL and Docker (dev container)
+remote development run a server on the remote side. Solo's releases now carry
+their own for Linux (x86_64 and aarch64), but it's still being tested, so
+those entries stay hidden, and using one says it isn't available yet. `ssh`
+and `wsl` in the terminal work as usual. To try it, set the environment
+variable `SOLO_REMOTE_DEVELOPMENT=1` and start Solo again: connecting then
+downloads the remote server of your Solo version from Solo's GitHub release
+(`github.com`, checked against the SHA-256 GitHub reports), uploads it to the
+remote host, which runs it from `~/.solo_server`, and keeps its data in
+`~/.local/share/solo`, apart from Zed's. Zed's servers are never contacted.
+Remote macOS and Windows hosts aren't supported.
 
 ## 10. Troubleshooting
 
@@ -392,7 +533,7 @@ Some security software treats these as suspicious.
   System32 (WSL) isn't supported.
 - If you have your own `claude` function or alias, Solo's wrapper isn't used,
   and the status is read from the output.
-- Changing `claude_code_hooks`, `codex_hooks` or `copilot_hooks` only affects
+- Changing `claude_code_hooks`, `codex_hooks`, `copilot_hooks` or `opencode_hooks` only affects
   new terminals.
 - Codex shows no status from hooks until you trust Solo's hooks in the review
   Codex shows when it starts; until then its status is read
@@ -429,14 +570,20 @@ Solo's own settings, under `"terminal"`:
 | `claude_code_hooks` | `true` | add status hooks to Claude Code with `--settings` |
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
+| `opencode_hooks` | `true` | load a status plugin into OpenCode for each session |
 | `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
-| `agent_usage_display` | `"always"` | a running agent's context and tokens in a bar at the bottom of its terminal (when narrow, the turn's tokens go first, then the session's) and its context percentage on the tab; `"tooltip"` shows them only in the tab's tooltip |
+| `agent_usage_display` | `"always"` | a running agent's context, model and tokens in a bar at the bottom of its terminal (when narrow, whole parts go: the session's tokens first, then the turn's, then the model, leaving the context's bar and percentage) and its context on the tab; `"tooltip"` shows them only in the tab's tooltip |
 | `agent_commands` | `[]` | more programs to treat as agents |
 | `agent_task_command` | `"claude"` | what a new agent task runs |
 | `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |
 | `follow_working_directory` | `false` | file tree and search follow the active terminal's repository |
 | `restore_contents` | `false` | show terminals' previous contents after a restart |
 | `input_editor` | `true` | type commands in an editor at the bottom |
+| `completions_as_you_type` | `true` | open completions in the input as you type; `false`: only with Tab |
+| `ai_command_agent` | `"auto"` | which agent turns `# requests` into commands: `auto` / `claude_code` / `codex` |
+| `ai_command_claude_model` | `"haiku"` | the model Claude Code generates commands with |
+| `ai_command_codex_model` | `""` | the model Codex generates commands with (empty: Codex's default) |
+| `ai_command_include_last_failure` | `true` | send the last failed command and the end of its output with a `#` request |
 | `notify_long_commands_after_seconds` | `10` | notify when a long command finishes; 0 turns it off |
 | `program_notifications` | `true` | let programs show desktop notifications (OSC 9/777) |
 

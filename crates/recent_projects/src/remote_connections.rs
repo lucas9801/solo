@@ -121,11 +121,22 @@ impl Settings for RemoteSettings {
 }
 
 /// SOLO: whether SSH, WSL and dev container remote development is offered.
-/// It runs a remote server that Solo doesn't build yet, and Zed's servers have
-/// none for Solo's version, so it couldn't connect anyway. Tests still cover
-/// it, for when Solo builds its own server.
+/// It runs a remote server, which Solo's releases now carry for Linux
+/// (`auto_update::solo_remote_server`), but it hasn't been tried against real
+/// hosts yet, so it stays off unless the environment variable
+/// [`REMOTE_DEVELOPMENT_ENV`] is `1` when Solo starts. Tests always have it.
 pub fn remote_development() -> bool {
-    cfg!(any(test, feature = "test-support"))
+    static ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        remote_development_enabled_by(std::env::var(REMOTE_DEVELOPMENT_ENV).ok().as_deref())
+    });
+    cfg!(any(test, feature = "test-support")) || *ENABLED
+}
+
+/// SOLO: turns on remote development for testing, see [`remote_development`].
+pub const REMOTE_DEVELOPMENT_ENV: &str = "SOLO_REMOTE_DEVELOPMENT";
+
+fn remote_development_enabled_by(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim() == "1")
 }
 
 /// SOLO: says that remote development isn't available, see
@@ -138,9 +149,9 @@ pub fn show_remote_development_unavailable(window: &mut gpui::Window, cx: &mut g
             "暂不支持远程开发",
         ),
         Some(util::i18n::tr(
-            "SSH, WSL and dev container projects need a remote server that Solo doesn't build yet. \
-             You can still use ssh or wsl in Solo's terminal.",
-            "SSH、WSL 和开发容器项目需要一个远程服务端，Solo 还没有自己构建的版本。在 Solo 的终端里照常可以用 ssh 或 wsl。",
+            "SSH, WSL and dev container projects run Solo's own remote server, which is still \
+             being tested, so they're off for now. You can still use ssh or wsl in Solo's terminal.",
+            "SSH、WSL 和开发容器项目要在远端运行 Solo 自己的远程服务端，它还在测试中，所以暂时关闭。在 Solo 的终端里照常可以用 ssh 或 wsl。",
         )),
         &[util::i18n::tr("OK", "确定")],
         cx,
@@ -551,6 +562,16 @@ mod tests {
     use serde_json::json;
     use util::path;
     use workspace::find_existing_workspace;
+
+    #[test]
+    fn test_remote_development_is_turned_on_by_the_environment() {
+        assert!(remote_development_enabled_by(Some("1")));
+        assert!(remote_development_enabled_by(Some(" 1 ")));
+        assert!(!remote_development_enabled_by(None));
+        assert!(!remote_development_enabled_by(Some("")));
+        assert!(!remote_development_enabled_by(Some("0")));
+        assert!(!remote_development_enabled_by(Some("true")));
+    }
 
     #[gpui::test]
     async fn test_open_remote_project_with_mock_connection(

@@ -532,6 +532,10 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         )
         .detach();
 
+        // SOLO: no threads sidebar; it only lists the agent panel's threads.
+        if project::AgentPanelRemoved::is_set(cx) {
+            return;
+        }
         cx.defer(move |cx| {
             window_handle
                 .update(cx, |_, window, cx| {
@@ -820,9 +824,11 @@ fn setup_or_teardown_ai_panel<P: Panel>(
     ) -> Task<anyhow::Result<Entity<P>>>
     + 'static,
 ) -> Task<anyhow::Result<()>> {
+    // SOLO: the agent panel (the only panel set up here) isn't added at all.
     let disable_ai = SettingsStore::global(cx)
         .get::<DisableAiSettings>(None)
         .disable_ai
+        || project::AgentPanelRemoved::is_set(cx)
         || cfg!(test);
     let existing_panel = workspace.panel::<P>(cx);
     match (disable_ai, existing_panel) {
@@ -831,7 +837,8 @@ fn setup_or_teardown_ai_panel<P: Panel>(
             workspace.update_in(cx, |workspace, window, cx| {
                 let disable_ai = SettingsStore::global(cx)
                     .get::<DisableAiSettings>(None)
-                    .disable_ai;
+                    .disable_ai
+                    || project::AgentPanelRemoved::is_set(cx);
                 let have_panel = workspace.panel::<P>(cx).is_some();
                 if !disable_ai && !have_panel {
                     workspace.add_panel(panel, window, cx);

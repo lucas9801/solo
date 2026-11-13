@@ -203,7 +203,12 @@ fn main() {
     #[cfg(unix)]
     util::prevent_root_execution();
 
-    let args = Args::parse();
+    let mut args = Args::parse();
+    // SOLO: Explorer's "Open with Solo" on a drive passes `G:"` for `G:\`.
+    args.paths_or_urls = std::mem::take(&mut args.paths_or_urls)
+        .into_iter()
+        .map(zed::repair_path_arg)
+        .collect();
 
     // `zed --askpass` Makes zed operate in nc/netcat mode for use with askpass
     #[cfg(not(target_os = "windows"))]

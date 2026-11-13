@@ -57,9 +57,11 @@ try {
     $themes = [IO.File]::ReadAllText((Join-Path $root "assets/themes/LICENSES"), $utf8)
     $icons = [IO.File]::ReadAllText((Join-Path $root "assets/icons/LICENSES"), $utf8)
     # cargo about skips crates that aren't published, like the vendored Warp
-    # command signatures (MIT), so their license is added here.
+    # command signatures (MIT), and data that isn't a crate, like Herdr's
+    # agent detection rules (Apache-2.0), so their licenses are added here.
     $signatures = [IO.File]::ReadAllText((Join-Path $root "vendor/warp_command_signatures/LICENSE.md"), $utf8)
-    $content = "# ###### THEME LICENSES ######`n`n$themes`n# ###### ICON LICENSES ######`n`n$icons`n# ###### CODE LICENSES ######`n`n$code`n# ###### VENDORED CODE LICENSES ######`n`n#### warp-command-signatures, warp-completion-metadata (MIT License)`n`n$signatures"
+    $herdr = [IO.File]::ReadAllText((Join-Path $root "vendor/herdr_agent_detection/LICENSE"), $utf8)
+    $content = "# ###### THEME LICENSES ######`n`n$themes`n# ###### ICON LICENSES ######`n`n$icons`n# ###### CODE LICENSES ######`n`n$code`n# ###### VENDORED CODE LICENSES ######`n`n#### warp-command-signatures, warp-completion-metadata (MIT License)`n`n$signatures`n`n#### Herdr agent detection rules (Apache License 2.0, https://github.com/herdrdev/herdr)`n`n$herdr"
 
     $directory = Split-Path -Parent $outputFile
     if ($directory) { New-Item -ItemType Directory -Force $directory | Out-Null }

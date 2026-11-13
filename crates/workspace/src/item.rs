@@ -223,6 +223,8 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     fn to_item_events(_event: &Self::Event, _f: &mut dyn FnMut(ItemEvent)) {}
 
     fn deactivated(&mut self, _window: &mut Window, _: &mut Context<Self>) {}
+    /// SOLO: the item became its pane's active item.
+    fn activated(&mut self, _window: &mut Window, _: &mut Context<Self>) {}
     fn discarded(&self, _project: Entity<Project>, _window: &mut Window, _cx: &mut Context<Self>) {}
     fn on_removed(&self, _cx: &mut Context<Self>) {}
     fn workspace_deactivated(&mut self, _window: &mut Window, _: &mut Context<Self>) {}
@@ -424,6 +426,24 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     ) -> Vec<(SharedString, Box<dyn Action>)> {
         Vec::new()
     }
+
+    /// SOLO: another group of entries for the tab's context menu, after
+    /// [`Item::tab_extra_context_menu_actions`].
+    fn tab_extra_context_menu_group(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Vec<TabContextEntry> {
+        Vec::new()
+    }
+}
+
+/// SOLO: an entry of [`Item::tab_extra_context_menu_group`].
+pub enum TabContextEntry {
+    /// A label and the action to dispatch.
+    Action(SharedString, Box<dyn Action>),
+    /// A label and its entries, each a label and the action to dispatch.
+    Submenu(SharedString, Vec<(SharedString, Box<dyn Action>)>),
 }
 
 pub trait SerializableItem: Item {
@@ -540,6 +560,8 @@ pub trait ItemHandle: 'static + Send {
         cx: &mut Context<Workspace>,
     );
     fn deactivated(&self, window: &mut Window, cx: &mut App);
+    /// SOLO: see `Item::activated`.
+    fn activated(&self, window: &mut Window, cx: &mut App);
     fn on_removed(&self, cx: &mut App);
     fn workspace_deactivated(&self, window: &mut Window, cx: &mut App);
     fn navigate(&self, data: Arc<dyn Any + Send>, window: &mut Window, cx: &mut App) -> bool;
@@ -605,6 +627,11 @@ pub trait ItemHandle: 'static + Send {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<(SharedString, Box<dyn Action>)>;
+    fn tab_extra_context_menu_group(
+        &self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<TabContextEntry>;
     fn can_autosave(&self, cx: &App) -> bool {
         let is_deleted = self.project_entry_ids(cx).is_empty();
         self.is_dirty(cx) && !self.has_conflict(cx) && self.can_save(cx) && !is_deleted
@@ -1037,6 +1064,10 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.update(cx, |this, cx| this.deactivated(window, cx));
     }
 
+    fn activated(&self, window: &mut Window, cx: &mut App) {
+        self.update(cx, |this, cx| this.activated(window, cx));
+    }
+
     fn on_removed(&self, cx: &mut App) {
         self.update(cx, |item, cx| item.on_removed(cx));
     }
@@ -1209,6 +1240,14 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.update(cx, |this, cx| {
             this.tab_extra_context_menu_actions(window, cx)
         })
+    }
+
+    fn tab_extra_context_menu_group(
+        &self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<TabContextEntry> {
+        self.update(cx, |this, cx| this.tab_extra_context_menu_group(window, cx))
     }
 }
 

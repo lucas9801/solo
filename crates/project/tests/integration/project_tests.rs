@@ -4261,6 +4261,98 @@ async fn test_toggling_enable_language_server(cx: &mut gpui::TestAppContext) {
         .await;
 }
 
+// SOLO: the per-project analysis modes stop, restart and start servers.
+#[gpui::test]
+async fn test_solo_analysis_modes(cx: &mut gpui::TestAppContext) {
+    use project::lsp_store::solo_server_modes::{AnalysisMode, set_mode};
+
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "a.rs": "" })).await;
+
+    let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    let mut fake_rust_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "rust-analyzer",
+            ..Default::default()
+        },
+    );
+    language_registry.add(rust_lang());
+
+    let _rs_buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/dir/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut first_server = fake_rust_servers.next().await.unwrap();
+    let server_name = LanguageServerName::new_static("rust-analyzer");
+
+    // Another project's choice changes nothing here.
+    cx.update(|cx| {
+        set_mode(
+            PathBuf::from(path!("/other")),
+            server_name.clone(),
+            AnalysisMode::Off,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert!(fake_rust_servers.try_recv().is_err());
+
+    // Pausing background analysis restarts the server with other options.
+    cx.update(|cx| {
+        set_mode(
+            PathBuf::from(path!("/dir")),
+            server_name.clone(),
+            AnalysisMode::OpenFilesOnly,
+            cx,
+        )
+    });
+    first_server
+        .receive_notification::<lsp::notification::Exit>()
+        .await;
+    let mut second_server = fake_rust_servers.next().await.unwrap();
+
+    // Off stops it, and nothing starts it again.
+    cx.update(|cx| {
+        set_mode(
+            PathBuf::from(path!("/dir")),
+            server_name.clone(),
+            AnalysisMode::Off,
+            cx,
+        )
+    });
+    second_server
+        .receive_notification::<lsp::notification::Exit>()
+        .await;
+    cx.run_until_parked();
+    assert!(fake_rust_servers.try_recv().is_err());
+
+    // Turned on again, it starts for the open file.
+    cx.update(|cx| {
+        set_mode(
+            PathBuf::from(path!("/dir")),
+            server_name.clone(),
+            AnalysisMode::Full,
+            cx,
+        )
+    });
+    let mut third_server = fake_rust_servers.next().await.unwrap();
+    assert_eq!(
+        third_server
+            .receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .await
+            .text_document
+            .uri
+            .as_str(),
+        uri!("file:///dir/a.rs")
+    );
+}
+
 #[gpui::test]
 async fn test_updating_lsp_settings_sends_one_did_change_configuration(
     cx: &mut gpui::TestAppContext,
