@@ -32,6 +32,8 @@ fn main() {
         println!("cargo:rerun-if-env-changed=RELEASE_CHANNEL");
         println!("cargo:rerun-if-env-changed=GITHUB_RUN_NUMBER");
 
-        windows_resources::compile(false).expect("failed to compile Windows resources");
+        // SOLO: solo-cli.exe; its version is Solo's (crates/windows_resources).
+        windows_resources::compile_with_description(false, Some("Solo CLI"))
+            .expect("failed to compile Windows resources");
     }
 }

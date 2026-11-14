@@ -122,15 +122,29 @@ jobs:
       - name: Build
         run: ./script/package-solo.ps1 -OutDir dist -Step Stage
 
-      # Its product version is "<version>+stable.<run>.<commit>"
-      # (crates/windows_resources).
-      - name: Check that solo.exe was built from this commit
+      # Every exe carries product name Solo and Solo's version as product and
+      # file version (SignPath Foundation wants the same on all signed files,
+      # script/signpath/exes.xml), and the build "<version>+stable.<run>.<commit>"
+      # in its comments (crates/windows_resources).
+      - name: Check the exes' version information
         run: |
-          $productVersion = (Get-Item dist/Solo/solo.exe).VersionInfo.ProductVersion
-          if (-not $productVersion -or -not $productVersion.EndsWith(".${{ github.sha }}")) {
-            throw "solo.exe was built from another commit (product version $productVersion), not ${{ github.sha }}"
+          $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $failed = $false
+          foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-terminal-host.exe", "solo-cli.exe") {
+            $info = (Get-Item "dist/Solo/$exe").VersionInfo
+            Write-Host "$exe`: $($info.ProductName) $($info.ProductVersion), file $($info.FileVersion) ($($info.FileVersionRaw)), $($info.Comments)"
+            $problems = @()
+            if ($info.ProductName -ne "Solo") { $problems += "product name '$($info.ProductName)', not 'Solo'" }
+            if ($info.ProductVersion -ne $version) { $problems += "product version '$($info.ProductVersion)', not $version" }
+            if ($info.FileVersion -ne $version) { $problems += "file version '$($info.FileVersion)', not $version" }
+            if ("$($info.FileVersionRaw)" -ne "$version.0" -or "$($info.ProductVersionRaw)" -ne "$version.0") { $problems += "fixed versions $($info.FileVersionRaw)/$($info.ProductVersionRaw), not $version.0" }
+            if (-not $info.Comments -or -not $info.Comments.EndsWith(".${{ github.sha }}")) { $problems += "built from another commit ('$($info.Comments)'), not ${{ github.sha }}" }
+            foreach ($problem in $problems) {
+              Write-Host "::error::$exe`: $problem"
+              $failed = $true
+            }
           }
-          Write-Host "solo.exe $productVersion"
+          if ($failed) { throw "The exes' version information doesn't match Solo $version" }
 
       - name: Show free disk space
         if: always()

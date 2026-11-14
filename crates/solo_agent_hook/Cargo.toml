@@ -15,3 +15,6 @@ doctest = false
 
 [dependencies]
 serde_json.workspace = true
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+windows_resources.workspace = true

@@ -35,6 +35,20 @@ as Microsoft signs them and are not re-signed. Every file in the packages,
 with its source and license, is listed in
 [package-contents.md](package-contents.md).
 
+### Version information
+
+Each of Solo's own programs carries the same version information
+(`crates/windows_resources`), which SignPath checks before signing
+([`script/signpath/exes.xml`](../script/signpath/exes.xml)):
+
+| Field | Value |
+|---|---|
+| Product name | `Solo` |
+| Product version, file version | Solo's version, e.g. `2.3.0` |
+| Company | `lucas9801` (the repository owner) |
+| Copyright | `Copyright lucas9801 and Solo contributors. Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0-or-later` |
+| Comments | the build, `<version>+stable.<run>.<commit>` |
+
 ### Team roles
 
 | Role | Members |
@@ -91,6 +105,10 @@ Free code signing provided by [SignPath.io](https://about.signpath.io), certific
 2. 安装程序 `Solo-Setup-<版本>.exe`，用第 1 轮签好的文件由 Inno Setup 生成。
 
 `conpty.dll` 和 `OpenConsole.exe`（微软的控制台宿主，来自 [microsoft/terminal](https://github.com/microsoft/terminal)，MIT 许可）保持微软自己的签名，不重新签。安装包里每个文件的来源和许可证见 [package-contents.md](package-contents.md)。
+
+### 版本信息
+
+Solo 自己的每个程序都带同样的版本信息（`crates/windows_resources`），SignPath 签名前会核对（[`script/signpath/exes.xml`](../script/signpath/exes.xml)）：产品名 `Solo`；产品版本和文件版本都是 Solo 的版本（如 `2.3.0`）；公司 `lucas9801`（仓库所有者）；版权 `Copyright lucas9801 and Solo contributors. Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0-or-later`；备注（Comments）是构建号 `<版本>+stable.<运行号>.<提交>`。
 
 ### 成员与角色
 

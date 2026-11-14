@@ -122,9 +122,14 @@ fn main() {
             let nupkg_path = out_dir.join("conpty.nupkg.zip");
             let extract_dir = out_dir.join("conpty");
 
+            // SOLO: the package's SHA-256 (the digest GitHub shows for the
+            // release asset); change it together with conpty_url. The script
+            // prints the downloaded file's hash.
+            let conpty_sha256 = "05fe9b571ea4fb198f5012405cb39a132cf23eee50feaa496524c149b2502692";
             let download_script = format!(
-                "$ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '{}' -OutFile '{}'",
+                "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '{}' -OutFile '{}'; (Get-FileHash -Algorithm SHA256 -LiteralPath '{}').Hash",
                 conpty_url,
+                nupkg_path.display(),
                 nupkg_path.display()
             );
 
@@ -139,6 +144,16 @@ fn main() {
 
             match download_result {
                 Ok(output) if output.status.success() => {
+                    // SOLO: a package with another hash stops the build.
+                    let sha256 = String::from_utf8_lossy(&output.stdout)
+                        .trim()
+                        .to_ascii_lowercase();
+                    if sha256 != conpty_sha256 {
+                        std::fs::remove_file(&nupkg_path).ok();
+                        panic!(
+                            "The ConPTY package from {conpty_url} has SHA-256 {sha256:?}, not {conpty_sha256}"
+                        );
+                    }
                     println!("Downloaded conpty nupkg successfully");
 
                     let extract_script = format!(

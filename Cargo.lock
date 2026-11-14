@@ -16916,6 +16916,7 @@ name = "solo_agent_hook"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "windows_resources",
 ]
 
 [[package]]
@@ -16925,6 +16926,7 @@ dependencies = [
  "serde",
  "serde_json",
  "windows-sys 0.59.0",
+ "windows_resources",
 ]
 
 [[package]]
@@ -16932,6 +16934,7 @@ name = "solo_update_helper"
 version = "0.1.0"
 dependencies = [
  "windows 0.62.2",
+ "windows_resources",
 ]
 
 [[package]]

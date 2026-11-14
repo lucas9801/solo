@@ -19,9 +19,35 @@ fn git_sha() -> Option<String> {
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn product_version() -> String {
+// SOLO: every exe Solo ships carries Solo's version, the version of the zed
+// crate (crates/zed/Cargo.toml, which script/release-solo.ps1 sets), not the
+// version of the crate it's built from (the CLI and the helpers are 0.1.0).
+// SignPath Foundation wants the same product name and product version on all
+// signed files (docs/signpath-application.md).
+const SOLO_CARGO_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../zed/Cargo.toml");
+
+/// The `version` of the `[package]` in crates/zed/Cargo.toml.
+fn solo_version() -> String {
+    println!("cargo:rerun-if-changed={SOLO_CARGO_TOML}");
+    let manifest = std::fs::read_to_string(SOLO_CARGO_TOML)
+        .unwrap_or_else(|error| panic!("can't read {SOLO_CARGO_TOML}: {error}"));
+    parse_package_version(&manifest).unwrap_or_else(|| panic!("no version in {SOLO_CARGO_TOML}"))
+}
+
+fn parse_package_version(manifest: &str) -> Option<String> {
+    manifest
+        .lines()
+        .take_while(|line| !line.starts_with('[') || line.trim() == "[package]")
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.split('"').next())
+        .map(str::to_string)
+}
+
+// SOLO: the build, "<version>+<channel>[.<run>][.<commit>]". It used to be the
+// product version; it's the Comments now, so that the product version is the
+// same on every build of a version.
+fn build_metadata(pkg_version: &str) -> String {
     let commit_sha = git_sha();
-    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
     let channel = std::env::var("RELEASE_CHANNEL").unwrap_or_else(|_| "dev".into());
     let build_id = std::env::var("GITHUB_RUN_NUMBER").ok();
 
@@ -38,10 +64,24 @@ fn product_version() -> String {
     format!("{pkg_version}+{metadata}")
 }
 
+// SOLO: as in docs/code-signing-policy.md ("Version information").
+const COMPANY_NAME: &str = "lucas9801";
+const LEGAL_COPYRIGHT: &str = "Copyright lucas9801 and Solo contributors. Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0-or-later";
+
 const ICON_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../zed/resources/windows");
 const MANIFEST_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/manifest.xml");
 
 pub fn compile(manifest: bool) -> Result<(), Box<dyn std::error::Error>> {
+    compile_with_description(manifest, None)
+}
+
+/// SOLO: like [`compile`], with `description` as the file description (what
+/// Task Manager and the file's details show); without one it's the product
+/// name.
+pub fn compile_with_description(
+    manifest: bool,
+    description: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let channel = option_env!("RELEASE_CHANNEL").unwrap_or("dev");
     let (icon_filename, product_name) = match channel {
         "stable" => ("app-icon.ico", "Solo"),
@@ -59,8 +99,9 @@ pub fn compile(manifest: bool) -> Result<(), Box<dyn std::error::Error>> {
         String::new()
     };
 
-    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
-    let product_version = product_version();
+    let pkg_version = solo_version();
+    let build = build_metadata(&pkg_version);
+    let description = description.unwrap_or(product_name);
     let mut version_parts = pkg_version
         .split('.')
         .map(|part| part.parse::<u16>().unwrap_or(0))
@@ -96,12 +137,13 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "FileDescription", "{product_name}\0"
+            VALUE "FileDescription", "{description}\0"
             VALUE "FileVersion", "{pkg_version}\0"
             VALUE "ProductName", "{product_name}\0"
-            VALUE "ProductVersion", "{product_version}\0"
-            VALUE "CompanyName", "Solo\0"
-            VALUE "LegalCopyright", "Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0\0"
+            VALUE "ProductVersion", "{pkg_version}\0"
+            VALUE "Comments", "{build}\0"
+            VALUE "CompanyName", "{COMPANY_NAME}\0"
+            VALUE "LegalCopyright", "{LEGAL_COPYRIGHT}\0"
         END
     END
     BLOCK "VarFileInfo"
@@ -128,4 +170,26 @@ END
         .unwrap();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_package_version;
+
+    #[test]
+    fn reads_the_package_version() {
+        let manifest = "[package]\nname = \"zed\"\ndescription = \"x\"\nversion = \"2.3.0\"\n\n[dependencies]\nversion = \"9.9.9\"\n";
+        assert_eq!(parse_package_version(manifest).as_deref(), Some("2.3.0"));
+        assert_eq!(
+            parse_package_version("[dependencies]\nversion = \"1.0.0\"\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn reads_solo_version() {
+        let manifest = std::fs::read_to_string(super::SOLO_CARGO_TOML).unwrap();
+        let version = parse_package_version(&manifest).unwrap();
+        assert_eq!(version.split('.').count(), 3, "{version}");
+    }
 }

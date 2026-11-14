@@ -11,7 +11,7 @@ workspace = true
 [lib]
 path = "src/windows_resources.rs"
 doctest = false
-test = false
+test = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 embed-resource = "3.0"

@@ -83,7 +83,8 @@ installer, quits, installs it silently where Solo is, and starts again.
 Releases are built by GitHub Actions, not locally (local builds are for
 testing). A version tag starts the
 [Solo package workflow](../.github/workflows/solo-package.yml), which builds
-Solo, checks solo.exe was built from the tagged commit, packages the installer
+Solo, checks the version information of its exes (product name Solo, Solo's
+version, built from the tagged commit), packages the installer
 and the zip, and creates a draft GitHub release with them and the notes in
 `docs/release-notes/<version>.md`. Running copies of Solo only update to
 published releases.

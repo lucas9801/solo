@@ -9,7 +9,7 @@
 # it (on GitHub, or `gh release edit v<version> --draft=false`); running
 # copies of Solo update only from published releases.
 #
-#   script\release-solo.ps1 (-Notes <text> | -NotesFile <file>) [-Version <x.y.z>] [-DryRun]
+#   script\release-solo.ps1 (-Notes <text> | -NotesFile <file>) [-Version <x.y.z>] [-DryRun] [-SkipCiCheck]
 #
 # The release notes must start with a one-sentence summary in Chinese on the
 # first line and in English on the second, plain text: the update
@@ -22,6 +22,13 @@
 # fails, the version commit and the tag are undone. Needs a clean working
 # tree on a branch that tracks the repository's main branch.
 #
+# It releases only a commit that passed Solo CI (.github/workflows/solo-ci.yml):
+# the latest Solo CI run on main for the current commit (which becomes the
+# version commit's parent) must have succeeded, so push the commit to main
+# and wait for CI first. It asks GitHub with `gh run list` (the GitHub CLI,
+# signed in); -DryRun checks it too. -SkipCiCheck releases without checking,
+# for emergencies only.
+#
 # To build packages locally (for testing only; releases come from CI), run
 # script\package-solo.ps1.
 
@@ -29,7 +36,8 @@ param(
     [string]$Version = "",
     [string]$Notes = "",
     [string]$NotesFile = "",
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$SkipCiCheck
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -65,6 +73,38 @@ if ($remoteTag) { throw "Tag $tag already exists on origin" }
 $notesPath = "docs\release-notes\$Version.md"
 if (Test-Path $notesPath) { throw "$notesPath already exists" }
 
+# Only a commit that passed Solo CI on main. The version commit is new, so
+# its parent, the current commit, is the one CI checked. (Runs started by
+# hand on main count too; pull requests' runs are on their own branches.)
+$head = git rev-parse HEAD
+$shortHead = git rev-parse --short HEAD
+$ciRuns = "https://github.com/$repo/actions/workflows/solo-ci.yml?query=branch%3Amain"
+if ($SkipCiCheck) {
+    Write-Warning "Not checking that Solo CI passed on $shortHead (-SkipCiCheck)."
+} else {
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        throw "Checking Solo CI needs the GitHub CLI (gh, signed in). Without it, check $ciRuns yourself and pass -SkipCiCheck only if Solo CI passed on $shortHead."
+    }
+    $runsJson = gh run list --repo $repo --workflow "Solo CI" --branch main --limit 100 --json "databaseId,headSha,status,conclusion,url"
+    if ($LASTEXITCODE -ne 0) { throw "Couldn't list Solo CI's runs with gh (exit code $LASTEXITCODE); is gh signed in?" }
+    # Newest first. (Windows PowerShell passes a JSON array on as one object.)
+    $runs = ($runsJson -join "`n") | ConvertFrom-Json
+    $ciRun = $null
+    foreach ($run in $runs) {
+        if ($run.headSha -eq $head) { $ciRun = $run; break }
+    }
+    if (-not $ciRun) {
+        throw "Solo CI hasn't run on main for $shortHead, the commit to release: push it to main and wait for Solo CI to pass ($ciRuns)."
+    }
+    if ($ciRun.status -ne "completed") {
+        throw "Solo CI on $shortHead hasn't finished ($($ciRun.status)); release once it passes: $($ciRun.url)"
+    }
+    if ($ciRun.conclusion -ne "success") {
+        throw "Solo CI didn't pass on $shortHead ($($ciRun.conclusion)): $($ciRun.url). Fix it and release a commit it passes on."
+    }
+    Write-Host "Solo CI passed on $shortHead`: $($ciRun.url)"
+}
+
 # The version of the zed crate is the app's version, here and in Cargo.lock.
 function Get-WithVersion([string]$path, [string]$pattern, [string]$replacement) {
     $text = [IO.File]::ReadAllText((Resolve-Path $path))
@@ -79,7 +119,7 @@ $notesText = ($Notes -replace "\r\n", "`n").TrimEnd() + "`n"
 
 if ($DryRun) {
     Write-Host "Dry run: nothing is changed, committed, tagged or pushed."
-    Write-Host "Would release Solo $Version (was $current) from $(git rev-parse --short HEAD), pushing to $upstreamBranch"
+    Write-Host "Would release Solo $Version (was $current) from $shortHead, pushing to $upstreamBranch"
     Write-Host "Would set the version in $cargoToml and Cargo.lock and write $notesPath`:"
     Write-Host $notesText
     Write-Host "Would commit `"Solo $Version`", tag it $tag and push the branch and $tag to $repo,"

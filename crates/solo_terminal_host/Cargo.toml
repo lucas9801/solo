@@ -30,3 +30,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+windows_resources.workspace = true

@@ -11,11 +11,11 @@ zip（`Solo\` 目录下）和安装程序（装到 `%LOCALAPPDATA%\Programs\Solo
 
 | File | Source / 来源 | Version / 版本 | License / 许可证 | Signed by / 签名 |
 |---|---|---|---|---|
-| `solo.exe` | Built from this repository (crate `zed`, a fork of [Zed](https://github.com/zed-industries/zed)) / 本仓库构建 | 2.2.0 (product version `2.2.0+stable.<run>.<commit>`) | GPL-3.0-or-later; statically links Rust crates and assets listed below | SignPath (once enabled) |
-| `solo-cli.exe` | Built from this repository (crate `cli`) | crate 0.1.0 | GPL-3.0-or-later | SignPath (once enabled) |
-| `solo-agent-hook.exe` | Built from this repository (crate `solo_agent_hook`) | crate 0.1.0 | GPL-3.0-or-later | SignPath (once enabled) |
-| `solo-update-helper.exe` | Built from this repository (crate `solo_update_helper`) | crate 0.1.0 | GPL-3.0-or-later | SignPath (once enabled) |
-| `solo-terminal-host.exe` | Built from this repository (crate `solo_terminal_host`) | crate 0.1.0 | GPL-3.0-or-later | SignPath (once enabled) |
+| `solo.exe` | Built from this repository (crate `zed`, a fork of [Zed](https://github.com/zed-industries/zed)) / 本仓库构建 | Solo's version (2.2.0); the build `<version>+stable.<run>.<commit>` is in its comments | GPL-3.0-or-later; statically links Rust crates and assets listed below | SignPath (once enabled) |
+| `solo-cli.exe` | Built from this repository (crate `cli`) | Solo's version (crate 0.1.0) | GPL-3.0-or-later | SignPath (once enabled) |
+| `solo-agent-hook.exe` | Built from this repository (crate `solo_agent_hook`) | Solo's version (crate 0.1.0) | GPL-3.0-or-later | SignPath (once enabled) |
+| `solo-update-helper.exe` | Built from this repository (crate `solo_update_helper`) | Solo's version (crate 0.1.0) | GPL-3.0-or-later | SignPath (once enabled) |
+| `solo-terminal-host.exe` | Built from this repository (crate `solo_terminal_host`) | Solo's version (crate 0.1.0) | GPL-3.0-or-later | SignPath (once enabled) |
 | `conpty.dll` | Microsoft, NuGet package `Microsoft.Windows.Console.ConPTY` from [microsoft/terminal releases](https://github.com/microsoft/terminal/releases/tag/v1.25.1912.0), downloaded by `crates/zed/build.rs` | 1.25.260710002-preview | MIT | Microsoft (not re-signed) |
 | `OpenConsole.exe` | Same package as `conpty.dll` / 同上 | 1.25.260710002-preview | MIT | Microsoft (not re-signed) |
 | `LICENSE-GPL` | This repository | – | GPL-3.0 text | – |
@@ -64,22 +64,24 @@ before or while applying for SignPath Foundation signing:
    unsigned, like upstream DLLs), but say so in the application. Removing the
    call/collaboration crates from Solo would drop it entirely.
    ——开源但用的是预编译二进制；申请时说明；从 Solo 去掉通话相关 crate 可以彻底去掉它。
-4. **ConPTY download isn't checksum-verified**: `crates/zed/build.rs` downloads
-   the NuGet package over HTTPS without checking a hash (inherited from Zed).
-   The files are Microsoft-signed; adding a SHA-256 check would make the
-   build verifiable.
-   ——构建时下载 ConPTY 没校验哈希（继承自 Zed），文件本身有微软签名；建议加 SHA-256 校验。
+4. **ConPTY download**: `crates/zed/build.rs` downloads the NuGet package
+   over HTTPS and checks its SHA-256 against a fixed value (the digest
+   GitHub shows for the release asset); another hash stops the build. The
+   files are Microsoft-signed as well. (Done; Zed doesn't check it.)
+   ——构建时下载的 ConPTY 包按固定的 SHA-256 校验（与 GitHub 上该发布文件的摘要一致），不一致就构建失败；文件本身也有微软签名。（已完成）
 5. **Sounds** (`assets/sounds/*.wav`) come from Zed's repository with no
    license of their own, so they fall under the repository's license.
    ——音效文件来自 Zed 仓库，没有单独许可证，按仓库许可证。
-6. **Version resources**: only `solo.exe` and `solo-cli.exe` have version
-   information (product name "Solo"); `solo-cli.exe` reports version 0.1.0,
-   and the three helpers have none. SignPath Foundation wants the product
-   name set to the project name and the same product version on every signed
-   file. To do before signing: give the helpers a version resource
-   (`crates/windows_resources`) and make all of them carry Solo's version,
-   then tighten `script/signpath/exes.xml`.
-   ——只有 solo.exe 和 solo-cli.exe 有版本信息，三个辅助程序没有；签名前要补上，并统一用 Solo 的版本号。
+6. **Version resources**: SignPath Foundation wants the product name set to
+   the project name and the same product version on every signed file. All
+   five of Solo's exes carry the same version information
+   (`crates/windows_resources`, see
+   [code-signing-policy.md](code-signing-policy.md#version-information)):
+   product name "Solo", and Solo's version (`crates/zed/Cargo.toml`) as
+   product and file version, whatever the version of the crate they're built
+   from. `script/signpath/exes.xml` matches each by product name and
+   version, and `solo-package.yml` checks them after building. (Done.)
+   ——五个 exe 都带同样的版本信息：产品名 Solo，产品版本和文件版本都是 Solo 的版本；exes.xml 按产品名和版本匹配，打包工作流构建后检查。（已完成）
 
 Herdr's Apache-2.0 license text is included in `licenses.md` (added with
 this list; before, only `THIRD-PARTY-VENDORED.md` mentioned it).
