@@ -118,8 +118,10 @@ hollow circle, **idle**; a gray dash, **exited**. The title is the session's
 context is: gray below 80%, yellow to 95%, red above. Hovering over the tab
 shows a card with the status, agent and model, the context, the directory,
 branch and command, and the tokens of the turn and the session. While Solo is
-in the background, you get a desktop notification when an agent needs you or
-stops after working for a while.
+in the background, you get a desktop notification when an agent needs your
+input. A notification when an agent stops after working for a while is off by
+default; turn it on in Settings > Terminal > Notifications
+(`agent_stopped_notifications`).
 
 ### Per-turn review
 Solo takes a snapshot of the working directory when each agent turn starts
@@ -620,7 +622,12 @@ Solo's own settings, under `"terminal"`:
 | `ai_command_codex_model` | `""` | the model Codex generates commands with (empty: Codex's default) |
 | `ai_command_include_last_failure` | `true` | send the last failed command and the end of its output with a `#` request |
 | `notify_long_commands_after_seconds` | `10` | notify when a long command finishes; 0 turns it off |
+| `agent_input_notifications` | `true` | notify when an agent needs your input or rings the bell |
+| `agent_stopped_notifications` | `false` | notify when an agent stops after working a while |
 | `program_notifications` | `true` | let programs show desktop notifications (OSC 9/777) |
+
+These notifications only show while Solo is in the background. All four are
+also in Settings > Terminal > Notifications.
 
 Outside `"terminal"`: `"ui_language"` (`"system"`, `"en"` or `"zh"`; the
 environment variable `SOLO_LANGUAGE` overrides it), `"auto_update"` and

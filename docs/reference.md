@@ -113,8 +113,9 @@ guide explains each feature in more detail.
 - Enable Remote Control from a Claude Code terminal's menu, to follow and
   answer it from the Claude app on a phone.
 - Desktop notifications when a long command finishes in the background, when
-  an agent rings the bell or stops after working a while, or when a program
-  asks for one (OSC 9 / OSC 777).
+  an agent needs your input or rings the bell, when a program asks for one
+  (OSC 9 / OSC 777), and (off by default) when an agent stops after working a
+  while. Each has its own setting.
 
 To get Claude Code's turn notifications, run
 `claude config set --global preferredNotifChannel iterm2` (OSC 9) or keep its
@@ -145,7 +146,8 @@ Solo's settings live in `%APPDATA%\Solo` (Windows), apart from Zed's. Its own
 terminal settings, under `"terminal"`: `shell_integration`, `input_editor`,
 `compact_prompt`, `completions_as_you_type`, `open_links_on_click`,
 `notify_long_commands_after_seconds`,
-`program_notifications`, `restore_contents`, `agent_commands`,
+`program_notifications`, `agent_input_notifications`,
+`agent_stopped_notifications`, `restore_contents`, `agent_commands`,
 `claude_code_hooks`, `codex_hooks`, `copilot_hooks`, `opencode_hooks`, `keep_running_on_quit`,
 `follow_working_directory`, `confirm_close`, `agent_task_command`,
 `agent_control`, `ai_command_agent`, `ai_command_include_last_failure`.

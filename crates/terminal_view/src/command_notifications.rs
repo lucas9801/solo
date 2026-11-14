@@ -1,7 +1,8 @@
 //! SOLO: desktop notifications from the terminal while Solo is in the
-//! background: when a long command finishes (a build, a test run), and when a
-//! program asks for one with OSC 9 / OSC 777 (e.g. Claude Code finishing a
-//! turn). Clicking a notification brings back the terminal it came from.
+//! background: when a long command finishes (a build, a test run), when a
+//! program asks for one with OSC 9 / OSC 777, when an agent needs you, and
+//! (if turned on) when an agent stops working. Each kind has its own setting.
+//! Clicking a notification brings back the terminal it came from.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -92,7 +93,8 @@ impl TerminalView {
     /// notification channel outside iTerm2); turn that into a notification.
     /// Other programs' bells stay bells.
     pub(crate) fn notify_agent_bell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !TerminalSettings::get_global(cx).program_notifications || window.is_window_active() {
+        if !TerminalSettings::get_global(cx).agent_input_notifications || window.is_window_active()
+        {
             return;
         }
         let extra = &TerminalSettings::get_global(cx).agent_commands;
@@ -119,7 +121,8 @@ impl TerminalView {
     /// An agent reported that it needs the user (a permission or a question),
     /// while Solo's window is in the background.
     pub(crate) fn notify_agent_needs_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !TerminalSettings::get_global(cx).program_notifications || window.is_window_active() {
+        if !TerminalSettings::get_global(cx).agent_input_notifications || window.is_window_active()
+        {
             return;
         }
         let Some((name, _)) = self.agent_status() else {
@@ -142,7 +145,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !TerminalSettings::get_global(cx).program_notifications
+        if !TerminalSettings::get_global(cx).agent_stopped_notifications
             || window.is_window_active()
             || worked_for < crate::agent_status::NOTIFY_AFTER_WORKING
         {
@@ -235,6 +238,139 @@ mod tests {
                 "✗ npm test (exit 1)".to_string(),
                 "Finished in 12s · x".to_string()
             )
+        );
+    }
+
+    async fn background_terminal(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        gpui::Entity<terminal::Terminal>,
+        gpui::Entity<TerminalView>,
+        &mut gpui::VisualTestContext,
+    ) {
+        use gpui::AppContext as _;
+        let (project, workspace) = crate::tests::init_test(cx).await;
+        let terminal = cx.new(|cx| {
+            terminal::TerminalBuilder::new_display_only(
+                Default::default(),
+                settings::AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                util::paths::PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal.clone(),
+                workspace.downgrade(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+        cx.update(|_, cx| cx.set_app_identity("Solo-Terminal-Test", "Solo"));
+        cx.deactivate_window();
+        cx.run_until_parked();
+        (terminal, view, cx)
+    }
+
+    fn update_terminal_settings(
+        cx: &mut gpui::VisualTestContext,
+        update: impl FnOnce(&mut settings::TerminalSettingsContent),
+    ) {
+        use gpui::UpdateGlobal as _;
+        cx.update(|_, cx| {
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    update(settings.terminal.get_or_insert_default())
+                });
+            })
+        });
+    }
+
+    fn agent_stopped(view: &gpui::Entity<TerminalView>, cx: &mut gpui::VisualTestContext) {
+        view.update_in(cx, |view, window, cx| {
+            view.set_agent_status_for_test("claude", crate::agent_status::AgentStatus::Finished);
+            view.notify_agent_stopped(Duration::from_secs(60), window, cx);
+        });
+    }
+
+    fn agent_needs_input(view: &gpui::Entity<TerminalView>, cx: &mut gpui::VisualTestContext) {
+        view.update_in(cx, |view, window, cx| {
+            view.set_agent_status_for_test("claude", crate::agent_status::AgentStatus::NeedsInput);
+            view.notify_agent_needs_input(window, cx);
+        });
+    }
+
+    fn shown_titles(cx: &mut gpui::VisualTestContext) -> Vec<String> {
+        cx.shown_system_notifications()
+            .into_iter()
+            .map(|notification| notification.title.to_string())
+            .collect()
+    }
+
+    #[gpui::test]
+    async fn test_agent_stopped_notification_is_off_by_default(cx: &mut gpui::TestAppContext) {
+        let (_terminal, view, cx) = background_terminal(cx).await;
+
+        agent_stopped(&view, cx);
+        assert!(shown_titles(cx).is_empty());
+
+        update_terminal_settings(cx, |terminal| {
+            terminal.agent_stopped_notifications = Some(true)
+        });
+        agent_stopped(&view, cx);
+        assert_eq!(shown_titles(cx), ["claude stopped working"]);
+    }
+
+    #[gpui::test]
+    async fn test_each_notification_kind_has_its_own_setting(cx: &mut gpui::TestAppContext) {
+        let (terminal, view, cx) = background_terminal(cx).await;
+        let program_notification = |cx: &mut gpui::VisualTestContext| {
+            terminal.update(cx, |terminal, cx| {
+                terminal.write_raw_output(b"\x1b]777;notify;Build;Done\x07", cx)
+            });
+            cx.run_until_parked();
+        };
+
+        // On by default, with "stopped working" off.
+        agent_needs_input(&view, cx);
+        program_notification(cx);
+        assert_eq!(shown_titles(cx), ["claude needs your input", "Build"]);
+
+        // Turning off programs' notifications leaves agents' alone.
+        update_terminal_settings(cx, |terminal| terminal.program_notifications = Some(false));
+        agent_needs_input(&view, cx);
+        program_notification(cx);
+        assert_eq!(
+            shown_titles(cx),
+            [
+                "claude needs your input",
+                "Build",
+                "claude needs your input"
+            ]
+        );
+
+        // And the other way around; turning on "stopped working" doesn't
+        // bring either back.
+        update_terminal_settings(cx, |terminal| {
+            terminal.program_notifications = Some(true);
+            terminal.agent_input_notifications = Some(false);
+            terminal.agent_stopped_notifications = Some(true);
+        });
+        agent_needs_input(&view, cx);
+        program_notification(cx);
+        assert_eq!(
+            shown_titles(cx),
+            [
+                "claude needs your input",
+                "Build",
+                "claude needs your input",
+                "Build"
+            ]
         );
     }
 }

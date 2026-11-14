@@ -290,11 +290,21 @@ pub struct TerminalSettingsContent {
     /// Default: 10
     pub notify_long_commands_after_seconds: Option<u64>,
     /// Whether programs in the terminal can show desktop notifications (with
-    /// OSC 9 or OSC 777) while Solo is in the background, e.g. Claude Code
-    /// when it finishes a turn.
+    /// OSC 9 or OSC 777) while Solo is in the background.
     ///
     /// Default: true
     pub program_notifications: Option<bool>,
+    /// Whether to show a desktop notification when an AI agent in the
+    /// terminal needs your input (a permission or a question, or it rang the
+    /// bell) while Solo is in the background.
+    ///
+    /// Default: true
+    pub agent_input_notifications: Option<bool>,
+    /// Whether to show a desktop notification when an AI agent in the
+    /// terminal stops working while Solo is in the background.
+    ///
+    /// Default: false
+    pub agent_stopped_notifications: Option<bool>,
     /// Whether terminals show their previous contents and command blocks
     /// again when Solo restarts. The contents are saved in Solo's data
     /// directory. Terminals are reopened either way.
@@ -389,7 +399,8 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         input_editor, compact_prompt, completions_as_you_type, ai_command_agent,
         ai_command_claude_model, ai_command_codex_model, ai_command_include_last_failure,
         open_links_on_click,
-        notify_long_commands_after_seconds, program_notifications, restore_contents,
+        notify_long_commands_after_seconds, program_notifications, agent_input_notifications,
+        agent_stopped_notifications, restore_contents,
         agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, opencode_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
         agent_task_command, agent_control, agent_usage_display,
     },

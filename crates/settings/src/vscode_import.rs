@@ -987,6 +987,8 @@ impl VsCodeSettings {
             open_links_on_click: None,
             notify_long_commands_after_seconds: None,
             program_notifications: None,
+            agent_input_notifications: None,
+            agent_stopped_notifications: None,
             restore_contents: None,
             agent_commands: None,
             claude_code_hooks: None,

@@ -284,6 +284,11 @@ impl TerminalView {
             .map(|(name, status)| (name.as_str(), *status))
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_agent_status_for_test(&mut self, name: &str, status: AgentStatus) {
+        self.agent_activity.status = Some((name.to_string(), status));
+    }
+
     /// The terminal printed something: if the agent did on its own, it's working.
     pub(crate) fn agent_output(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();

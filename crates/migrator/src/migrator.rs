@@ -260,6 +260,7 @@ pub fn migrate_settings(text: &str) -> Result<Option<String>> {
         MigrationType::Json(migrations::m_2026_09_29::move_copilot_enterprise_uri),
         // SOLO
         MigrationType::Json(migrations::m_2026_11_10::remove_terminal_open_changed_files),
+        MigrationType::Json(migrations::m_2026_11_15::split_terminal_agent_input_notifications),
     ];
     run_migrations(text, migrations)
 }
@@ -5463,6 +5464,37 @@ mod tests {
                     }
                 }
             "#}),
+        );
+    }
+
+    #[test]
+    fn test_split_terminal_agent_input_notifications_is_registered() {
+        assert_migrate_settings(
+            indoc! {r#"
+                {
+                    "terminal": {
+                        "program_notifications": false
+                    }
+                }
+            "#},
+            Some(indoc! {r#"
+                {
+                    "terminal": {
+                        "agent_input_notifications": false,
+                        "program_notifications": false
+                    }
+                }
+            "#}),
+        );
+        assert_migrate_settings(
+            indoc! {r#"
+                {
+                    "terminal": {
+                        "program_notifications": true
+                    }
+                }
+            "#},
+            None,
         );
     }
 }

@@ -2284,9 +2284,14 @@
     // seconds finishes while Solo is in the background. 0 turns it off.
     "notify_long_commands_after_seconds": 10,
     // Let programs in the terminal show desktop notifications (OSC 9 or
-    // OSC 777) while Solo is in the background, e.g. Claude Code when it
-    // finishes a turn.
+    // OSC 777) while Solo is in the background.
     "program_notifications": true,
+    // Show a desktop notification when an AI agent in the terminal needs your
+    // input (or rings the bell) while Solo is in the background.
+    "agent_input_notifications": true,
+    // Show a desktop notification when an AI agent in the terminal stops
+    // working while Solo is in the background.
+    "agent_stopped_notifications": false,
     // Show terminals' previous contents and command blocks again when Solo
     // restarts. The contents are saved in Solo's data directory. Off by
     // default: terminals are still reopened in their directories with their

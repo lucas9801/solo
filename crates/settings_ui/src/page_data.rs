@@ -8071,6 +8071,105 @@ fn terminal_page() -> SettingsPage {
         ]
     }
 
+    // SOLO: the terminal's desktop notifications, each kind on its own.
+    fn notifications_section() -> [SettingsPageItem; 5] {
+        [
+            SettingsPageItem::SectionHeader("Notifications"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Notify When Agent Stops",
+                description: "Show a desktop notification when an agent stops working while Solo is in the background.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("terminal.agent_stopped_notifications"),
+                    pick: |settings_content| {
+                        settings_content
+                            .terminal
+                            .as_ref()?
+                            .agent_stopped_notifications
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .terminal
+                            .get_or_insert_default()
+                            .agent_stopped_notifications = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Notify When Agent Needs Input",
+                description: "Show a desktop notification when an agent needs your input while Solo is in the background.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("terminal.agent_input_notifications"),
+                    pick: |settings_content| {
+                        settings_content
+                            .terminal
+                            .as_ref()?
+                            .agent_input_notifications
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .terminal
+                            .get_or_insert_default()
+                            .agent_input_notifications = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Program Notifications",
+                description: "Show desktop notifications that programs in the terminal send while Solo is in the background.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("terminal.program_notifications"),
+                    pick: |settings_content| {
+                        settings_content
+                            .terminal
+                            .as_ref()?
+                            .program_notifications
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .terminal
+                            .get_or_insert_default()
+                            .program_notifications = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Notify When Long Commands Finish",
+                description: "Notify when a command that ran at least this many seconds finishes while Solo is in the background. 0 turns it off.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("terminal.notify_long_commands_after_seconds"),
+                    pick: |settings_content| {
+                        settings_content
+                            .terminal
+                            .as_ref()?
+                            .notify_long_commands_after_seconds
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .terminal
+                            .get_or_insert_default()
+                            .notify_long_commands_after_seconds = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
     fn layout_settings_section() -> [SettingsPageItem; 3] {
         [
             SettingsPageItem::SectionHeader("Layout Settings"),
@@ -8242,6 +8341,7 @@ fn terminal_page() -> SettingsPage {
             font_section(),
             display_settings_section(),
             behavior_settings_section(),
+            notifications_section(),
             layout_settings_section(),
             advanced_settings_section(),
             toolbar_section(),

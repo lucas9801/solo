@@ -395,3 +395,10 @@ pub(crate) mod m_2026_11_10 {
 
     pub(crate) use settings::remove_terminal_open_changed_files;
 }
+
+// SOLO
+pub(crate) mod m_2026_11_15 {
+    mod settings;
+
+    pub(crate) use settings::split_terminal_agent_input_notifications;
+}
