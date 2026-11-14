@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Solo's MSIX manifest (R12 trial: packaging Solo for the Microsoft Store).
+  script\package-solo-msix.ps1 fills in the @...@ placeholders and the
+  @UNVIRTUALIZED_*@ blocks. Solo runs as a full-trust desktop app
+  (runFullTrust); the execution aliases put solo, solo-cli and
+  solo-agent-hook in %LOCALAPPDATA%\Microsoft\WindowsApps, which is on PATH.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap5 uap10 desktop4 desktop6 rescap">
+
+  <Identity
+    Name="@IDENTITY_NAME@"
+    Publisher="@PUBLISHER@"
+    Version="@VERSION@"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>@DISPLAY_NAME@</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_DISPLAY_NAME@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>A terminal-first code editor for coding agents.</Description>
+<!--@UNVIRTUALIZED_PROPERTIES@-->
+  </Properties>
+
+  <Dependencies>
+    <!-- uap10:Parameters needs Windows 10 2004. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+    <Resource Language="zh-cn" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Solo" Executable="solo.exe" EntryPoint="Windows.FullTrustApplication"@SOLO_PARAMETERS@>
+      <uap:VisualElements
+        DisplayName="@DISPLAY_NAME@"
+        Description="A terminal-first code editor for coding agents."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias">
+          <uap5:AppExecutionAlias>
+            <uap5:ExecutionAlias Alias="solo@ALIAS_SUFFIX@.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+        <!-- solo:// links (settings, shared skills), as script\solo.iss registers them. -->
+        <uap3:Extension Category="windows.protocol">
+          <uap3:Protocol Name="@PROTOCOL@" Parameters="@PROTOCOL_PARAMETERS@">
+            <uap:DisplayName>@DISPLAY_NAME@</uap:DisplayName>
+          </uap3:Protocol>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+
+    <!-- The command line (SOLO_CLI in Solo's terminals). -->
+    <Application Id="SoloCli" Executable="solo-cli.exe" EntryPoint="Windows.FullTrustApplication" desktop4:SupportsMultipleInstances="true">
+      <uap:VisualElements
+        DisplayName="Solo CLI"
+        Description="Solo's command line."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        AppListEntry="none" />
+      <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias">
+          <uap5:AppExecutionAlias desktop4:Subsystem="console">
+            <uap5:ExecutionAlias Alias="solo-cli@ALIAS_SUFFIX@.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+
+    <!-- What agents' hooks run to report their status. -->
+    <Application Id="SoloAgentHook" Executable="solo-agent-hook.exe" EntryPoint="Windows.FullTrustApplication" desktop4:SupportsMultipleInstances="true">
+      <uap:VisualElements
+        DisplayName="Solo agent hook"
+        Description="Reports coding agents' status to Solo."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        AppListEntry="none" />
+      <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias">
+          <uap5:AppExecutionAlias desktop4:Subsystem="console">
+            <uap5:ExecutionAlias Alias="solo-agent-hook@ALIAS_SUFFIX@.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+<!--@UNVIRTUALIZED_CAPABILITY@-->
+  </Capabilities>
+</Package>
