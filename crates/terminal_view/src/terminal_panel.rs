@@ -1964,6 +1964,8 @@ impl RenderOnce for InlineAssistTabBarButton {
 mod tests {
     use std::num::NonZero;
 
+    use picker::PickerDelegate as _;
+
     use super::*;
     use crate::persistence::{SerializedPane, SerializedPaneGroup};
     use gpui::{Modifiers, TestAppContext, UpdateGlobal as _, VisualTestContext};
@@ -3663,26 +3665,18 @@ mod tests {
         let workspace = window_handle
             .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
             .unwrap();
-        let choose_from_menu = |entries_down: usize, cx: &mut VisualTestContext| {
+        // The menu's entries, as it dispatches them from the terminal pane.
+        // (Keys sent in a test don't reach the popover menu itself.)
+        let choose = |action: Box<dyn gpui::Action>, cx: &mut VisualTestContext| {
             pane.update_in(cx, |pane, window, cx| {
                 window.focus(&pane.focus_handle(cx), cx)
             });
             cx.run_until_parked();
-            cx.update(|window, cx| {
-                let _ = window.draw(cx);
-            });
-            let handle = pane.read_with(cx, |pane, _| pane.new_item_context_menu_handle.clone());
-            cx.update(|window, cx| handle.show(window, cx));
-            cx.run_until_parked();
-            assert!(handle.is_deployed(), "the + menu should open");
-            for _ in 0..entries_down {
-                cx.dispatch_action(menu::SelectNext);
-            }
-            cx.dispatch_action(menu::Confirm);
+            cx.update(|window, cx| window.dispatch_action(action, cx));
             cx.run_until_parked();
         };
 
-        choose_from_menu(2, cx);
+        choose(zed_actions::agent_task::NewAgentTask.boxed_clone(), cx);
         workspace.update_in(cx, |workspace, window, cx| {
             assert!(
                 workspace
@@ -3693,7 +3687,7 @@ mod tests {
             workspace.hide_modal(window, cx);
         });
 
-        choose_from_menu(3, cx);
+        choose(crate::run_workflow::RunWorkflow.boxed_clone(), cx);
         let picker = workspace.read_with(cx, |workspace, cx| {
             workspace
                 .active_modal::<crate::run_workflow::RunWorkflowModal>(cx)

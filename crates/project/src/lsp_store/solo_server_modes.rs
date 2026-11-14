@@ -452,7 +452,7 @@ mod tests {
         );
 
         // One server changed on its own makes them differ again.
-        modes.set(a.clone(), json.clone(), AnalysisMode::Full);
+        modes.set(a, json, AnalysisMode::Full);
         assert_eq!(modes.common_mode(&running, &roots, default), None);
 
         // Without servers, the project's mode or the default.
