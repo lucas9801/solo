@@ -95,6 +95,14 @@ Fields at the end can be left out along with their `;`. For example, with
 printf '\033]6973;agent;nonce=%s;working;1;;my-agent\a' "$SOLO_AGENT_TOKEN"
 ```
 
+An `edit` report names a file the agent edited, in place of the directory:
+`ESC ] 6973 ; agent ; nonce=<nonce> ; edit ; <order> ; <session id> ; <agent> ; <file> BEL`,
+the file absolute and encoded like the directory. Once a terminal's agent has
+sent one, its turns are only the files it reported editing; the rest of what
+changed in the folder during a turn is listed apart, and rejecting the turn
+leaves it alone. Solo's hook sends one after each of Claude Code's Edit,
+Write, MultiEdit and NotebookEdit tools.
+
 Solo's own hook for Claude Code, Codex and Copilot CLI sends
 `ESC ] 6973 ; agent ; nonce=<nonce> ; <kind> ; <ms since the epoch> ; <session id> ; <agent> ; <directory> BEL`,
 with the directory from the hook's `cwd`, which is the same format.

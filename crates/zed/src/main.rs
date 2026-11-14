@@ -1027,7 +1027,46 @@ fn main() {
     });
 }
 
+/// SOLO: Asks the user before doing what links (any web page can open
+/// `solo://` ones) ask for that reaches outside Solo: opening files,
+/// connecting to a host, cloning or opening a repository (R3 M13).
+fn confirm_link_request(mut request: OpenRequest, app_state: Arc<AppState>, cx: &mut App) {
+    let detail = std::mem::take(&mut request.link_requests)
+        .iter()
+        .map(|link_request| format!("• {}", link_request.describe()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    cx.spawn(async move |cx| {
+        let multi_workspace =
+            workspace::get_any_active_multi_workspace(app_state.clone(), cx.clone()).await?;
+        let answer = multi_workspace.update(cx, |_, window, cx| {
+            window.prompt(
+                gpui::PromptLevel::Warning,
+                util::i18n::tr(
+                    "A link asks Solo to do this. Only allow it if you opened the link yourself and trust where it came from.",
+                    "一个链接请求 Solo 做下面的事。只有链接是你自己打开、并且信任它的来源时，才允许。",
+                ),
+                Some(&detail),
+                &[
+                    util::i18n::tr("Allow", "允许"),
+                    util::i18n::tr("Cancel", "取消"),
+                ],
+                cx,
+            )
+        })?;
+        if answer.await == Ok(0) {
+            cx.update(|cx| handle_open_request(request, app_state, cx));
+        }
+        anyhow::Ok(())
+    })
+    .detach_and_log_err(cx);
+}
+
 fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut App) {
+    if !request.link_requests.is_empty() {
+        confirm_link_request(request, app_state, cx);
+        return;
+    }
     if let Some(kind) = request.kind {
         match kind {
             OpenRequestKind::CliConnection(connection) => {

@@ -143,7 +143,19 @@ Snapshots are kept in Solo's data folder. They never touch your branch, HEAD,
 index, stash list or git object database, and ignored files aren't included.
 Folders on network drives aren't snapshotted. Rolling back leaves files inside
 linked folders (junctions, symlinks) alone, since they may be outside the
-project, and stops if files changed after the confirmation was shown.
+project, and stops if files changed after the confirmation was shown. If
+rolling back (or undoing it) fails partway, say because another program has a
+file open, the page says so and keeps **Undo Rollback**: close that program
+and click it to put every file back as it was.
+
+A turn is only the files the agent reported editing, when it reports them
+(Claude Code does, through Solo's hook for its Edit and Write tools): files
+you or another agent in the same repository changed meanwhile aren't in it,
+and **Reject All**, which says how many files it puts back, leaves them alone.
+The page lists the other files that changed during the turn, including what
+the agent's own commands changed. For an agent that doesn't report its edits,
+the turn is everything that changed in the folder, and the page says some of
+it may not be the agent's.
 
 When the folder can't be snapshotted (say, it isn't a git repository and has
 more than 20000 files), Solo notes the files in the project that change during
@@ -438,7 +450,10 @@ To treat another program as an agent:
   `solo://settings/terminal.font_size` (jumps to that setting) or a shared
   skill link open in Solo. Uninstalling removes it. Solo doesn't
   register `zed://`, which stays Zed's, but still opens such links passed to
-  it.
+  it. Any web page can open such a link, so a link that opens a file,
+  connects to an SSH host, or clones or opens a repository
+  (`solo://file/...`, `solo://ssh/...`, `solo://git/...`) first asks you,
+  naming the file, host or repository.
 - **Terminal hosts:** each terminal's shell runs in its own
   `solo-terminal-host.exe`, started from a copy in
   `%LOCALAPPDATA%\Solo\terminal-host` (so updates can replace Solo's files

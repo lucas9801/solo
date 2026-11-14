@@ -711,6 +711,9 @@ pub enum Event {
     /// SOLO: an AI agent's hook reported what the agent is doing (see
     /// [`shell_integration::integrate_claude_code`]).
     AgentHook(shell_integration::AgentHook),
+    /// SOLO: an AI agent's hook reported the agent edited this file (see
+    /// [`shell_integration::parse_agent_edit`]).
+    AgentEditedFile(PathBuf),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1971,6 +1974,10 @@ impl Terminal {
                     log::debug!("agent report without this terminal's nonce, ignored");
                     return;
                 };
+                if let Some(path) = shell_integration::parse_agent_edit(params) {
+                    cx.emit(Event::AgentEditedFile(path));
+                    return;
+                }
                 match shell_integration::AgentHook::parse(params) {
                     Some(hook) => {
                         log::debug!("agent hook {hook:?}");

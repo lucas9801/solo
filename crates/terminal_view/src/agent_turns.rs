@@ -33,7 +33,7 @@ use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
 use util::ResultExt as _;
 use workspace::{Workspace, item::ItemEvent};
 
-use crate::{AgentTurnEvent, TerminalView, terminal_panel::TerminalPanel};
+use crate::{AgentTurnEvent, TerminalView, agent_status::AgentEditedFile, terminal_panel::TerminalPanel};
 use diagnostics::{DiagnosticsBefore, TurnDiagnostics};
 pub(crate) use review::AgentTurnReview;
 use snapshot::{ChangedFile, FileChange, SnapshotStore, SnapshotUnavailable, TreeId};
@@ -96,6 +96,13 @@ pub(crate) fn init(cx: &mut App) {
             }
         })
         .detach();
+        // SOLO: the files the agent says it edited (R3 M5).
+        cx.subscribe_self(|_: &mut TerminalView, event: &AgentEditedFile, cx| {
+            let terminal_id = cx.entity_id();
+            let path = event.0.clone();
+            AgentTurns::global(cx).update(cx, |turns, _| turns.file_edited(terminal_id, path));
+        })
+        .detach();
     })
     .detach();
 
@@ -121,6 +128,18 @@ pub(crate) struct AgentTurn {
     /// ones made since.
     pub after: TreeId,
     pub changed: Vec<ChangedFile>,
+    /// SOLO: Whether `changed` are the files the agent's hooks said it
+    /// edited. If not (it doesn't report them), they're everything that
+    /// changed in the work tree during the turn, some maybe by the user or
+    /// another agent (R3 M5).
+    pub attributed: bool,
+    /// SOLO: When `attributed`, the other files that changed in the work
+    /// tree during the turn: by the agent's commands, the user or another
+    /// agent. Rejecting the turn leaves them alone.
+    pub others: Vec<ChangedFile>,
+    /// SOLO: Files the agent edited before the turn's first snapshot was
+    /// taken: what it changed in them may show only in part.
+    pub edited_before_snapshot: Vec<PathBuf>,
     /// What the turn did to the language servers' diagnostics.
     pub diagnostics: TurnDiagnostics,
 }
@@ -154,6 +173,10 @@ struct PendingTurn {
     project: WeakEntity<project::Project>,
     diagnostics_before: DiagnosticsBefore,
     snapshot: Shared<BoxFuture<'static, TurnSnapshot>>,
+    /// SOLO: The files the agent's hooks said it edited during the turn.
+    edited: Vec<PathBuf>,
+    /// SOLO: Those it said it edited before the first snapshot was taken.
+    edited_before_snapshot: Vec<PathBuf>,
 }
 
 /// The files in a turn's directory the project saw change since the turn
@@ -187,6 +210,9 @@ struct TerminalTurns {
     offer_last_turn: bool,
     /// Stores by directory, which keep their index between snapshots.
     stores: HashMap<PathBuf, Arc<SnapshotStore>>,
+    /// SOLO: Whether the agent reports the files it edits, so its turns
+    /// are only those (R3 M5).
+    reports_edits: bool,
     _end_task: Option<Task<()>>,
 }
 
@@ -401,6 +427,8 @@ impl AgentTurns {
             project,
             diagnostics_before,
             snapshot: snapshot.clone(),
+            edited: Vec::new(),
+            edited_before_snapshot: Vec::new(),
         });
         // Keep the store for the next turn once it's open.
         cx.spawn(async move |this, cx| {
@@ -416,14 +444,30 @@ impl AgentTurns {
         .detach();
     }
 
+    /// SOLO: The terminal's agent says it edited `path` (R3 M5).
+    fn file_edited(&mut self, terminal: EntityId, path: PathBuf) {
+        let terminal = self.terminals.entry(terminal).or_default();
+        terminal.reports_edits = true;
+        let Some(pending) = terminal.pending.as_mut() else {
+            return;
+        };
+        if pending.snapshot.peek().is_none() && !pending.edited_before_snapshot.contains(&path) {
+            pending.edited_before_snapshot.push(path.clone());
+        }
+        if !pending.edited.contains(&path) {
+            pending.edited.push(path);
+        }
+    }
+
     fn end_turn(&mut self, terminal_view: Entity<TerminalView>, cx: &mut Context<Self>) {
         let terminal_id = terminal_view.entity_id();
         let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
             return;
         };
-        let Some(pending) = terminal.pending.take() else {
+        let Some(mut pending) = terminal.pending.take() else {
             return;
         };
+        let attributed = terminal.reports_edits;
         // Earlier turns' watches belong to end tasks this one replaces.
         terminal
             .watches
@@ -457,20 +501,34 @@ impl AgentTurns {
             let started_at = pending.started_at;
             let project = pending.project;
             let diagnostics_before = pending.diagnostics_before;
+            let edited = std::mem::take(&mut pending.edited);
             let changes = cx
                 .background_spawn({
                     let started = started.clone();
                     async move {
                         let after = started.store.snapshot()?;
                         let changed = started.store.changed_files(&started.before, &after)?;
+                        // SOLO: an agent that reports its edits changed only
+                        // those files; the rest are someone else's, or its
+                        // commands' (R3 M5).
+                        let (changed, others) = if attributed {
+                            let edited: Vec<PathBuf> =
+                                edited.iter().map(|path| comparable_path(path)).collect();
+                            changed.into_iter().partition(|file| {
+                                let abs_path = comparable_path(&started.store.abs_path(&file.path));
+                                edited.iter().any(|edited| is_same_path(edited, &abs_path))
+                            })
+                        } else {
+                            (changed, Vec::new())
+                        };
                         let prompt = prompt_source
                             .and_then(|directory| last_claude_prompt(&directory, started_at));
-                        anyhow::Ok((after, changed, prompt))
+                        anyhow::Ok((after, changed, others, prompt))
                     }
                 })
                 .await
                 .log_err();
-            let Some((after, changed, prompt)) = changes else {
+            let Some((after, changed, others, prompt)) = changes else {
                 return;
             };
             // The files to have the language servers check: those still there.
@@ -485,7 +543,7 @@ impl AgentTurns {
                     return false;
                 };
                 terminal.offer_last_turn = !changed.is_empty();
-                let recorded = !changed.is_empty();
+                let recorded = !changed.is_empty() || !others.is_empty();
                 if recorded {
                     terminal.turns.push_back(AgentTurn {
                         number: pending.number,
@@ -496,6 +554,9 @@ impl AgentTurns {
                         before: started.before.clone(),
                         after,
                         changed,
+                        attributed,
+                        others,
+                        edited_before_snapshot: pending.edited_before_snapshot,
                         diagnostics: TurnDiagnostics::Checking,
                     });
                     if terminal.turns.len() > MAX_TURNS {
@@ -570,6 +631,35 @@ impl AgentTurns {
             turns.offer_last_turn = false;
             cx.notify();
         }
+    }
+}
+
+/// SOLO: `path` as the file system spells it (whatever the case, or 8.3
+/// names, it was given in), to compare; a file that's gone by its directory.
+fn comparable_path(path: &Path) -> PathBuf {
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return path;
+    }
+    match (path.parent().map(std::fs::canonicalize), path.file_name()) {
+        (Some(Ok(parent)), Some(name)) => parent.join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// SOLO: Whether two absolute paths name the same file, as reported (by an
+/// agent) and as built from a snapshot: on Windows, whatever the case and
+/// separators.
+fn is_same_path(left: &Path, right: &Path) -> bool {
+    if cfg!(windows) {
+        let key = |path: &Path| {
+            let text = path.to_string_lossy().replace('/', "\\").to_lowercase();
+            text.strip_prefix(r"\\?\")
+                .map(str::to_string)
+                .unwrap_or(text)
+        };
+        key(left) == key(right)
+    } else {
+        left == right
     }
 }
 

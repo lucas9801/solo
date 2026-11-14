@@ -665,7 +665,7 @@ fn claude_code_settings(hook: &ClaudeHook) -> serde_json::Value {
         }
         group
     };
-    serde_json::json!({
+    let mut settings = serde_json::json!({
         "hooks": {
             "SessionStart": [group(None, AgentHookKind::SessionStarted)],
             "UserPromptSubmit": [group(None, AgentHookKind::PromptSubmitted)],
@@ -684,7 +684,43 @@ fn claude_code_settings(hook: &ClaudeHook) -> serde_json::Value {
             "Stop": [group(None, AgentHookKind::Stopped)],
             "StopFailure": [group(None, AgentHookKind::Stopped)],
         }
-    })
+    });
+    // SOLO: the files Claude edits, so its turns are only what it changed,
+    // not what others changed in the folder meanwhile (R3 M5). Only the
+    // program reads the file from the hook's input. Not in the background:
+    // the report must reach the terminal before the turn's `Stop`.
+    if let ClaudeHook::Executable(path) = hook {
+        settings["hooks"]["PostToolUse"] = serde_json::json!([{
+            "matcher": CLAUDE_EDIT_TOOLS,
+            "hooks": [{
+                "type": "command",
+                "command": path,
+                "args": [AGENT_EDIT_REPORT],
+            }],
+        }]);
+    }
+    settings
+}
+
+/// SOLO: Claude Code's tools that edit files, whose `tool_input` names the
+/// file (`file_path`, or `notebook_path`).
+const CLAUDE_EDIT_TOOLS: &str = "Edit|Write|MultiEdit|NotebookEdit";
+
+/// SOLO: The kind of an agent report that names a file the agent edited:
+/// `OSC 6973 ; agent ; nonce=<nonce> ; edit ; <order> ; <session id> ;
+/// <agent> ; <path>`, the path absolute and percent-encoded.
+pub const AGENT_EDIT_REPORT: &str = "edit";
+
+/// SOLO: The file an agent report (the parameters after its nonce) says the
+/// agent edited, if it's an edit report.
+pub fn parse_agent_edit(params: &[String]) -> Option<PathBuf> {
+    let (kind, rest) = params.split_first()?;
+    if kind.trim() != AGENT_EDIT_REPORT || rest.len() < 4 {
+        return None;
+    }
+    percent_decode(&rest[3..].join(";"))
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && !is_network_path(path))
 }
 
 /// SOLO: What an AI agent's hook reported it's doing.
@@ -1730,6 +1766,49 @@ mod tests {
         }
         // A path TOML can't hold in a literal string.
         assert_eq!(codex_hook_args(true, r"C:\a''b\solo-agent-hook.exe"), None);
+    }
+
+    /// SOLO: Claude reports the files it edits (R3 M5).
+    #[test]
+    fn claude_code_reports_the_files_it_edits() {
+        let settings = claude_code_settings(&ClaudeHook::Executable(
+            r"C:\Solo\solo-agent-hook.exe".into(),
+        ));
+        let group = &settings["hooks"]["PostToolUse"][0];
+        assert_eq!(group["matcher"], "Edit|Write|MultiEdit|NotebookEdit");
+        assert_eq!(group["hooks"][0]["args"], serde_json::json!(["edit"]));
+        // Before the turn's `Stop`.
+        assert!(group["hooks"][0].get("async").is_none());
+        // The scripts can't read the file from the input.
+        let settings = claude_code_settings(&ClaudeHook::Sh("/tmp/claude-hook.sh".into()));
+        assert!(settings["hooks"].get("PostToolUse").is_none());
+
+        let params = |params: &[&str]| -> Vec<String> {
+            params.iter().map(|param| param.to_string()).collect()
+        };
+        let path = if cfg!(windows) {
+            r"C:\repo\a;b.rs"
+        } else {
+            "/repo/a;b.rs"
+        };
+        let encoded = path.replace(';', "%3B");
+        assert_eq!(
+            parse_agent_edit(&params(&["edit", "1", "s", "", &encoded])),
+            Some(PathBuf::from(path))
+        );
+        // Not an edit, relative, or on the network.
+        assert_eq!(
+            parse_agent_edit(&params(&["prompt", "1", "s", "", &encoded])),
+            None
+        );
+        assert_eq!(
+            parse_agent_edit(&params(&["edit", "1", "s", "", "a.rs"])),
+            None
+        );
+        assert_eq!(
+            parse_agent_edit(&params(&["edit", "1", "s", "", r"\\host\share\a.rs"])),
+            None
+        );
     }
 
     #[test]

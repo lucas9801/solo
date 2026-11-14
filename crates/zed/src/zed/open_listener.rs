@@ -44,6 +44,45 @@ pub struct OpenRequest {
     pub join_channel: Option<u64>,
     pub remote_connection: Option<RemoteConnectionOptions>,
     pub open_behavior: Option<cli::OpenBehavior>,
+    /// SOLO: What links in the request ask for that the user confirms
+    /// first (R3 M13).
+    pub link_requests: Vec<LinkRequest>,
+}
+
+/// SOLO: Something a link (`solo://...`, which any web page can open) asks
+/// Solo to do that reaches outside it: opening a file, connecting to a host,
+/// or cloning a repository. Solo asks the user before doing it (R3 M13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkRequest {
+    OpenPath(String),
+    Ssh { destination: String, path: String },
+    GitClone(String),
+    GitCommit { repository: String, sha: String },
+}
+
+impl LinkRequest {
+    /// What the link asks for, to show the user.
+    pub fn describe(&self) -> String {
+        let chinese = util::i18n::is_chinese();
+        match self {
+            Self::OpenPath(path) if chinese => format!("打开 {path}"),
+            Self::OpenPath(path) => format!("Open {path}"),
+            Self::Ssh { destination, path } if chinese => {
+                format!("通过 SSH 连接主机 {destination}（会在那里安装 Solo 的远程服务），并打开 {path}")
+            }
+            Self::Ssh { destination, path } => format!(
+                "Connect to the host {destination} over SSH (installing Solo's remote server there) and open {path}"
+            ),
+            Self::GitClone(repository) if chinese => format!("克隆仓库 {repository}"),
+            Self::GitClone(repository) => format!("Clone the repository {repository}"),
+            Self::GitCommit { repository, sha } if chinese => {
+                format!("打开仓库 {repository}，并显示提交 {sha}")
+            }
+            Self::GitCommit { repository, sha } => {
+                format!("Open the repository {repository} and show the commit {sha}")
+            }
+        }
+    }
 }
 
 pub enum OpenRequestKind {
@@ -168,10 +207,22 @@ impl OpenRequest {
             } else if let Some(file) = url.strip_prefix("file://") {
                 this.parse_file_path(file)
             } else if let Some(file) = url.strip_prefix("zed://file") {
-                this.parse_file_path(file)
+                this.parse_file_path(file);
+                // SOLO: links ask first (R3 M13).
+                if let Some(path) = this.open_paths.last() {
+                    this.link_requests
+                        .push(LinkRequest::OpenPath(path.clone()));
+                }
             } else if let Some(file) = url.strip_prefix("zed://ssh") {
                 let ssh_url = "ssh:/".to_string() + file;
-                this.parse_ssh_file_path(&ssh_url, cx)?
+                this.parse_ssh_file_path(&ssh_url, cx)?;
+                // SOLO: links ask first (R3 M13).
+                if let Some(RemoteConnectionOptions::Ssh(options)) = &this.remote_connection {
+                    this.link_requests.push(LinkRequest::Ssh {
+                        destination: options.connection_string(),
+                        path: this.open_paths.last().cloned().unwrap_or_default(),
+                    });
+                }
             } else if let Some(extension_id) = url.strip_prefix("zed://extension/") {
                 this.kind = Some(OpenRequestKind::Extension {
                     extension_id: extension_id.to_string(),
@@ -194,9 +245,21 @@ impl OpenRequest {
                     setting_path: Some(setting_path.to_string()),
                 });
             } else if let Some(clone_path) = url.strip_prefix("zed://git/clone") {
-                this.parse_git_clone_url(clone_path)?
+                this.parse_git_clone_url(clone_path)?;
+                // SOLO: links ask first (R3 M13).
+                if let Some(OpenRequestKind::GitClone { repo_url }) = &this.kind {
+                    this.link_requests
+                        .push(LinkRequest::GitClone(repo_url.to_string()));
+                }
             } else if let Some(commit_path) = url.strip_prefix("zed://git/commit/") {
-                this.parse_git_commit_url(commit_path)?
+                this.parse_git_commit_url(commit_path)?;
+                // SOLO: links ask first (R3 M13).
+                if let Some(OpenRequestKind::GitCommit { sha }) = &this.kind {
+                    this.link_requests.push(LinkRequest::GitCommit {
+                        repository: this.open_paths.last().cloned().unwrap_or_default(),
+                        sha: sha.clone(),
+                    });
+                }
             } else if url.starts_with("ssh://") {
                 this.parse_ssh_file_path(&url, cx)?
             } else if let Some(zed_link) = parse_zed_link(&url, cx) {
@@ -3089,6 +3152,113 @@ mod tests {
 
         assert_eq!(status, 0);
         assert!(!prompt_shown, "no prompt should be shown with -n flag");
+        assert_eq!(cx.windows().len(), 2);
+    }
+
+    /// SOLO: what `solo://` links ask for that reaches outside Solo (R3 M13).
+    #[gpui::test]
+    fn test_links_list_what_they_ask_for(cx: &mut TestAppContext) {
+        let _app_state = init_test(cx);
+        let parse = |url: &str, cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                OpenRequest::parse(
+                    RawOpenRequest {
+                        urls: vec![url.into()],
+                        ..Default::default()
+                    },
+                    cx,
+                )
+                .unwrap()
+            })
+        };
+
+        assert_eq!(
+            parse("solo://file/tmp/evil.txt", cx).link_requests,
+            vec![LinkRequest::OpenPath("/tmp/evil.txt".into())]
+        );
+        assert_eq!(
+            parse("solo://ssh/me@example.com:2222/srv/app", cx).link_requests,
+            vec![LinkRequest::Ssh {
+                destination: "me@example.com:2222".into(),
+                path: "/srv/app".into(),
+            }]
+        );
+        assert_eq!(
+            parse(
+                "solo://git/clone?repo=https%3A%2F%2Fexample.com%2Fx.git",
+                cx
+            )
+            .link_requests,
+            vec![LinkRequest::GitClone("https://example.com/x.git".into())]
+        );
+        assert_eq!(
+            parse("solo://git/commit/abc123?repo=path/to/repo", cx).link_requests,
+            vec![LinkRequest::GitCommit {
+                repository: "path/to/repo".into(),
+                sha: "abc123".into(),
+            }]
+        );
+        // `zed://` links are taken too.
+        assert_eq!(
+            parse("zed://file/tmp/evil.txt", cx).link_requests.len(),
+            1
+        );
+
+        // Paths and `ssh://` given on the command line, and Solo's own links
+        // that stay inside it, don't ask.
+        for url in [
+            "file:///tmp/file.txt",
+            "ssh://me@example.com/srv/app",
+            "solo://settings/terminal.font_size",
+            "solo://agent",
+        ] {
+            assert!(parse(url, cx).link_requests.is_empty(), "{url}");
+        }
+    }
+
+    /// SOLO: a link a web page opens doesn't open the file until the user
+    /// allows it (R3 M13).
+    #[gpui::test]
+    async fn test_e2e_file_link_asks_first(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/project"), json!({ "file.txt": "content" }))
+            .await;
+        open_workspace_file(path!("/project"), Default::default(), app_state.clone(), cx).await;
+        assert_eq!(cx.windows().len(), 1);
+
+        let link = format!(
+            "solo://file{}",
+            urlencoding::encode(path!("/project/file.txt")).into_owned()
+        );
+        let open_link = |cx: &mut TestAppContext| {
+            let (status, _) = run_cli_with_zed_handler(
+                cx,
+                app_state.clone(),
+                make_cli_url_open_request(vec![link.clone()], cli::OpenBehavior::AlwaysNew),
+                None,
+            );
+            assert_eq!(status, 0);
+            cx.run_until_parked();
+        };
+
+        // Cancelled: nothing opens.
+        open_link(cx);
+        let (_, detail) = cx.pending_prompt().expect("the link asks first");
+        assert!(detail.contains(path!("/project/file.txt")), "{detail}");
+        assert_eq!(cx.windows().len(), 1);
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        assert_eq!(cx.windows().len(), 1);
+
+        // Allowed: it opens.
+        open_link(cx);
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("Allow");
+        cx.run_until_parked();
         assert_eq!(cx.windows().len(), 2);
     }
 

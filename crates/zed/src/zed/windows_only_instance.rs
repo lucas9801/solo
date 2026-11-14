@@ -126,12 +126,7 @@ fn send_args_to_instance(args: &Args) -> anyhow::Result<()> {
             match std::fs::canonicalize(&path) {
                 Ok(path) => paths.push(path.to_string_lossy().into_owned()),
                 Err(error) => {
-                    if path.starts_with("zed://")
-                        || path.starts_with("http://")
-                        || path.starts_with("https://")
-                        || path.starts_with("file://")
-                        || path.starts_with("ssh://")
-                    {
+                    if is_url_arg(path) {
                         urls.push(path.clone());
                     } else {
                         log::error!("error parsing path argument: {}", error);
@@ -221,4 +216,25 @@ fn write_message_to_instance_pipe(message: &[u8]) -> anyhow::Result<()> {
         CloseHandle(pipe)?;
     }
     Ok(())
+}
+
+/// Whether an argument that isn't a path is a link to pass on to the running
+/// Solo. SOLO: `solo://` links too (a web page opens them by running
+/// `solo.exe <link>`), or they're dropped while Solo runs.
+fn is_url_arg(arg: &str) -> bool {
+    ["zed://", "solo://", "http://", "https://", "file://", "ssh://"]
+        .iter()
+        .any(|prefix| arg.starts_with(prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_url_arg;
+
+    #[test]
+    fn test_solo_links_are_passed_on_to_the_running_solo() {
+        assert!(is_url_arg("solo://git/clone?repo=https://example.com/x.git"));
+        assert!(is_url_arg("zed://settings"));
+        assert!(!is_url_arg("not-a-link"));
+    }
 }

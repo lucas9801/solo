@@ -50,6 +50,13 @@ pub enum AgentTurnEvent {
 
 impl EventEmitter<AgentTurnEvent> for TerminalView {}
 
+/// SOLO: The agent's hook reported it edited this file, so its turn is only
+/// what it changed, not what others changed meanwhile (R3 M5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentEditedFile(pub std::path::PathBuf);
+
+impl EventEmitter<AgentEditedFile> for TerminalView {}
+
 /// Output this soon after input is taken as the program answering it.
 const ECHO_WINDOW: Duration = Duration::from_millis(400);
 /// An agent that printed nothing of its own for this long has stopped working.

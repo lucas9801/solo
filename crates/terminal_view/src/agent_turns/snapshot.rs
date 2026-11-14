@@ -130,6 +130,23 @@ impl std::fmt::Display for WorkTreeChanged {
 
 impl std::error::Error for WorkTreeChanged {}
 
+/// SOLO: Restoring failed after it started changing files (one was in use,
+/// say): some files are restored and some aren't. Restoring `undo` puts the
+/// work tree back as it was before.
+#[derive(Debug)]
+pub(crate) struct PartlyRestored {
+    pub undo: TreeId,
+    pub error: anyhow::Error,
+}
+
+impl std::fmt::Display for PartlyRestored {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.error)
+    }
+}
+
+impl std::error::Error for PartlyRestored {}
+
 #[derive(Debug)]
 pub(crate) struct Restored {
     /// The state before restoring, to undo it.
@@ -357,7 +374,8 @@ impl SnapshotStore {
 
     /// Puts the work tree back as it was in `target`: changed files get their
     /// contents back, and files that weren't there are removed. The current
-    /// state is snapshotted first, to undo it.
+    /// state is snapshotted first, to undo it. If it fails partway, the
+    /// error is [`PartlyRestored`], with the state to undo it to.
     pub(crate) fn restore(&self, target: &str) -> Result<Restored> {
         self.restore_checked(target, None)
     }
@@ -403,6 +421,7 @@ impl SnapshotStore {
             .filter(|file| file.change != FileChange::Added && !is_skipped(file))
             .map(|file| file.path.as_str())
             .collect();
+        let mut errors = Vec::new();
         if !to_check_out.is_empty() {
             let restore_index = self.store_dir.join("restore-index");
             let result = (|| {
@@ -428,9 +447,13 @@ impl SnapshotStore {
             {
                 log::warn!("failed to remove {restore_index:?}: {error}");
             }
-            result?;
+            if let Err(error) = result {
+                errors.push(error);
+            }
         }
 
+        // SOLO: files are changed by now, so the rest is still done, and the
+        // state to undo it is returned even when something failed (R3 M2).
         for file in changed
             .iter()
             .filter(|file| file.change == FileChange::Added && !is_skipped(file))
@@ -440,9 +463,25 @@ impl SnapshotStore {
                 Ok(()) => remove_empty_parents(&path, &self.work_tree),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
-                    return Err(error).with_context(|| format!("removing {path:?}"));
+                    errors.push(anyhow::Error::new(error).context(format!("removing {path:?}")));
                 }
             }
+        }
+        if let Some(first) = errors.first() {
+            let error = if errors.len() == 1 {
+                anyhow!("{first:#}")
+            } else {
+                anyhow!("{first:#} (and {} more errors)", errors.len() - 1)
+            };
+            log::error!(
+                "restoring {:?} to {target} stopped partway; the state before is {current}: {errors:?}",
+                self.work_tree
+            );
+            return Err(PartlyRestored {
+                undo: current,
+                error,
+            }
+            .into());
         }
 
         Ok(Restored {
@@ -671,6 +710,50 @@ fn remove_empty_parents(path: &Path, root: &Path) {
     }
 }
 
+/// SOLO: Keeps a file from being replaced or deleted while it's held, as a
+/// program that has it open does on Windows.
+#[cfg(test)]
+pub(crate) struct FileInUse {
+    #[cfg(windows)]
+    _file: std::fs::File,
+    #[cfg(not(windows))]
+    directory: PathBuf,
+}
+
+#[cfg(test)]
+impl FileInUse {
+    pub(crate) fn hold(path: &Path) -> Self {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                // Others may read it, but not write, replace or delete it.
+                .share_mode(1)
+                .open(path)
+                .expect("opening the file to hold");
+            Self { _file: file }
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            // Files in a read-only directory can't be replaced or deleted.
+            let directory = path.parent().expect("a file in a directory").to_path_buf();
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o555))
+                .expect("making the directory read-only");
+            Self { directory }
+        }
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+impl Drop for FileInUse {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&self.directory, std::fs::Permissions::from_mode(0o755)).ok();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,6 +923,42 @@ mod tests {
         store.restore(&second_turn).unwrap();
         assert_eq!(read("a.txt").as_deref(), Some("one\nTWO\nthree\n"));
         assert_eq!(read("src/b.txt").as_deref(), Some("b\n"));
+    }
+
+    /// A file in use stops restoring partway: what was restored stays so,
+    /// and the error says how to undo it.
+    #[test]
+    fn test_restore_that_fails_partway_can_be_undone() {
+        let (_temp, repository, storage) = repository();
+        fs::create_dir_all(repository.join("held")).unwrap();
+        fs::write(repository.join("held/h.txt"), "h\n").unwrap();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let read = |path: &str| fs::read_to_string(repository.join(path)).ok();
+
+        let before = store.snapshot().unwrap();
+        fs::write(repository.join("a.txt"), "after\n").unwrap();
+        fs::write(repository.join("held/h.txt"), "after\n").unwrap();
+        fs::write(repository.join("new.txt"), "new\n").unwrap();
+        let after = store.snapshot().unwrap();
+
+        let held = FileInUse::hold(&repository.join("held/h.txt"));
+        let error = store.restore(&before).unwrap_err();
+        let partly = error
+            .downcast_ref::<PartlyRestored>()
+            .unwrap_or_else(|| panic!("not partly restored: {error:#}"));
+        assert_eq!(partly.undo, after);
+        // The rest was restored all the same.
+        assert_eq!(read("a.txt").as_deref(), Some("one\ntwo\nthree\n"));
+        assert_eq!(read("new.txt"), None);
+        assert_eq!(read("held/h.txt").as_deref(), Some("after\n"));
+
+        // Once the file is free, undoing puts everything back.
+        drop(held);
+        store.restore(&partly.undo).unwrap();
+        assert_eq!(read("a.txt").as_deref(), Some("after\n"));
+        assert_eq!(read("new.txt").as_deref(), Some("new\n"));
+        assert_eq!(read("held/h.txt").as_deref(), Some("after\n"));
+        assert_eq!(store.snapshot().unwrap(), after);
     }
 
     #[test]

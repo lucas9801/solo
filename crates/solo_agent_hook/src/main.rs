@@ -54,6 +54,20 @@ fn main() {
     };
     let session_id = session_id_of(&input).unwrap_or_default();
     let agent = agent.filter(|agent| is_agent_name(agent));
+    // SOLO: the file the agent edited, in place of the working directory.
+    if kind == "edit" {
+        let Some(file) = edited_file_of(&input) else {
+            return;
+        };
+        let sequence = format!(
+            "\x1b]6973;agent;nonce={nonce};edit;{sent_at_ms};{session_id};{};{file}\x07",
+            agent.unwrap_or_default()
+        );
+        if let Err(error) = write_to_terminal(sequence.as_bytes()) {
+            eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
+        }
+        return;
+    }
     // Claude Code runs its hooks without `--agent`.
     let project_directory = agent
         .is_none()
@@ -227,13 +241,24 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
         },
         // Codex's Interrupt: the user stopped the turn.
         "Stop" | "StopFailure" | "Interrupt" => Some("stop"),
+        // SOLO: Claude Code edited a file (R3 M5).
+        "PostToolUse" => matches!(
+            field("tool_name"),
+            Some("Edit" | "Write" | "MultiEdit" | "NotebookEdit")
+        )
+        .then_some("edit"),
         _ => None,
     };
     // An event this doesn't know, under a name another agent uses for it:
     // the argument the hook was set up with says what it is.
     let known = matches!(
         event_name,
-        "SessionStart" | "UserPromptSubmit" | "PermissionRequest" | "PreToolUse" | "Notification"
+        "SessionStart"
+            | "UserPromptSubmit"
+            | "PermissionRequest"
+            | "PreToolUse"
+            | "PostToolUse"
+            | "Notification"
     );
     kind.or_else(|| if known { None } else { from_argument() })
 }
@@ -272,6 +297,27 @@ fn working_directory_of(input: &str, project_directory: Option<&str>) -> Option<
     let event = serde_json::from_str::<serde_json::Value>(input).ok()?;
     let directory = event.get("cwd")?.as_str()?.trim();
     (!directory.is_empty()).then(|| percent_encode(directory))
+}
+
+/// SOLO: The file a Claude Code edit tool changed (`tool_input.file_path`,
+/// or `notebook_path`), absolute (against the hook's `cwd` if it isn't),
+/// percent-encoded for the escape sequence.
+fn edited_file_of(input: &str) -> Option<String> {
+    let event = serde_json::from_str::<serde_json::Value>(input).ok()?;
+    let tool_input = event.get("tool_input")?;
+    let path = ["file_path", "notebook_path"]
+        .iter()
+        .find_map(|field| tool_input.get(*field)?.as_str())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())?;
+    let path = std::path::Path::new(path);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::path::Path::new(event.get("cwd")?.as_str()?.trim()).join(path)
+    };
+    path.is_absolute()
+        .then(|| percent_encode(&path.to_string_lossy()))
 }
 
 /// Everything but printable ASCII, `;` and `%` as `%XX` bytes of UTF-8, so
@@ -404,6 +450,39 @@ fn write_to_terminal(bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SOLO: Claude Code's edits are reported with the file (R3 M5).
+    #[test]
+    fn edits_report_the_file() {
+        let (root, cwd) = if cfg!(windows) {
+            (r"C:\\repo\\a;b.rs", r"C:\\repo")
+        } else {
+            ("/repo/a;b.rs", "/repo")
+        };
+        let input = format!(
+            r#"{{"hook_event_name":"PostToolUse","tool_name":"Edit","cwd":"{cwd}","tool_input":{{"file_path":"{root}"}}}}"#
+        );
+        assert_eq!(kind_of(&input, Some("edit")), Some("edit"));
+        let expected = if cfg!(windows) {
+            r"C:\repo\a%3Bb.rs"
+        } else {
+            "/repo/a%3Bb.rs"
+        };
+        assert_eq!(edited_file_of(&input).as_deref(), Some(expected));
+        // Relative to the hook's directory; notebooks by their own field.
+        let input = format!(
+            r#"{{"hook_event_name":"PostToolUse","tool_name":"NotebookEdit","cwd":"{cwd}","tool_input":{{"notebook_path":"n.ipynb"}}}}"#
+        );
+        assert!(edited_file_of(&input).is_some_and(|file| file.ends_with("n.ipynb")));
+        // Other tools aren't edits.
+        assert_eq!(
+            kind_of(
+                r#"{"hook_event_name":"PostToolUse","tool_name":"Bash"}"#,
+                Some("edit")
+            ),
+            None
+        );
+    }
 
     #[test]
     fn working_directory_is_encoded() {

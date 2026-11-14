@@ -36,7 +36,8 @@ use workspace::{
 
 use super::diagnostics::{TurnDiagnostic, TurnDiagnostics};
 use super::snapshot::{
-    ChangedFile, FileChange, SnapshotStore, TreeId, WorkTreeChanged, linked_ancestor,
+    ChangedFile, FileChange, PartlyRestored, SnapshotStore, TreeId, WorkTreeChanged,
+    linked_ancestor,
 };
 use super::{AgentTurn, AgentTurns};
 use crate::TerminalView;
@@ -54,6 +55,9 @@ enum Mode {
         store: Arc<SnapshotStore>,
         undo: TreeId,
         file_count: usize,
+        /// SOLO: Rolling back failed partway: some files are rolled back
+        /// and some aren't, until it's undone (R3 M2).
+        stopped_partway: bool,
     },
 }
 
@@ -737,11 +741,41 @@ impl AgentTurnReview {
                             store,
                             undo: restored.undo,
                             file_count,
+                            stopped_partway: false,
                         },
                         window,
                         cx,
                     );
                     this.status = skipped_message(&restored.skipped);
+                }
+                Err(error) if error.downcast_ref::<PartlyRestored>().is_some() => {
+                    let Ok(partly) = error.downcast::<PartlyRestored>() else {
+                        return;
+                    };
+                    // SOLO: keep the way back: the files are half rolled back.
+                    this.set_mode(
+                        Mode::RolledBack {
+                            number,
+                            store,
+                            undo: partly.undo,
+                            file_count: 0,
+                            stopped_partway: true,
+                        },
+                        window,
+                        cx,
+                    );
+                    this.status = Some(
+                        format!(
+                            "{}: {:#}. {}",
+                            tr("Rollback stopped partway", "回滚中途失败"),
+                            partly.error,
+                            tr(
+                                "Some files are rolled back and some aren't. Click Undo Rollback to put every file back as it was before rolling back; if a file is open in another program, close it first.",
+                                "一部分文件已回滚，一部分没有。点“撤销回滚”可以把所有文件恢复到回滚之前的样子；如果有文件被别的程序打开，请先关掉它。",
+                            )
+                        )
+                        .into(),
+                    );
                 }
                 Err(error) if error.downcast_ref::<WorkTreeChanged>().is_some() => {
                     // Show what rolling back would discard now.
@@ -788,8 +822,20 @@ impl AgentTurnReview {
                     });
                 }
                 Err(error) => {
-                    this.status =
-                        Some(format!("{}: {error:#}", tr("Undo failed", "撤销失败")).into());
+                    // SOLO: the way back is kept, to try again (R3 M2).
+                    let message = if error.downcast_ref::<PartlyRestored>().is_some() {
+                        format!(
+                            "{}: {error:#}. {}",
+                            tr("Undo stopped partway", "撤销中途失败"),
+                            tr(
+                                "Some files are back and some aren't. Close any program that has them open, then click Undo Rollback again.",
+                                "一部分文件已恢复，一部分没有。请关掉打开着这些文件的程序，再点一次“撤销回滚”。",
+                            )
+                        )
+                    } else {
+                        format!("{}: {error:#}", tr("Undo failed", "撤销失败"))
+                    };
+                    this.status = Some(message.into());
                     cx.notify();
                 }
             })
@@ -1145,6 +1191,57 @@ impl AgentTurnReview {
         )
     }
 
+    /// SOLO: Whose changes the turn shown has, when it may not be only the
+    /// agent's (R3 M5).
+    fn attribution_note(&self, cx: &App) -> Option<String> {
+        let Mode::Turn(number) = self.mode else {
+            return None;
+        };
+        let turn = self.turn(number, cx)?;
+        let mut notes = Vec::new();
+        if !turn.attributed {
+            notes.push(
+                tr(
+                    "This agent doesn't report which files it edits, so these are all the files that changed in the folder during its turn: some may not be this agent's (yours, or another agent's).",
+                    "这个 agent 不报告它改了哪些文件，所以这里是这一轮期间文件夹里所有改动过的文件：其中可能有不是这个 agent 改的（你自己或别的 agent 改的）。",
+                )
+                .to_string(),
+            );
+        } else if !turn.others.is_empty() {
+            const LISTED: usize = 5;
+            let mut names: Vec<&str> = turn
+                .others
+                .iter()
+                .take(LISTED)
+                .map(|file| file.path.as_str())
+                .collect();
+            if turn.others.len() > LISTED {
+                names.push("…");
+            }
+            let names = names.join(", ");
+            let count = turn.others.len();
+            notes.push(if is_chinese() {
+                format!(
+                    "另有 {count} 个文件在这一轮期间改动过，但 agent 没有报告编辑过它们（可能是它运行的命令、你自己或别的 agent 改的），这里不显示，全部拒绝也不会动它们：{names}"
+                )
+            } else {
+                format!(
+                    "{count} more files changed during the turn that the agent didn't report editing (its commands may have, or you, or another agent). They aren't shown, and rejecting leaves them alone: {names}"
+                )
+            });
+        }
+        if !turn.edited_before_snapshot.is_empty() {
+            notes.push(
+                tr(
+                    "The agent edited some files before the turn's snapshot was taken; their changes may show only in part.",
+                    "agent 在这一轮的快照拍完之前就改了一些文件，这些文件的改动可能只显示了一部分。",
+                )
+                .to_string(),
+            );
+        }
+        (!notes.is_empty()).then(|| notes.join(" "))
+    }
+
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, actions): (String, AnyElement) = match &self.mode {
             Mode::Turn(number) => {
@@ -1180,7 +1277,8 @@ impl AgentTurnReview {
                         )
                     })
                     .child(
-                        Button::new("reject-all", tr("Reject All", "全部拒绝"))
+                        // SOLO: how many files rejecting puts back (R3 M5).
+                        Button::new("reject-all", reject_all_label(self.files.len()))
                             .disabled(!has_hunks)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.reject_hunks(Self::all_hunks(), cx)
@@ -1230,9 +1328,18 @@ impl AgentTurnReview {
                 (title, actions)
             }
             Mode::RolledBack {
-                number, file_count, ..
+                number,
+                file_count,
+                stopped_partway,
+                ..
             } => {
-                let title = if is_chinese() {
+                let title = if *stopped_partway {
+                    if is_chinese() {
+                        format!("回滚到第 {number} 轮开始之前时中途失败")
+                    } else {
+                        format!("Rolling back to before turn {number} stopped partway")
+                    }
+                } else if is_chinese() {
                     format!("已回滚到第 {number} 轮开始之前（{file_count} 个文件）")
                 } else {
                     format!("Rolled back to before turn {number} ({file_count} files)")
@@ -1286,6 +1393,11 @@ impl AgentTurnReview {
                         .color(Color::Muted),
                 )
             })
+            .children(self.attribution_note(cx).map(|note| {
+                Label::new(note)
+                    .size(LabelSize::Small)
+                    .color(Color::Warning)
+            }))
             .when(self.skipped_files > 0, |this| {
                 let count = self.skipped_files;
                 this.child(
@@ -1372,6 +1484,17 @@ impl AgentTurnReview {
                     .into_any_element()
             })
             .collect()
+    }
+}
+
+/// SOLO: The Reject All button, with how many files it puts back (R3 M5).
+fn reject_all_label(file_count: usize) -> String {
+    if is_chinese() {
+        format!("全部拒绝（{file_count} 个文件）")
+    } else if file_count == 1 {
+        "Reject All (1 file)".to_string()
+    } else {
+        format!("Reject All ({file_count} files)")
     }
 }
 
@@ -2368,5 +2491,289 @@ mod tests {
                 .unwrap(),
             "before\n"
         );
+    }
+
+    /// A file in use stops a rollback partway: the page keeps the way back,
+    /// and undoing puts every file back (R3 M2).
+    #[gpui::test]
+    async fn test_rollback_that_fails_partway_can_be_undone(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.executor().allow_parking();
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        std::fs::create_dir_all(repository.join("held")).unwrap();
+        #[allow(clippy::disallowed_methods, reason = "test setup")]
+        let git = |args: &[&str]| {
+            let output = util::command::new_std_command("git")
+                .current_dir(&repository)
+                .args(["-c", "user.name=Solo", "-c", "user.email=solo@example.com"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", "core.autocrlf", "false"]);
+        std::fs::write(repository.join("a.txt"), "before\n").unwrap();
+        std::fs::write(repository.join("held/h.txt"), "before\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "-m", "initial"]);
+        let read = |path: &str| std::fs::read_to_string(repository.join(path)).ok();
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), json!({})).await;
+        let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let terminal_view = workspace.update_in(cx, |workspace, window, cx| {
+            let terminal = cx.new(|cx| {
+                terminal::TerminalBuilder::new_display_only(
+                    Default::default(),
+                    terminal::terminal_settings::AlternateScroll::On,
+                    None,
+                    0,
+                    cx.background_executor(),
+                    util::paths::PathStyle::local(),
+                )
+                .subscribe(cx)
+            });
+            cx.new(|cx| {
+                TerminalView::new(
+                    terminal,
+                    workspace.weak_handle(),
+                    None,
+                    project.downgrade(),
+                    window,
+                    cx,
+                )
+            })
+        });
+
+        // A turn that changes two files and creates one.
+        let turns = cx.update(|_, cx| AgentTurns::global(cx));
+        turns.update(cx, |turns, cx| {
+            turns.storage_root = Some(temp.path().join("storage"));
+            turns.start_turn(
+                terminal_view.clone(),
+                Some(repository.clone()),
+                None,
+                WeakEntity::new_invalid(),
+                Default::default(),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        std::fs::write(repository.join("a.txt"), "after\n").unwrap();
+        std::fs::write(repository.join("held/h.txt"), "after\n").unwrap();
+        std::fs::write(repository.join("new.txt"), "new\n").unwrap();
+        turns.update(cx, |turns, cx| turns.end_turn(terminal_view.clone(), cx));
+        cx.run_until_parked();
+
+        let review = cx.new_window_entity(|window, cx| {
+            AgentTurnReview::new(terminal_view.clone(), project.clone(), None, window, cx)
+        });
+        review.update_in(cx, |review, window, cx| {
+            review.set_mode(Mode::ConfirmRollback(1), window, cx)
+        });
+        cx.run_until_parked();
+
+        // Another program has a file open while rolling back.
+        let held = super::super::snapshot::FileInUse::hold(&repository.join("held/h.txt"));
+        review.update_in(cx, |review, window, cx| review.confirm_rollback(window, cx));
+        cx.run_until_parked();
+        assert_eq!(read("a.txt").as_deref(), Some("before\n"));
+        assert_eq!(read("new.txt"), None);
+        assert_eq!(read("held/h.txt").as_deref(), Some("after\n"));
+        review.read_with(cx, |review, _| {
+            assert!(
+                matches!(
+                    review.mode,
+                    Mode::RolledBack {
+                        stopped_partway: true,
+                        ..
+                    }
+                ),
+                "the way back is kept"
+            );
+            let status = review.status.clone().unwrap_or_default();
+            assert!(status.contains("Undo Rollback"), "{status}");
+        });
+
+        // Once the file is closed, undoing puts every file back.
+        drop(held);
+        review.update_in(cx, |review, window, cx| review.undo_rollback(window, cx));
+        cx.run_until_parked();
+        assert_eq!(read("a.txt").as_deref(), Some("after\n"));
+        assert_eq!(read("held/h.txt").as_deref(), Some("after\n"));
+        assert_eq!(read("new.txt").as_deref(), Some("new\n"));
+        review.read_with(cx, |review, _| {
+            assert!(matches!(review.mode, Mode::Turn(1)), "back to the turn");
+        });
+    }
+
+    /// Two agents work in the same repository at once, each on its own file:
+    /// each turn is only what its agent reported editing, and rejecting one
+    /// leaves the other's file alone (R3 M5). An agent that doesn't report
+    /// its edits gets everything that changed, and the page says so.
+    #[gpui::test]
+    async fn test_agents_in_one_repository_reject_only_their_own_files(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.executor().allow_parking();
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        std::fs::create_dir_all(&repository).unwrap();
+        #[allow(clippy::disallowed_methods, reason = "test setup")]
+        let git = |args: &[&str]| {
+            let output = util::command::new_std_command("git")
+                .current_dir(&repository)
+                .args(["-c", "user.name=Solo", "-c", "user.email=solo@example.com"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", "core.autocrlf", "false"]);
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(repository.join(name), "before\n").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "-m", "initial"]);
+
+        // The project's files are fake, mirroring the real ones git sees.
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(&repository, json!({ "a.txt": "before\n", "b.txt": "before\n" }))
+            .await;
+        let project = Project::test(fs.clone(), [repository.as_path()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let new_terminal = |cx: &mut VisualTestContext| {
+            workspace.update_in(cx, |workspace, window, cx| {
+                let terminal = cx.new(|cx| {
+                    terminal::TerminalBuilder::new_display_only(
+                        Default::default(),
+                        terminal::terminal_settings::AlternateScroll::On,
+                        None,
+                        0,
+                        cx.background_executor(),
+                        util::paths::PathStyle::local(),
+                    )
+                    .subscribe(cx)
+                });
+                cx.new(|cx| {
+                    TerminalView::new(
+                        terminal,
+                        workspace.weak_handle(),
+                        None,
+                        project.downgrade(),
+                        window,
+                        cx,
+                    )
+                })
+            })
+        };
+        let first = new_terminal(cx);
+        let second = new_terminal(cx);
+        let unreported = new_terminal(cx);
+        let terminals = [&first, &second, &unreported];
+
+        let turns = cx.update(|_, cx| AgentTurns::global(cx));
+        turns.update(cx, |turns, cx| {
+            turns.storage_root = Some(temp.path().join("storage"));
+            for terminal in terminals {
+                turns.start_turn(
+                    terminal.clone(),
+                    Some(repository.clone()),
+                    None,
+                    WeakEntity::new_invalid(),
+                    Default::default(),
+                    cx,
+                );
+            }
+        });
+        cx.run_until_parked();
+        // Each agent edits its file, and its hooks say so; the third one's
+        // don't report edits.
+        for (name, terminal) in [("a.txt", &first), ("b.txt", &second)] {
+            let path = repository.join(name);
+            std::fs::write(&path, format!("{name} by its agent\n")).unwrap();
+            fs.save(
+                &path,
+                &format!("{name} by its agent\n").as_str().into(),
+                language::LineEnding::Unix,
+            )
+            .await
+            .unwrap();
+            // As the hook reports it, through the terminal.
+            terminal.update(cx, |_, cx| cx.emit(crate::agent_status::AgentEditedFile(path)));
+        }
+        turns.update(cx, |turns, cx| {
+            for terminal in terminals {
+                turns.end_turn(terminal.clone(), cx);
+            }
+        });
+        cx.run_until_parked();
+
+        let recorded = |terminal: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            turns.read_with(cx, |turns, _| {
+                let turn = turns.turn(terminal.entity_id(), 1).cloned().unwrap();
+                let paths = |files: &[ChangedFile]| {
+                    let mut paths: Vec<String> =
+                        files.iter().map(|file| file.path.clone()).collect();
+                    paths.sort();
+                    paths
+                };
+                (turn.attributed, paths(&turn.changed), paths(&turn.others))
+            })
+        };
+        assert_eq!(
+            recorded(&first, cx),
+            (true, vec!["a.txt".to_string()], vec!["b.txt".to_string()])
+        );
+        assert_eq!(
+            recorded(&second, cx),
+            (true, vec!["b.txt".to_string()], vec!["a.txt".to_string()])
+        );
+        assert_eq!(
+            recorded(&unreported, cx),
+            (false, vec!["a.txt".to_string(), "b.txt".to_string()], vec![])
+        );
+
+        // Rejecting everything in the first agent's turn.
+        let review = cx.new_window_entity(|window, cx| {
+            AgentTurnReview::new(first.clone(), project.clone(), Some(1), window, cx)
+        });
+        cx.run_until_parked();
+        review.read_with(cx, |review, cx| {
+            assert_eq!(review.files.len(), 1);
+            assert_eq!(reject_all_label(review.files.len()), "Reject All (1 file)");
+            let note = review.attribution_note(cx).unwrap_or_default();
+            assert!(note.contains("b.txt"), "{note}");
+        });
+        review.update(cx, |review, cx| {
+            review.reject_hunks(AgentTurnReview::all_hunks(), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            fs.load(&repository.join("a.txt")).await.unwrap(),
+            "before\n"
+        );
+        assert_eq!(
+            fs.load(&repository.join("b.txt")).await.unwrap(),
+            "b.txt by its agent\n"
+        );
+
+        // The agent that doesn't report its edits: the page says the files
+        // may not all be its own.
+        let review = cx.new_window_entity(|window, cx| {
+            AgentTurnReview::new(unreported.clone(), project.clone(), Some(1), window, cx)
+        });
+        cx.run_until_parked();
+        review.read_with(cx, |review, cx| {
+            let note = review.attribution_note(cx).unwrap_or_default();
+            assert!(note.contains("may not be this agent's"), "{note}");
+        });
     }
 }

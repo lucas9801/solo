@@ -1660,6 +1660,9 @@ fn subscribe_for_terminal_events(
                     terminal_view.notify_from_program(title.clone(), body.clone(), window, cx)
                 }
                 Event::AgentHook(hook) => terminal_view.agent_hook(hook.clone(), window, cx),
+                Event::AgentEditedFile(path) => {
+                    cx.emit(agent_status::AgentEditedFile(path.clone()))
+                }
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
                     MaybeNavigationTarget::Url(url) => cx.open_url(url),
                     MaybeNavigationTarget::PathLike(_)
