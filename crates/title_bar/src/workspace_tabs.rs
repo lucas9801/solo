@@ -150,14 +150,13 @@ impl TitleBar {
                         })
                         .untranslated(),
                 )
-                .children(render_counts(
+                .children(render_states(
                     counts,
                     if is_active {
                         selected
                     } else {
                         colors.title_bar_background
                     },
-                    cx,
                 ))
                 .when(is_active, |element| element.children(branch.take()))
                 .child(div().visible_on_hover(group).child(render_menu_button(
@@ -330,14 +329,10 @@ fn render_menu_button(
         .anchor(gpui::Anchor::TopLeft)
 }
 
-/// How many agents failed, wait for you, finished a turn you haven't seen
-/// (gone once you look at the terminal) and work, in that order, as counts
-/// with their status shapes.
-fn render_counts(
-    counts: AgentCounts,
-    background: Hsla,
-    cx: &App,
-) -> impl Iterator<Item = AnyElement> {
+/// SOLO: the statuses the workspace's agents are in, one each, in the order
+/// the tab shows them: failed, waiting for you, finished a turn you haven't
+/// seen (gone once you look at the terminal), working.
+fn shown_states(counts: AgentCounts) -> Vec<AgentState> {
     [
         (counts.failed, AgentState::Failed),
         (counts.needs_input, AgentState::NeedsInput),
@@ -346,23 +341,23 @@ fn render_counts(
     ]
     .into_iter()
     .filter(|(count, _)| *count > 0)
-    .map(move |(count, state)| {
+    .map(|(_, state)| state)
+    .collect()
+}
+
+/// The status shapes of [`shown_states`], without how many are in each: the
+/// tab's menu lists the terminals.
+fn render_states(counts: AgentCounts, background: Hsla) -> Option<AnyElement> {
+    let states = shown_states(counts);
+    (!states.is_empty()).then(|| {
         h_flex()
-            .gap_0p5()
-            .child(
+            .debug_selector(|| "workspace-tab-states".into())
+            .gap_1()
+            .children(states.into_iter().map(|state| {
                 AgentStateIcon::new(state)
                     .size(IconSize::XSmall)
-                    .on(background),
-            )
-            .child(
-                Label::new(count.to_string())
-                    .size(LabelSize::XSmall)
-                    .color(Color::Custom(agent_activity::legible_on(
-                        state.color().color(cx),
-                        background,
-                    )))
-                    .untranslated(),
-            )
+                    .on(background)
+            }))
             .into_any_element()
     })
 }
@@ -719,6 +714,36 @@ mod tests {
         }
         dispatch(&ActivateWorkspace { index: 8 }, cx);
         assert_eq!(active(cx), tabs[0], "no ninth tab: stays");
+    }
+
+    #[test]
+    fn test_shown_states() {
+        assert!(shown_states(AgentCounts::default()).is_empty());
+        // One shape per status, however many agents are in it, red to blue.
+        let counts = AgentCounts {
+            working: 3,
+            needs_input: 2,
+            finished: 1,
+            failed: 4,
+        };
+        assert_eq!(
+            shown_states(counts),
+            [
+                AgentState::Failed,
+                AgentState::NeedsInput,
+                AgentState::Finished,
+                AgentState::Working
+            ]
+        );
+        let counts = AgentCounts {
+            working: 1,
+            needs_input: 2,
+            ..AgentCounts::default()
+        };
+        assert_eq!(
+            shown_states(counts),
+            [AgentState::NeedsInput, AgentState::Working]
+        );
     }
 
     #[test]

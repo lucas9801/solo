@@ -158,7 +158,11 @@ impl TerminalPanel {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(render_agent_mark(agent.name, cx))
+                    .child(render_agent_mark(
+                        agent.name,
+                        cx.theme().colors().terminal_background,
+                        cx,
+                    ))
                     .child(Label::new(label).size(LabelSize::Small).untranslated()),
             )
             .on_click(move |_, window, cx| {

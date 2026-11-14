@@ -261,7 +261,11 @@ impl Render for SplitWorkspaceModal {
                                 .min_w_0()
                                 .gap_2()
                                 .child(match &terminal.agent {
-                                    Some((agent, _)) => agent_tab::render_agent_mark(agent, cx),
+                                    Some((agent, _)) => agent_tab::render_agent_mark(
+                                        agent,
+                                        cx.theme().colors().elevated_surface_background,
+                                        cx,
+                                    ),
                                     None => Icon::new(IconName::Terminal)
                                         .size(IconSize::Small)
                                         .color(Color::Muted)

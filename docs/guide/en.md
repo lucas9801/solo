@@ -109,8 +109,9 @@ Open a project folder and run `claude` (or `codex`, `gemini`, ...) in the
 terminal. Solo adds the following.
 
 ### Status in the tab
-The terminal's tab shows the agent's icon (or initial) with its status on its
-corner, like a traffic light: red with a cross, **failed**; yellow in a
+The terminal's tab shows the agent's icon in its own color (Claude Code's
+orange; monochrome logos in the text color) or its initial, with its status on
+its corner, like a traffic light: red with a cross, **failed**; yellow in a
 breathing ring, **waiting for you**; green, **done, not seen yet** (a turn
 finished while you weren't looking); a turning blue ring, **working**; a gray
 hollow circle, **idle**; a gray dash, **exited**. The title is the session's
@@ -210,9 +211,10 @@ first; click one to go to its terminal.
 
 ### Workspace tabs in the title bar
 Each project folder is a workspace with its own tab in the title bar, holding
-its own terminals, agents, editors and file tree. Each tab counts its agents that
-failed, wait for you, are done but not seen yet, and work (red, yellow, green,
-blue, in that order), so you can see an agent waiting in the background.
+its own terminals, agents, editors and file tree. Each tab shows one status
+shape for each status its agents are in: failed, waiting for you, done but not
+seen yet, and working (red, yellow, green, blue, in that order), so you can see
+an agent waiting in the background; its menu lists the terminals.
 
 - `+` (or opening a folder) adds a workspace;
 - `ctrl-alt-1` … `ctrl-alt-9` switch to a workspace by position;

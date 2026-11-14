@@ -117,44 +117,79 @@ pub(crate) fn short_model(model: &str) -> &str {
     }
 }
 
-/// The agent's icon, Zed's for the agents it has one for.
-fn agent_icon(name: &str) -> Option<IconName> {
-    let name = name.to_lowercase();
-    if name.starts_with("claude") {
-        Some(IconName::AiClaude)
-    } else if name.starts_with("codex") {
-        Some(IconName::AiOpenAi)
-    } else if name.starts_with("copilot") {
-        Some(IconName::Copilot)
-    } else {
-        None
-    }
+/// Claude's orange, for Claude Code's logo.
+const CLAUDE_ORANGE: u32 = 0xD97757;
+
+/// The agent's logo, Zed's for the agents it has one for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AgentLogo {
+    icon: IconName,
+    /// Its brand color; `None` for a monochrome logo, drawn in the text color.
+    color: Option<u32>,
 }
 
-/// The agent's icon, or its initial when it has none, in a small square.
-pub(crate) fn render_agent_mark(name: &str, cx: &App) -> AnyElement {
+fn agent_logo(name: &str) -> Option<AgentLogo> {
+    let name = name.to_lowercase();
+    let (icon, color) = if name.starts_with("claude") {
+        (IconName::AiClaude, Some(CLAUDE_ORANGE))
+    } else if name.starts_with("codex") {
+        (IconName::AiOpenAi, None)
+    } else if name.starts_with("copilot") {
+        (IconName::Copilot, None)
+    } else if name.starts_with("gemini") {
+        (IconName::AiGemini, None)
+    } else if name.starts_with("opencode") {
+        (IconName::AiOpenCode, None)
+    } else if name.starts_with("grok") {
+        (IconName::AiXAi, None)
+    } else {
+        return None;
+    };
+    Some(AgentLogo { icon, color })
+}
+
+/// The color `name`'s logo is drawn in on `background`: its brand color, or
+/// the text color for a monochrome logo, kept legible there.
+fn agent_logo_color(logo: AgentLogo, background: Hsla, cx: &App) -> Hsla {
+    let color = match logo.color {
+        Some(color) => Hsla::from(gpui::rgb(color)),
+        None => cx.theme().colors().text,
+    };
+    legible_on(color, background)
+}
+
+/// The agent's logo in its own color on `background` (what it's drawn on),
+/// or its initial in a small square when it has none.
+pub(crate) fn render_agent_mark(name: &str, background: Hsla, cx: &App) -> AnyElement {
     let mark = div()
         .flex_none()
         .size(rems_from_px(16_f32))
-        .rounded(px(4.))
-        .bg(cx.theme().colors().border)
         .flex()
         .items_center()
         .justify_center();
-    match agent_icon(name) {
-        Some(icon) => mark.child(Icon::new(icon).size(IconSize::XSmall).color(Color::Default)),
+    match agent_logo(name) {
+        Some(logo) => mark
+            .debug_selector(move || format!("agent-logo-{:?}", logo.icon))
+            .child(
+                Icon::new(logo.icon)
+                    .size(IconSize::Custom(rems_from_px(15_f32)))
+                    .color(Color::Custom(agent_logo_color(logo, background, cx))),
+            ),
         None => {
             let initial = name
                 .chars()
                 .find(|c| c.is_alphanumeric())
                 .map(|c| c.to_uppercase().to_string())
                 .unwrap_or_else(|| "?".to_string());
-            mark.child(
-                Label::new(initial)
-                    .untranslated()
-                    .size(LabelSize::Custom(rems_from_px(10_f32)))
-                    .weight(FontWeight::BOLD),
-            )
+            mark.debug_selector(|| "agent-initial".into())
+                .rounded(px(4.))
+                .bg(cx.theme().colors().border)
+                .child(
+                    Label::new(initial)
+                        .untranslated()
+                        .size(LabelSize::Custom(rems_from_px(10_f32)))
+                        .weight(FontWeight::BOLD),
+                )
         }
     }
     .into_any_element()
@@ -181,7 +216,7 @@ pub(crate) fn render_agent_badge(
         .flex_none()
         // Room for the status, which sticks out.
         .mr_1()
-        .child(render_agent_mark(name, cx))
+        .child(render_agent_mark(name, backdrop, cx))
         .child(
             div()
                 .absolute()
@@ -362,7 +397,11 @@ impl TabCard {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(render_agent_mark(&agent.agent, cx))
+                            .child(render_agent_mark(
+                                &agent.agent,
+                                cx.theme().colors().elevated_surface_background,
+                                cx,
+                            ))
                             .child(
                                 Label::new(title)
                                     .untranslated()
@@ -551,6 +590,77 @@ impl TabCard {
 mod tests {
     use super::*;
     use agent_sessions::{AgentAdapter as _, AgentKind, ClaudeCode};
+
+    #[test]
+    fn test_agent_logo() {
+        let logo = |name| agent_logo(name).map(|logo| (logo.icon, logo.color));
+        assert_eq!(
+            logo("Claude Code"),
+            Some((IconName::AiClaude, Some(CLAUDE_ORANGE)))
+        );
+        assert_eq!(
+            logo("claude"),
+            Some((IconName::AiClaude, Some(CLAUDE_ORANGE)))
+        );
+        // Monochrome logos, drawn in the text color.
+        assert_eq!(logo("codex"), Some((IconName::AiOpenAi, None)));
+        assert_eq!(logo("Codex"), Some((IconName::AiOpenAi, None)));
+        assert_eq!(logo("copilot"), Some((IconName::Copilot, None)));
+        assert_eq!(logo("gemini"), Some((IconName::AiGemini, None)));
+        assert_eq!(logo("Gemini CLI"), Some((IconName::AiGemini, None)));
+        assert_eq!(logo("opencode"), Some((IconName::AiOpenCode, None)));
+        assert_eq!(logo("grok"), Some((IconName::AiXAi, None)));
+        // The rest show their initial.
+        assert_eq!(logo("aider"), None);
+        assert_eq!(logo("cursor-agent"), None);
+    }
+
+    #[test]
+    fn test_claude_orange_contrast() {
+        use gpui::rgb;
+        use ui::utils::calculate_contrast_ratio;
+        let orange = Hsla::from(rgb(CLAUDE_ORANGE));
+        // Ayu Dark's active and inactive tabs: left as it is.
+        for tab in [0x0d1016, 0x1f2127] {
+            let tab = Hsla::from(rgb(tab));
+            assert!(calculate_contrast_ratio(orange, tab) >= 3.);
+            assert_eq!(legible_on(orange, tab), orange);
+        }
+        // One Light's: too pale, darkened, still orange.
+        for tab in [0xfafafa, 0xebebec] {
+            let tab = Hsla::from(rgb(tab));
+            assert!(calculate_contrast_ratio(orange, tab) < 3.);
+            let legible = legible_on(orange, tab);
+            assert!(calculate_contrast_ratio(legible, tab) >= 3.);
+            assert!(legible.l < orange.l && (legible.h - orange.h).abs() < 0.01);
+        }
+    }
+
+    #[gpui::test]
+    async fn test_agent_mark_square_only_for_initials(cx: &mut gpui::TestAppContext) {
+        struct Mark(&'static str);
+        impl Render for Mark {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().child(render_agent_mark(
+                    self.0,
+                    cx.theme().colors().tab_active_background,
+                    cx,
+                ))
+            }
+        }
+        crate::tests::init_test(cx).await;
+        let (mark, cx) = cx.add_window_view(|_, _| Mark("claude"));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("agent-logo-AiClaude").is_some());
+        assert!(cx.debug_bounds("agent-initial").is_none());
+        mark.update(cx, |mark, cx| {
+            mark.0 = "aider";
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("agent-logo-AiClaude").is_none());
+        assert!(cx.debug_bounds("agent-initial").is_some());
+    }
 
     #[test]
     fn test_format_tokens() {
