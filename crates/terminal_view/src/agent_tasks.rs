@@ -40,7 +40,7 @@ use zed_actions::agent_task::{ManageAgentTasks, NewAgentTask};
 
 pub use git::{AgentTask, MergeOutcome};
 
-/// SOLO: a new task, made the way the repository's `.solo/tasks.json` says
+/// SOLO: a new task, made the way the repository's `.solo/worktrees.json` says
 /// (see `config`), with what its terminal needs.
 pub(crate) struct NewTask {
     pub task: AgentTask,
@@ -197,7 +197,7 @@ pub(crate) fn make_group_task(
 
 /// SOLO: Whether the repository at `main_root` is trusted in `project`
 /// (Zed's worktree trust, "restricted mode"): only then does Solo run the
-/// commands of its `.solo/tasks.json` (setup, teardown) or give tasks its
+/// commands of its `.solo/worktrees.json` (setup, teardown) or give tasks its
 /// variables, which a cloned repository's author wrote. Asking marks an
 /// untrusted worktree restricted, so Zed offers to trust it.
 pub(crate) fn is_repository_trusted(
@@ -231,7 +231,7 @@ pub(crate) fn is_repository_trusted(
     })
 }
 
-/// SOLO: Leaves out what the repository's `.solo/tasks.json` would run in
+/// SOLO: Leaves out what the repository's `.solo/worktrees.json` would run in
 /// the new task's terminal (its setup command and variables) when the
 /// repository isn't trusted, and says so.
 pub(crate) fn drop_untrusted_config(new_task: &mut NewTask) {
@@ -246,8 +246,8 @@ pub(crate) fn drop_untrusted_config(new_task: &mut NewTask) {
 
 fn untrusted_message() -> String {
     tr(
-        "This project isn't trusted (restricted mode), so the commands and variables in .solo/tasks.json weren't used. Trust the project to use them.",
-        "这个项目尚未受信任（受限模式），所以没有使用 .solo/tasks.json 里的命令和环境变量。信任这个项目后才会使用。",
+        "This project isn't trusted (restricted mode), so the commands and variables in .solo/worktrees.json weren't used. Trust the project to use them.",
+        "这个项目尚未受信任（受限模式），所以没有使用 .solo/worktrees.json 里的命令和环境变量。信任这个项目后才会使用。",
     )
     .to_string()
 }
@@ -458,7 +458,7 @@ pub fn agent_tasks(
 }
 
 /// Opens a terminal named `title` in a task's `worktree`, with the task's
-/// environment from the repository's `.solo/tasks.json`.
+/// environment from the repository's `.solo/worktrees.json`.
 pub(crate) fn open_task_terminal_in(
     workspace: &Entity<Workspace>,
     worktree: PathBuf,
@@ -482,7 +482,7 @@ pub(crate) fn open_task_terminal_in(
         .detach_and_log_err(cx);
 }
 
-/// The environment `.solo/tasks.json` gives the task in `worktree`.
+/// The environment `.solo/worktrees.json` gives the task in `worktree`.
 fn task_env_of_worktree(worktree: &Path) -> collections::HashMap<String, String> {
     let Ok(info) = git::repository_info(worktree) else {
         return Default::default();
@@ -662,11 +662,80 @@ enum RepositoryState {
     Failed(SharedString),
 }
 
-/// Asks for the new task's name.
+/// SOLO: what the new task's terminal can run: nothing (just a shell), or
+/// an agent CLI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunOption {
+    pub label: SharedString,
+    /// `None` for just a shell.
+    pub command: Option<String>,
+}
+
+/// The program `command` runs, as a lowercase name without its folder or
+/// extension.
+fn program_of(command: &str) -> Option<String> {
+    let program = command.split_whitespace().next()?;
+    let program = program.trim_matches(['"', '\'']);
+    let name = Path::new(program)
+        .file_stem()?
+        .to_string_lossy()
+        .to_lowercase();
+    Some(name)
+}
+
+/// The choices for what the terminal runs: nothing, then the agents on the
+/// `PATH` (with `configured`, `terminal.agent_task_command`, for the one it
+/// runs, so its options stay), then `configured` itself if it runs another
+/// program. Also the one `configured` picks: none when it's empty.
+pub(crate) fn run_options(
+    configured: &str,
+    agents_on_path: &[crate::terminal_panel::empty_state::Agent],
+) -> (Vec<RunOption>, usize) {
+    let configured_program = program_of(configured);
+    let mut options = vec![RunOption {
+        label: tr("Don't Run", "不运行").into(),
+        command: None,
+    }];
+    let mut default = 0;
+    for agent in agents_on_path {
+        let is_configured = configured_program.as_deref() == Some(agent.command);
+        if is_configured {
+            default = options.len();
+        }
+        options.push(RunOption {
+            label: agent.name.into(),
+            command: Some(if is_configured {
+                configured.trim().to_string()
+            } else {
+                agent.command.to_string()
+            }),
+        });
+    }
+    let is_known_agent = configured_program.as_deref().is_some_and(|program| {
+        crate::terminal_panel::empty_state::agents_on_path(|_| true)
+            .iter()
+            .any(|agent| agent.command == program)
+    });
+    if let Some(program) = configured_program.filter(|_| !is_known_agent) {
+        default = options.len();
+        options.push(RunOption {
+            label: program.into(),
+            command: Some(configured.trim().to_string()),
+        });
+    }
+    (options, default)
+}
+
+/// Asks for the new task's name and what its terminal runs.
 pub struct NewAgentTaskModal {
     workspace: WeakEntity<Workspace>,
     editor: Entity<Editor>,
     repository: RepositoryState,
+    /// What the terminal can run; `None` until the agents on the `PATH`
+    /// are found.
+    run_options: Option<Vec<RunOption>>,
+    /// The chosen one of `run_options`.
+    run_choice: usize,
     /// The workspace's other repositories, which the task can span too.
     other_repositories: Vec<git::RepositoryInfo>,
     include_other_repositories: bool,
@@ -674,6 +743,7 @@ pub struct NewAgentTaskModal {
     creating: bool,
     error: Option<SharedString>,
     _load: Task<()>,
+    _find_agents: Task<()>,
 }
 
 impl NewAgentTaskModal {
@@ -713,10 +783,7 @@ impl NewAgentTaskModal {
         let editor = cx.new(|cx| {
             let mut editor = Editor::single_line(window, cx);
             editor.set_placeholder_text(
-                tr(
-                    "Task name, e.g. Fix the login redirect",
-                    "任务名，例如：修复登录跳转",
-                ),
+                tr("e.g. Fix the login redirect", "例如：修复登录跳转"),
                 window,
                 cx,
             );
@@ -776,10 +843,24 @@ impl NewAgentTaskModal {
             })
             .log_err();
         });
+        let find_agents = cx.spawn(async move |this, cx| {
+            let agents = cx
+                .background_spawn(async move {
+                    crate::terminal_panel::empty_state::agents_on_path(|command| {
+                        which::which(command).is_ok()
+                    })
+                })
+                .await;
+            this.update(cx, |this, cx| this.set_agents_on_path(&agents, cx))
+                .log_err();
+        });
         Self {
             workspace,
             editor,
             repository: RepositoryState::Loading,
+            run_options: None,
+            run_choice: 0,
+            _find_agents: find_agents,
             other_repositories: Vec::new(),
             include_other_repositories: false,
             worktree_directory_setting: ProjectSettings::get_global(cx)
@@ -794,6 +875,41 @@ impl NewAgentTaskModal {
 
     fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(DismissEvent);
+    }
+
+    pub(crate) fn set_agents_on_path(
+        &mut self,
+        agents: &[crate::terminal_panel::empty_state::Agent],
+        cx: &mut Context<Self>,
+    ) {
+        let configured = TerminalSettings::get_global(cx).agent_task_command.clone();
+        let (options, default) = run_options(&configured, agents);
+        self.run_options = Some(options);
+        self.run_choice = default;
+        cx.notify();
+    }
+
+    pub(crate) fn choose_run_option(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self
+            .run_options
+            .as_ref()
+            .is_some_and(|options| index < options.len())
+        {
+            self.run_choice = index;
+            cx.notify();
+        }
+    }
+
+    /// What the new terminal runs: the chosen option, or before the agents
+    /// are found `terminal.agent_task_command`.
+    pub(crate) fn command_to_run(&self, cx: &App) -> Option<String> {
+        match &self.run_options {
+            Some(options) => options
+                .get(self.run_choice)
+                .and_then(|option| option.command.clone()),
+            None => Some(TerminalSettings::get_global(cx).agent_task_command.clone())
+                .filter(|command| !command.trim().is_empty()),
+        }
     }
 
     fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
@@ -819,7 +935,7 @@ impl NewAgentTaskModal {
             Vec::new()
         };
         let setting = self.worktree_directory_setting.clone();
-        let command = TerminalSettings::get_global(cx).agent_task_command.clone();
+        let command = self.command_to_run(cx);
         self.creating = true;
         cx.notify();
 
@@ -884,7 +1000,7 @@ impl NewAgentTaskModal {
                     directory,
                     task.name.clone(),
                     env,
-                    task_commands(setup, Some(command)),
+                    task_commands(setup, command),
                     window,
                     cx,
                 )
@@ -936,6 +1052,8 @@ impl ModalView for NewAgentTaskModal {}
 
 impl Render for NewAgentTaskModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // SOLO: laid out as the "+" menu's "New Terminal in New
+        // Worktree…": the name with its branch below, then what runs.
         let status: Option<(SharedString, Color)> = match &self.repository {
             RepositoryState::Loading => None,
             RepositoryState::Failed(message) => Some((message.clone(), Color::Error)),
@@ -948,123 +1066,152 @@ impl Render for NewAgentTaskModal {
                     .into(),
                     Color::Error,
                 )),
-                Some(branch) => self.preview(cx).map(|(new_branch, directory)| {
-                    let spans = self.include_other_repositories
-                        && !self.other_repositories.is_empty();
-                    let text = if spans && is_chinese() {
-                        format!(
-                            "在每个仓库从当前分支新建分支 {new_branch}，工作区都放在 {}",
-                            directory.display()
-                        )
-                    } else if spans {
-                        format!(
-                            "New branch {new_branch} in each repository from its current branch, worktrees side by side in {}",
-                            directory.display()
-                        )
-                    } else if is_chinese() {
-                        format!(
-                            "从 {branch} 新建分支 {new_branch}，工作区 {}",
-                            directory.display()
-                        )
+                Some(_) => self.preview(cx).map(|(new_branch, _)| {
+                    let text = if is_chinese() {
+                        format!("分支 {new_branch}")
                     } else {
-                        format!(
-                            "New branch {new_branch} from {branch}, worktree {}",
-                            directory.display()
-                        )
+                        format!("Branch {new_branch}")
                     };
                     (text.into(), Color::Muted)
                 }),
             },
         };
-        let command = TerminalSettings::get_global(cx).agent_task_command.clone();
-        let runs = if command.trim().is_empty() {
-            None
-        } else if is_chinese() {
-            Some(format!(
-                "然后在其中的终端运行 {command}（设置项 terminal.agent_task_command）"
-            ))
-        } else {
-            Some(format!(
-                "Then runs {command} in a terminal there (terminal.agent_task_command)"
-            ))
-        };
+        let run_options = self.run_options.clone().unwrap_or_default();
+        let border = cx.theme().colors().border;
 
         v_flex()
-            .w(rems(34.))
-            .elevation_2(cx)
+            .w(rems(30.))
+            .p_4()
+            .gap_3()
+            .elevation_3(cx)
             .key_context("NewAgentTask")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
             .child(
-                h_flex().px_2().pt_2().child(
-                    Label::new(tr("New Agent Task", "新建 agent 任务"))
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
-                ),
-            )
-            .child(
-                div()
-                    .border_b_1()
-                    .border_color(cx.theme().colors().border_variant)
-                    .px_2()
-                    .py_1()
-                    .child(self.editor.clone()),
+                Label::new(tr(
+                    "New Terminal in New Worktree",
+                    "在新 worktree 中新建终端",
+                ))
+                .weight(gpui::FontWeight::BOLD),
             )
             .child(
                 v_flex()
-                    .px_2()
-                    .py_1()
-                    .gap_0p5()
-                    .when(!self.other_repositories.is_empty(), |this| {
-                        let names: Vec<String> = self
-                            .other_repositories
-                            .iter()
-                            .filter_map(|other| other.main_root.file_name())
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .collect();
-                        let label = if is_chinese() {
-                            format!("同时在工作区的其他仓库里建：{}", names.join("、"))
-                        } else {
-                            format!(
-                                "Also in the workspace's other repositories: {}",
-                                names.join(", ")
-                            )
-                        };
-                        this.child(
-                            Checkbox::new(
-                                "agent-task-other-repositories",
-                                if self.include_other_repositories {
-                                    ToggleState::Selected
-                                } else {
-                                    ToggleState::Unselected
-                                },
-                            )
-                            .label(label)
-                            .label_size(LabelSize::Small)
-                            .on_click(cx.listener(
-                                |this, state: &ToggleState, _, cx| {
-                                    this.include_other_repositories = state.selected();
-                                    cx.notify();
-                                },
-                            )),
-                        )
-                    })
+                    .gap_1()
+                    .child(
+                        Label::new(tr("Name", "名称"))
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(border)
+                            .child(self.editor.clone()),
+                    )
                     .when_some(status, |this, (text, color)| {
-                        this.child(Label::new(text).size(LabelSize::Small).color(color))
-                    })
-                    .when_some(runs, |this, runs| {
-                        this.child(Label::new(runs).size(LabelSize::Small).color(Color::Muted))
-                    })
-                    .when(self.creating, |this| {
                         this.child(
-                            Label::new(tr("Creating the worktree…", "正在创建工作区…"))
+                            Label::new(text)
                                 .size(LabelSize::Small)
-                                .color(Color::Accent),
+                                .color(color)
+                                .buffer_font(cx),
                         )
-                    })
-                    .when_some(self.error.clone(), |this, error| {
-                        this.child(Label::new(error).size(LabelSize::Small).color(Color::Error))
                     }),
+            )
+            .when(!self.other_repositories.is_empty(), |this| {
+                let names: Vec<String> = self
+                    .other_repositories
+                    .iter()
+                    .filter_map(|other| other.main_root.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .collect();
+                let label = if is_chinese() {
+                    format!("同时在工作区的其他仓库里建：{}", names.join("、"))
+                } else {
+                    format!(
+                        "Also in the workspace's other repositories: {}",
+                        names.join(", ")
+                    )
+                };
+                this.child(
+                    Checkbox::new(
+                        "agent-task-other-repositories",
+                        if self.include_other_repositories {
+                            ToggleState::Selected
+                        } else {
+                            ToggleState::Unselected
+                        },
+                    )
+                    .label(label)
+                    .label_size(LabelSize::Small)
+                    .on_click(cx.listener(
+                        |this, state: &ToggleState, _, cx| {
+                            this.include_other_repositories = state.selected();
+                            cx.notify();
+                        },
+                    )),
+                )
+            })
+            .when(!run_options.is_empty(), |this| {
+                this.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            Label::new(tr("Run in the Terminal", "在终端里运行"))
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .children(run_options.iter().enumerate().map(|(index, option)| {
+                                    let selected = index == self.run_choice;
+                                    Button::new(("agent-task-run", index), option.label.clone())
+                                        .style(if selected {
+                                            ButtonStyle::Filled
+                                        } else {
+                                            ButtonStyle::Outlined
+                                        })
+                                        .toggle_state(selected)
+                                        .label_size(LabelSize::Small)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.choose_run_option(index, cx)
+                                        }))
+                                })),
+                        ),
+                )
+            })
+            .when(self.creating, |this| {
+                this.child(
+                    Label::new(tr("Creating the worktree…", "正在创建 worktree…"))
+                        .size(LabelSize::Small)
+                        .color(Color::Accent),
+                )
+            })
+            .when_some(self.error.clone(), |this, error| {
+                this.child(Label::new(error).size(LabelSize::Small).color(Color::Error))
+            })
+            .child(
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("agent-task-cancel", tr("Cancel", "取消"))
+                            .style(ButtonStyle::Outlined)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.cancel(&menu::Cancel, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("agent-task-create", tr("Create", "新建"))
+                            .style(ButtonStyle::Filled)
+                            .disabled(self.creating)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.confirm(&menu::Confirm, window, cx)
+                            })),
+                    ),
             )
     }
 }
@@ -1690,7 +1837,7 @@ impl AgentTasksModal {
                 Ok(MergeOutcome::Conflicts(files)) => (
                     if chinese {
                         format!(
-                            "合并有冲突，已中止，{} 保持原样。冲突文件：\n{}\n\n可以在任务的工作区里把 {} 合并进来并解决冲突（例如交给 agent），然后再合并。",
+                            "合并有冲突，已中止，{} 保持原样。冲突文件：\n{}\n\n可以在任务的 worktree 里把 {} 合并进来并解决冲突（例如交给 agent），然后再合并。",
                             task.base_branch,
                             files.join("\n"),
                             task.base_branch
@@ -1771,7 +1918,7 @@ impl AgentTasksModal {
             let (message, is_error) = match deleted {
                 Ok(None) => (
                     if is_chinese() {
-                        format!("已删除任务 {} 的工作区和分支。", task.name)
+                        format!("已删除任务 {} 的 worktree 和分支。", task.name)
                     } else {
                         format!("Deleted the worktree and branch of {}.", task.name)
                     },
@@ -1780,7 +1927,7 @@ impl AgentTasksModal {
                 Ok(Some(teardown_error)) => (
                     if is_chinese() {
                         format!(
-                            "已删除任务 {} 的工作区和分支，但清理命令失败：{teardown_error:#}",
+                            "已删除任务 {} 的 worktree 和分支，但清理命令失败：{teardown_error:#}",
                             task.name
                         )
                     } else {
@@ -1849,7 +1996,7 @@ impl AgentTasksModal {
                 let has_worktree = task.worktree_path.is_some();
                 let location = match &task.worktree_path {
                     Some(path) => path.display().to_string(),
-                    None => tr("worktree is gone", "工作区已不存在").to_string(),
+                    None => tr("worktree is gone", "worktree 已不存在").to_string(),
                 };
                 let selected = index == self.selected;
                 v_flex()
@@ -2006,7 +2153,7 @@ impl AgentTasksModal {
             }
             (FinishAction::Delete, true) => {
                 format!(
-                    "删除任务“{}”的工作区和分支 {}？",
+                    "删除任务“{}”的 worktree 和分支 {}？",
                     display_name(task),
                     task.branch
                 )
@@ -2050,7 +2197,7 @@ impl AgentTasksModal {
                                 body = body.child(
                                     Label::new(if chinese {
                                         format!(
-                                            "{} 没有在任何工作区检出，请先检出它再合并。",
+                                            "{} 没有在任何 worktree 检出，请先检出它再合并。",
                                             task.base_branch
                                         )
                                     } else {
@@ -2390,12 +2537,12 @@ impl Render for AgentTasksModal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, VisualTestContext};
     use project::{FakeFs, Project};
     use settings::SettingsStore;
     use util::path;
 
-    /// A cloned repository's .solo/tasks.json runs nothing until the project
+    /// A cloned repository's .solo/worktrees.json runs nothing until the project
     /// is trusted.
     #[gpui::test]
     async fn test_tasks_config_needs_a_trusted_project(cx: &mut TestAppContext) {
@@ -2469,6 +2616,118 @@ mod tests {
             Path::new(path!("/project/sub")),
             cx
         )));
+    }
+
+    // SOLO: what the new worktree's terminal runs: nothing, or an
+    // agent CLI on the `PATH`, by default the one
+    // `terminal.agent_task_command` runs.
+    #[test]
+    fn run_options_follow_the_setting() {
+        use crate::terminal_panel::empty_state::Agent;
+        let claude = Agent {
+            name: "Claude Code",
+            command: "claude",
+        };
+        let codex = Agent {
+            name: "Codex",
+            command: "codex",
+        };
+        let commands = |options: &[RunOption]| {
+            options
+                .iter()
+                .map(|option| (option.label.to_string(), option.command.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        let (options, default) = run_options("claude", &[claude, codex]);
+        assert_eq!(
+            commands(&options),
+            vec![
+                ("Don't Run".to_string(), None),
+                ("Claude Code".to_string(), Some("claude".to_string())),
+                ("Codex".to_string(), Some("codex".to_string())),
+            ]
+        );
+        assert_eq!(default, 1);
+
+        // The setting's options stay with its agent.
+        let (options, default) = run_options("codex --full-auto", &[claude, codex]);
+        assert_eq!(default, 2);
+        assert_eq!(options[2].command.as_deref(), Some("codex --full-auto"));
+        assert_eq!(options[1].command.as_deref(), Some("claude"));
+
+        // Nothing set: nothing runs. An agent not on the PATH isn't offered.
+        assert_eq!(run_options("", &[claude]).1, 0);
+        let (options, default) = run_options("claude", &[codex]);
+        assert_eq!(options.len(), 2);
+        assert_eq!(default, 0);
+
+        // Another program set: offered too, and the default.
+        let (options, default) = run_options("aider --yes", &[claude]);
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[2].label.as_ref(), "aider");
+        assert_eq!(default, 2);
+    }
+
+    // SOLO: "Don't Run" opens just a shell; an agent chosen runs.
+    #[gpui::test]
+    async fn test_new_worktree_terminal_runs_the_chosen_agent(cx: &mut TestAppContext) {
+        use crate::terminal_panel::empty_state::Agent;
+        cx.update(|cx| {
+            let store = SettingsStore::test(cx);
+            cx.set_global(store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            crate::init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), serde_json::json!({ "a.txt": "a" }))
+            .await;
+        let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            NewAgentTaskModal::toggle(workspace, window, cx);
+        });
+        cx.run_until_parked();
+        let modal = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_modal::<NewAgentTaskModal>(cx)
+                .expect("the New Terminal in New Worktree dialog")
+        });
+        // A fake: tests never look up or run real agents.
+        modal.update(cx, |modal, cx| {
+            modal.set_agents_on_path(
+                &[
+                    Agent {
+                        name: "Claude Code",
+                        command: "claude",
+                    },
+                    Agent {
+                        name: "Codex",
+                        command: "codex",
+                    },
+                ],
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let command =
+            |cx: &mut VisualTestContext| modal.read_with(cx, |modal, cx| modal.command_to_run(cx));
+        assert_eq!(command(cx).as_deref(), Some("claude"));
+        assert_eq!(task_commands(None, command(cx)).as_deref(), Some("claude"));
+
+        modal.update(cx, |modal, cx| modal.choose_run_option(2, cx));
+        assert_eq!(command(cx).as_deref(), Some("codex"));
+
+        modal.update(cx, |modal, cx| modal.choose_run_option(0, cx));
+        assert_eq!(command(cx), None);
+        assert_eq!(task_commands(None, command(cx)), None);
+        // The worktree's own setup still runs.
+        assert_eq!(
+            task_commands(Some("npm install".into()), command(cx)).as_deref(),
+            Some("npm install")
+        );
     }
 
     /// Opening the task list from a workspace action reads the workspace's

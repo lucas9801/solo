@@ -188,16 +188,29 @@ the branch it started from, open a pull request, or delete it. Tasks are
 stored in the repository's git config, so they're still there after a restart.
 Local projects only.
 
+**New Terminal in New Worktree…** in the terminal column's **+** menu opens
+the same dialog: give it a name (the branch, `agent/<name>`, shows below it)
+and choose what runs in the terminal: nothing (just a shell), Claude Code or
+Codex (the ones on the `PATH`; `terminal.agent_task_command` picks the
+default). The menu's **Run Workflow…** (alt-shift-t) lists your workflows and
+the project's tasks: a workflow fills a new terminal's input with its first
+`{{argument}}` selected, without running it; a task runs as Spawn Task runs
+it.
+
 - **Several repositories:** in a workspace with folders from more than one git
   repository, New Agent Task can make the task in the others too. Each gets a
   worktree on the same new branch, side by side in one folder named for the
   task, and the agent starts in that folder, so it sees them all. Each
   repository's part is merged, opened as a pull request or deleted on its own;
-  the folder goes with the last one. Setup commands from `.solo/tasks.json`
+  the folder goes with the last one. Setup commands from `.solo/worktrees.json`
   don't run for such tasks.
 - **Trust:** the `setup` and `teardown` commands and `env` variables of a
-  repository's `.solo/tasks.json` are used only once you trust the project
+  repository's `.solo/worktrees.json` are used only once you trust the project
   (Zed's restricted mode); until then tasks are made without them.
+- **Config file:** this config used to be `.solo/tasks.json`, where Zed reads
+  project tasks. An old one (a JSON object) is renamed to
+  `.solo/worktrees.json` when Solo first reads it; a `.solo/tasks.json` with
+  project tasks (a JSON array) is left alone.
 - **Committing:** merging and pull requests take the task's commits. When it
   has uncommitted changes, **Ask the Agent to Commit** pastes a request into
   the task's agent to commit them, with a message it writes from the diff;
@@ -335,6 +348,11 @@ typed in an editor at the bottom of the terminal.
   new terminal (Ctrl+Shift+`), one running Claude Code or Codex (whichever is
   on the `PATH`) and the file finder. With the column hidden (Ctrl+`) and no
   files open, the editor area shows the same shortcuts.
+- The button at the right end of the terminal column's tab bar hides the
+  column (Ctrl+J); its terminals and agents keep running. The terminal icon
+  at the top of the activity bar on the left shows it again (or Ctrl+J), and
+  while the column is hidden it carries a count of the agents that want a
+  look: red failed, yellow waiting for you, green finished.
 
 ### Language servers on large repositories
 Language servers (rust-analyzer, clangd and others) analyze the project in

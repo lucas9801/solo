@@ -217,6 +217,7 @@ impl TerminalInput {
     pub fn new(
         terminal: Entity<Terminal>,
         languages: Option<Arc<LanguageRegistry>>,
+        workspace: WeakEntity<workspace::Workspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -253,6 +254,7 @@ impl TerminalInput {
                 last_completions: last_completions.clone(),
                 completer: completer.clone(),
                 input: this,
+                workspace,
             })));
             editor
         });
@@ -430,7 +432,7 @@ impl TerminalInput {
         });
     }
 
-    fn text(&self, cx: &App) -> String {
+    pub(crate) fn text(&self, cx: &App) -> String {
         self.editor.read(cx).text(cx)
     }
 
@@ -952,6 +954,23 @@ impl TerminalInput {
         self.filling_workflow = self.select_next_placeholder(window, cx);
     }
 
+    /// SOLO: puts a workflow's command in the input and focuses it, its first
+    /// `{{argument}}` selected, as picking it from ctrl-shift-r does.
+    pub(crate) fn fill_workflow(
+        &mut self,
+        command: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_text(command, window, cx);
+        self.editor.update(cx, |editor, cx| {
+            editor.move_to_beginning(&editor::actions::MoveToBeginning, window, cx)
+        });
+        self.filling_workflow = self.select_next_placeholder(window, cx);
+        let focus_handle = self.editor.focus_handle(cx);
+        window.focus(&focus_handle, cx);
+    }
+
     fn select_next_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.editor.update(cx, |editor, cx| {
             let snapshot = editor.display_snapshot(cx);
@@ -1417,7 +1436,10 @@ impl TerminalView {
             .map(|project| project.read(cx).languages().clone());
         let input = self
             .input
-            .get_or_insert_with(|| cx.new(|cx| TerminalInput::new(terminal, languages, window, cx)))
+            .get_or_insert_with(|| {
+                let workspace = self.workspace.clone();
+                cx.new(|cx| TerminalInput::new(terminal, languages, workspace, window, cx))
+            })
             .clone();
         // Typing goes to the input while the shell waits for a command.
         if !running && self.selected_command_block.is_none() && self.focus_handle.is_focused(window)
@@ -1425,7 +1447,25 @@ impl TerminalView {
             let focus_handle = input.read(cx).editor.focus_handle(cx);
             window.defer(cx, move |window, cx| window.focus(&focus_handle, cx));
         }
+        if !running && let Some(command) = self.pending_workflow.take() {
+            let input = input.clone();
+            window.defer(cx, move |window, cx| {
+                input.update(cx, |input, cx| input.fill_workflow(&command, window, cx))
+            });
+        }
         Some(input)
+    }
+
+    /// SOLO: puts a workflow's `command` in the input, its first
+    /// `{{argument}}` selected, once the shell shows its prompt.
+    pub(crate) fn fill_input_when_ready(
+        &mut self,
+        command: String,
+        cx: &mut Context<TerminalView>,
+    ) {
+        self.pending_workflow = Some(command);
+        // Filled as it's drawn next, once the input shows.
+        cx.notify();
     }
 }
 
@@ -1494,6 +1534,8 @@ struct ShellCompletionProvider {
     last_completions: Rc<RefCell<Option<CachedCompletions>>>,
     completer: Rc<RefCell<CompleteFn>>,
     input: WeakEntity<TerminalInput>,
+    /// SOLO: for the project's tasks, listed with the workflows.
+    workspace: WeakEntity<workspace::Workspace>,
 }
 
 /// The editor's text and the byte offset of its newest cursor.
@@ -1588,8 +1630,14 @@ impl ShellCompletionProvider {
 }
 
 impl ShellCompletionProvider {
-    /// Saved workflows, replacing the whole input, then an entry to edit them.
-    fn workflow_completions(&self, buffer: &Entity<Buffer>, cx: &App) -> CompletionResponse {
+    /// Saved workflows, then the project's tasks (SOLO, G37), replacing the
+    /// whole input, then an entry to edit the workflows.
+    fn workflow_completions(
+        &self,
+        buffer: &Entity<Buffer>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Task<Result<Vec<CompletionResponse>>> {
         let shell = self.terminal.upgrade().and_then(|terminal| {
             terminal
                 .read(cx)
@@ -1597,77 +1645,135 @@ impl ShellCompletionProvider {
                 .shell()
                 .map(str::to_string)
         });
-        let snapshot = buffer.read(cx).snapshot();
-        let start = snapshot.anchor_before(0);
-        let end = snapshot.anchor_after(snapshot.len());
-        let completion =
-            |label: String,
-             new_text: String,
-             documentation: Option<String>,
-             icon: IconName,
-             confirm: Option<CompletionConfirm>| project::Completion {
-                replace_range: start..end,
-                new_text,
-                label: CodeLabel::plain(label, None),
-                documentation: documentation
-                    .map(|text| CompletionDocumentation::MultiLinePlainText(text.into())),
-                source: CompletionSource::Custom,
-                icon_path: Some(icon.path().into()),
-                icon_color: None,
-                match_start: Some(start),
-                snippet_deduplication_key: None,
-                insert_text_mode: None,
-                confirm,
-                group: None,
-            };
-        let mut completions: Vec<_> = workflows::load(ShellFlavor::from_shell(shell.as_deref()))
-            .into_iter()
-            .map(|workflow| {
-                let documentation = match &workflow.description {
-                    Some(description) => format!("{}\n\n{description}", workflow.command),
-                    None => workflow.command.clone(),
-                };
-                // Select the first argument once the command is in.
-                let confirm = workflows::next_placeholder(&workflow.command, 0).map(|_| {
-                    Arc::new(|_, window: &mut Window, cx: &mut App| {
-                        window.dispatch_action(Box::new(SelectWorkflowArgument), cx);
-                        false
-                    }) as CompletionConfirm
-                });
-                completion(
-                    workflow.name,
-                    workflow.command,
-                    Some(documentation),
-                    IconName::BoltOutlined,
-                    confirm,
-                )
+        let workflows = workflows::load(ShellFlavor::from_shell(shell.as_deref()));
+        let tasks = self
+            .workspace
+            .update(cx, |workspace, cx| {
+                crate::run_workflow::project_tasks(workspace, window, cx)
             })
-            .collect();
-        completions.push(completion(
-            util::i18n::tr("Edit workflows…", "编辑 Workflows…").to_string(),
+            .ok();
+        let workspace = self.workspace.clone();
+        let buffer = buffer.clone();
+        cx.spawn(async move |cx| {
+            let tasks = match tasks {
+                Some(tasks) => tasks.await,
+                None => Vec::new(),
+            };
+            Ok(vec![cx.update(|cx| {
+                workflow_completions(&buffer, workflows, tasks, workspace, cx)
+            })])
+        })
+    }
+}
+
+fn workflow_completions(
+    buffer: &Entity<Buffer>,
+    workflows: Vec<workflows::Workflow>,
+    tasks: Vec<(project::TaskSourceKind, task::ResolvedTask)>,
+    workspace: WeakEntity<workspace::Workspace>,
+    cx: &App,
+) -> CompletionResponse {
+    let snapshot = buffer.read(cx).snapshot();
+    let start = snapshot.anchor_before(0);
+    let end = snapshot.anchor_after(snapshot.len());
+    let group = |key: &'static str, label: Option<&'static str>| {
+        Some(project::CompletionGroup {
+            key: key.into(),
+            label: label.map(Into::into),
+        })
+    };
+    let completion =
+        |label: String,
+         new_text: String,
+         documentation: Option<String>,
+         icon: IconName,
+         confirm: Option<CompletionConfirm>,
+         group: Option<project::CompletionGroup>| project::Completion {
+            replace_range: start..end,
+            new_text,
+            label: CodeLabel::plain(label, None),
+            documentation: documentation
+                .map(|text| CompletionDocumentation::MultiLinePlainText(text.into())),
+            source: CompletionSource::Custom,
+            icon_path: Some(icon.path().into()),
+            icon_color: None,
+            match_start: Some(start),
+            snippet_deduplication_key: None,
+            insert_text_mode: None,
+            confirm,
+            group,
+        };
+    let workflows_group = group("workflows", Some(util::i18n::tr("Workflows", "工作流")));
+    let mut completions: Vec<_> = workflows
+        .into_iter()
+        .map(|workflow| {
+            let documentation = match &workflow.description {
+                Some(description) => format!("{}\n\n{description}", workflow.command),
+                None => workflow.command.clone(),
+            };
+            // Select the first argument once the command is in.
+            let confirm = workflows::next_placeholder(&workflow.command, 0).map(|_| {
+                Arc::new(|_, window: &mut Window, cx: &mut App| {
+                    window.dispatch_action(Box::new(SelectWorkflowArgument), cx);
+                    false
+                }) as CompletionConfirm
+            });
+            completion(
+                workflow.name,
+                workflow.command,
+                Some(documentation),
+                IconName::BoltOutlined,
+                confirm,
+                workflows_group.clone(),
+            )
+        })
+        .collect();
+    // SOLO: a task runs as Spawn Task runs it, leaving the input as it
+    // was.
+    let tasks_group = group("tasks", Some(util::i18n::tr("Project Tasks", "项目任务")));
+    completions.extend(tasks.into_iter().map(|(kind, task)| {
+        let label = task.resolved_label.clone();
+        let documentation = task.resolved.command_label.clone();
+        let workspace = workspace.clone();
+        let task = Arc::new((kind, task));
+        completion(
+            label,
             snapshot.text(),
-            Some(if util::i18n::is_chinese() {
-                format!(
-                    "打开 {} 来添加、修改或删除 Workflow。",
-                    workflows::workflows_file().display()
-                )
-            } else {
-                format!(
-                    "Opens {} to add, change or remove workflows.",
-                    workflows::workflows_file().display()
-                )
-            }),
-            IconName::Pencil,
-            Some(Arc::new(|_, window: &mut Window, cx: &mut App| {
-                window.dispatch_action(Box::new(OpenWorkflowsFile), cx);
+            Some(documentation),
+            IconName::PlayOutlined,
+            Some(Arc::new(move |_, window: &mut Window, cx: &mut App| {
+                let (kind, task) = task.as_ref().clone();
+                crate::run_workflow::run_project_task(&workspace, kind, task, window, cx);
                 false
             })),
-        ));
-        CompletionResponse {
-            completions,
-            display_options: CompletionDisplayOptions::default(),
-            is_incomplete: false,
-        }
+            tasks_group.clone(),
+        )
+    }));
+    completions.push(completion(
+        util::i18n::tr("Edit Workflows…", "编辑工作流…").to_string(),
+        snapshot.text(),
+        Some(if util::i18n::is_chinese() {
+            format!(
+                "打开 {} 来添加、修改或删除 Workflow。",
+                workflows::workflows_file().display()
+            )
+        } else {
+            format!(
+                "Opens {} to add, change or remove workflows.",
+                workflows::workflows_file().display()
+            )
+        }),
+        IconName::Pencil,
+        Some(Arc::new(|_, window: &mut Window, cx: &mut App| {
+            window.dispatch_action(Box::new(OpenWorkflowsFile), cx);
+            false
+        })),
+        group("edit", None),
+    ));
+    CompletionResponse {
+        completions,
+        display_options: CompletionDisplayOptions::default(),
+        is_incomplete: false,
     }
 }
 
@@ -1687,7 +1793,7 @@ impl CompletionProvider for ShellCompletionProvider {
             return Task::ready(Ok(vec![self.history_completions(buffer, cx)]));
         }
         if self.searching_workflows.replace(false) {
-            return Task::ready(Ok(vec![self.workflow_completions(buffer, cx)]));
+            return self.workflow_completions(buffer, window, cx);
         }
         let Some(terminal) = self.terminal.upgrade() else {
             return Task::ready(Ok(Vec::new()));
@@ -1963,6 +2069,103 @@ mod tests {
                 input.history.borrow_mut().push(entry.to_string());
             }
         });
+    }
+
+    // SOLO: ctrl-shift-r lists the workflows, then the project's tasks,
+    // each group under its header, then "Edit Workflows…"; a task leaves the
+    // input as it was.
+    #[gpui::test]
+    async fn test_workflow_menu_lists_project_tasks(cx: &mut TestAppContext) {
+        let (_, workspace) = crate::tests::init_test(cx).await;
+        let buffer = cx.new(|cx| Buffer::local("cargo", cx));
+        let task = task::TaskTemplate {
+            label: "test".to_string(),
+            command: "cargo".to_string(),
+            args: vec!["test".to_string()],
+            ..Default::default()
+        }
+        .resolve_task("test-source", &task::TaskContext::default())
+        .unwrap();
+        let workflow = workflows::Workflow {
+            name: "Push".to_string(),
+            command: "git push".to_string(),
+            description: None,
+        };
+        let response = cx.update(|cx| {
+            workflow_completions(
+                &buffer,
+                vec![workflow],
+                vec![(project::TaskSourceKind::UserInput, task)],
+                workspace.downgrade(),
+                cx,
+            )
+        });
+        let entries: Vec<(String, String, Option<String>)> = response
+            .completions
+            .iter()
+            .map(|completion| {
+                (
+                    completion.label.text.clone(),
+                    completion.new_text.clone(),
+                    completion
+                        .group
+                        .as_ref()
+                        .and_then(|group| group.label.as_ref())
+                        .map(|label| label.to_string()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                (
+                    "Push".to_string(),
+                    "git push".to_string(),
+                    Some("Workflows".to_string())
+                ),
+                (
+                    "test".to_string(),
+                    "cargo".to_string(),
+                    Some("Project Tasks".to_string())
+                ),
+                ("Edit Workflows…".to_string(), "cargo".to_string(), None),
+            ]
+        );
+        assert!(response.completions[1].confirm.is_some());
+    }
+
+    // SOLO: a workflow picked from "Run Workflow…" waits for the new
+    // terminal's prompt, then fills its input with the first argument
+    // selected, as picking it from ctrl-shift-r does; nothing runs.
+    #[gpui::test]
+    async fn test_workflow_fills_input_once_prompt_shows(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        let command = "git switch -c {{branch}} && echo {{other}}";
+        view.update(cx, |view, cx| {
+            view.fill_input_when_ready(command.to_string(), cx)
+        });
+        draw(cx);
+        assert!(view.read_with(cx, |view, _| view.input.is_none()));
+
+        write(&terminal, SHELL_PROMPT, cx);
+        assert_eq!(input_text(&view, cx), command);
+        assert!(input_focused(&view, cx));
+        let input = input(&view, cx);
+        let selected = input.update(cx, |input, cx| {
+            input.editor.update(cx, |editor, cx| {
+                let snapshot = editor.display_snapshot(cx);
+                let selection = editor.selections.newest::<language::Point>(&snapshot);
+                editor
+                    .buffer()
+                    .read(cx)
+                    .snapshot(cx)
+                    .text_for_range(selection.start..selection.end)
+                    .collect::<String>()
+            })
+        });
+        assert_eq!(selected, "{{branch}}");
+        assert!(view.read_with(cx, |view, _| view.pending_workflow.is_none()));
+        assert!(take_input_log(&terminal, cx).is_empty(), "nothing was run");
     }
 
     #[gpui::test]

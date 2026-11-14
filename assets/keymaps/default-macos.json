@@ -799,7 +799,7 @@
     "use_key_equivalents": true,
     "bindings": {
       "cmd-n": "workspace::NewFile",
-      "cmd-shift-r": "task::Spawn",
+      "cmd-shift-r": "terminal_panel::RunWorkflow",
       // All task parameters are captured and unchanged between reruns by default.
       // Use the `"reevaluate_context"` parameter to control this.
       "cmd-alt-r": ["task::Rerun", { "reevaluate_context": false }],

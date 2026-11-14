@@ -183,6 +183,8 @@ pub enum IconName {
     Github,
     Gitlab,
     Hash,
+    // SOLO: the terminal column's "Hide Terminal" button.
+    HideTerminalColumn,
     HistoryRerun,
     Image,
     Inception,

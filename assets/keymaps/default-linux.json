@@ -743,7 +743,7 @@
       "ctrl-shift-r": ["task::Rerun", { "reevaluate_context": false }],
       "ctrl-alt-r": "task::Rerun",
       "alt-t": "task::Rerun",
-      "alt-shift-t": "task::Spawn",
+      "alt-shift-t": "terminal_panel::RunWorkflow",
       "alt-shift-r": ["task::Spawn", { "reveal_target": "center" }],
       // also possible to spawn tasks by name:
       // "foo-bar": ["task::Spawn", { "task_name": "MyTask", "reveal_target": "dock" }]

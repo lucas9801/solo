@@ -21,7 +21,7 @@ Frontend, backend and a shared library in separate repositories, and one change 
 
 ### A repository's own task setup
 
-A `.solo/tasks.json` in the repository sets where worktrees go, which ignored files (like `.env`) each task gets a copy of, what runs before the agent starts and before a task is deleted, and a port of its own for each task.
+A `.solo/worktrees.json` in the repository sets where worktrees go, which ignored files (like `.env`) each task gets a copy of, what runs before the agent starts and before a task is deleted, and a port of its own for each task.
 
 ## Seeing who's doing what
 

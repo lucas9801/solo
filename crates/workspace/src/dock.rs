@@ -414,7 +414,9 @@ pub struct PanelButtons {
     _settings_subscription: Subscription,
 }
 
-fn terminal_first_layout(cx: &App) -> bool {
+/// SOLO: whether the workspace uses the terminal-first layout, where the bottom
+/// dock is the terminal column.
+pub fn terminal_first_layout(cx: &App) -> bool {
     WorkspaceSettings::get_global(cx).bottom_dock_layout
         == settings::BottomDockLayout::TerminalFirst
 }
@@ -1555,6 +1557,11 @@ impl Render for PanelButtons {
         if !self.vertical && dock_position == DockPosition::Left && terminal_first_layout(cx) {
             return div().into_any_element();
         }
+        // SOLO: and the terminal column is hidden from the tab bar's button and
+        // shown again from the activity bar, not from the status bar.
+        if !self.vertical && dock_position == DockPosition::Bottom && terminal_first_layout(cx) {
+            return div().into_any_element();
+        }
 
         let (menu_anchor, menu_attach) = match dock.position {
             _ if self.vertical => (Anchor::TopLeft, Anchor::TopRight),
@@ -1793,6 +1800,120 @@ impl StatusItemView for PanelButtons {
         // Panel buttons are hidden on a per-panel basis through each panel
         // button's own context menu.
         None
+    }
+}
+
+/// SOLO: the terminal column's button at the top of the terminal-first
+/// layout's activity bar. Highlighted while the column is shown; while it's
+/// hidden, it shows the column again and carries how many agents want a look.
+pub struct TerminalColumnButton {
+    dock: Entity<Dock>,
+    workspace: WeakEntity<Workspace>,
+    _subscriptions: [Subscription; 2],
+}
+
+impl TerminalColumnButton {
+    pub fn new(
+        dock: Entity<Dock>,
+        workspace: WeakEntity<Workspace>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let activity = crate::agent_activity::AgentActivity::global(cx);
+        Self {
+            _subscriptions: [
+                cx.observe(&dock, |_, _, cx| cx.notify()),
+                cx.observe(&activity, |_, _, cx| cx.notify()),
+            ],
+            dock,
+            workspace,
+        }
+    }
+
+    /// The count the button carries while the column is hidden: the agents
+    /// in the most pressing of the states that want a look (failed, waiting
+    /// for you, finished a turn you haven't seen), and that state.
+    pub fn badge(&self, cx: &App) -> Option<(usize, crate::agent_activity::AgentState)> {
+        use crate::agent_activity::{self, AgentCounts, AgentState};
+        if self.dock.read(cx).is_open() {
+            return None;
+        }
+        let workspace = self.workspace.upgrade()?;
+        let counts = AgentCounts::of(&agent_activity::terminals(&workspace, cx));
+        [
+            (counts.failed, AgentState::Failed),
+            (counts.needs_input, AgentState::NeedsInput),
+            (counts.finished, AgentState::Finished),
+        ]
+        .into_iter()
+        .find(|(count, _)| *count > 0)
+    }
+}
+
+impl Render for TerminalColumnButton {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_open = self.dock.read(cx).is_open();
+        let badge = self.badge(cx);
+        let tooltip: SharedString = if is_open {
+            util::i18n::tr("Terminal", "终端").into()
+        } else {
+            util::i18n::tr("Show Terminal", "显示终端栏").into()
+        };
+        let workspace = self.workspace.clone();
+        let button = IconButton::new(("terminal-column", is_open as u64), IconName::Terminal)
+            .icon_size(IconSize::Small)
+            .toggle_state(is_open)
+            .tab_index(0isize)
+            .aria_label(tooltip.clone())
+            .tooltip(move |_window, cx| {
+                Tooltip::for_action(tooltip.clone(), &crate::ToggleBottomDock, cx)
+            })
+            .on_click(move |_, window, cx| {
+                workspace
+                    .update(cx, |workspace, cx| {
+                        workspace.show_terminal_column(window, cx)
+                    })
+                    .log_err();
+            });
+        div()
+            .debug_selector(|| "terminal-column-button".into())
+            .relative()
+            .child(button)
+            .when_some(badge, |this, (count, state)| {
+                let background = state.color().color(cx);
+                let black = gpui::black();
+                let white = gpui::white();
+                let text = if ui::utils::calculate_contrast_ratio(black, background)
+                    >= ui::utils::calculate_contrast_ratio(white, background)
+                {
+                    black
+                } else {
+                    white
+                };
+                this.child(
+                    h_flex()
+                        .debug_selector(|| "terminal-column-badge".into())
+                        .absolute()
+                        .right(px(-3.))
+                        .bottom(px(-3.))
+                        .h(px(12.))
+                        .min_w(px(12.))
+                        .px(px(2.))
+                        .rounded_full()
+                        .justify_center()
+                        .bg(background)
+                        .child(
+                            Label::new(if count > 99 {
+                                "99+".to_string()
+                            } else {
+                                count.to_string()
+                            })
+                            .size(LabelSize::Custom(rems_from_px(9_f32)))
+                            .weight(gpui::FontWeight::BOLD)
+                            .color(Color::Custom(text))
+                            .untranslated(),
+                        ),
+                )
+            })
     }
 }
 

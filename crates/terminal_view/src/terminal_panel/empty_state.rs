@@ -25,13 +25,13 @@ const COMPACT_BELOW: Pixels = px(360.);
 
 /// An agent CLI the empty state can start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Agent {
+pub(crate) struct Agent {
     pub name: &'static str,
     pub command: &'static str,
 }
 
 /// The agents whose command `is_on_path` finds, in [`AGENTS`]' order.
-pub(super) fn agents_on_path(is_on_path: impl Fn(&str) -> bool) -> Vec<Agent> {
+pub(crate) fn agents_on_path(is_on_path: impl Fn(&str) -> bool) -> Vec<Agent> {
     AGENTS
         .iter()
         .filter(|(_, command)| is_on_path(command))

@@ -41,9 +41,13 @@ guide explains each feature in more detail.
   with their tools off, for a command to review and run
   (`terminal.ai_command_agent`).
 - Workflows: saved commands with `{{arguments}}`, listed with ctrl-shift-r
-  (or the bolt button). Tab moves between the arguments. Save a command from
-  its block (right click, or ctrl-s on a selected block); they're kept in
-  `workflows.json` in the settings directory, next to built-in ones.
+  (or the bolt button) along with the project's tasks. Tab moves between the
+  arguments. Save a command from its block (right click, or ctrl-s on a
+  selected block); they're kept in `workflows.json` in the settings
+  directory, next to built-in ones. **Run Workflow…** in the terminal
+  column's + menu (alt-shift-t) lists them too and fills a new terminal's
+  input with the one picked; a project task picked there runs as Spawn Task
+  runs it.
 
 **Working with AI agents**
 - Paths in terminal output open with a click: code in the editor, Markdown in
@@ -89,7 +93,9 @@ guide explains each feature in more detail.
   command palette). In a workspace with several repositories, a task can span
   them: a worktree of each, side by side in one folder where its agent works.
   With uncommitted changes, the task's agent can be asked to commit them. A
-  repository can set its tasks up in `.solo/tasks.json`:
+  repository can set its tasks up in `.solo/worktrees.json` (an older
+  `.solo/tasks.json` in this format is renamed to it when first read; one
+  with Zed's project tasks, a JSON array, is left alone):
 
   ```jsonc
   {

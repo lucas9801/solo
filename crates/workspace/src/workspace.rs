@@ -49,7 +49,9 @@ use client::{
     proto::{self, ErrorCode, PanelId, PeerId},
 };
 use collections::{HashMap, HashSet, TypeIdHashMap, hash_map};
-use dock::{Dock, DockPosition, PanelButtons, PanelHandle, RESIZE_HANDLE_SIZE};
+use dock::{
+    Dock, DockPosition, PanelButtons, PanelHandle, RESIZE_HANDLE_SIZE, TerminalColumnButton,
+};
 use fs::Fs;
 use futures::{
     Future, FutureExt, StreamExt,
@@ -1594,6 +1596,10 @@ pub struct Workspace {
     status_bar: Entity<StatusBar>,
     /// Vertical buttons for the left dock's panels, shown in the terminal-first layout.
     activity_bar: Entity<PanelButtons>,
+    /// SOLO: the terminal column's button at the top of the activity bar.
+    terminal_column_button: Entity<TerminalColumnButton>,
+    /// SOLO: whether the terminal column was shown, to tell when it's hidden.
+    terminal_column_was_open: bool,
     /// Share of the width the terminal takes beside the editor in the terminal-first layout.
     terminal_first_split: f32,
     _save_terminal_first_split: Task<()>,
@@ -1980,6 +1986,17 @@ impl Workspace {
         let bottom_dock_buttons = cx.new(|cx| PanelButtons::new(bottom_dock.clone(), cx));
         let right_dock_buttons = cx.new(|cx| PanelButtons::new(right_dock.clone(), cx));
         let activity_bar = cx.new(|cx| PanelButtons::new_vertical(left_dock.clone(), cx));
+        let terminal_column_button =
+            cx.new(|cx| TerminalColumnButton::new(bottom_dock.clone(), weak_handle.clone(), cx));
+        // SOLO: the first time the terminal column is hidden, say that its
+        // terminals keep running.
+        cx.observe(&bottom_dock, |workspace: &mut Workspace, dock, cx| {
+            let is_open = dock.read(cx).is_open();
+            if std::mem::replace(&mut workspace.terminal_column_was_open, is_open) && !is_open {
+                workspace.notify_terminal_column_hidden(cx);
+            }
+        })
+        .detach();
         let multi_workspace = window
             .root::<MultiWorkspace>()
             .flatten()
@@ -2106,6 +2123,8 @@ impl Workspace {
             last_active_view_id: None,
             status_bar,
             activity_bar,
+            terminal_column_button,
+            terminal_column_was_open: false,
             terminal_first_split: db::kvp::KeyValueStore::global(cx)
                 .read_kvp(TERMINAL_FIRST_SPLIT_KEY)
                 .log_err()
@@ -9265,6 +9284,8 @@ impl Workspace {
                     .bg(activity_bar_background)
                     .border_r_1()
                     .border_color(border_color)
+                    .gap_1()
+                    .child(self.terminal_column_button.clone())
                     .child(self.activity_bar.clone()),
             )
             .children(self.render_dock(DockPosition::Left, &self.left_dock, window, cx))
@@ -9374,6 +9395,75 @@ impl Workspace {
                 .child(v_flex().w(px(260.)).gap_1().children(rows))
                 .into_any_element(),
         )
+    }
+
+    /// SOLO: shows the terminal column (the bottom dock) and focuses its
+    /// terminal, or just focuses it if it's shown.
+    pub fn show_terminal_column(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let other_is_zoomed =
+            self.zoomed.is_some() && self.zoomed_position != Some(DockPosition::Bottom);
+        if self.bottom_dock.read(cx).is_open() && !other_is_zoomed {
+            if let Some(panel) = self.bottom_dock.read(cx).active_panel() {
+                window.focus(&panel.activation_focus_handle(cx), cx);
+            }
+        } else {
+            self.toggle_dock(DockPosition::Bottom, window, cx);
+        }
+    }
+
+    /// SOLO: says, once, that hiding the terminal column leaves its terminals
+    /// running; "Got It" keeps it from being said again.
+    fn notify_terminal_column_hidden(&mut self, cx: &mut Context<Self>) {
+        if !dock::terminal_first_layout(cx)
+            || cx.has_global::<TerminalColumnHiddenNoticeShown>()
+            || db::kvp::KeyValueStore::global(cx)
+                .read_kvp(TERMINAL_COLUMN_HIDDEN_NOTICE_KEY)
+                .log_err()
+                .flatten()
+                .is_some()
+        {
+            return;
+        }
+        cx.set_global(TerminalColumnHiddenNoticeShown);
+        let workspace = self.weak_self.clone();
+        self.show_notification(
+            NotificationId::unique::<TerminalColumnHiddenNotice>(),
+            cx,
+            |cx| {
+                cx.new(|cx| {
+                    MessageNotification::new(
+                        util::i18n::tr(
+                            "Terminal column hidden. Terminals are still running.",
+                            "终端栏已隐藏，终端仍在运行。",
+                        ),
+                        cx,
+                    )
+                    .primary_message(util::i18n::tr("Show", "显示"))
+                    .primary_on_click(move |window, cx| {
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.show_terminal_column(window, cx)
+                            })
+                            .log_err();
+                    })
+                    .secondary_message(util::i18n::tr("Got It", "知道了"))
+                    .secondary_on_click(|_, cx| {
+                        let kvp = db::kvp::KeyValueStore::global(cx);
+                        cx.background_spawn(async move {
+                            kvp.write_kvp(
+                                TERMINAL_COLUMN_HIDDEN_NOTICE_KEY.to_string(),
+                                "1".to_string(),
+                            )
+                            .await
+                            .log_err();
+                        })
+                        .detach();
+                    })
+                    .show_close_button(false)
+                    .show_suppress_button(false)
+                })
+            },
+        );
     }
 
     /// Sets the terminal's share of the terminal-first layout and saves it once
@@ -10123,6 +10213,14 @@ impl Render for DraggedTerminalSplit {
 
 /// Share of the width the terminal takes while the editor is shown beside it.
 const TERMINAL_FIRST_SPLIT_KEY: &str = "solo_terminal_first_split";
+/// SOLO: set once "Got It" is clicked on the notice that the terminal column
+/// was hidden.
+/// SOLO: the notice that the terminal column was hidden.
+struct TerminalColumnHiddenNotice;
+/// SOLO: set once that notice was shown, to show it once a session.
+struct TerminalColumnHiddenNoticeShown;
+impl Global for TerminalColumnHiddenNoticeShown {}
+const TERMINAL_COLUMN_HIDDEN_NOTICE_KEY: &str = "solo_terminal_column_hidden_notice_dismissed";
 const DEFAULT_TERMINAL_FIRST_SPLIT: f32 = 0.5;
 
 impl Render for Workspace {
@@ -21546,6 +21644,189 @@ mod tests {
         set_bottom_dock_layout(BottomDockLayout::Contained, cx);
         cx.run_until_parked();
         assert!(cx.debug_bounds("terminal-column-hints").is_none());
+    }
+
+    // SOLO: the hidden terminal column comes back from the activity bar,
+    // whose terminal button carries the agents waiting for you; the first time
+    // it's hidden a notice says its terminals keep running.
+    #[gpui::test]
+    async fn test_hidden_terminal_column_shows_from_activity_bar(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        cx.update(|_, cx| {
+            cx.bind_keys([gpui::KeyBinding::new("ctrl-j", ToggleBottomDock, None)]);
+            // A fake: one agent waiting for you, one working.
+            agent_activity::register(
+                |_, _| {
+                    vec![
+                        agent_activity::WorkspaceTerminal {
+                            id: EntityId::from(1_u64),
+                            title: "claude".into(),
+                            agent: Some(agent_activity::AgentState::NeedsInput),
+                        },
+                        agent_activity::WorkspaceTerminal {
+                            id: EntityId::from(2_u64),
+                            title: "codex".into(),
+                            agent: Some(agent_activity::AgentState::Working),
+                        },
+                    ]
+                },
+                |_, _, _, _| {},
+                cx,
+            );
+        });
+        let panel = add_fake_terminal_panel(&workspace, cx);
+        cx.update(|window, cx| window.focus(&panel.focus_handle(cx), cx));
+        cx.run_until_parked();
+        let button =
+            workspace.read_with(cx, |workspace, _| workspace.terminal_column_button.clone());
+        let notice_shown = |cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |workspace, _| {
+                workspace.has_notification(&NotificationId::unique::<TerminalColumnHiddenNotice>())
+            })
+        };
+        let column_open = |cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |workspace, cx| {
+                workspace.bottom_dock().read(cx).is_open()
+            })
+        };
+
+        // Shown: highlighted, no count.
+        assert!(cx.debug_bounds("terminal-column-button").is_some());
+        assert!(cx.debug_bounds("terminal-column-badge").is_none());
+        assert_eq!(button.read_with(cx, |button, cx| button.badge(cx)), None);
+
+        // Hidden: the count of agents waiting for you, and the notice.
+        cx.simulate_keystrokes("ctrl-j");
+        cx.run_until_parked();
+        assert!(!column_open(cx));
+        assert_eq!(
+            button.read_with(cx, |button, cx| button.badge(cx)),
+            Some((1, agent_activity::AgentState::NeedsInput))
+        );
+        assert!(cx.debug_bounds("terminal-column-badge").is_some());
+        assert!(notice_shown(cx));
+
+        // Clicking the activity bar's button shows the column again.
+        let bounds = cx
+            .debug_bounds("terminal-column-button")
+            .expect("terminal button in the activity bar");
+        cx.simulate_click(bounds.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert!(column_open(cx));
+        assert!(cx.debug_bounds("terminal-column-badge").is_none());
+
+        // The notice comes once.
+        workspace.update(cx, |workspace, cx| {
+            workspace
+                .dismiss_notification(&NotificationId::unique::<TerminalColumnHiddenNotice>(), cx)
+        });
+        cx.simulate_keystrokes("ctrl-j");
+        cx.run_until_parked();
+        assert!(!column_open(cx));
+        assert!(!notice_shown(cx));
+
+        // So does Ctrl+J.
+        cx.simulate_keystrokes("ctrl-j");
+        cx.run_until_parked();
+        assert!(column_open(cx));
+    }
+
+    // SOLO: the notice's "Show" shows the column; "Got It" keeps it from
+    // coming again.
+    #[gpui::test]
+    async fn test_terminal_column_hidden_notice_buttons(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        add_fake_terminal_panel(&workspace, cx);
+        let notice = |cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |workspace, _| {
+                workspace
+                    .notifications
+                    .iter()
+                    .find(|(id, _)| *id == NotificationId::unique::<TerminalColumnHiddenNotice>())
+                    .and_then(|(_, view)| view.clone().downcast::<MessageNotification>().ok())
+            })
+        };
+        let column_open = |cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |workspace, cx| {
+                workspace.bottom_dock().read(cx).is_open()
+            })
+        };
+
+        // Not in other layouts.
+        set_bottom_dock_layout(BottomDockLayout::Contained, cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Bottom, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(!column_open(cx));
+        assert!(notice(cx).is_none());
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Bottom, window, cx)
+        });
+        set_bottom_dock_layout(BottomDockLayout::TerminalFirst, cx);
+        cx.run_until_parked();
+        assert!(column_open(cx));
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Bottom, window, cx)
+        });
+        cx.run_until_parked();
+        let shown = notice(cx).expect("the notice");
+        shown.update_in(cx, |notice, window, cx| {
+            notice.click_button(true, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(column_open(cx));
+        assert!(notice(cx).is_none());
+        assert!(
+            cx.update(|_, cx| db::kvp::KeyValueStore::global(cx)
+                .read_kvp(TERMINAL_COLUMN_HIDDEN_NOTICE_KEY)
+                .unwrap())
+                .is_none(),
+            "\"Show\" doesn't keep it from coming again"
+        );
+
+        // "Got It", as if in a later session.
+        cx.update(|_, cx| cx.remove_global::<TerminalColumnHiddenNoticeShown>());
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Bottom, window, cx)
+        });
+        cx.run_until_parked();
+        let shown = notice(cx).expect("the notice");
+        shown.update_in(cx, |notice, window, cx| {
+            notice.click_button(false, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(!column_open(cx));
+        assert!(notice(cx).is_none());
+        assert!(
+            cx.update(|_, cx| db::kvp::KeyValueStore::global(cx)
+                .read_kvp(TERMINAL_COLUMN_HIDDEN_NOTICE_KEY)
+                .unwrap())
+                .is_some()
+        );
+        cx.update(|_, cx| cx.remove_global::<TerminalColumnHiddenNoticeShown>());
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Bottom, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(column_open(cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Bottom, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(!column_open(cx));
+        assert!(notice(cx).is_none());
     }
 
     struct FakeTerminalPanel {

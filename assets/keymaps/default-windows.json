@@ -731,7 +731,7 @@
       // Use the `"reevaluate_context"` parameter to control this.
       "ctrl-shift-r": ["task::Rerun", { "reevaluate_context": false }],
       "alt-t": "task::Rerun",
-      "shift-alt-t": "task::Spawn",
+      "shift-alt-t": "terminal_panel::RunWorkflow",
       "shift-alt-r": ["task::Spawn", { "reveal_target": "center" }],
       // also possible to spawn tasks by name:
       // "foo-bar": ["task::Spawn", { "task_name": "MyTask", "reveal_target": "dock" }]

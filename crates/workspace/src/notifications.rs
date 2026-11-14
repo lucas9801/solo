@@ -954,6 +954,20 @@ pub mod simple_message_notification {
             self.copy_text.as_ref()
         }
 
+        /// SOLO: does what clicking its primary or secondary button does.
+        #[cfg(any(test, feature = "test-support"))]
+        pub fn click_button(&mut self, primary: bool, window: &mut Window, cx: &mut Context<Self>) {
+            let on_click = if primary {
+                self.primary_on_click.clone()
+            } else {
+                self.secondary_on_click.clone()
+            };
+            if let Some(on_click) = on_click {
+                on_click(window, cx);
+            }
+            self.dismiss(cx);
+        }
+
         fn auto_dismiss(mut self, severity: ErrorSeverity, cx: &mut Context<Self>) -> Self {
             if let Some(delay) = severity.auto_dismiss_delay() {
                 self.auto_hide = Some(AutoHideState::new(delay, cx));

@@ -41,7 +41,7 @@ use anyhow::{Result, anyhow};
 use zed_actions::assistant::InlineAssist;
 
 // SOLO: what the terminal-first layout's terminal column shows with no terminals.
-mod empty_state;
+pub(crate) mod empty_state;
 
 // SOLO: shared with the workspace, whose terminal-first layout keeps the
 // bottom dock for this panel.
@@ -166,17 +166,25 @@ impl TerminalPanel {
                             .menu(move |window, cx| {
                                 let focus_handle = focus_handle.clone();
                                 let menu = ContextMenu::build(window, cx, |menu, _, _| {
+                                    // SOLO: a terminal in a new git
+                                    // worktree, and workflows (with the
+                                    // project's tasks) in place of Spawn Task.
                                     menu.context(focus_handle.clone())
                                         .action(
                                             "New Terminal",
                                             workspace::NewTerminal::default().boxed_clone(),
                                         )
-                                        // We want the focus to go back to terminal panel once task modal is dismissed,
-                                        // hence we focus that first. Otherwise, we'd end up without a focused element, as
-                                        // context menu will be gone the moment we spawn the modal.
                                         .action(
-                                            "Spawn Task",
-                                            zed_actions::Spawn::modal().boxed_clone(),
+                                            util::i18n::tr(
+                                                "New Terminal in New Worktree…",
+                                                "在新 worktree 中新建终端…",
+                                            ),
+                                            zed_actions::agent_task::NewAgentTask.boxed_clone(),
+                                        )
+                                        .separator()
+                                        .action(
+                                            util::i18n::tr("Run Workflow…", "运行工作流…"),
+                                            crate::run_workflow::RunWorkflow.boxed_clone(),
                                         )
                                 });
 
@@ -229,6 +237,25 @@ impl TerminalPanel {
                                     cx,
                                 )
                             })
+                    })
+                    // SOLO: the terminal-first layout hides its terminal
+                    // column from here (and shows it from the activity bar).
+                    .when(workspace::dock::terminal_first_layout(cx), |this| {
+                        let tooltip = util::i18n::tr("Hide Terminal", "隐藏终端栏");
+                        this.child(
+                            IconButton::new("hide-terminal-column", IconName::HideTerminalColumn)
+                                .icon_size(IconSize::Small)
+                                .aria_label(tooltip)
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(
+                                        workspace::ToggleBottomDock.boxed_clone(),
+                                        cx,
+                                    )
+                                })
+                                .tooltip(move |_window, cx| {
+                                    Tooltip::for_action(tooltip, &workspace::ToggleBottomDock, cx)
+                                }),
+                        )
                     })
                     .into_any_element()
                     .into();
@@ -3553,6 +3580,153 @@ mod tests {
         cx.run_until_parked();
         assert!(terminal_dock_open(window_handle, cx));
         assert_eq!(panel_terminal_count(&terminal_panel, cx), 1);
+    }
+
+    // SOLO: the terminal-first layout hides its terminal column from the
+    // tab bar, not from the status bar; its terminals keep running.
+    #[gpui::test]
+    async fn test_terminal_first_layout_hides_column_from_tab_bar(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        init_test(cx);
+        set_bottom_dock_layout(cx, settings::BottomDockLayout::TerminalFirst);
+
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        terminal_panel.update_in(cx, |panel, window, cx| {
+            panel.new_terminal_from_empty_state(window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(panel_terminal_count(&terminal_panel, cx), 1);
+        let focus_terminal_pane = |cx: &mut VisualTestContext| {
+            let pane = terminal_panel.read_with(cx, |panel, _| panel.active_pane.clone());
+            pane.update_in(cx, |pane, window, cx| {
+                window.focus(&pane.focus_handle(cx), cx)
+            });
+            cx.run_until_parked();
+        };
+        focus_terminal_pane(cx);
+        assert!(terminal_dock_open(window_handle, cx));
+        assert!(
+            cx.debug_bounds("ICON-TerminalAlt").is_none(),
+            "no terminal button in the status bar"
+        );
+
+        let hide = cx
+            .debug_bounds("ICON-HideTerminalColumn")
+            .expect("the tab bar's hide button");
+        cx.simulate_click(hide.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(!terminal_dock_open(window_handle, cx));
+        assert_eq!(panel_terminal_count(&terminal_panel, cx), 1);
+        assert!(cx.debug_bounds("ICON-TerminalAlt").is_none());
+
+        // Other layouts keep Zed's status bar button and no hide button.
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.bottom_dock_layout =
+                        Some(settings::BottomDockLayout::Contained);
+                });
+            })
+        });
+        window_handle
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    workspace.toggle_dock(DockPosition::Bottom, window, cx)
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+        focus_terminal_pane(cx);
+        assert!(terminal_dock_open(window_handle, cx));
+        assert!(cx.debug_bounds("ICON-TerminalAlt").is_some());
+        assert!(cx.debug_bounds("ICON-HideTerminalColumn").is_none());
+    }
+
+    // SOLO: the "+" menu: New Terminal, New Terminal in New Worktree…
+    // (the new-worktree dialog), then Run Workflow… (the workflow list, whose
+    // workflow fills a new terminal's input).
+    #[gpui::test]
+    async fn test_new_menu_opens_worktree_dialog_and_workflows(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        init_test(cx);
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        terminal_panel
+            .update_in(cx, |panel, window, cx| {
+                panel.add_terminal_shell(false, None, RevealStrategy::Always, window, cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        let pane = terminal_panel.read_with(cx, |panel, _| panel.active_pane.clone());
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let choose_from_menu = |entries_down: usize, cx: &mut VisualTestContext| {
+            pane.update_in(cx, |pane, window, cx| {
+                window.focus(&pane.focus_handle(cx), cx)
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let handle = pane.read_with(cx, |pane, _| pane.new_item_context_menu_handle.clone());
+            cx.update(|window, cx| handle.show(window, cx));
+            cx.run_until_parked();
+            assert!(handle.is_deployed(), "the + menu should open");
+            for _ in 0..entries_down {
+                cx.dispatch_action(menu::SelectNext);
+            }
+            cx.dispatch_action(menu::Confirm);
+            cx.run_until_parked();
+        };
+
+        choose_from_menu(2, cx);
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(
+                workspace
+                    .active_modal::<crate::agent_tasks::NewAgentTaskModal>(cx)
+                    .is_some(),
+                "New Terminal in New Worktree… should open its dialog"
+            );
+            workspace.hide_modal(window, cx);
+        });
+
+        choose_from_menu(3, cx);
+        let picker = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_modal::<crate::run_workflow::RunWorkflowModal>(cx)
+                .expect("Run Workflow… should open the list")
+                .read(cx)
+                .picker()
+                .clone()
+        });
+
+        // A workflow goes into a new terminal's input, not run.
+        let before = panel_terminal_count(&terminal_panel, cx);
+        picker.update_in(cx, |picker, window, cx| {
+            picker
+                .delegate
+                .select_named("Create a git branch and switch to it");
+            picker.delegate.confirm(false, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(panel_terminal_count(&terminal_panel, cx), before + 1);
+        let view = terminal_panel.read_with(cx, |panel, cx| {
+            panel
+                .active_pane
+                .read(cx)
+                .active_item()
+                .and_then(|item| item.downcast::<TerminalView>())
+                .unwrap()
+        });
+        let filled = view.read_with(cx, |view, cx| {
+            view.pending_workflow
+                .clone()
+                .or_else(|| view.input.as_ref().map(|input| input.read(cx).text(cx)))
+        });
+        assert_eq!(filled.as_deref(), Some("git switch -c {{branch}}"));
     }
 
     // SOLO: other layouts keep Zed's behavior: the dock closes with its

@@ -42,6 +42,7 @@ release_channel.workspace = true
 regex.workspace = true
 schemars.workspace = true
 task.workspace = true
+tasks_ui.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true

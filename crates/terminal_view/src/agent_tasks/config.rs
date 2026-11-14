@@ -1,4 +1,4 @@
-//! SOLO: a repository's settings for its agent tasks, in `.solo/tasks.json`:
+//! SOLO: a repository's settings for its agent tasks, in `.solo/worktrees.json`:
 //! where their worktrees go, the ignored files each gets a copy of, a setup
 //! command run in it, a port of its own, environment variables, and a
 //! teardown command run when it's deleted.
@@ -15,7 +15,10 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use serde::Deserialize;
 
 /// The file, relative to the repository's main worktree.
-pub const CONFIG_PATH: &str = ".solo/tasks.json";
+pub const CONFIG_PATH: &str = ".solo/worktrees.json";
+/// Where the file was before: Zed's project tasks (a JSON array) are read
+/// from the same path, so one format there broke the other.
+const OLD_CONFIG_PATH: &str = ".solo/tasks.json";
 /// The environment variable with a task's port.
 pub const PORT_ENV: &str = "SOLO_TASK_PORT";
 const MAX_COPIED_FILES: usize = 1000;
@@ -43,7 +46,7 @@ pub struct TasksConfig {
 impl TasksConfig {
     pub fn parse(text: &str) -> Result<Self> {
         let config: TasksConfig =
-            serde_json_lenient::from_str(text).context("reading .solo/tasks.json")?;
+            serde_json_lenient::from_str(text).context("reading .solo/worktrees.json")?;
         if let Some([first, last]) = config.port_range {
             ensure!(
                 first > 0 && first <= last,
@@ -61,6 +64,7 @@ impl TasksConfig {
 
     /// The repository's config, `None` if it has none.
     pub fn load(main_root: &Path) -> Result<Option<Self>> {
+        migrate_old_config(main_root);
         let path = main_root.join(CONFIG_PATH);
         match std::fs::read_to_string(&path) {
             Ok(text) => Self::parse(&text).map(Some),
@@ -114,6 +118,33 @@ impl TasksConfig {
             env.insert(PORT_ENV.to_string(), port.to_string());
         }
         env
+    }
+}
+
+/// Renames `.solo/tasks.json` to `.solo/worktrees.json` if there's no
+/// `worktrees.json` yet and it holds a JSON object (this config); an array is
+/// Zed's project tasks and stays.
+fn migrate_old_config(main_root: &Path) {
+    let new_path = main_root.join(CONFIG_PATH);
+    let old_path = main_root.join(OLD_CONFIG_PATH);
+    if new_path.exists() {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(&old_path) else {
+        return;
+    };
+    let is_object = serde_json_lenient::from_str::<serde_json::Value>(&text)
+        .is_ok_and(|value| value.is_object());
+    if !is_object {
+        return;
+    }
+    match std::fs::rename(&old_path, &new_path) {
+        Ok(()) => log::info!("renamed {} to {}", old_path.display(), new_path.display()),
+        Err(error) => log::warn!(
+            "couldn't rename {} to {}: {error}",
+            old_path.display(),
+            new_path.display()
+        ),
     }
 }
 
@@ -238,6 +269,42 @@ pub fn run_teardown(command: &str, directory: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SOLO: the config moved out of `.solo/tasks.json`, which Zed reads
+    // as project tasks.
+    #[test]
+    fn old_config_file_is_renamed() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join(".solo")).unwrap();
+        let old = root.join(".solo/tasks.json");
+        let new = root.join(".solo/worktrees.json");
+
+        // Zed's tasks (an array) stay where they are.
+        let zed_tasks = r#"[{ "label": "build", "command": "cargo build" }]"#;
+        std::fs::write(&old, zed_tasks).unwrap();
+        assert_eq!(TasksConfig::load(root).unwrap(), None);
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), zed_tasks);
+        assert!(!new.exists());
+
+        // This config (an object) moves, comments and all.
+        let config = "{\n  // Comments are fine.\n  \"setup\": \"npm install\",\n}";
+        std::fs::write(&old, config).unwrap();
+        let loaded = TasksConfig::load(root).unwrap().unwrap();
+        assert_eq!(loaded.setup.as_deref(), Some("npm install"));
+        assert!(!old.exists());
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), config);
+
+        // An existing worktrees.json wins; tasks.json is left alone.
+        std::fs::write(&old, r#"{ "setup": "old" }"#).unwrap();
+        let loaded = TasksConfig::load(root).unwrap().unwrap();
+        assert_eq!(loaded.setup.as_deref(), Some("npm install"));
+        assert!(old.exists());
+
+        // Nothing to load.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(TasksConfig::load(empty.path()).unwrap(), None);
+    }
 
     #[test]
     fn parses_configs() {

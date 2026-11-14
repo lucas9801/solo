@@ -791,7 +791,7 @@ async fn new_task(
         Ok(new_task) => new_task,
         Err(error) => return AgentCliOutput::error(format!("{error:#}")),
     };
-    // SOLO: .solo/tasks.json's setup and variables only for a trusted project.
+    // SOLO: .solo/worktrees.json's setup and variables only for a trusted project.
     let trusted = cx.update(|cx| {
         let project = workspace.read(cx).project().clone();
         crate::agent_tasks::is_repository_trusted(&project, &new_task.task.repository_root, cx)

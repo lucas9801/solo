@@ -19,6 +19,7 @@ mod mermaid_viewer;
 #[cfg(test)]
 mod output_perf_tests;
 mod persistence;
+mod run_workflow;
 mod running_program;
 mod session_contents;
 #[cfg(test)]
@@ -146,6 +147,7 @@ pub fn init(cx: &mut App) {
     command_notifications::init(cx);
     follow_working_directory::init(cx);
     agent_tasks::init(cx);
+    run_workflow::init(cx);
     agent_turns::init(cx);
     agent_context::init(cx);
     agent_board::init(cx);
@@ -224,6 +226,8 @@ pub struct TerminalView {
     running_command_ticker: Option<Task<()>>,
     /// SOLO: the Warp-style input editor, once the shell supports it.
     input: Option<Entity<TerminalInput>>,
+    /// SOLO: a workflow's command to put in the input once it shows.
+    pending_workflow: Option<String>,
     /// SOLO: saves the contents to show them again after a restart.
     save_contents: Task<()>,
     save_contents_scheduled: bool,
@@ -418,6 +422,7 @@ impl TerminalView {
             selected_command_block: None,
             running_command_ticker: None,
             input: None,
+            pending_workflow: None,
             save_contents: Task::ready(()),
             save_contents_scheduled: false,
             restored_from: None,
@@ -1433,8 +1438,8 @@ impl TerminalView {
         // A terminal an earlier Solo left running was busy then; if its
         // output kept for this Solo lost the shell's marks (it's long), what
         // runs is unknown until the shell's next prompt: kept meanwhile.
-        let unknown = terminal.reconnected_to_host()
-            && terminal.shell_integration().blocks().is_empty();
+        let unknown =
+            terminal.reconnected_to_host() && terminal.shell_integration().blocks().is_empty();
         let keep = self.agent_status().is_some()
             || unknown
             || matches!(running_program::running_command(terminal), Some((_, true)));
@@ -2090,11 +2095,13 @@ impl Item for TerminalView {
                         .ok();
                 }
             })
-            .on_action(move |action: &workspace_grouping::MoveToNewTab, window, cx| {
-                self_handle
-                    .update(cx, |this, cx| this.move_to_new_tab(action, window, cx))
-                    .ok();
-            })
+            .on_action(
+                move |action: &workspace_grouping::MoveToNewTab, window, cx| {
+                    self_handle
+                        .update(cx, |this, cx| this.move_to_new_tab(action, window, cx))
+                        .ok();
+                },
+            )
             .child(
                 h_flex()
                     .group("term-tab-icon")

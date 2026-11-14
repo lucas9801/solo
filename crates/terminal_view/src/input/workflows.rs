@@ -38,6 +38,12 @@ pub fn load(flavor: ShellFlavor) -> Vec<Workflow> {
     workflows
 }
 
+/// SOLO: the user's workflows, then the built-in ones for `shell` (the
+/// shell's program, if known).
+pub fn load_for_shell(shell: Option<&str>) -> Vec<Workflow> {
+    load(ShellFlavor::from_shell(shell))
+}
+
 fn load_user_workflows() -> Result<Vec<Workflow>> {
     let path = workflows_file();
     let text = match std::fs::read_to_string(&path) {
