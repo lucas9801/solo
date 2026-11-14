@@ -141,6 +141,16 @@ pub struct GlobalLspSettings {
 
     /// Rules for highlighting semantic tokens.
     pub semantic_token_rules: SemanticTokenRules,
+    /// SOLO: how much language servers analyze in projects where no level
+    /// was chosen for them.
+    pub default_analysis_mode: settings::LanguageServerAnalysisMode,
+    /// SOLO: whether to ask how much to analyze when a heavy language server
+    /// starts in a very large project.
+    pub ask_before_large_projects: bool,
+    /// SOLO: whether to alert when a project's language servers take more
+    /// than `memory_alert_threshold_gb` of memory.
+    pub memory_alert: bool,
+    pub memory_alert_threshold_gb: u32,
 }
 
 impl Default for GlobalLspSettings {
@@ -151,6 +161,10 @@ impl Default for GlobalLspSettings {
             max_buffer_line_length: 20_000,
             notifications: LspNotificationSettings::default(),
             semantic_token_rules: SemanticTokenRules::default(),
+            default_analysis_mode: settings::LanguageServerAnalysisMode::Full,
+            ask_before_large_projects: true,
+            memory_alert: true,
+            memory_alert_threshold_gb: 4,
         }
     }
 }
@@ -676,6 +690,9 @@ impl Settings for ProjectSettings {
         let diagnostics = content.diagnostics.as_ref().unwrap();
         let lsp_pull_diagnostics = diagnostics.lsp_pull_diagnostics.as_ref().unwrap();
         let inline_diagnostics = diagnostics.inline.as_ref().unwrap();
+        // SOLO: the language services settings.
+        let global_lsp = content.global_lsp_settings.as_ref().unwrap();
+        let memory_alert = global_lsp.memory_alert.clone().unwrap_or_default();
 
         let git = content.git.as_ref().unwrap();
         let git_enabled = {
@@ -771,6 +788,11 @@ impl Settings for ProjectSettings {
                     .as_ref()
                     .unwrap()
                     .clone(),
+                // SOLO: the language services settings.
+                default_analysis_mode: global_lsp.default_analysis_mode.unwrap_or_default(),
+                ask_before_large_projects: global_lsp.ask_before_large_projects.unwrap_or(true),
+                memory_alert: memory_alert.enabled.unwrap_or(true),
+                memory_alert_threshold_gb: memory_alert.threshold_gb.unwrap_or(4),
             },
             dap: project
                 .dap

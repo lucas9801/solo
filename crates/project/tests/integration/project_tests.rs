@@ -4353,6 +4353,153 @@ async fn test_solo_analysis_modes(cx: &mut gpui::TestAppContext) {
     );
 }
 
+// SOLO: the default analysis mode applies to projects without a choice, and
+// the global switch keeps every language server from starting.
+#[gpui::test]
+async fn test_solo_default_analysis_mode(cx: &mut gpui::TestAppContext) {
+    use project::lsp_store::solo_server_modes::{AnalysisMode, set_mode};
+
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/chosen"), json!({ "a.rs": "" }))
+        .await;
+    fs.insert_tree(path!("/new"), json!({ "b.rs": "", "c.js": "" }))
+        .await;
+
+    let project = Project::test(fs, [path!("/chosen").as_ref(), path!("/new").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    let (initialize_sender, initialize_receiver) = async_channel::unbounded();
+    let mut fake_rust_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "rust-analyzer",
+            initializer: Some(Box::new(move |server| {
+                let initialize_sender = initialize_sender.clone();
+                server.set_request_handler::<lsp::request::Initialize, _, _>(move |params, _| {
+                    initialize_sender.try_send(params).unwrap();
+                    future::ready(Ok(lsp::InitializeResult {
+                        capabilities: lsp::LanguageServer::full_capabilities(),
+                        server_info: None,
+                    }))
+                });
+            })),
+            ..Default::default()
+        },
+    );
+    let mut fake_js_servers = language_registry.register_fake_lsp(
+        "JavaScript",
+        FakeLspAdapter {
+            name: "js-lsp",
+            ..Default::default()
+        },
+    );
+    language_registry.add(rust_lang());
+    language_registry.add(js_lang());
+    let rust_analyzer = LanguageServerName::new_static("rust-analyzer");
+
+    // The user chose full analysis for rust-analyzer in one project, and
+    // only the open files by default.
+    cx.update(|cx| {
+        set_mode(
+            PathBuf::from(path!("/chosen")),
+            rust_analyzer.clone(),
+            AnalysisMode::Full,
+            cx,
+        );
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.global_lsp_settings = Some(GlobalLspSettingsContent {
+                    default_analysis_mode: Some(
+                        settings::LanguageServerAnalysisMode::OpenFilesOnly,
+                    ),
+                    ..Default::default()
+                });
+            });
+        })
+    });
+
+    let _chosen_buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/chosen/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let chosen_server = fake_rust_servers.next().await.unwrap();
+    cx.run_until_parked();
+    let options = initialize_receiver
+        .try_recv()
+        .unwrap()
+        .initialization_options;
+    assert!(
+        options
+            .as_ref()
+            .is_none_or(|options| options.get("checkOnSave").is_none()),
+        "the project's own choice wins: {options:?}"
+    );
+
+    let _new_buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/new/b.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let new_server = fake_rust_servers.next().await.unwrap();
+    cx.run_until_parked();
+    let options = initialize_receiver
+        .try_recv()
+        .unwrap()
+        .initialization_options
+        .unwrap();
+    assert_eq!(options["checkOnSave"], false);
+    assert_eq!(options["cachePriming"]["enable"], false);
+
+    // A server that can't skip background analysis runs as usual.
+    let _js_buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/new/c.js"), cx)
+        })
+        .await
+        .unwrap();
+    let mut js_server = fake_js_servers.next().await.unwrap();
+
+    // The global switch stops every server, whatever the projects chose.
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings
+                    .project
+                    .all_languages
+                    .defaults
+                    .enable_language_server = Some(false);
+            });
+        })
+    });
+    for mut server in [chosen_server, new_server] {
+        server
+            .receive_notification::<lsp::notification::Exit>()
+            .await;
+    }
+    js_server
+        .receive_notification::<lsp::notification::Exit>()
+        .await;
+    for path in [
+        path!("/chosen/a.rs"),
+        path!("/new/b.rs"),
+        path!("/new/c.js"),
+    ] {
+        let _buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer_with_lsp(path, cx)
+            })
+            .await
+            .unwrap();
+    }
+    cx.run_until_parked();
+    assert!(fake_rust_servers.try_recv().is_err());
+    assert!(fake_js_servers.try_recv().is_err());
+}
+
 #[gpui::test]
 async fn test_updating_lsp_settings_sends_one_did_change_configuration(
     cx: &mut gpui::TestAppContext,

@@ -2962,6 +2962,19 @@
     //
     // Default rules are viewable via the "solo: show default semantic token rules" action.
     "semantic_token_rules": [],
+    // How much language servers analyze in projects where no level was chosen
+    // for them in the language servers menu: "full", "open_files_only" (no
+    // background checks or indexing; rust-analyzer and clangd) or "off".
+    "default_analysis_mode": "full",
+    // Whether to ask how much to analyze when a heavy language server starts
+    // in a project with more than 100,000 files.
+    "ask_before_large_projects": true,
+    // Alert when a project's language servers, with the processes they start,
+    // take more than this memory for about 30 seconds (once per project and run).
+    "memory_alert": {
+      "enabled": true,
+      "threshold_gb": 4,
+    },
   },
   // Jupyter settings
   "jupyter": {

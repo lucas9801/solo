@@ -347,6 +347,61 @@ pub struct GlobalLspSettingsContent {
     pub notifications: Option<LspNotificationSettingsContent>,
     /// Rules for rendering LSP semantic tokens.
     pub semantic_token_rules: Option<SemanticTokenRules>,
+    /// SOLO: how much language servers analyze in projects where no level
+    /// was chosen for them.
+    ///
+    /// Default: `full`
+    pub default_analysis_mode: Option<LanguageServerAnalysisMode>,
+    /// SOLO: whether to ask how much to analyze when a heavy language server
+    /// starts in a project with more than 100,000 files.
+    ///
+    /// Default: `true`
+    pub ask_before_large_projects: Option<bool>,
+    /// SOLO: an alert when the language servers of a project (with the
+    /// processes they start) take more memory than a threshold.
+    pub memory_alert: Option<LanguageServerMemoryAlertContent>,
+}
+
+/// SOLO: how much a language server analyzes.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    Hash,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LanguageServerAnalysisMode {
+    /// Everything, including background checks and indexing.
+    #[default]
+    Full,
+    /// Only the open files (rust-analyzer and clangd; other servers analyze
+    /// everything).
+    OpenFilesOnly,
+    /// The language servers don't run.
+    Off,
+}
+
+/// SOLO: the alert about the language servers' memory.
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct LanguageServerMemoryAlertContent {
+    /// Whether to alert.
+    ///
+    /// Default: `true`
+    pub enabled: Option<bool>,
+    /// The memory, in GB, above which to alert.
+    ///
+    /// Default: `4`
+    pub threshold_gb: Option<u32>,
 }
 
 #[with_fallible_options]

@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use sysinfo::System;
@@ -22,7 +22,8 @@ use project::{
 };
 use settings::{Settings as _, SettingsStore};
 use ui::{
-    ContextMenu, ContextMenuEntry, Indicator, PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*,
+    ContextMenu, ContextMenuEntry, Indicator, PopoverMenu, PopoverMenuHandle, ToggleButtonGroup,
+    ToggleButtonGroupStyle, ToggleButtonSimple, Tooltip, prelude::*,
 };
 
 use util::{ResultExt, paths::PathExt, rel_path::RelPath};
@@ -30,10 +31,11 @@ use workspace::{StatusItemView, ToggleWorktreeSecurity, Workspace};
 
 use crate::lsp_log_view;
 use crate::server_resources::{
-    self, ProcessTreeUsage, ServerActivity, choose_mode, describe_server, describe_usage,
-    format_memory, mode_label, modes_for, server_activity,
+    self, AlertedProjects, MemoryAlertTracker, ProcessTreeUsage, ServerActivity, choose_mode,
+    choose_project_mode, describe_server, describe_usage, effective_mode, format_memory,
+    mode_label, modes_for, server_activity, short_mode_label,
 };
-use project::lsp_store::solo_server_modes;
+use project::lsp_store::solo_server_modes::{self, AnalysisMode, LanguageServerModes};
 
 actions!(
     lsp_tool,
@@ -48,6 +50,8 @@ pub struct LspButton {
     popover_menu_handle: PopoverMenuHandle<ContextMenu>,
     lsp_menu: Option<Entity<ContextMenu>>,
     lsp_menu_refresh: Task<()>,
+    /// SOLO: the menu is being created for a project with analysis choices.
+    creating_menu: bool,
     _usage_sampler: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -159,7 +163,151 @@ impl LanguageServerHealthStatus {
     }
 }
 
+/// SOLO: the language servers of the project in this window.
+#[derive(Debug, Default)]
+struct ProjectServers {
+    /// The project's folders.
+    roots: Vec<PathBuf>,
+    /// Each server with its project folder and memory.
+    servers: Vec<(PathBuf, LanguageServerName, u64)>,
+    /// The memory of all the project's servers.
+    total_memory: u64,
+}
+
+impl ProjectServers {
+    fn server_names(&self) -> Vec<(PathBuf, LanguageServerName)> {
+        self.servers
+            .iter()
+            .map(|(root, name, _)| (root.clone(), name.clone()))
+            .collect()
+    }
+
+    /// The mode all the project's servers share, or `None` when they differ.
+    fn common_mode(&self, cx: &App) -> Option<AnalysisMode> {
+        let default = solo_server_modes::default_mode(cx);
+        let no_choices = LanguageServerModes::default();
+        cx.try_global::<LanguageServerModes>()
+            .unwrap_or(&no_choices)
+            .common_mode(&self.server_names(), &self.roots, default)
+    }
+}
+
+/// SOLO: "Mixed" when the project's servers work in different modes.
+fn mixed_label(common_mode: Option<AnalysisMode>) -> Option<&'static str> {
+    common_mode
+        .is_none()
+        .then(|| util::i18n::tr("Mixed", "各不相同"))
+}
+
+/// SOLO: the top of the menu: the project's memory, and one choice for all
+/// of its language servers.
+fn render_project_row(state: &Entity<LanguageServerState>, cx: &mut App) -> AnyElement {
+    let project = state.read(cx).project_servers(cx);
+    let common_mode = project.common_mode(cx);
+    let roots = Rc::new(project.roots.clone());
+    let servers = Rc::new(project.server_names());
+    let mode_button = |mode: AnalysisMode| {
+        let roots = roots.clone();
+        let servers = servers.clone();
+        ToggleButtonSimple::new(short_mode_label(mode), move |_, window, cx| {
+            choose_project_mode(&roots, &servers, mode, cx);
+            window.refresh();
+        })
+        .selected(common_mode == Some(mode))
+    };
+    v_flex()
+        .w(rems_from_px(320_f32))
+        .gap_1p5()
+        .py_1()
+        .child(
+            h_flex()
+                .justify_between()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Label::new(util::i18n::tr("This Project", "本项目"))
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .when_some(mixed_label(common_mode), |row, mixed| {
+                            row.child(
+                                Label::new(format!("· {mixed}"))
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                        }),
+                )
+                .when(project.total_memory > 0, |row| {
+                    row.child(
+                        Label::new(format_memory(project.total_memory))
+                            .size(LabelSize::Small)
+                            .buffer_font(cx),
+                    )
+                }),
+        )
+        .child(
+            ToggleButtonGroup::single_row(
+                "solo-project-analysis-mode",
+                [
+                    mode_button(AnalysisMode::Full),
+                    mode_button(AnalysisMode::OpenFilesOnly),
+                    mode_button(AnalysisMode::Off),
+                ],
+            )
+            .style(ToggleButtonGroupStyle::Outlined)
+            .selected_index(usize::MAX)
+            .full_width(),
+        )
+        .into_any_element()
+}
+
 impl LanguageServerState {
+    /// SOLO: the project's folders and language servers with their memory;
+    /// nothing for a remote project.
+    fn project_servers(&self, cx: &App) -> ProjectServers {
+        let Some(lsp_store) = self.lsp_store.upgrade() else {
+            return ProjectServers::default();
+        };
+        let lsp_store = lsp_store.read(cx);
+        if lsp_store.as_remote().is_some() {
+            return ProjectServers::default();
+        }
+        let roots = self
+            .workspace
+            .upgrade()
+            .map(|workspace| {
+                workspace
+                    .read(cx)
+                    .project()
+                    .read(cx)
+                    .visible_worktrees(cx)
+                    .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let worktree_store = lsp_store.worktree_store();
+        let mut project = ProjectServers {
+            roots,
+            ..ProjectServers::default()
+        };
+        for (_, status) in lsp_store.language_server_statuses() {
+            let memory = status
+                .process_id
+                .and_then(|pid| self.server_usage.get(&pid))
+                .map_or(0, |usage| usage.memory);
+            project.total_memory += memory;
+            let root = status
+                .worktree
+                .and_then(|worktree_id| worktree_store.read(cx).worktree_for_id(worktree_id, cx))
+                .map(|worktree| worktree.read(cx).abs_path().to_path_buf());
+            if let Some(root) = root {
+                project.servers.push((root, status.name.clone(), memory));
+            }
+        }
+        project
+    }
+
     fn fill_menu(&self, mut menu: ContextMenu, cx: &mut Context<Self>) -> ContextMenu {
         let lsp_logs = cx
             .try_global::<GlobalLogStore>()
@@ -207,6 +355,19 @@ impl LanguageServerState {
             );
         }
 
+        // SOLO: the project's memory and one choice for all its servers.
+        if !self.project_servers(cx).roots.is_empty() {
+            let state = cx.entity().downgrade();
+            menu = menu
+                .custom_row(move |_, cx| {
+                    state
+                        .upgrade()
+                        .map(|state| render_project_row(&state, cx))
+                        .unwrap_or_else(|| div().into_any_element())
+                })
+                .separator();
+        }
+
         let path_style = self
             .workspace
             .upgrade()
@@ -242,13 +403,15 @@ impl LanguageServerState {
                 })
                 .unwrap_or_default();
 
-        let mut first_button_encountered = false;
+        // SOLO: the buttons for all servers go at the bottom, after the
+        // servers turned off in this project.
+        let mut toggle_buttons = Vec::new();
         for item in &self.items {
             if let LspMenuItem::ToggleServersButton { restart } = item {
                 let label = if *restart {
-                    "Restart All Servers"
+                    util::i18n::tr("Restart All Language Services", "重启所有语言服务")
                 } else {
-                    "Stop All Servers"
+                    util::i18n::tr("Stop All Language Services", "停止所有语言服务")
                 };
 
                 let restart = *restart;
@@ -269,12 +432,7 @@ impl LanguageServerState {
                     }
                 });
 
-                if !first_button_encountered {
-                    menu = menu.separator();
-                    first_button_encountered = true;
-                }
-
-                menu = menu.item(button);
+                toggle_buttons.push(button);
                 continue;
             } else if let LspMenuItem::Header { header, separator } = item {
                 menu = menu
@@ -344,6 +502,13 @@ impl LanguageServerState {
 
             let submenu_server_name = server_info.name.clone();
             let submenu_server_info = server_info.clone();
+
+            // SOLO: the server's analysis level and memory on its row.
+            let level = project_root.as_ref().filter(|_| !is_remote).map(|root| {
+                let mode = solo_server_modes::mode_for(root, &server_info.name, cx);
+                short_mode_label(effective_mode(&server_info.name, mode))
+            });
+            let row_state = cx.entity().downgrade();
 
             menu = menu.submenu_with_colored_icon(
                 server_info.name.0.clone(),
@@ -667,6 +832,29 @@ impl LanguageServerState {
                     }
                 },
             );
+            menu = menu.submenu_end_slot(move |_, cx| {
+                let usage = process_id.and_then(|pid| {
+                    row_state
+                        .upgrade()?
+                        .read(cx)
+                        .server_usage
+                        .get(&pid)
+                        .copied()
+                });
+                h_flex()
+                    .gap_2()
+                    .when_some(level, |row, level| {
+                        row.child(Label::new(level).size(LabelSize::Small).color(Color::Muted))
+                    })
+                    .when_some(usage, |row, usage| {
+                        row.child(
+                            Label::new(format_memory(usage.memory))
+                                .size(LabelSize::Small)
+                                .buffer_font(cx),
+                        )
+                    })
+                    .into_any_element()
+            });
         }
 
         // SOLO: servers turned off in this project, to turn on again.
@@ -709,15 +897,36 @@ impl LanguageServerState {
                     choose_mode(
                         project_root.clone(),
                         server_name.clone(),
-                        solo_server_modes::AnalysisMode::Full,
+                        AnalysisMode::Full,
                         cx,
                     );
                 });
             }
         }
-        menu
+
+        // SOLO: the buttons for all servers, and the settings page.
+        menu = menu.separator();
+        for button in toggle_buttons {
+            menu = menu.item(button);
+        }
+        menu.entry(
+            util::i18n::tr("Language Services Settings…", "语言服务设置…"),
+            None,
+            |window, cx| {
+                window.dispatch_action(
+                    Box::new(zed_actions::OpenSettingsPage {
+                        page: LANGUAGE_SERVICES_SETTINGS_PAGE.to_string(),
+                        target: None,
+                    }),
+                    cx,
+                );
+            },
+        )
     }
 }
+
+/// SOLO: the title of the language services settings page.
+const LANGUAGE_SERVICES_SETTINGS_PAGE: &str = "Language Services";
 
 fn tooltip_for_server_binary(
     server_binary: &lsp::LanguageServerBinary,
@@ -943,6 +1152,11 @@ impl LspButton {
             cx.subscribe_in(&lsp_store, window, |lsp_button, _, e, window, cx| {
                 lsp_button.on_lsp_store_event(e, window, cx)
             });
+        // SOLO: the menu shows the analysis modes.
+        let modes_subscription =
+            cx.observe_global_in::<LanguageServerModes>(window, |lsp_button, window, cx| {
+                lsp_button.refresh_lsp_menu(false, window, cx);
+            });
 
         let server_state = cx.new(|_| LanguageServerState {
             workspace: workspace.weak_handle(),
@@ -958,8 +1172,13 @@ impl LspButton {
             popover_menu_handle,
             lsp_menu: None,
             lsp_menu_refresh: Task::ready(()),
+            creating_menu: false,
             _usage_sampler: Self::sample_usage(server_state, cx),
-            _subscriptions: vec![settings_subscription, lsp_store_subscription],
+            _subscriptions: vec![
+                settings_subscription,
+                lsp_store_subscription,
+                modes_subscription,
+            ],
         };
         let is_restricted = TrustedWorktrees::has_restricted_worktrees(
             &workspace.project().read(cx).worktree_store(),
@@ -986,6 +1205,7 @@ impl LspButton {
         const INTERVAL: Duration = Duration::from_secs(4);
         cx.spawn(async move |lsp_button, cx| {
             let mut system = System::new();
+            let mut memory_alert = MemoryAlertTracker::default();
             loop {
                 let roots = server_state.update(cx, |state, cx| {
                     let Some(lsp_store) = state.lsp_store.upgrade() else {
@@ -1012,11 +1232,35 @@ impl LspButton {
                     system = returned_system;
                     usage.into_iter().collect()
                 };
-                let changed = server_state.update(cx, |state, _| {
+                let (changed, alert) = server_state.update(cx, |state, cx| {
                     let changed = state.server_usage != usage;
                     state.server_usage = usage;
-                    changed
+                    // SOLO: alert when the project's servers stay above the
+                    // memory threshold.
+                    let project = state.project_servers(cx);
+                    let threshold = server_resources::memory_alert_threshold(cx);
+                    let alert = memory_alert
+                        .should_alert(
+                            project.total_memory,
+                            threshold,
+                            Instant::now(),
+                            &project.roots,
+                            cx.default_global::<AlertedProjects>(),
+                        )
+                        .then(|| (state.workspace.clone(), project));
+                    (changed, alert)
                 });
+                if let Some((workspace, project)) = alert {
+                    cx.update(|cx| {
+                        server_resources::show_memory_alert(
+                            workspace,
+                            project.roots,
+                            project.servers,
+                            project.total_memory,
+                            cx,
+                        );
+                    });
+                }
                 if changed {
                     if lsp_button.update(cx, |_, cx| cx.notify()).is_err() {
                         return;
@@ -1314,14 +1558,18 @@ impl LspButton {
             }
 
             let mut new_lsp_items = Vec::with_capacity(servers_per_worktree.len() + 1);
+            // SOLO: folder names only when the project has several.
+            let several_worktrees = servers_per_worktree.len() > 1;
             for (worktree_name, worktree_servers) in servers_per_worktree {
                 if worktree_servers.is_empty() {
                     continue;
                 }
-                new_lsp_items.push(LspMenuItem::Header {
-                    header: Some(worktree_name),
-                    separator: false,
-                });
+                if several_worktrees {
+                    new_lsp_items.push(LspMenuItem::Header {
+                        header: Some(worktree_name),
+                        separator: false,
+                    });
+                }
                 new_lsp_items.extend(worktree_servers.into_iter().map(ServerData::into_lsp_item));
             }
             if !new_lsp_items.is_empty() {
@@ -1465,7 +1713,7 @@ impl StatusItemView for LspButton {
 }
 
 impl Render for LspButton {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl ui::IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl ui::IntoElement {
         let is_restricted = self
             .server_state
             .read(cx)
@@ -1477,8 +1725,23 @@ impl Render for LspButton {
             })
             .unwrap_or(false);
 
+        // SOLO: also shown in a project where servers were turned off, to
+        // turn them on again.
+        let has_choices = {
+            let roots = self.server_state.read(cx).project_servers(cx).roots;
+            server_resources::has_choices_in(&roots, cx)
+        };
+        if has_choices
+            && self.lsp_menu.is_none()
+            && !self.creating_menu
+            && ProjectSettings::get_global(cx).global_lsp_settings.button
+        {
+            self.creating_menu = true;
+            self.refresh_lsp_menu(true, window, cx);
+        }
         if !is_restricted
-            && (self.server_state.read(cx).language_servers.is_empty() || self.lsp_menu.is_none())
+            && ((self.server_state.read(cx).language_servers.is_empty() && !has_choices)
+                || self.lsp_menu.is_none())
         {
             return div().hidden();
         }
@@ -1771,6 +2034,40 @@ mod tests {
         assert!(
             state.health_statuses.contains_key(&server_id(2)),
             "the new server's health entry is present",
+        );
+    }
+
+    #[test]
+    fn mixed_modes_are_shown_as_such() {
+        let roots = vec![PathBuf::from("/a")];
+        let project = ProjectServers {
+            roots: roots.clone(),
+            servers: vec![
+                (PathBuf::from("/a"), server_name("clangd"), 0),
+                (PathBuf::from("/a"), server_name("json-language-server"), 0),
+            ],
+            total_memory: 0,
+        };
+        let mut modes = LanguageServerModes::default();
+        modes.set_for_project(
+            PathBuf::from("/a"),
+            [server_name("clangd"), server_name("json-language-server")],
+            AnalysisMode::OpenFilesOnly,
+        );
+        let common = modes.common_mode(&project.server_names(), &roots, AnalysisMode::Full);
+        assert_eq!(common, Some(AnalysisMode::OpenFilesOnly));
+        assert_eq!(mixed_label(common), None);
+
+        modes.set(
+            PathBuf::from("/a"),
+            server_name("clangd"),
+            AnalysisMode::Off,
+        );
+        let common = modes.common_mode(&project.server_names(), &roots, AnalysisMode::Full);
+        assert_eq!(common, None);
+        assert_eq!(
+            mixed_label(common),
+            Some(util::i18n::tr("Mixed", "各不相同"))
         );
     }
 

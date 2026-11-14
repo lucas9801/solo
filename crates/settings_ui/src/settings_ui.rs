@@ -39,8 +39,8 @@ use std::{
 use theme_settings::ThemeSettings;
 use ui::{
     Banner, ContextMenu, Divider, DropdownMenu, DropdownStyle, IconButtonShape, KeyBinding,
-    KeybindingHint, PopoverMenu, Scrollbars, Switch, Tooltip, TreeViewItem, WithScrollbar,
-    prelude::*,
+    KeybindingHint, PopoverMenu, Scrollbars, Switch, ToggleButtonGroup, ToggleButtonGroupStyle,
+    ToggleButtonSimple, Tooltip, TreeViewItem, WithScrollbar, prelude::*,
 };
 
 use util::{ResultExt as _, paths::PathStyle, rel_path::RelPath};
@@ -614,6 +614,9 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::CursorShapeContent>(render_dropdown)
         .add_basic_renderer::<settings::EditPredictionPromptFormatContent>(render_dropdown)
         .add_basic_renderer::<settings::EditPredictionDataCollectionChoice>(render_dropdown)
+        // SOLO: the language services page.
+        .add_basic_renderer::<settings::LanguageServerAnalysisMode>(render_analysis_mode)
+        .add_renderer::<settings::LanguageServerMemoryAlertContent>(render_memory_alert)
         .add_basic_renderer::<f32>(render_editable_number_field)
         .add_basic_renderer::<settings::AutoCompactThreshold>(render_text_field)
         .add_basic_renderer::<u32>(render_editable_number_field)
@@ -5247,6 +5250,148 @@ where
     .into_any_element()
 }
 
+/// SOLO: the default analysis level as three buttons.
+fn render_analysis_mode(
+    field: SettingField<settings::LanguageServerAnalysisMode>,
+    file: SettingsUiFile,
+    _metadata: Option<&SettingsFieldMetadata>,
+    _title: &'static str,
+    _description: &'static str,
+    _window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    use settings::LanguageServerAnalysisMode as Mode;
+
+    let current = get_current_value(&SettingsStore::global(cx), &file, &field, cx)
+        .map(|value| *value.value)
+        .unwrap_or_default();
+    let button = |mode: Mode, label: &'static str| {
+        let file = file.clone();
+        ToggleButtonSimple::new(label, move |_, window, cx| {
+            if mode == current {
+                return;
+            }
+            update_settings_file(
+                file.clone(),
+                field.json_path,
+                window,
+                cx,
+                move |settings, app| {
+                    (field.write)(settings, Some(mode), app);
+                },
+            )
+            .log_err();
+        })
+        .selected(mode == current)
+    };
+    ToggleButtonGroup::single_row(
+        "default-analysis-mode",
+        [
+            button(Mode::Full, util::i18n::tr("Full", "完整")),
+            button(
+                Mode::OpenFilesOnly,
+                util::i18n::tr("Open files only", "仅打开的文件"),
+            ),
+            button(Mode::Off, util::i18n::tr("Off", "关闭")),
+        ],
+    )
+    .style(ToggleButtonGroupStyle::Outlined)
+    .selected_index(usize::MAX)
+    .auto_width()
+    .into_any_element()
+}
+
+/// SOLO: "Alert when memory exceeds [4] GB", with a switch.
+fn render_memory_alert(
+    _settings_window: &SettingsWindow,
+    item: &SettingItem,
+    field: SettingField<settings::LanguageServerMemoryAlertContent>,
+    file: SettingsUiFile,
+    _metadata: Option<&SettingsFieldMetadata>,
+    _sub_field: bool,
+    window: &mut Window,
+    cx: &mut Context<SettingsWindow>,
+) -> Stateful<Div> {
+    let store = SettingsStore::global(cx);
+    let (_, enabled) = store.get_value_from_file(file.to_settings(), |settings| {
+        settings
+            .global_lsp_settings
+            .as_ref()?
+            .memory_alert
+            .as_ref()?
+            .enabled
+    });
+    let (_, threshold_gb) = store.get_value_from_file(file.to_settings(), |settings| {
+        settings
+            .global_lsp_settings
+            .as_ref()?
+            .memory_alert
+            .as_ref()?
+            .threshold_gb
+    });
+    let enabled = enabled.unwrap_or(true);
+    let threshold_gb = threshold_gb.unwrap_or(4);
+    let json_path = field.json_path;
+
+    let threshold = NumberField::new("memory-alert-threshold", threshold_gb, window, cx)
+        .mode(NumberFieldMode::Edit, cx)
+        .tab_index(0_isize)
+        .aria_label(item.title)
+        .on_change({
+            let file = file.clone();
+            move |value: &u32, window, cx| {
+                let value = (*value).max(1);
+                update_settings_file(file.clone(), json_path, window, cx, move |settings, _| {
+                    settings
+                        .global_lsp_settings
+                        .get_or_insert_default()
+                        .memory_alert
+                        .get_or_insert_default()
+                        .threshold_gb = Some(value);
+                })
+                .log_err();
+            }
+        });
+    let switch = Switch::new(
+        "memory-alert-enabled",
+        if enabled {
+            ToggleState::Selected
+        } else {
+            ToggleState::Unselected
+        },
+    )
+    .tab_index(0_isize)
+    .aria_label(item.title)
+    .on_click(move |state, window, cx| {
+        let enabled = *state == ToggleState::Selected;
+        update_settings_file(file.clone(), json_path, window, cx, move |settings, _| {
+            settings
+                .global_lsp_settings
+                .get_or_insert_default()
+                .memory_alert
+                .get_or_insert_default()
+                .enabled = Some(enabled);
+        })
+        .log_err();
+    });
+
+    h_flex()
+        .id(item.title)
+        .min_w_0()
+        .justify_between()
+        .child(
+            h_flex()
+                .gap_2()
+                .child(Label::new(util::i18n::tr(
+                    "Alert when memory exceeds",
+                    "内存超过",
+                )))
+                .child(div().w(rems_from_px(96_f32)).child(threshold))
+                .child(Label::new(util::i18n::tr("GB", "GB 时提醒"))),
+        )
+        .child(switch)
+}
+
 fn render_picker_trigger_button(id: SharedString, label: SharedString) -> Button {
     Button::new(id, label)
         .aria_role(Role::ComboBox)
@@ -5468,6 +5613,38 @@ pub mod test {
     use credentials_provider::test_support::FakeCredentialsProvider;
     use language_model::{ApiKeyState, EnvVar, LanguageModelProviderState, LanguageModelRegistry};
     use language_models::provider::open_ai_compatible::OpenAiCompatibleLanguageModelProvider;
+
+    // SOLO: the language services page renders each of its settings, and the
+    // language servers menu finds it by its title.
+    #[gpui::test]
+    fn language_services_page_has_renderers(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            init_renderers(cx);
+            let page = page_data::language_services_page();
+            assert_eq!(page.title, "Language Services");
+            let renderers = cx.global::<SettingFieldRenderer>().renderers.borrow();
+            let mut json_paths = Vec::new();
+            for item in page.items.iter() {
+                if let SettingsPageItem::SettingItem(item) = item {
+                    assert!(
+                        renderers.contains_key(&AnySettingField::type_id(item.field.as_ref())),
+                        "no renderer for {}",
+                        item.title
+                    );
+                    json_paths.extend(item.field.json_path());
+                }
+            }
+            assert_eq!(
+                json_paths,
+                [
+                    "enable_language_server",
+                    "global_lsp_settings.default_analysis_mode",
+                    "global_lsp_settings.ask_before_large_projects",
+                    "global_lsp_settings.memory_alert",
+                ]
+            );
+        });
+    }
 
     #[test]
     fn test_dedup_folders() {

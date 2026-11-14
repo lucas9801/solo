@@ -69,6 +69,9 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
         keymap_page(),
         editor_page(),
         languages_and_tools_page(cx),
+        // SOLO: language servers: on or off, how much they analyze, and
+        // their memory.
+        language_services_page(),
         search_and_files_page(),
         window_and_layout_page(),
         panels_page(),
@@ -3735,6 +3738,112 @@ fn languages_and_tools_page(cx: &App) -> SettingsPage {
                 languages_list_section(cx),
             )
         },
+    }
+}
+
+/// SOLO: the language services page; the language servers menu in the
+/// status bar opens it by its title.
+pub(crate) fn language_services_page() -> SettingsPage {
+    let items = [
+        SettingsPageItem::SectionHeader("Language Services"),
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "Enable Language Services",
+            description: "When off, there's no go-to-definition, completion or diagnostics.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                json_path: Some("enable_language_server"),
+                pick: |settings_content| {
+                    settings_content
+                        .project
+                        .all_languages
+                        .defaults
+                        .enable_language_server
+                        .as_ref()
+                },
+                write: |settings_content, value, _| {
+                    settings_content
+                        .project
+                        .all_languages
+                        .defaults
+                        .enable_language_server = value;
+                },
+            }),
+            metadata: None,
+            files: USER | PROJECT,
+        }),
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "Default Analysis Level",
+            description: "Used by projects without their own level.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                json_path: Some("global_lsp_settings.default_analysis_mode"),
+                pick: |settings_content| {
+                    settings_content
+                        .global_lsp_settings
+                        .as_ref()?
+                        .default_analysis_mode
+                        .as_ref()
+                },
+                write: |settings_content, value, _| {
+                    settings_content
+                        .global_lsp_settings
+                        .get_or_insert_default()
+                        .default_analysis_mode = value;
+                },
+            }),
+            metadata: None,
+            files: USER,
+        }),
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "Ask Before Large Projects",
+            description: "When there are more than 100,000 files.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                json_path: Some("global_lsp_settings.ask_before_large_projects"),
+                pick: |settings_content| {
+                    settings_content
+                        .global_lsp_settings
+                        .as_ref()?
+                        .ask_before_large_projects
+                        .as_ref()
+                },
+                write: |settings_content, value, _| {
+                    settings_content
+                        .global_lsp_settings
+                        .get_or_insert_default()
+                        .ask_before_large_projects = value;
+                },
+            }),
+            metadata: None,
+            files: USER,
+        }),
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "Memory Alert",
+            description: "",
+            field: Box::new(SettingField {
+                organization_override: None,
+                json_path: Some("global_lsp_settings.memory_alert"),
+                pick: |settings_content| {
+                    settings_content
+                        .global_lsp_settings
+                        .as_ref()?
+                        .memory_alert
+                        .as_ref()
+                },
+                write: |settings_content, value, _| {
+                    settings_content
+                        .global_lsp_settings
+                        .get_or_insert_default()
+                        .memory_alert = value;
+                },
+            }),
+            metadata: None,
+            files: USER,
+        }),
+    ];
+    SettingsPage {
+        title: "Language Services",
+        items: Box::new(items),
     }
 }
 

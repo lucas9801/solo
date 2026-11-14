@@ -346,16 +346,36 @@ the background; on a large repository that can take several GB of memory.
   and `rustc` under rust-analyzer). Its tooltip has one line per server, for
   example "rust-analyzer: checking · 5 compiler processes · 3.1 GB"; the
   server's submenu shows the same.
-- **Per project.** In a server's submenu, under "In This Project": full
-  analysis; "Pause background analysis (open files only)" (rust-analyzer: no
-  `cargo check` on save and no background indexing; clangd: no background
-  index) for rust-analyzer and clangd; or off. The choice is remembered for the
-  project (in Solo's database, not in the repository) and applies after
-  restarts. Servers turned off are listed at the bottom of the menu to turn on
-  again.
-- **Large projects.** When a heavy server (rust-analyzer, clangd, roslyn,
-  jdtls, gopls…) starts in a project with more than 100,000 files, Solo asks
-  once how much it should analyze.
+- **Settings.** Settings → Language Services (also "Language Services
+  Settings…" at the bottom of the ⚡ menu):
+  - "Enable Language Services" turns all of them off or on
+    (`enable_language_server`); off, nothing starts, whatever the projects
+    chose.
+  - "Default Analysis Level" (`global_lsp_settings.default_analysis_mode`):
+    Full, Open files only (rust-analyzer: no `cargo check` on save and no
+    background indexing; clangd: no background index; other servers analyze
+    everything) or Off. Used by projects where you didn't pick a level; a
+    level picked in a project wins. Full by default.
+  - "Ask Before Large Projects" (`global_lsp_settings.ask_before_large_projects`):
+    when a heavy server (rust-analyzer, clangd, roslyn, jdtls, gopls…) starts
+    in a project with more than 100,000 files and the default level is Full,
+    Solo asks once how much it should analyze.
+  - "Alert when memory exceeds 4 GB" (`global_lsp_settings.memory_alert`,
+    `enabled` and `threshold_gb`): when the project's language servers, with
+    the processes they started, stay above the threshold for about 30
+    seconds, Solo shows how much each one takes, once per project until Solo
+    restarts, with buttons to analyze only the open files, turn the project's
+    language services off, or not alert again. It changes nothing by itself.
+- **This project.** The top of the ⚡ menu shows the memory of this project's
+  language servers and three buttons, Full / Open files only / Off, for all of
+  them at once, including servers that start later; when they differ, none is
+  highlighted and the menu says "Mixed". Below, each server has a line with
+  its level and memory; in its submenu, under "In This Project", you can pick
+  its own level (full analysis; "Pause background analysis (open files only)"
+  for rust-analyzer and clangd; or off). Choices are remembered for the
+  project (in Solo's database, not in the repository) and apply after
+  restarts. Servers turned off are listed further down to turn on again.
+  "Stop All Language Services" stops them until Solo restarts.
 - **Turn review and pausing.** When a turn ends, Solo still asks
   rust-analyzer for one `cargo check` of the changed files, even while its
   background analysis is paused, so the turn's diagnostics stay complete; with

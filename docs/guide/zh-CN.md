@@ -150,8 +150,12 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 语言服务（rust-analyzer、clangd 等）会在后台分析整个项目，大仓库里可能占好几 GB 内存。
 - **默认更省。** rust-analyzer 的 `cargo check` 同时最多跑逻辑核数四分之一个 `rustc`（至少 2 个）；clangd 用 2 个线程、低优先级建索引，预编译头放在磁盘上。想改回去：在设置里写 `"lsp": {"rust-analyzer": {"initialization_options": {"cargo": {"extraEnv": {"CARGO_BUILD_JOBS": "default"}}}}}`，并给 `lsp.clangd.binary.arguments` 写上你自己的参数（不要参数就写 `[]`）。
 - **占了多少。** 状态栏 ⚡ 按钮旁边的数字是所有语言服务的内存，包括它们启动的进程（rust-analyzer 下面的 `cargo`、`rustc`）。鼠标停在按钮上，每个语言服务一行，例如"rust-analyzer：检查中 · 5 个编译进程 · 3.1 GB"；语言服务的子菜单里也有。
-- **按项目设置。** 在语言服务的子菜单"在本项目"下选：完整分析；"暂停后台分析（只分析打开的文件）"（rust-analyzer 保存时不跑 `cargo check`、不在后台建索引；clangd 不建后台索引），只有 rust-analyzer 和 clangd 有这一项；或者在本项目关闭。选择按项目记住（存在 Solo 的数据库里，不写进仓库），重启后保持。关掉的语言服务列在菜单最下面，可以再开启。
-- **大项目提醒。** 在超过 10 万个文件的项目里启动重的语言服务（rust-analyzer、clangd、roslyn、jdtls、gopls 等）时，Solo 会问一次要分析多少。
+- **设置。** 设置 → 语言服务（⚡ 菜单最下面的"语言服务设置…"也能打开）：
+  - "启用语言服务"：全部关掉或打开（`enable_language_server`）；关掉后什么都不启动，不管项目里怎么选的。
+  - "默认分析级别"（`global_lsp_settings.default_analysis_mode`）：完整、仅打开的文件（rust-analyzer 保存时不跑 `cargo check`、不在后台建索引；clangd 不建后台索引；其他语言服务照常完整分析）或关闭。没在项目里单独选过的项目用它；项目里选过的优先。默认"完整"。
+  - "大项目启动前询问"（`global_lsp_settings.ask_before_large_projects`）：默认级别是"完整"时，在超过 10 万个文件的项目里启动重的语言服务（rust-analyzer、clangd、roslyn、jdtls、gopls 等）时，Solo 会问一次要分析多少。
+  - "内存超过 4 GB 时提醒"（`global_lsp_settings.memory_alert` 的 `enabled` 和 `threshold_gb`）：本项目的语言服务（包括它们启动的进程）一共持续超过阈值约 30 秒时，Solo 列出各自占了多少，同一项目在 Solo 重启前最多提醒一次；按钮可以只分析打开的文件、关闭本项目语言服务，或者不再提醒。它自己不会改任何东西。
+- **本项目。** ⚡ 菜单顶部是本项目语言服务的内存和"完整 / 仅打开的文件 / 关闭"三档，一下作用于本项目全部语言服务（包括以后才启动的）；各服务不一致时三档都不高亮，并显示"各不相同"。下面每个语言服务一行，写着级别和内存；它的子菜单"在本项目"下可以单独选（完整分析；rust-analyzer 和 clangd 还有"暂停后台分析（只分析打开的文件）"；或者在本项目关闭）。选择按项目记住（存在 Solo 的数据库里，不写进仓库），重启后保持。关掉的语言服务列在下面，可以再开启。"停止所有语言服务"只停到 Solo 下次启动。
 - **按轮审阅和暂停。** 一轮结束时，即使暂停了后台分析，Solo 仍会让 rust-analyzer 对改过的文件跑一次 `cargo check`，这一轮的诊断仍然完整；关掉以后就不比较 Rust 的诊断了。
 - **语言服务起不来时**，如果 Solo 认得原因（例如 roslyn 缺 .NET 运行时、下载失败），状态栏会直接写出原因；点一下可以看到解决办法和下载链接。
 

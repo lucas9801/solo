@@ -64,6 +64,8 @@ pub enum ContextMenuItem {
         icon: Option<IconName>,
         icon_color: Option<Color>,
         builder: Rc<dyn Fn(ContextMenu, &mut Window, &mut Context<ContextMenu>) -> ContextMenu>,
+        /// SOLO: shown before the chevron (see [`ContextMenu::submenu_end_slot`]).
+        end_slot: Option<Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>>,
     },
 }
 
@@ -819,6 +821,7 @@ impl ContextMenu {
             icon: None,
             icon_color: None,
             builder: Rc::new(builder),
+            end_slot: None,
         });
         self
     }
@@ -834,6 +837,7 @@ impl ContextMenu {
             icon: Some(icon),
             icon_color: None,
             builder: Rc::new(builder),
+            end_slot: None,
         });
         self
     }
@@ -850,7 +854,19 @@ impl ContextMenu {
             icon: Some(icon),
             icon_color: Some(icon_color),
             builder: Rc::new(builder),
+            end_slot: None,
         });
+        self
+    }
+
+    /// SOLO: shows `render` before the chevron of the last item, a submenu.
+    pub fn submenu_end_slot(
+        mut self,
+        render: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+    ) -> Self {
+        if let Some(ContextMenuItem::Submenu { end_slot, .. }) = self.items.last_mut() {
+            *end_slot = Some(Rc::new(render));
+        }
         self
     }
 
@@ -1521,18 +1537,22 @@ impl ContextMenu {
                 label,
                 icon,
                 icon_color,
+                end_slot,
                 ..
-            } => self
-                .render_submenu_item_trigger(
+            } => {
+                let end_slot = end_slot.clone().map(|render| render(window, cx));
+                self.render_submenu_item_trigger(
                     ix,
                     label.clone(),
                     *icon,
                     *icon_color,
+                    end_slot,
                     is_active_descendant(true),
                     window,
                     cx,
                 )
-                .into_any_element(),
+                .into_any_element()
+            }
         }
     }
 
@@ -1542,6 +1562,7 @@ impl ContextMenu {
         label: SharedString,
         icon: Option<IconName>,
         icon_color: Option<Color>,
+        end_slot: Option<AnyElement>,
         is_active_descendant: bool,
         window: &Window,
         cx: &mut Context<Self>,
@@ -1679,9 +1700,11 @@ impl ContextMenu {
                                     .child(Label::new(label).color(Color::Default)),
                             )
                             .child(
-                                Icon::new(IconName::ChevronRight)
-                                    .size(IconSize::Small)
-                                    .color(Color::Muted),
+                                h_flex().gap_2().children(end_slot).child(
+                                    Icon::new(IconName::ChevronRight)
+                                        .size(IconSize::Small)
+                                        .color(Color::Muted),
+                                ),
                             ),
                     ),
             )

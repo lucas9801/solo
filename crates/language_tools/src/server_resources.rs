@@ -1,9 +1,13 @@
 //! SOLO: what the language servers cost and how much they may do: the memory
 //! and processes of each server with its children (`cargo` and `rustc` under
-//! rust-analyzer), the per-project analysis modes (persisted here), and a
-//! one-time question when a heavy server starts in a very large project.
+//! rust-analyzer), the per-project analysis modes (persisted here), a
+//! one-time question when a heavy server starts in a very large project, and
+//! an alert when a project's servers take too much memory.
 
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use collections::{HashMap, HashSet};
 use db::kvp::KeyValueStore;
@@ -12,8 +16,11 @@ use lsp::LanguageServerName;
 use project::{
     LanguageServerProgress, Worktree,
     lsp_store::solo_server_modes::{self, AnalysisMode, LanguageServerModes},
+    project_settings::ProjectSettings,
 };
+use settings::Settings as _;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use ui::{Color, IconName};
 use util::{ResultExt as _, i18n::tr};
 use workspace::{
     Workspace,
@@ -22,6 +29,9 @@ use workspace::{
 
 const MODES_KEY: &str = "solo_language_server_modes";
 const PROMPTED_KEY: &str = "solo_large_project_prompted";
+/// How long the servers' memory must stay above the threshold before the
+/// alert.
+pub(crate) const MEMORY_ALERT_AFTER: Duration = Duration::from_secs(30);
 /// Projects with more files than this get asked how much a heavy language
 /// server should analyze.
 pub(crate) const LARGE_PROJECT_FILE_COUNT: usize = 100_000;
@@ -74,6 +84,23 @@ pub(crate) fn choose_mode(
     cx: &mut App,
 ) {
     solo_server_modes::set_mode(project_root, server, mode, cx);
+    save_modes(cx);
+}
+
+/// Sets how much all the language servers of a project analyze: those
+/// given, those chosen there before and those that start there later; and
+/// remembers it.
+pub(crate) fn choose_project_mode(
+    project_roots: &[PathBuf],
+    servers: &[(PathBuf, LanguageServerName)],
+    mode: AnalysisMode,
+    cx: &mut App,
+) {
+    solo_server_modes::set_project_mode(project_roots, servers, mode, cx);
+    save_modes(cx);
+}
+
+fn save_modes(cx: &mut App) {
     let Some(json) = serde_json::to_string(cx.global::<LanguageServerModes>()).log_err() else {
         return;
     };
@@ -92,6 +119,38 @@ pub(crate) fn mode_label(mode: AnalysisMode) -> &'static str {
         ),
         AnalysisMode::Off => tr("Off in this project", "在本项目关闭"),
     }
+}
+
+/// The short name of a mode, in the language servers menu.
+pub(crate) fn short_mode_label(mode: AnalysisMode) -> &'static str {
+    match mode {
+        AnalysisMode::Full => tr("Full", "完整"),
+        AnalysisMode::OpenFilesOnly => tr("Open files only", "仅打开的文件"),
+        AnalysisMode::Off => tr("Off", "关闭"),
+    }
+}
+
+/// The mode a server works in: servers that can't analyze only the open
+/// files analyze everything.
+pub(crate) fn effective_mode(server: &LanguageServerName, mode: AnalysisMode) -> AnalysisMode {
+    if mode == AnalysisMode::OpenFilesOnly && !solo_server_modes::supports_open_files_only(server) {
+        AnalysisMode::Full
+    } else {
+        mode
+    }
+}
+
+/// Whether the user chose a mode for any server of these projects.
+pub(crate) fn has_choices_in(project_roots: &[PathBuf], cx: &App) -> bool {
+    cx.try_global::<LanguageServerModes>().is_some_and(|modes| {
+        project_roots.iter().any(|root| {
+            modes.project_modes.contains_key(root)
+                || modes
+                    .projects
+                    .get(root)
+                    .is_some_and(|servers| !servers.is_empty())
+        })
+    })
 }
 
 /// The modes offered for a server.
@@ -295,6 +354,14 @@ pub(crate) fn maybe_ask_about_large_project(
     if !solo_server_modes::is_heavy_server(&server) {
         return;
     }
+    // Asked only when the setting allows it and servers analyze everything
+    // by default.
+    let settings = &ProjectSettings::get_global(cx).global_lsp_settings;
+    if !settings.ask_before_large_projects
+        || solo_server_modes::default_mode(cx) != AnalysisMode::Full
+    {
+        return;
+    }
     let project_root = worktree.read(cx).abs_path().to_path_buf();
     let already_decided = cx
         .try_global::<PromptedProjects>()
@@ -386,9 +453,208 @@ fn show_large_project_prompt(
         .log_err();
 }
 
+/// Watches a project's language server memory for the alert.
+#[derive(Default)]
+pub(crate) struct MemoryAlertTracker {
+    over_since: Option<Instant>,
+}
+
+/// The projects already alerted about in this run, by their folders.
+#[derive(Default)]
+pub(crate) struct AlertedProjects(HashSet<Vec<PathBuf>>);
+
+impl Global for AlertedProjects {}
+
+impl MemoryAlertTracker {
+    /// Whether to alert now about `project`, whose servers take `memory`
+    /// bytes: when the memory has stayed above the threshold (`None`: the
+    /// alert is off) for [`MEMORY_ALERT_AFTER`], at most once per project.
+    pub(crate) fn should_alert(
+        &mut self,
+        memory: u64,
+        threshold_gb: Option<u32>,
+        now: Instant,
+        project: &[PathBuf],
+        alerted: &mut AlertedProjects,
+    ) -> bool {
+        const GB: u64 = 1024 * 1024 * 1024;
+        let Some(threshold_gb) = threshold_gb else {
+            self.over_since = None;
+            return false;
+        };
+        if memory <= u64::from(threshold_gb.max(1)) * GB {
+            self.over_since = None;
+            return false;
+        }
+        let over_since = *self.over_since.get_or_insert(now);
+        if now.duration_since(over_since) < MEMORY_ALERT_AFTER
+            || project.is_empty()
+            || alerted.0.contains(project)
+        {
+            return false;
+        }
+        alerted.0.insert(project.to_vec());
+        true
+    }
+}
+
+/// The alert threshold in GB, or `None` when the alert is off.
+pub(crate) fn memory_alert_threshold(cx: &App) -> Option<u32> {
+    let settings = &ProjectSettings::get_global(cx).global_lsp_settings;
+    settings
+        .memory_alert
+        .then_some(settings.memory_alert_threshold_gb)
+}
+
+/// "clangd 4.4 GB · json-language-server 200 MB", the biggest first.
+pub(crate) fn describe_memory(servers: &[(LanguageServerName, u64)]) -> String {
+    let mut servers = servers.to_vec();
+    servers.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    servers
+        .iter()
+        .map(|(name, memory)| format!("{name} {}", format_memory(*memory)))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Alerts that the project's language servers take `total` bytes, listing
+/// each server's memory. Changes nothing by itself.
+pub(crate) fn show_memory_alert(
+    workspace: WeakEntity<Workspace>,
+    project_roots: Vec<PathBuf>,
+    servers: Vec<(PathBuf, LanguageServerName, u64)>,
+    total: u64,
+    cx: &mut App,
+) {
+    let title = if util::i18n::is_chinese() {
+        format!("语言服务占用 {}", format_memory(total))
+    } else {
+        format!("Language services use {}", format_memory(total))
+    };
+    let body = describe_memory(
+        &servers
+            .iter()
+            .map(|(_, name, memory)| (name.clone(), *memory))
+            .collect::<Vec<_>>(),
+    );
+    let project_servers: Vec<(PathBuf, LanguageServerName)> = servers
+        .into_iter()
+        .map(|(root, name, _)| (root, name))
+        .collect();
+    let id = NotificationId::named("solo-language-server-memory".into());
+    let workspace_for_settings = workspace.clone();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.show_notification(id, cx, |cx| {
+                let choice = |mode: AnalysisMode| {
+                    let project_roots = project_roots.clone();
+                    let project_servers = project_servers.clone();
+                    move |_: &mut gpui::Window, cx: &mut gpui::Context<MessageNotification>| {
+                        choose_project_mode(&project_roots, &project_servers, mode, cx);
+                    }
+                };
+                let workspace = workspace_for_settings.clone();
+                let notification = MessageNotification::new(body, cx)
+                    .with_title(title)
+                    .content_icon(IconName::Warning, Color::Warning)
+                    .show_suppress_button(false)
+                    .primary_message(tr("Analyze Open Files Only", "仅分析打开的文件"))
+                    .primary_on_click(choice(AnalysisMode::OpenFilesOnly))
+                    .secondary_message(tr(
+                        "Turn Off Language Services in This Project",
+                        "关闭本项目语言服务",
+                    ))
+                    .secondary_on_click(choice(AnalysisMode::Off))
+                    .tertiary_message(tr("Don't Alert Again", "不再提醒"))
+                    .tertiary_on_click(move |_, cx| {
+                        let Ok(fs) = workspace
+                            .read_with(cx, |workspace, _| workspace.app_state().fs.clone())
+                        else {
+                            return;
+                        };
+                        settings::update_settings_file(fs, cx, |settings, _| {
+                            settings
+                                .global_lsp_settings
+                                .get_or_insert_default()
+                                .memory_alert
+                                .get_or_insert_default()
+                                .enabled = Some(false);
+                        });
+                    });
+                cx.new(|_| notification)
+            });
+        })
+        .log_err();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_alert_after_30_seconds_once_per_project() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let project = vec![PathBuf::from("/a")];
+        let mut alerted = AlertedProjects::default();
+        let mut tracker = MemoryAlertTracker::default();
+
+        // At or below the threshold: nothing.
+        assert!(!tracker.should_alert(4 * GB, Some(4), at(0), &project, &mut alerted));
+        // Above it, not before 30 seconds.
+        assert!(!tracker.should_alert(5 * GB, Some(4), at(4), &project, &mut alerted));
+        assert!(!tracker.should_alert(5 * GB, Some(4), at(30), &project, &mut alerted));
+        // Dropping below starts over.
+        assert!(!tracker.should_alert(3 * GB, Some(4), at(32), &project, &mut alerted));
+        assert!(!tracker.should_alert(5 * GB, Some(4), at(36), &project, &mut alerted));
+        assert!(!tracker.should_alert(5 * GB, Some(4), at(60), &project, &mut alerted));
+        assert!(tracker.should_alert(5 * GB, Some(4), at(66), &project, &mut alerted));
+        // Once per project and run, also from another window.
+        assert!(!tracker.should_alert(9 * GB, Some(4), at(200), &project, &mut alerted));
+        let mut other_window = MemoryAlertTracker::default();
+        assert!(!other_window.should_alert(9 * GB, Some(4), at(0), &project, &mut alerted));
+        assert!(!other_window.should_alert(9 * GB, Some(4), at(40), &project, &mut alerted));
+
+        // Another project is alerted about on its own.
+        let other = vec![PathBuf::from("/b")];
+        let mut tracker = MemoryAlertTracker::default();
+        assert!(!tracker.should_alert(5 * GB, Some(4), at(0), &other, &mut alerted));
+        assert!(tracker.should_alert(5 * GB, Some(4), at(30), &other, &mut alerted));
+
+        // A higher threshold, and the alert turned off.
+        let third = vec![PathBuf::from("/c")];
+        let mut tracker = MemoryAlertTracker::default();
+        assert!(!tracker.should_alert(5 * GB, Some(8), at(0), &third, &mut alerted));
+        assert!(!tracker.should_alert(5 * GB, Some(8), at(40), &third, &mut alerted));
+        assert!(!tracker.should_alert(9 * GB, None, at(0), &third, &mut alerted));
+        assert!(!tracker.should_alert(9 * GB, None, at(40), &third, &mut alerted));
+    }
+
+    #[test]
+    fn describes_memory_and_modes() {
+        const MB: u64 = 1024 * 1024;
+        let text = describe_memory(&[
+            (
+                LanguageServerName::new_static("json-language-server"),
+                200 * MB,
+            ),
+            (LanguageServerName::new_static("clangd"), 4500 * MB),
+        ]);
+        assert_eq!(text, "clangd 4.4 GB · json-language-server 200 MB");
+
+        let json = LanguageServerName::new_static("json-language-server");
+        let clangd = LanguageServerName::new_static("clangd");
+        assert_eq!(
+            effective_mode(&json, AnalysisMode::OpenFilesOnly),
+            AnalysisMode::Full
+        );
+        assert_eq!(
+            effective_mode(&clangd, AnalysisMode::OpenFilesOnly),
+            AnalysisMode::OpenFilesOnly
+        );
+        assert_eq!(effective_mode(&json, AnalysisMode::Off), AnalysisMode::Off);
+    }
 
     #[test]
     fn sums_process_trees_with_children() {

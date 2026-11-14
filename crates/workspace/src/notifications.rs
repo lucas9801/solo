@@ -672,6 +672,9 @@ pub mod simple_message_notification {
         secondary_icon_color: Option<Color>,
         secondary_on_click: Option<Arc<dyn Fn(&mut Window, &mut Context<Self>)>>,
         secondary_menu_entries: Vec<(SharedString, Arc<dyn Fn(&mut Window, &mut Context<Self>)>)>,
+        // SOLO: a third button, after the secondary one.
+        tertiary_message: Option<SharedString>,
+        tertiary_on_click: Option<Arc<dyn Fn(&mut Window, &mut Context<Self>)>>,
         more_info_message: Option<SharedString>,
         more_info_url: Option<Arc<str>>,
         show_close_button: bool,
@@ -725,6 +728,8 @@ pub mod simple_message_notification {
                 secondary_icon_color: None,
                 secondary_on_click: None,
                 secondary_menu_entries: Vec::new(),
+                tertiary_message: None,
+                tertiary_on_click: None,
                 more_info_message: None,
                 more_info_url: None,
                 show_close_button: true,
@@ -833,6 +838,24 @@ pub mod simple_message_notification {
         {
             self.secondary_menu_entries
                 .push((label.into(), Arc::new(on_click)));
+            self
+        }
+
+        /// SOLO: a third button, shown after the secondary one; it
+        /// dismisses the notification like the others.
+        pub fn tertiary_message<S>(mut self, message: S) -> Self
+        where
+            S: Into<SharedString>,
+        {
+            self.tertiary_message = Some(message.into());
+            self
+        }
+
+        pub fn tertiary_on_click<F>(mut self, on_click: F) -> Self
+        where
+            F: 'static + Fn(&mut Window, &mut Context<Self>),
+        {
+            self.tertiary_on_click = Some(Arc::new(on_click));
             self
         }
 
@@ -1095,6 +1118,7 @@ pub mod simple_message_notification {
 
             let has_suffix = self.primary_message.is_some()
                 || self.secondary_message.is_some()
+                || self.tertiary_message.is_some()
                 || self.more_info_message.is_some();
 
             let suffix = h_flex()
@@ -1145,6 +1169,18 @@ pub mod simple_message_notification {
                             .style(SplitButtonStyle::Transparent)
                             .into_any_element()
                     }
+                }))
+                // SOLO: the third button.
+                .children(self.tertiary_message.clone().map(|message| {
+                    Button::new(("notification-tertiary", cx.entity_id()), message)
+                        .label_size(LabelSize::Small)
+                        .color(Color::Muted)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if let Some(on_click) = this.tertiary_on_click.as_ref() {
+                                (on_click)(window, cx)
+                            };
+                            this.dismiss(cx)
+                        }))
                 }))
                 .child(
                     h_flex().w_full().justify_end().children(
