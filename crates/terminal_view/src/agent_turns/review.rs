@@ -2641,6 +2641,18 @@ mod tests {
         }
         git(&["add", "."]);
         git(&["commit", "--quiet", "-m", "initial"]);
+        // The repository as git spells it, which the review uses: the temp
+        // directory can be spelled with a short (8.3) name (on CI,
+        // C:\Users\RUNNER~1\...), and the fake file system below knows only
+        // the spelling it's given.
+        #[allow(clippy::disallowed_methods, reason = "test setup")]
+        let top_level = util::command::new_std_command("git")
+            .current_dir(&repository)
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .unwrap();
+        let top_level = String::from_utf8(top_level.stdout).unwrap();
+        let repository = PathBuf::from(top_level.trim().replace('/', std::path::MAIN_SEPARATOR_STR));
 
         // The project's files are fake, mirroring the real ones git sees.
         let fs = FakeFs::new(cx.executor());
@@ -2693,7 +2705,25 @@ mod tests {
                 );
             }
         });
-        cx.run_until_parked();
+        // git takes the turns' first snapshots on a background thread, which
+        // run_until_parked doesn't wait for; slower machines (CI) need longer.
+        let started = std::time::Instant::now();
+        loop {
+            cx.run_until_parked();
+            let taken = turns.read_with(cx, |turns, _| {
+                terminals
+                    .iter()
+                    .all(|terminal| turns.start_snapshot_taken(terminal.entity_id()))
+            });
+            if taken {
+                break;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "the turns' first snapshots weren't taken"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         // Each agent edits its file, and its hooks say so; the third one's
         // don't report edits.
         for (name, terminal) in [("a.txt", &first), ("b.txt", &second)] {
@@ -2755,10 +2785,40 @@ mod tests {
         review.update(cx, |review, cx| {
             review.reject_hunks(AgentTurnReview::all_hunks(), cx)
         });
-        cx.run_until_parked();
+        // The restore runs git on a background thread, which run_until_parked
+        // doesn't wait for; slower machines (CI) need a moment longer.
+        let started = std::time::Instant::now();
+        loop {
+            cx.run_until_parked();
+            let restored = fs.load(&repository.join("a.txt")).await.unwrap() == "before\n";
+            if restored || started.elapsed() > std::time::Duration::from_secs(10) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let state = review.read_with(cx, |review, cx| {
+            let files: Vec<String> = review
+                .files
+                .iter()
+                .map(|file| {
+                    format!(
+                        "{} base={} as_left={} abs={:?}",
+                        file.path_key.path.as_unix_str(),
+                        file.base.is_some(),
+                        file.is_as_the_turn_left_it(cx),
+                        file.abs_path
+                    )
+                })
+                .collect();
+            format!(
+                "status={:?} work_tree={:?} files={files:?}",
+                review.status, review.work_tree
+            )
+        });
         assert_eq!(
             fs.load(&repository.join("a.txt")).await.unwrap(),
-            "before\n"
+            "before\n",
+            "{state} repository={repository:?}"
         );
         assert_eq!(
             fs.load(&repository.join("b.txt")).await.unwrap(),

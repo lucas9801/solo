@@ -661,10 +661,10 @@ fn is_older_than(path: &Path, age: Duration) -> bool {
 pub(crate) fn linked_ancestor(path: &Path, root: &Path) -> Option<PathBuf> {
     use std::path::Component;
 
-    let Ok(relative) = path.strip_prefix(root) else {
+    let Some((root, relative)) = path_in(path, root) else {
         return Some(path.to_path_buf());
     };
-    let mut current = root.to_path_buf();
+    let mut current = root;
     let mut components = relative.components().peekable();
     while let Some(component) = components.next() {
         if !matches!(component, Component::Normal(_)) {
@@ -682,6 +682,27 @@ pub(crate) fn linked_ancestor(path: &Path, root: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// `path` relative to `root`, with the root as `path` spells it. The two may
+/// spell it differently: git gives the long, `/`-separated form while a path
+/// from elsewhere can use another case or a short (8.3) name, like CI's temp
+/// directory `C:\Users\RUNNER~1\...`. Then the root is the folder on the
+/// path that is the same folder on disk; only folders above the repository
+/// are resolved, so links inside it are still caught.
+fn path_in(path: &Path, root: &Path) -> Option<(PathBuf, PathBuf)> {
+    if let Ok(relative) = path.strip_prefix(root) {
+        return Some((root.to_path_buf(), relative.to_path_buf()));
+    }
+    let root_on_disk = std::fs::canonicalize(root).ok()?;
+    path.ancestors().skip(1).find_map(|ancestor| {
+        let same = std::fs::canonicalize(ancestor).ok()? == root_on_disk;
+        same.then(|| {
+            let relative = path.strip_prefix(ancestor).ok()?;
+            Some((ancestor.to_path_buf(), relative.to_path_buf()))
+        })
+        .flatten()
+    })
 }
 
 fn is_link(metadata: &std::fs::Metadata) -> bool {
@@ -1213,6 +1234,14 @@ mod tests {
         assert_eq!(
             linked_ancestor(&repository.join("new.txt"), &repository),
             None
+        );
+        // The same repository spelled another way (case here; on CI, a
+        // short 8.3 name) is no link.
+        let respelled = PathBuf::from(repository.to_string_lossy().to_uppercase());
+        assert_eq!(linked_ancestor(&respelled.join("new.txt"), &repository), None);
+        assert_eq!(
+            linked_ancestor(&respelled.join("link").join("secret.txt"), &repository),
+            Some(respelled.join("link"))
         );
 
         let restored = store.restore(&before).unwrap();

@@ -265,6 +265,16 @@ impl AgentTurns {
             .flat_map(|turns| turns.turns.iter())
     }
 
+    /// Whether the snapshot starting the terminal's current turn is taken
+    /// (it's taken by git on a background thread).
+    #[cfg(test)]
+    pub(crate) fn start_snapshot_taken(&self, terminal: EntityId) -> bool {
+        self.terminals
+            .get(&terminal)
+            .and_then(|turns| turns.pending.as_ref())
+            .is_some_and(|pending| pending.snapshot.peek().is_some())
+    }
+
     pub(crate) fn turn(&self, terminal: EntityId, number: usize) -> Option<&AgentTurn> {
         self.turns(terminal).find(|turn| turn.number == number)
     }
