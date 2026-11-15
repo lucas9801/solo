@@ -483,10 +483,14 @@ jobs:
             *static*) ;;
             *) echo "::error::remote_server isn't statically linked"; exit 1 ;;
           esac
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/zed/Cargo.toml | head -n 1)
+          version=$(tr -d '\r' < crates/zed/Cargo.toml | sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1)
           channel=$(cat crates/zed/RELEASE_CHANNEL)
           reported=$("$binary" version)
           echo "remote_server version: $reported (Solo $version, $channel)"
+          if [ -z "$version" ]; then
+            echo "::error::Couldn't read Solo's version from crates/zed/Cargo.toml"
+            exit 1
+          fi
           if [ "$channel" = "stable" ] && [ "$reported" != "$version" ]; then
             echo "::error::remote_server says $reported, not $version"
             exit 1

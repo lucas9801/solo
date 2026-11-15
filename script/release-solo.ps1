@@ -110,7 +110,9 @@ function Get-WithVersion([string]$path, [string]$pattern, [string]$replacement) 
     $text = [IO.File]::ReadAllText((Resolve-Path $path))
     $updated = [regex]::Replace($text, $pattern, $replacement, [Text.RegularExpressions.RegexOptions]::Multiline)
     if ($updated -eq $text) { throw "Couldn't set the version in $path" }
-    return $updated
+    # Written with LF line endings, like the repository stores them, even if
+    # the checkout has CRLF: a CRLF file breaks the package workflow's checks.
+    return $updated -replace "`r`n", "`n"
 }
 $newCargoToml = Get-WithVersion $cargoToml '^version = ".+"' "version = `"$Version`""
 $newCargoLock = Get-WithVersion "Cargo.lock" '(?<=^name = "zed"\r?\nversion = ")[^"]+' $Version
