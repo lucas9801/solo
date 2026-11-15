@@ -239,10 +239,7 @@ impl TerminalInput {
                 placement: Some(ContextMenuPlacement::Above),
             });
             editor.set_placeholder_text(
-                util::i18n::tr(
-                    "Type a command (Tab completes), or # and what you want to do to ask AI",
-                    "输入命令（Tab 补全），或输入 # 加上想做的事来问 AI",
-                ),
+                util::i18n::tr("Type a command, or # to ask AI", "输入命令，或输入 # 问 AI"),
                 window,
                 cx,
             );
@@ -1206,8 +1203,8 @@ impl Render for TerminalInput {
                             .label_size(LabelSize::XSmall)
                             .style(ButtonStyle::Subtle)
                             .tooltip(Tooltip::text(util::i18n::tr(
-                                "Paste the errors or failed tests into the agent working here",
-                                "把错误或失败的测试粘贴给在这里工作的 agent",
+                                "Send the errors or failed tests to the agent here",
+                                "把错误或失败的测试发给这里的 agent",
                             )))
                             .on_click(move |_, window, cx| {
                                 // The terminal handles it, from its input.
@@ -1242,10 +1239,8 @@ impl Render for TerminalInput {
                     .when(self.show_auto_menu_hint, |this| {
                         this.child(
                             Label::new(util::i18n::tr(
-                                "Tab accepts, Enter runs the command, Esc closes; \
-                                 terminal.completions_as_you_type turns this off",
-                                "Tab 接受，Enter 直接运行命令，Esc 关闭；\
-                                 设置 terminal.completions_as_you_type 可关掉自动弹出",
+                                "Tab accepts · Enter runs · Esc closes",
+                                "Tab 接受 · Enter 运行 · Esc 关闭",
                             ))
                             .size(LabelSize::XSmall)
                             .color(Color::Muted)
@@ -1325,9 +1320,8 @@ impl Render for TerminalInput {
                                 .border_color(colors.border)
                                 .bg(colors.element_background)
                                 .tooltip(Tooltip::text(util::i18n::tr(
-                                    "This command and the end of its output go to your \
-                                     Claude Code or Codex with the request",
-                                    "这条命令和它输出的最后一部分会随请求发给你的 Claude Code 或 Codex",
+                                    "Sends this command and the end of its output with the request",
+                                    "随请求发送这条命令和它输出的最后一部分",
                                 )))
                                 .child(
                                     Icon::new(IconName::Terminal)
@@ -1752,17 +1746,9 @@ fn workflow_completions(
     completions.push(completion(
         util::i18n::tr("Edit Workflows…", "编辑工作流…").to_string(),
         snapshot.text(),
-        Some(if util::i18n::is_chinese() {
-            format!(
-                "打开 {} 来添加、修改或删除 Workflow。",
-                workflows::workflows_file().display()
-            )
-        } else {
-            format!(
-                "Opens {} to add, change or remove workflows.",
-                workflows::workflows_file().display()
-            )
-        }),
+        Some(
+            util::i18n::tr("Add, change or remove workflows", "添加、修改或删除工作流").to_string(),
+        ),
         IconName::Pencil,
         Some(Arc::new(|_, window: &mut Window, cx: &mut App| {
             window.dispatch_action(Box::new(OpenWorkflowsFile), cx);

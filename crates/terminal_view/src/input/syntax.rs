@@ -47,17 +47,78 @@ impl TokenKind {
 }
 
 const KEYWORDS: &[&str] = &[
-    "begin", "break", "catch", "class", "continue", "data", "do", "dynamicparam", "else",
-    "elseif", "end", "enum", "exit", "filter", "finally", "for", "foreach", "function", "if",
-    "in", "param", "process", "return", "switch", "throw", "trap", "try", "until", "using",
+    "begin",
+    "break",
+    "catch",
+    "class",
+    "continue",
+    "data",
+    "do",
+    "dynamicparam",
+    "else",
+    "elseif",
+    "end",
+    "enum",
+    "exit",
+    "filter",
+    "finally",
+    "for",
+    "foreach",
+    "function",
+    "if",
+    "in",
+    "param",
+    "process",
+    "return",
+    "switch",
+    "throw",
+    "trap",
+    "try",
+    "until",
+    "using",
     "while",
 ];
 
 const OPERATORS: &[&str] = &[
-    "and", "or", "not", "xor", "band", "bor", "bnot", "bxor", "shl", "shr", "eq", "ne", "gt",
-    "ge", "lt", "le", "like", "notlike", "match", "notmatch", "contains", "notcontains", "in",
-    "notin", "replace", "split", "join", "is", "isnot", "as", "f", "ieq", "ine", "ceq", "cne",
-    "ilike", "clike", "imatch", "cmatch",
+    "and",
+    "or",
+    "not",
+    "xor",
+    "band",
+    "bor",
+    "bnot",
+    "bxor",
+    "shl",
+    "shr",
+    "eq",
+    "ne",
+    "gt",
+    "ge",
+    "lt",
+    "le",
+    "like",
+    "notlike",
+    "match",
+    "notmatch",
+    "contains",
+    "notcontains",
+    "in",
+    "notin",
+    "replace",
+    "split",
+    "join",
+    "is",
+    "isnot",
+    "as",
+    "f",
+    "ieq",
+    "ine",
+    "ceq",
+    "cne",
+    "ilike",
+    "clike",
+    "imatch",
+    "cmatch",
 ];
 
 /// Tokens of a PowerShell command line, in order. Text between them (spaces,
@@ -82,7 +143,9 @@ pub fn powershell_tokens(text: &str) -> Vec<(Range<usize>, TokenKind)> {
                 tokens.push((start..ix, TokenKind::Comment));
             }
             b'<' if bytes.get(ix + 1) == Some(&b'#') => {
-                ix = text[ix + 2..].find("#>").map_or(bytes.len(), |len| ix + 2 + len + 2);
+                ix = text[ix + 2..]
+                    .find("#>")
+                    .map_or(bytes.len(), |len| ix + 2 + len + 2);
                 tokens.push((start..ix, TokenKind::Comment));
             }
             b'\'' | b'"' => {
@@ -192,7 +255,9 @@ fn is_number(lower: &str) -> bool {
     }
     let digits = lower
         .strip_suffix('b')
-        .map_or(lower, |rest| rest.trim_end_matches(['k', 'm', 'g', 't', 'p']))
+        .map_or(lower, |rest| {
+            rest.trim_end_matches(['k', 'm', 'g', 't', 'p'])
+        })
         .trim_end_matches(['l', 'd']);
     !digits.is_empty()
         && digits.as_bytes()[0].is_ascii_digit()
@@ -324,7 +389,12 @@ mod tests {
         );
         assert_eq!(
             kinds("[int]$n = -5"),
-            [("[int]", Type), ("$n", Variable), ("=", Operator), ("-5", Number)]
+            [
+                ("[int]", Type),
+                ("$n", Variable),
+                ("=", Operator),
+                ("-5", Number)
+            ]
         );
     }
 

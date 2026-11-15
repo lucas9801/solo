@@ -487,7 +487,7 @@ fn general_page(cx: &App) -> SettingsPage {
             SettingsPageItem::SectionHeader("Language"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Interface Language",
-                description: "The language of Solo's interface. System follows the language the system is set to.",
+                description: "The language of Solo's interface.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("ui_language"),

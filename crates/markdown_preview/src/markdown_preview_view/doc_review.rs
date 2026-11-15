@@ -464,8 +464,8 @@ impl MarkdownPreviewView {
                                 .style(ButtonStyle::Filled)
                                 .label_size(LabelSize::Small)
                                 .tooltip(Tooltip::text(tr(
-                                    "Paste the comments, with their lines and text, into the agent that last changed this document",
-                                    "把批注连同行号和原文粘贴给最近改过这份文档的 agent",
+                                    "Send the comments to the agent that last edited this document",
+                                    "把批注发给最近改过这份文档的 agent",
                                 )))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.send_comments(window, cx)

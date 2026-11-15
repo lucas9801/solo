@@ -381,12 +381,8 @@ impl TerminalView {
             return;
         };
         let message = match crate::input::workflows::save(command.trim()) {
-            Ok(()) => util::i18n::tr(
-                "Saved as a workflow; ctrl-shift-r in the input lists them",
-                "已存为 Workflow；在输入框按 ctrl-shift-r 可列出",
-            )
-            .to_string(),
-            Err(error) if util::i18n::is_chinese() => format!("无法保存 Workflow：{error:#}"),
+            Ok(()) => util::i18n::tr("Saved as a workflow", "已存为工作流").to_string(),
+            Err(error) if util::i18n::is_chinese() => format!("无法保存工作流：{error:#}"),
             Err(error) => format!("Couldn't save the workflow: {error:#}"),
         };
         if let Some(workspace) = self.workspace.upgrade() {

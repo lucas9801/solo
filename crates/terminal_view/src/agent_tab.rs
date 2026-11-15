@@ -37,12 +37,9 @@ impl TerminalView {
                 ))
             }),
             // See `Terminal::host_failed`.
-            warning: terminal.host_failed().then(|| {
-                tr(
-                    "Ends when Solo quits: its background process couldn't be started",
-                    "Solo 退出时它会结束：没能启动它的后台进程",
-                )
-            }),
+            warning: terminal
+                .host_failed()
+                .then(|| tr("Ends when Solo quits", "Solo 退出时会结束")),
             pid: Some(pid),
         })
     }

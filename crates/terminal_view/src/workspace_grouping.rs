@@ -219,9 +219,9 @@ fn not_in_tab_note(tab_name: &str) -> String {
 /// The bar's line on what runs in it.
 fn carries_on_note(agent: &str) -> String {
     if util::i18n::is_chinese() {
-        format!("移过去不会打断正在运行的 {agent}。")
+        format!("{agent} 会继续运行。")
     } else {
-        format!("Moving it doesn't interrupt {agent}, which is running.")
+        format!("{agent} keeps running.")
     }
 }
 
@@ -1075,10 +1075,7 @@ impl TerminalView {
                 .child(
                     IconButton::new("close-misplaced-terminal-bar", IconName::Close)
                         .icon_size(IconSize::Small)
-                        .tooltip(Tooltip::text(tr(
-                            "Close for now; asks again next time Solo starts",
-                            "这次先关掉，下次启动 Solo 再提示",
-                        )))
+                        .tooltip(Tooltip::text(tr("Close", "关闭")))
                         .on_click(cx.listener(|view, _, _, cx| view.close_misplaced_bar(cx))),
                 )
                 .into_any_element(),
@@ -1985,10 +1982,7 @@ mod tests {
     fn test_carries_on_note() {
         assert_eq!(
             carries_on_note("claude"),
-            tr(
-                "Moving it doesn't interrupt claude, which is running.",
-                "移过去不会打断正在运行的 claude。"
-            )
+            tr("claude keeps running.", "claude 会继续运行。")
         );
     }
 

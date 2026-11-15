@@ -1323,7 +1323,9 @@ mod tests {
             )
             .await;
             assert_eq!(
-                open_target.as_ref().map(|target| target.path().path.as_path()),
+                open_target
+                    .as_ref()
+                    .map(|target| target.path().path.as_path()),
                 expected.map(Path::new),
                 "{working_directory}"
             );

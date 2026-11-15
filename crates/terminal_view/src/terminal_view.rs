@@ -849,7 +849,7 @@ impl TerminalView {
                             )
                         })
                         .action(
-                            util::i18n::tr("Save Command as Workflow", "把命令存为 Workflow"),
+                            util::i18n::tr("Save Command as Workflow", "把命令存为工作流"),
                             Box::new(SaveCommandBlockAsWorkflow),
                         )
                         .action(

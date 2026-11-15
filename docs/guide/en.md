@@ -85,7 +85,7 @@ Outside those folders, remove these yourself if you want them gone:
 
 - `.solo` folders in your projects (project settings, tasks, debug scenarios);
 - git worktrees and branches left by agent tasks (by default in `../worktrees/`
-  next to the project). Delete them from **Manage Agent Tasks**, or with
+  next to the project). Delete them from **Manage Worktrees…** in the workspace tab menu, or with
   `git worktree remove` and `git branch -D`.
 
 Solo doesn't change your Claude Code configuration (see section 8), so there's
@@ -182,14 +182,15 @@ which Solo only reads. If Solo picks the wrong session, use
 **New Agent Task** in the command palette asks for a task name, then creates a
 branch with its own git worktree (where it goes is set by
 `git.worktree_directory`, `../worktrees` by default) and opens a terminal there
-running `terminal.agent_task_command` (`claude` by default). **Manage Agent
-Tasks** lists the tasks: open a task's terminal, view its diff, merge it into
+running `terminal.agent_task_command` (`claude` by default). **Manage
+Worktrees…** in the workspace tab menu (or `agent task: manage agent tasks`)
+lists the tasks: open a task's terminal, view its diff, merge it into
 the branch it started from, open a pull request, or delete it. Tasks are
 stored in the repository's git config, so they're still there after a restart.
 Local projects only.
 
-**New Terminal in New Worktree…** in the terminal column's **+** menu opens
-the same dialog: give it a name (the branch, `agent/<name>`, shows below it)
+**New Terminal in New Worktree…** in the terminal column's **+** menu (and in
+the workspace tab menu) opens the same dialog: give it a name (the branch, `agent/<name>`, shows below it)
 and choose what runs in the terminal: nothing (just a shell), Claude Code or
 Codex (the ones on the `PATH`; `terminal.agent_task_command` picks the
 default). The menu's **Run Workflow…** (alt-shift-t) lists your workflows and

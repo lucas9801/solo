@@ -1238,7 +1238,10 @@ mod tests {
         // The same repository spelled another way (case here; on CI, a
         // short 8.3 name) is no link.
         let respelled = PathBuf::from(repository.to_string_lossy().to_uppercase());
-        assert_eq!(linked_ancestor(&respelled.join("new.txt"), &repository), None);
+        assert_eq!(
+            linked_ancestor(&respelled.join("new.txt"), &repository),
+            None
+        );
         assert_eq!(
             linked_ancestor(&respelled.join("link").join("secret.txt"), &repository),
             Some(respelled.join("link"))

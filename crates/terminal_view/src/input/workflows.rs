@@ -118,7 +118,7 @@ pub fn ensure_file() -> Result<PathBuf> {
             description: Some(
                 util::i18n::tr(
                     "Workflows fill the terminal input; Tab selects each {{argument}}.",
-                    "Workflow 会填入终端输入框；按 Tab 依次选中每个 {{argument}}。",
+                    "工作流会填入终端输入框；按 Tab 依次选中每个 {{argument}}。",
                 )
                 .to_string(),
             ),

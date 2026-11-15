@@ -67,8 +67,8 @@ impl AgentPanelOnboarding {
             .child(Headline::new(tr("Set Up AI", "设置 AI")))
             .child(
                 Label::new(tr(
-                    "Solo uses your own API keys or an external agent. No account needed.",
-                    "Solo 使用你自己的 API 密钥或外部智能体，无需账号。",
+                    "Use your own API key or an external agent.",
+                    "使用你自己的 API 密钥或外部 agent。",
                 ))
                 .color(Color::Muted)
                 .mb_2(),
@@ -81,7 +81,7 @@ impl AgentPanelOnboarding {
                     )))
                     .child(ListBulletItem::new(tr(
                         "Or add an external agent such as Claude Code or Codex.",
-                        "或添加 Claude Code、Codex 等外部智能体。",
+                        "或添加 Claude Code、Codex 等外部 agent。",
                     ))),
             )
             .child(

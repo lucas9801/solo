@@ -144,26 +144,25 @@ fn not_installed_message(preference: AiCommandAgent) -> String {
     let codex = "npm install -g @openai/codex";
     let chinese = util::i18n::is_chinese();
     match (preference, chinese) {
-        (AiCommandAgent::Auto, true) => format!(
-            "没找到 Claude Code 或 Codex，无法生成命令。装一个即可：Claude Code 用 `{claude}` 安装，Codex 用 `{codex}` 安装"
-        ),
-        (AiCommandAgent::Auto, false) => format!(
-            "Neither Claude Code nor Codex is installed, so commands can't be generated. \
-             Install one: Claude Code with `{claude}`, Codex with `{codex}`"
-        ),
+        (AiCommandAgent::Auto, true) => {
+            format!("生成命令需要 Claude Code 或 Codex：用 `{claude}` 或 `{codex}` 安装。")
+        }
+        (AiCommandAgent::Auto, false) => {
+            format!("Install Claude Code (`{claude}`) or Codex (`{codex}`) to generate commands.")
+        }
         (AiCommandAgent::ClaudeCode, true) => format!(
-            "没找到 Claude Code（PATH 里没有 claude）。用 `{claude}` 安装，或把设置 terminal.ai_command_agent 改为 \"auto\""
+            "没找到 Claude Code。用 `{claude}` 安装，或把设置 terminal.ai_command_agent 改为 \"auto\"。"
         ),
         (AiCommandAgent::ClaudeCode, false) => format!(
-            "Claude Code isn't installed (no `claude` on PATH). Install it with `{claude}`, \
-             or set terminal.ai_command_agent to \"auto\""
+            "Claude Code isn't installed. Install it with `{claude}`, \
+             or set terminal.ai_command_agent to \"auto\"."
         ),
         (AiCommandAgent::Codex, true) => format!(
-            "没找到 Codex（PATH 里没有 codex）。用 `{codex}` 安装，或把设置 terminal.ai_command_agent 改为 \"auto\""
+            "没找到 Codex。用 `{codex}` 安装，或把设置 terminal.ai_command_agent 改为 \"auto\"。"
         ),
         (AiCommandAgent::Codex, false) => format!(
-            "Codex isn't installed (no `codex` on PATH). Install it with `{codex}`, \
-             or set terminal.ai_command_agent to \"auto\""
+            "Codex isn't installed. Install it with `{codex}`, \
+             or set terminal.ai_command_agent to \"auto\"."
         ),
     }
 }

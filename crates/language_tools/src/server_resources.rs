@@ -411,13 +411,9 @@ fn show_large_project_prompt(
     cx: &mut App,
 ) {
     let message = if util::i18n::is_chinese() {
-        format!(
-            "这个项目有 {file_count} 个文件，{server} 在大项目里可能占用好几 GB 内存和大量 CPU。要它分析多少？（以后可以在状态栏的语言服务菜单里改）"
-        )
+        format!("这个项目有 {file_count} 个文件，要 {server} 分析多少？")
     } else {
-        format!(
-            "This project has {file_count} files; in a project this large {server} can take several GB of memory and a lot of CPU. How much should it analyze? (You can change this later in the language servers menu in the status bar.)"
-        )
+        format!("This project has {file_count} files. How much should {server} analyze?")
     };
     let modes = modes_for(&server);
     let id = NotificationId::named(format!("solo-large-project-{server}").into());

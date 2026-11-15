@@ -161,12 +161,12 @@ pub(crate) fn make_group_task(
         {
             warnings.push(if is_chinese() {
                 format!(
-                    "{} 的 setup 命令没有运行（跨仓库任务不运行 setup），需要的话请在它的文件夹里手动运行",
+                    "{} 的 setup 命令没有运行，需要的话请在它的文件夹里手动运行",
                     task.repository_root.display()
                 )
             } else {
                 format!(
-                    "the setup commands of {} didn't run (tasks spanning repositories don't run them); run them in its folder if needed",
+                    "the setup commands of {} didn't run; run them in its folder if needed",
                     task.repository_root.display()
                 )
             });
@@ -246,8 +246,8 @@ pub(crate) fn drop_untrusted_config(new_task: &mut NewTask) {
 
 fn untrusted_message() -> String {
     tr(
-        "This project isn't trusted (restricted mode), so the commands and variables in .solo/worktrees.json weren't used. Trust the project to use them.",
-        "这个项目尚未受信任（受限模式），所以没有使用 .solo/worktrees.json 里的命令和环境变量。信任这个项目后才会使用。",
+        "Trust this project to use the setup in .solo/worktrees.json.",
+        "信任这个项目后才会使用 .solo/worktrees.json 里的设置。",
     )
     .to_string()
 }
@@ -1088,11 +1088,8 @@ impl Render for NewAgentTaskModal {
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
             .child(
-                Label::new(tr(
-                    "New Terminal in New Worktree",
-                    "在新 worktree 中新建终端",
-                ))
-                .weight(gpui::FontWeight::BOLD),
+                Label::new(tr("New Terminal in New Worktree", "在新工作树中新建终端"))
+                    .weight(gpui::FontWeight::BOLD),
             )
             .child(
                 v_flex()
@@ -1185,7 +1182,7 @@ impl Render for NewAgentTaskModal {
             })
             .when(self.creating, |this| {
                 this.child(
-                    Label::new(tr("Creating the worktree…", "正在创建 worktree…"))
+                    Label::new(tr("Creating the worktree…", "正在创建工作树…"))
                         .size(LabelSize::Small)
                         .color(Color::Accent),
                 )
@@ -1372,13 +1369,13 @@ impl AgentTasksModal {
             if !uncommitted.is_empty() {
                 let message = if is_chinese() {
                     format!(
-                        "{} 有 {} 个文件的改动还没提交，PR 里不会有它们。可以让任务的 agent 根据 diff 写提交信息并提交，然后再开 PR。",
+                        "{} 有 {} 个文件的改动未提交，不会进入 PR。",
                         task.branch,
                         uncommitted.len()
                     )
                 } else {
                     format!(
-                        "{} has uncommitted changes in {} files, which a pull request wouldn't have. The task's agent can commit them with a message written from the diff; then open the pull request.",
+                        "{} has uncommitted changes in {} files that won't be in the pull request.",
                         task.branch,
                         uncommitted.len()
                     )
@@ -1417,7 +1414,7 @@ impl AgentTasksModal {
                     message: message.into(),
                     is_error,
                     offer_delete: None,
-                offer_commit: None,
+                    offer_commit: None,
                 };
                 this.reload(window, cx);
             })
@@ -1499,8 +1496,8 @@ impl AgentTasksModal {
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
                             (
                                 tr(
-                                    "No agent is taking pasted text in the task's terminals; copied the failed checks and comments to the clipboard instead.",
-                                    "任务的终端里没有能接收粘贴的 agent，已把失败的检查和评论复制到剪贴板。",
+                                    "No agent is running in the task's terminals; copied the feedback to the clipboard.",
+                                    "任务的终端里没有 agent，已把反馈复制到剪贴板。",
                                 )
                                 .to_string(),
                                 false,
@@ -1559,8 +1556,8 @@ impl AgentTasksModal {
             }
             None => (
                 tr(
-                    "No agent is taking pasted text in the task's terminals. Start one there, or commit yourself.",
-                    "任务的终端里没有能接收粘贴的 agent。请先在那里启动一个，或者自己提交。",
+                    "No agent is running in the task's terminals. Start one, or commit yourself.",
+                    "任务的终端里没有 agent。请先启动一个，或者自己提交。",
                 ),
                 true,
             ),
@@ -1822,7 +1819,7 @@ impl AgentTasksModal {
                 Ok(MergeOutcome::NothingToMerge) => (
                     if chinese {
                         format!(
-                            "{} 没有 {} 之外的提交，没有可合并的内容。未提交的改动需要先提交。",
+                            "{} 没有 {} 之外的提交。请先提交任务的改动。",
                             task.branch, task.base_branch
                         )
                     } else {
@@ -1837,14 +1834,14 @@ impl AgentTasksModal {
                 Ok(MergeOutcome::Conflicts(files)) => (
                     if chinese {
                         format!(
-                            "合并有冲突，已中止，{} 保持原样。冲突文件：\n{}\n\n可以在任务的 worktree 里把 {} 合并进来并解决冲突（例如交给 agent），然后再合并。",
+                            "合并有冲突，已中止，{} 保持原样。冲突文件：\n{}\n\n请先在任务里合并 {} 并解决冲突，再合并。",
                             task.base_branch,
                             files.join("\n"),
                             task.base_branch
                         )
                     } else {
                         format!(
-                            "The merge has conflicts and was aborted; {} is unchanged. Conflicting files:\n{}\n\nMerge {} into the task in its worktree and resolve them there (or have the agent do it), then merge again.",
+                            "The merge has conflicts and was aborted; {} is unchanged. Conflicting files:\n{}\n\nMerge {} into the task and resolve the conflicts, then merge again.",
                             task.base_branch,
                             files.join("\n"),
                             task.base_branch
@@ -1918,7 +1915,7 @@ impl AgentTasksModal {
             let (message, is_error) = match deleted {
                 Ok(None) => (
                     if is_chinese() {
-                        format!("已删除任务 {} 的 worktree 和分支。", task.name)
+                        format!("已删除任务 {} 的工作树和分支。", task.name)
                     } else {
                         format!("Deleted the worktree and branch of {}.", task.name)
                     },
@@ -1927,7 +1924,7 @@ impl AgentTasksModal {
                 Ok(Some(teardown_error)) => (
                     if is_chinese() {
                         format!(
-                            "已删除任务 {} 的 worktree 和分支，但清理命令失败：{teardown_error:#}",
+                            "已删除任务 {} 的工作树和分支，但清理命令失败：{teardown_error:#}",
                             task.name
                         )
                     } else {
@@ -1996,7 +1993,7 @@ impl AgentTasksModal {
                 let has_worktree = task.worktree_path.is_some();
                 let location = match &task.worktree_path {
                     Some(path) => path.display().to_string(),
-                    None => tr("worktree is gone", "worktree 已不存在").to_string(),
+                    None => tr("worktree is gone", "工作树已不存在").to_string(),
                 };
                 let selected = index == self.selected;
                 v_flex()
@@ -2093,8 +2090,8 @@ impl AgentTasksModal {
                                         .label_size(LabelSize::Small)
                                         .disabled(!has_worktree)
                                         .tooltip(ui::Tooltip::text(tr(
-                                            "Paste the failed checks and the comments into the task's agent",
-                                            "把失败的检查和评论粘贴给任务的 agent",
+                                            "Send the failed checks and comments to the task's agent",
+                                            "把失败的检查和评论发给任务的 agent",
                                         )))
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.send_pull_request_feedback(index, window, cx)
@@ -2110,8 +2107,8 @@ impl AgentTasksModal {
                                     .label_size(LabelSize::Small)
                                     .disabled(!has_worktree)
                                     .tooltip(ui::Tooltip::text(tr(
-                                        "Push the branch to origin and open a pull request with gh, titled from its commits",
-                                        "把分支推送到 origin，用 gh 开一个 PR，标题和说明取自它的提交",
+                                        "Push the branch and open a pull request",
+                                        "推送分支并开 PR",
                                     )))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.open_pull_request(index, window, cx)
@@ -2153,7 +2150,7 @@ impl AgentTasksModal {
             }
             (FinishAction::Delete, true) => {
                 format!(
-                    "删除任务“{}”的 worktree 和分支 {}？",
+                    "删除任务“{}”的工作树和分支 {}？",
                     display_name(task),
                     task.branch
                 )
@@ -2184,9 +2181,9 @@ impl AgentTasksModal {
                             Some(base) => {
                                 body = body.child(
                                     Label::new(if chinese {
-                                        format!("在 {} 中执行 git merge --no-ff", base.display())
+                                        format!("在 {} 中合并", base.display())
                                     } else {
-                                        format!("Runs git merge --no-ff in {}", base.display())
+                                        format!("Merges in {}", base.display())
                                     })
                                     .size(LabelSize::Small)
                                     .color(Color::Muted),
@@ -2197,7 +2194,7 @@ impl AgentTasksModal {
                                 body = body.child(
                                     Label::new(if chinese {
                                         format!(
-                                            "{} 没有在任何 worktree 检出，请先检出它再合并。",
+                                            "{} 没有在任何工作树检出，请先检出它再合并。",
                                             task.base_branch
                                         )
                                     } else {
@@ -2247,12 +2244,14 @@ impl AgentTasksModal {
                                         .style(ButtonStyle::Subtle)
                                         .label_size(LabelSize::Small)
                                         .tooltip(ui::Tooltip::text(tr(
-                                            "Paste a request into the task's agent to commit, with a message written from the diff",
-                                            "把提交请求粘贴给任务的 agent，让它根据 diff 写提交信息",
+                                            "Ask the task's agent to commit these changes",
+                                            "让任务的 agent 提交这些改动",
                                         )))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.ask_agent_to_commit(index, window, cx)
-                                        })),
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.ask_agent_to_commit(index, window, cx)
+                                            }),
+                                        ),
                                     ),
                                 );
                         }

@@ -99,10 +99,10 @@ pub fn find_pull_request(worktree: &Path, branch: &str) -> Result<Option<PullReq
 /// Pushes the task's branch and opens a pull request into the branch it
 /// started from, titled and described from its commits.
 pub fn open_pull_request(task: &AgentTask) -> Result<PullRequest> {
-    let worktree = task.worktree_path.as_deref().context(tr(
-        "the task's worktree is gone",
-        "任务的 worktree 已不存在",
-    ))?;
+    let worktree = task
+        .worktree_path
+        .as_deref()
+        .context(tr("the task's worktree is gone", "任务的工作树已不存在"))?;
     if !git::uncommitted_changes(worktree)?.is_empty() {
         if is_chinese() {
             bail!(

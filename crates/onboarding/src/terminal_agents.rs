@@ -72,8 +72,8 @@ pub(crate) fn render_terminal_agents_section(
     let status: SharedString = match found {
         None => tr("Looking for installed agents…", "正在查找已安装的 agent…").into(),
         Some(0) => tr(
-            "No agent CLI found on the PATH. Install one, such as Claude Code or Codex, then run it in a terminal here.",
-            "PATH 里没有找到 agent 命令行工具。装一个（比如 Claude Code 或 Codex），然后在这里的终端里运行。",
+            "No agent CLI found. Install one, such as Claude Code or Codex.",
+            "没有找到 agent 命令行工具。请安装一个，例如 Claude Code 或 Codex。",
         )
         .into(),
         Some(count) if is_chinese() => format!("找到 {count} 个已安装的 agent：").into(),
@@ -88,8 +88,8 @@ pub(crate) fn render_terminal_agents_section(
         .child(Label::new(tr("Agents in the Terminal", "在终端里用 agent")))
         .child(
             Label::new(tr(
-                "Run Claude Code, Codex or another agent CLI in Solo's terminal, as you would anywhere. Solo shows what each agent is doing, keeps every turn's changes for you to review, reject or roll back, and sends code, comments and errors to it.",
-                "像在别处一样，在 Solo 的终端里运行 Claude Code、Codex 等 agent 命令行工具。Solo 会显示每个 agent 在做什么，把每一轮的改动留给你审阅、拒绝或回滚，还能把代码、批注和错误发给它。",
+                "Run Claude Code, Codex and other agent CLIs in the terminal, and review each turn's changes.",
+                "在终端里运行 Claude Code、Codex 等 agent，并审阅每一轮的改动。",
             ))
             .color(Color::Muted),
         )
@@ -110,27 +110,6 @@ pub(crate) fn render_terminal_agents_section(
                         ),
                     )
                 }),
-        )
-        .child(
-            h_flex()
-                .gap_2()
-                .items_start()
-                .child(
-                    Icon::new(IconName::Info)
-                        .size(IconSize::Small)
-                        .color(Color::Muted),
-                )
-                .child(
-                    // Shrinks so the note wraps instead of running off the page.
-                    div().flex_1().min_w_0().child(
-                        Label::new(tr(
-                            "Solo adds its hooks only to the sessions started in its terminal, through their environment, and doesn't change your agents' own settings files. Agents run on your own CLIs and subscriptions.",
-                            "Solo 只给在它的终端里启动的会话加 hooks（通过这些会话的环境变量），不改动 agent 自己的配置文件。agent 用的是你自己的命令行工具和订阅。",
-                        ))
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
-                    ),
-                ),
         )
         .child(
             h_flex().gap_2().child(

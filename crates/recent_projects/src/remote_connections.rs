@@ -149,9 +149,8 @@ pub fn show_remote_development_unavailable(window: &mut gpui::Window, cx: &mut g
             "暂不支持远程开发",
         ),
         Some(util::i18n::tr(
-            "SSH, WSL and dev container projects run Solo's own remote server, which is still \
-             being tested, so they're off for now. You can still use ssh or wsl in Solo's terminal.",
-            "SSH、WSL 和开发容器项目要在远端运行 Solo 自己的远程服务端，它还在测试中，所以暂时关闭。在 Solo 的终端里照常可以用 ssh 或 wsl。",
+            "SSH, WSL and dev container projects aren't supported yet. Use ssh or wsl in the terminal instead.",
+            "暂不支持 SSH、WSL 和开发容器项目，可以在终端里使用 ssh 或 wsl。",
         )),
         &[util::i18n::tr("OK", "确定")],
         cx,

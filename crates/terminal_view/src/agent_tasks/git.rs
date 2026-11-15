@@ -517,7 +517,7 @@ pub fn diff_against_base(task: &AgentTask) -> Result<String> {
     let worktree = task
         .worktree_path
         .as_deref()
-        .ok_or_else(|| anyhow!(tr("The task's worktree is gone", "任务的worktree 已不存在")))?;
+        .ok_or_else(|| anyhow!(tr("The task's worktree is gone", "任务的工作树已不存在")))?;
     let merge_base = git_ok(worktree, ["merge-base", &task.base_branch, "HEAD"])?;
     let mut diff = git_ok(
         worktree,
@@ -558,7 +558,7 @@ pub fn merge_task(task: &AgentTask) -> Result<MergeOutcome> {
     let Some(target) = base_worktree(task)? else {
         if is_chinese() {
             bail!(
-                "{} 没有在任何 worktree 检出，请先检出它再合并",
+                "{} 没有在任何工作树检出，请先检出它再合并",
                 task.base_branch
             );
         }
@@ -572,13 +572,13 @@ pub fn merge_task(task: &AgentTask) -> Result<MergeOutcome> {
     if merge_in_progress(&target) {
         bail!(tr(
             "A merge is in progress where the base branch is checked out; finish or abort it first",
-            "基础分支所在的 worktree 里有一个未完成的合并，请先完成或中止它",
+            "基础分支所在的工作树里有一个未完成的合并，请先完成或中止它",
         ));
     }
     if !git_ok(&target, ["diff", "--name-only", "--diff-filter=U"])?.is_empty() {
         bail!(tr(
             "The base branch's worktree has unresolved conflicts; resolve them first",
-            "基础分支所在的 worktree 里有未解决的冲突，请先解决",
+            "基础分支所在的工作树里有未解决的冲突，请先解决",
         ));
     }
     let message = format!("Merge agent task \"{}\" ({})", task.name, task.branch);
@@ -635,13 +635,13 @@ pub fn delete_task(task: &AgentTask) -> Result<()> {
         if is_main || !worktree.join(".git").is_file() {
             if is_chinese() {
                 bail!(
-                    "{} 检出在 {}，它不是任务自己的 worktree，所以没有删除。请先在那里切换到别的分支。",
+                    "{} 检出在 {}，没有删除。请先在那里切换到别的分支。",
                     task.branch,
                     worktree.display()
                 );
             }
             bail!(
-                "{} is checked out in {}, which isn't the task's own worktree, so nothing was deleted. Check out another branch there first.",
+                "{} is checked out in {}, so nothing was deleted. Check out another branch there first.",
                 task.branch,
                 worktree.display()
             );

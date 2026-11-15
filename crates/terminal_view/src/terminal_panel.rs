@@ -177,7 +177,7 @@ impl TerminalPanel {
                                         .action(
                                             util::i18n::tr(
                                                 "New Terminal in New Worktree…",
-                                                "在新 worktree 中新建终端…",
+                                                "在新工作树中新建终端…",
                                             ),
                                             zed_actions::agent_task::NewAgentTask.boxed_clone(),
                                         )

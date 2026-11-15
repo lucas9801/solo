@@ -4,7 +4,7 @@
 
 ## 1. Solo 是什么
 
-Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/zed-industries/zed) 修改而来。终端占据整个窗口，代码编辑器在需要时从右侧打开。它是为在终端里使用 AI 智能体（Claude Code、Codex 等）设计的：你能看到智能体在做什么，按轮审阅它改了什么，也可以让多个智能体在各自的 git worktree 里并行工作。
+Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/zed-industries/zed) 修改而来。终端占据整个窗口，代码编辑器在需要时从右侧打开。它是为在终端里使用 AI agent（Claude Code、Codex 等）设计的：你能看到 agent 在做什么，按轮审阅它改了什么，也可以让多个 agent 在各自的 git worktree 里并行工作。
 
 ## 2. 安装
 
@@ -51,7 +51,7 @@ Remove-Item -Recurse -Force "$env:APPDATA\Solo", "$env:LOCALAPPDATA\Solo", `
 另外还有几样东西不在上面这些目录里，需要的话手动处理：
 
 - 项目里的 `.solo` 文件夹（项目设置、任务、调试配置）；
-- 智能体任务留下的 git worktree 和分支（默认在项目旁边的 `../worktrees/` 里）。最好先在 Solo 的“Manage Agent Tasks”里删除；也可以用 `git worktree remove` 加 `git branch -D` 删除。
+- agent 任务留下的 git worktree 和分支（默认在项目旁边的 `../worktrees/` 里）。最好先在 Solo 工作区标签菜单的“管理工作树…”里删除；也可以用 `git worktree remove` 加 `git branch -D` 删除。
 
 Solo 不会修改你的 Claude Code 配置（见第 8 节），所以那边没有需要清理的。
 
@@ -60,77 +60,77 @@ Solo 不会修改你的 Claude Code 配置（见第 8 节），所以那边没�
 | 位置 | 内容 |
 | --- | --- |
 | `%APPDATA%\Solo` | 设置目录：`settings.json`、`keymap.json`、`tasks.json`、`debug.json`、`AGENTS.md`、`workflows.json`（保存的命令） |
-| `%LOCALAPPDATA%\Solo` | 数据目录：`logs\`（日志）、`db\`（工作区和会话状态）、`extensions\`、`languages\`（自动下载的语言服务器）、`node\`、`external_agents\`、`terminal_sessions\`（终端内容恢复，30 天后清理）、`agent_turns\`（智能体轮次快照）、`terminal-host\`（终端宿主进程的副本）、`hang_traces\` |
+| `%LOCALAPPDATA%\Solo` | 数据目录：`logs\`（日志）、`db\`（工作区和会话状态）、`extensions\`、`languages\`（自动下载的语言服务器）、`node\`、`external_agents\`、`terminal_sessions\`（终端内容恢复，30 天后清理）、`agent_turns\`（agent 轮次快照）、`terminal-host\`（终端宿主进程的副本）、`hang_traces\` |
 | `%TEMP%\solo-shell-integration` | shell 集成脚本和 Claude Code 的 hook 设置文件 |
 | `%TEMP%\solo-update` | 下载的更新安装包和安装日志 |
 | 项目里的 `.solo\` | 项目设置、任务和调试配置（也会读 Zed 的 `.zed\`） |
 
 Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响。
 
-## 6. 第一次使用：在 Solo 终端里跑智能体
+## 6. 第一次使用：在 Solo 终端里跑 agent
 
 打开一个项目文件夹，在终端里运行 `claude`（或者 `codex`、`gemini` 等），Solo 会自动加上以下功能。
 
 ### 标签页状态
-终端标签会显示智能体的图标，用它本来的颜色（Claude Code 是橙色，黑白标志用正文颜色；没有图标的显示名字首字母），右下角挂着红绿灯一样的状态点：红色带叉是**失败**，黄色带呼吸外圈是**等你回复**，绿色是**完成待看**（你没看着时做完了一轮），蓝色转动圆环是**工作中**，灰色空心圆是**空闲**，灰色短横是**已退出**。标题只显示会话名（没有会话名时显示智能体名），后面是上下文圆环和百分比：灰色 < 80%，黄色 80–95%，红色 ≥ 95%。鼠标悬停时会显示一张卡片：状态、智能体和模型、上下文进度条、目录/分支/命令，以及本轮和本会话的 token。Solo 在后台时，智能体需要你输入会发桌面通知。智能体干完一段较长的活停下时的通知默认关闭，可以在 设置 > 终端 > 通知 里打开（`agent_stopped_notifications`）。
+终端标签会显示 agent 的图标，用它本来的颜色（Claude Code 是橙色，黑白标志用正文颜色；没有图标的显示名字首字母），右下角挂着红绿灯一样的状态点：红色带叉是**失败**，黄色带呼吸外圈是**等你回复**，绿色是**完成待看**（你没看着时做完了一轮），蓝色转动圆环是**工作中**，灰色空心圆是**空闲**，灰色短横是**已退出**。标题只显示会话名（没有会话名时显示 agent 名），后面是上下文圆环和百分比：灰色 < 80%，黄色 80–95%，红色 ≥ 95%。鼠标悬停时会显示一张卡片：状态、agent 和模型、上下文进度条、目录/分支/命令，以及本轮和本会话的 token。Solo 在后台时，agent 需要你输入会发桌面通知。agent 干完一段较长的活停下时的通知默认关闭，可以在 设置 > 终端 > 通知 里打开（`agent_stopped_notifications`）。
 
 ### 按轮审阅
-智能体每开始和结束一轮，Solo 都会给工作目录拍一个快照（支持哪些智能体见第 7 节）。一轮结束后，标签上会出现 **“N 个文件已修改”** 按钮（命令：`terminal: review agent turn`，中文界面显示为“终端: 审阅智能体轮次”）。在审阅界面里你可以：
+agent 每开始和结束一轮，Solo 都会给工作目录拍一个快照（支持哪些 agent 见第 7 节）。一轮结束后，标签上会出现 **“N 个文件已修改”** 按钮（命令：`terminal: review agent turn`，中文界面显示为“终端: 审阅 agent 轮次”）。在审阅界面里你可以：
 
 - 对每个改动块（hunk）选择 **保留** 或 **拒绝**，或者用 **全部保留 / 全部拒绝**。拒绝这一轮新建的文件时，文件会被移到回收站；这一轮之前就存在的文件（例如当时被 `.gitignore` 忽略）不会被删除；
-- 在代码行上写评论，再一起发回给智能体；
+- 在代码行上写评论，再一起发回给 agent；
 - **回滚**，把工作区恢复到某一轮之前；
 - 看这一轮对语言服务器诊断的影响：在改过的文件里新增了哪些错误和警告、修掉了几个错误（点一下跳到那里）；
 - 像在编辑器里一样读代码：跳到定义、查引用、搜索都能用，每个改动块上方写着它所在的函数或类型。
 
 快照存在 Solo 自己的目录里，不会改动你的分支、HEAD、暂存区、stash，也不会往你的 git 对象库里写东西。被 `.gitignore` 忽略的文件不在快照里。网络驱动器上的文件夹不拍快照。回滚时不动链接文件夹（目录联接、符号链接）里的文件，因为它们可能在项目之外；确认页显示之后如果又有文件改动，回滚会停下来让你重新确认。回滚（或撤销回滚）中途失败时（例如文件被别的程序打开着），页面会说明，并保留 **撤销回滚**：关掉那个程序后点它，所有文件会恢复到回滚之前的样子。
 
-智能体报告自己改了哪些文件时（Claude Code 会，通过 Solo 给它的 Edit、Write 等工具加的 hook），一轮只算它报告的文件：这期间你自己或同一仓库里别的智能体改的文件不算进来，**全部拒绝**（按钮上写着要撤回几个文件）也不会动它们。页面会列出这一轮期间改动过的其他文件，包括智能体自己运行的命令改的。不报告改动的智能体，一轮算文件夹里所有改动过的文件，页面会说明其中可能有不是它改的。
+agent 报告自己改了哪些文件时（Claude Code 会，通过 Solo 给它的 Edit、Write 等工具加的 hook），一轮只算它报告的文件：这期间你自己或同一仓库里别的 agent 改的文件不算进来，**全部拒绝**（按钮上写着要撤回几个文件）也不会动它们。页面会列出这一轮期间改动过的其他文件，包括 agent 自己运行的命令改的。不报告改动的 agent，一轮算文件夹里所有改动过的文件，页面会说明其中可能有不是它改的。
 
-拍不了快照时（例如不是 git 仓库、文件又超过 20000 个），Solo 会记下这一轮里项目中被改动的文件（只算智能体工作目录下、没被忽略的文件），标签上照样显示 **“N 个文件已修改”**；点开是一个文件列表，点文件在编辑器里打开，列表上方写明为什么这一轮没有差异和回滚。这种情况下只能看到项目里打开的文件夹里的改动，别的程序同时改的文件也会算进去。
+拍不了快照时（例如不是 git 仓库、文件又超过 20000 个），Solo 会记下这一轮里项目中被改动的文件（只算 agent 工作目录下、没被忽略的文件），标签上照样显示 **“N 个文件已修改”**；点开是一个文件列表，点文件在编辑器里打开，列表上方写明为什么这一轮没有差异和回滚。这种情况下只能看到项目里打开的文件夹里的改动，别的程序同时改的文件也会算进去。
 
-Solo 不会在智能体工作时自动打开它改的文件。
+Solo 不会在 agent 工作时自动打开它改的文件。
 
 ### 时间线（Claude Code、Codex）
-命令 `terminal: show agent timeline`（“显示智能体时间线”）会在终端旁边打开这次会话的时间线：每一轮的提示词、读过和改过的文件、跑过的命令和最后的回答。内容读自 agent 自己的会话记录（Claude Code 的 `~/.claude/projects/...`，Codex 的 `~/.codex/sessions/...`），Solo 只读不写。如果 Solo 判断不出是哪个会话，用 `terminal: choose agent session` 手动选。
+命令 `terminal: show agent timeline`（“显示 agent 时间线”）会在终端旁边打开这次会话的时间线：每一轮的提示词、读过和改过的文件、跑过的命令和最后的回答。内容读自 agent 自己的会话记录（Claude Code 的 `~/.claude/projects/...`，Codex 的 `~/.codex/sessions/...`），Solo 只读不写。如果 Solo 判断不出是哪个会话，用 `terminal: choose agent session` 手动选。
 
-### 智能体任务（git worktree）
-命令面板里运行 **New Agent Task（新建智能体任务）** 并给任务起个名字。Solo 会新建一个分支和对应的 git worktree（位置由 `git.worktree_directory` 决定，默认是 `../worktrees`），然后在里面打开一个终端，运行 `terminal.agent_task_command`（默认是 `claude`）。在 **Manage Agent Tasks（管理智能体任务）** 里可以打开任务的终端、查看 diff、合并回原分支、开 PR 或删除任务。任务信息记在仓库的 git 配置里，重启后还在。只支持本地项目。
+### agent 任务（git worktree）
+命令面板里运行 **新建 agent 任务**（`agent task: new agent task`）并给任务起个名字。Solo 会新建一个分支和对应的 git worktree（位置由 `git.worktree_directory` 决定，默认是 `../worktrees`），然后在里面打开一个终端，运行 `terminal.agent_task_command`（默认是 `claude`）。在工作区标签菜单的 **管理工作树…**（命令 `agent task: manage agent tasks`）里可以打开任务的终端、查看 diff、合并回原分支、开 PR 或删除任务。任务信息记在仓库的 git 配置里，重启后还在。只支持本地项目。
 
-终端栏 **+** 菜单里的 **在新 worktree 中新建终端…** 打开同一个弹窗：填名称（下面显示分支名 `agent/<名称>`），再选在终端里运行什么：不运行（只开 shell）、Claude Code 或 Codex（只列 `PATH` 里找得到的；默认按 `terminal.agent_task_command`）。同一个菜单里的 **运行工作流…**（Alt+Shift+T）列出你的工作流和项目任务：选工作流会新开一个终端，把命令填进输入框并选中第一个 `{{参数}}`，不自动运行；选项目任务和"启动任务"一样运行。
+终端栏 **+** 菜单（以及工作区标签菜单）里的 **在新工作树中新建终端…** 打开同一个弹窗：填名称（下面显示分支名 `agent/<名称>`），再选在终端里运行什么：不运行（只开 shell）、Claude Code 或 Codex（只列 `PATH` 里找得到的；默认按 `terminal.agent_task_command`）。同一个菜单里的 **运行工作流…**（Alt+Shift+T）列出你的工作流和项目任务：选工作流会新开一个终端，把命令填进输入框并选中第一个 `{{参数}}`，不自动运行；选项目任务和"启动任务"一样运行。
 
-- **跨仓库：** 工作区里有来自多个 git 仓库的文件夹时，新建任务时可以勾选同时在其他仓库里建。每个仓库都在同名的新分支上建一个 worktree，放在以任务命名的同一个文件夹里，智能体在这个文件夹里启动，能看到所有仓库。每个仓库的部分分别合并、开 PR 或删除，最后一个删除时文件夹也一起删掉。这类任务不运行 `.solo/worktrees.json` 里的 setup 命令。
+- **跨仓库：** 工作区里有来自多个 git 仓库的文件夹时，新建任务时可以勾选同时在其他仓库里建。每个仓库都在同名的新分支上建一个工作树，放在以任务命名的同一个文件夹里，agent 在这个文件夹里启动，能看到所有仓库。每个仓库的部分分别合并、开 PR 或删除，最后一个删除时文件夹也一起删掉。这类任务不运行 `.solo/worktrees.json` 里的 setup 命令。
 - **信任：** 仓库 `.solo/worktrees.json` 里的 `setup`、`teardown` 命令和 `env` 变量，只有在你信任这个项目（Zed 的受限模式）之后才会使用；在此之前新建任务时不使用它们。
 - **配置文件：** 这份配置以前叫 `.solo/tasks.json`，和 Zed 的项目任务文件同名。旧文件如果是 JSON 对象（这份配置），Solo 第一次读到时会把它改名为 `.solo/worktrees.json`；是 JSON 数组（项目任务）就不动。
-- **提交：** 合并和开 PR 用的是任务的提交。任务有未提交的改动时，**让 agent 提交** 会把提交请求粘贴给任务的智能体，让它根据 diff 写提交信息再提交；在它的终端里按回车发送。
+- **提交：** 合并和开 PR 用的是任务的提交。任务有未提交的改动时，**让 agent 提交** 会把提交请求粘贴给任务的 agent，让它根据 diff 写提交信息再提交；在它的终端里按回车发送。
 
-### 智能体看板
-左侧 dock 里的看板（`agent board: toggle focus`）列出所有跑过智能体的终端和所有智能体任务，显示每个的状态、分支、上一轮的改动、运行时长和最后一句话。需要你输入的排在最前面，点一下就跳到对应终端。
+### agent 看板
+左侧 dock 里的看板（`agent board: toggle focus`）列出所有跑过 agent 的终端和所有 agent 任务，显示每个的状态、分支、上一轮的改动、运行时长和最后一句话。需要你输入的排在最前面，点一下就跳到对应终端。
 
 ### 标题栏工作区标签
-每个项目文件夹是一个工作区，在标题栏占一个标签，各有自己的终端、智能体、编辑器和文件树。标签上会按红、黄、绿、蓝的顺序显示这个工作区里智能体出现的状态（失败、等你回复、完成待看、工作中），每种状态只显示一个图标，不标数量，后台有智能体在等你也能看到；标签菜单里列出各个终端。
+每个项目文件夹是一个工作区，在标题栏占一个标签，各有自己的终端、agent、编辑器和文件树。标签上会按红、黄、绿、蓝的顺序显示这个工作区里 agent 出现的状态（失败、等你回复、完成待看、工作中），每种状态只显示一个图标，不标数量，后台有 agent 在等你也能看到；标签菜单里列出各个终端。
 
 - `+` 或打开文件夹：新增工作区；
 - `ctrl-alt-1` … `ctrl-alt-9`：切换到第 N 个；`ctrl-alt-pagedown` / `ctrl-alt-pageup`：下一个 / 上一个；
 - 标签菜单（箭头或右键）列出这个工作区的终端，可以直接跳过去；
 - 重启后只加载当前工作区，其他的在第一次切换过去时才加载；
-- 终端的目录（智能体上报的目录优先）在另一个标签的项目里（它的文件夹，或同一个 git 仓库），或者不在本标签的任何文件夹里时，切到这个终端会在顶部看到提示条：“移到 <标签名>”，或者“在新标签中打开 <名字> 并移过去”（目录在 git 仓库里时用仓库的名字）。移动不会打断正在运行的程序和智能体，同一个标签里去往同一处的终端会一起移过去。选“留在这里”后不再为那里提示（Solo 重启后仍记得）；× 只关这一次。不在本标签文件夹里的终端，标签上还有一个虚线小标记写着它实际所在的文件夹，悬停卡片的“目录”下面也会注明。不会自动移动；
+- 终端的目录（agent 上报的目录优先）在另一个标签的项目里（它的文件夹，或同一个 git 仓库），或者不在本标签的任何文件夹里时，切到这个终端会在顶部看到提示条：“移到 <标签名>”，或者“在新标签中打开 <名字> 并移过去”（目录在 git 仓库里时用仓库的名字）。移动不会打断正在运行的程序和 agent，同一个标签里去往同一处的终端会一起移过去。选“留在这里”后不再为那里提示（Solo 重启后仍记得）；× 只关这一次。不在本标签文件夹里的终端，标签上还有一个虚线小标记写着它实际所在的文件夹，悬停卡片的“目录”下面也会注明。不会自动移动；
 - 终端标签的右键菜单里有“移到 <名字> 的新标签”（或“移到 <标签名> 的标签”）和“移到标签 ›”，可以随时把终端移到这个窗口的任何标签，或者先选文件夹再移到新标签；
 - 一个工作区里有互不相关的项目时，Solo 会弹出“拆分工作区”对话框：列出留下和拆出去的文件夹；不在任何文件夹里的终端逐个选去向（默认新建它自己的标签）。点“拆分”才生效，“保持现状”之后不再询问；
-- 这个版本的 Solo 第一次启动时，有标签之前留下的终端会按 git 仓库移到对应的标签，没有的话在后台打开一个。agent 任务的 worktree 算作它所属的仓库。开着 `follow_working_directory` 时这两项都不生效。
+- 这个版本的 Solo 第一次启动时，有标签之前留下的终端会按 git 仓库移到对应的标签，没有的话在后台打开一个。agent 任务的工作树算作它所属的仓库。开着 `follow_working_directory` 时这两项都不生效。
 
-### 把东西发给智能体
+### 把东西发给 agent
 - 编辑器里按 `ctrl-alt-k` 发送选中内容或光标位置；`ctrl-alt-shift-k` 可以先选目标终端；`ctrl-alt-shift-m` 发送当前文件的诊断信息。
-- 终端里选中一个命令块（`ctrl-up/down` 或点左侧边栏），按 `alt-enter` 把命令和输出发给另一个终端里的智能体。
-- 命令失败时，退出码旁边（以及右键菜单里）有 **发给 agent**：只挑出失败的部分，比如编译错误和位置、失败的测试和断言（支持 cargo、tsc、gcc/clang、MSVC、pytest、go、jest），其他情况取输出的最后一段，粘贴给在同一目录里工作的智能体。
-- 在 Markdown 预览里选中文字，右键选 **批注…**。批注列在文档下方；点 **发给 agent**，所有批注连同行号和原文一起粘贴给最近改过这份文档的智能体（没有的话给最近用过的）。你读过之后文档又被改了，上方会提示新增和删除了多少行；**显示改动** 会标出改过的段落，**标为已读** 表示看完了。
-- 智能体可以用 `solo-cli agent` 驱动其他终端（列出终端、发消息、等它完成、读它的回答、新开任务），见 [agent-cli.md](../agent-cli.md)。设置项 `agent_control` 控制它能做到什么程度。
+- 终端里选中一个命令块（`ctrl-up/down` 或点左侧边栏），按 `alt-enter` 把命令和输出发给另一个终端里的 agent。
+- 命令失败时，退出码旁边（以及右键菜单里）有 **发给 agent**：只挑出失败的部分，比如编译错误和位置、失败的测试和断言（支持 cargo、tsc、gcc/clang、MSVC、pytest、go、jest），其他情况取输出的最后一段，粘贴给在同一目录里工作的 agent。
+- 在 Markdown 预览里选中文字，右键选 **批注…**。批注列在文档下方；点 **发给 agent**，所有批注连同行号和原文一起粘贴给最近改过这份文档的 agent（没有的话给最近用过的）。你读过之后文档又被改了，上方会提示新增和删除了多少行；**显示改动** 会标出改过的段落，**标为已读** 表示看完了。
+- agent 可以用 `solo-cli agent` 驱动其他终端（列出终端、发消息、等它完成、读它的回答、新开任务），见 [agent-cli.md](../agent-cli.md)。设置项 `agent_control` 控制它能做到什么程度。
 - 在 Claude Code 终端的菜单里选“开启手机控制”，Solo 会往 Claude Code 里输入 `/remote-control`，之后可以用手机上的 Claude App 继续这个会话。
 
-### 关掉 Solo，智能体照样在跑
-每个终端的 shell 跑在一个小的后台进程 `solo-terminal-host.exe` 里。Solo 退出、更新重启，甚至崩溃时，正在运行东西（智能体，或者编译之类的命令）的终端会在那里继续跑；Solo 再打开那个工作区时会自动连回去，期间的输出也都在。空闲的 shell 还是随 Solo 一起结束；关掉终端标签会结束里面运行的东西。
+### 关掉 Solo，agent 照样在跑
+每个终端的 shell 跑在一个小的后台进程 `solo-terminal-host.exe` 里。Solo 退出、更新重启，甚至崩溃时，正在运行东西（agent，或者编译之类的命令）的终端会在那里继续跑；Solo 再打开那个工作区时会自动连回去，期间的输出也都在。空闲的 shell 还是随 Solo 一起结束；关掉终端标签会结束里面运行的东西。
 
-- 所以退出和更新时不再因为终端里的智能体而询问；关闭标签或窗口时仍然会问。关闭 Solo 的最后一个窗口算作退出。
+- 所以退出和更新时不再因为终端里的 agent 而询问；关闭标签或窗口时仍然会问。关闭 Solo 的最后一个窗口算作退出。
 - 每个后台进程会把 Solo 发给它的指令和它结束的原因记在 Solo 日志目录的 `terminal-host-<日期>.log` 里（保留一周）。
 - 关闭方法：`"terminal": {"keep_running_on_quit": false}`，之后新开的终端跑在 Solo 里面，随 Solo 结束。
 - 如果某个后台进程自己出了问题，它的终端就结束了；重启后会按下面的方式提示继续会话。
@@ -142,11 +142,11 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - **灰色提示**：光标后面的灰字先来自跑过的命令（这个目录里跑过的优先），没有的话来自命令规格（输入 `git ch` 提示 `eckout`）；按 `→` 或 Tab 接受。
 - **`# 想做的事`** 加 Enter：让 AI 生成命令，填进输入框给你确认，再按一次 Enter 才运行。用的是你自己的 Claude Code（`claude -p`，默认模型 `haiku`）或 Codex（`codex exec`），装了哪个用哪个（都装了优先 Claude Code；用 `terminal.ai_command_agent` 指定）。生成时关掉了它们的工具：Claude Code 不给任何工具，Codex 用只读沙箱且没有 shell 工具，所以生成过程不会执行命令或改文件。它们在 Solo 的一个空目录里运行，不会加载项目的 hooks、MCP 服务器和 CLAUDE.md/AGENTS.md。生成中显示已用时间，**Esc** 取消。
 - **会发送什么**：请求本身、shell、系统和当前目录，再加上最近一条失败的命令和它输出的最后一部分（最多 4000 字符；`terminal.ai_command_include_last_failure`），所以 `# 修好刚才的错误` 能用。选中一个命令块按 `ctrl-i`（或右键菜单“带上这个命令块让 AI 生成命令”）也可以把它带上。要发送的命令块以小标签显示在输入框上方，点 × 可以去掉。这些内容会以你的账号发给你自己的 Claude Code 或 Codex，和你直接在里面输入一样。
-- Solo 不自动判断输入的是命令还是自然语言（Warp 的 Agent Mode 会这样做），请求要以 `#` 开头：Solo 的终端主要用来跑智能体，把命令误当成自然语言发给 AI 的代价比多打一个 `#` 大。
+- Solo 不自动判断输入的是命令还是自然语言（Warp 的 Agent Mode 会这样做），请求要以 `#` 开头：Solo 的终端主要用来跑 agent，把命令误当成自然语言发给 AI 的代价比多打一个 `#` 大。
 
 ### 其他
-- 关闭正在运行智能体的终端或窗口前会先确认（`terminal.confirm_close`，默认 `"agents"`）。
-- 重启后，跑着智能体、但没能保留下来的终端会提示是否继续上次的会话（例如 `claude --continue`）。
+- 关闭正在运行 agent 的终端或窗口前会先确认（`terminal.confirm_close`，默认 `"agents"`）。
+- 重启后，跑着 agent、但没能保留下来的终端会提示是否继续上次的会话（例如 `claude --continue`）。
 - 关掉最后一个终端后终端栏不收起，显示"新建终端"（Ctrl+Shift+`）、"新建 Claude Code / Codex 终端"（只列 `PATH` 里找得到的）和"查找文件"按钮。终端栏被收起（Ctrl+`）又没有打开文件时，编辑区显示同样的快捷入口。
 - 终端栏标签条最右边的按钮隐藏终端栏（Ctrl+J），里面的终端和 agent 照常运行。点左边活动栏最上面的终端图标（或 Ctrl+J）显示回来；隐藏期间这个图标右下角显示需要你看一眼的 agent 数：红色失败、黄色等你回复、绿色完成待看。
 
@@ -163,18 +163,18 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - **按轮审阅和暂停。** 一轮结束时，即使暂停了后台分析，Solo 仍会让 rust-analyzer 对改过的文件跑一次 `cargo check`，这一轮的诊断仍然完整；关掉以后就不比较 Rust 的诊断了。
 - **语言服务起不来时**，如果 Solo 认得原因（例如 roslyn 缺 .NET 运行时、下载失败），状态栏会直接写出原因；点一下可以看到解决办法和下载链接。
 
-## 7. 支持哪些智能体、支持到什么程度
+## 7. 支持哪些 agent、支持到什么程度
 
 | 功能 | Claude Code | Codex、Copilot CLI、OpenCode | gemini、qwen、amp、cursor-agent 等 | aider、`agent_commands` 里加的程序 |
 | --- | --- | --- | --- | --- |
-| 被识别为智能体（状态、关闭确认、发送命令块） | 是 | 是 | 是 | 是 |
+| 被识别为 agent（状态、关闭确认、发送命令块） | 是 | 是 | 是 | 是 |
 | 状态来源 | hooks 上报，准确 | hooks 上报（OpenCode 是插件），准确（Codex 需要先信任一次） | 按各自的规则读屏幕，可能会慢一点 | 从终端输出推断 |
 | 按轮审阅、回滚 | 是 | 是 | 是，按屏幕状态划分轮次 | 否 |
 | 时间线、会话标题、token 用量 | 是 | Codex 是（标题取第一条提示词）；Copilot CLI、OpenCode 否 | 否 | 否 |
 | 重启后继续会话 | 是（`--continue`） | 是（`codex resume --last`、`copilot --continue`、`opencode --session <id>`） | 是（各自的 resume 参数；qwen 和 amp 不支持） | 否 |
-| 智能体任务 | 默认命令就是 `claude` | 把 `agent_task_command` 改成对应程序即可 | 同左 | 同左 |
+| agent 任务 | 默认命令就是 `claude` | 把 `agent_task_command` 改成对应程序即可 | 同左 | 同左 |
 
-没有 hooks 的智能体，Solo 是这样判断状态的：输出里有转圈动画就是在工作，安静 3 秒左右算停止，响铃或发通知（OSC 9/777）就当作需要你输入。
+没有 hooks 的 agent，Solo 是这样判断状态的：输出里有转圈动画就是在工作，安静 3 秒左右算停止，响铃或发通知（OSC 9/777）就当作需要你输入。
 
 要让 Solo 识别别的程序，在设置里加：
 
@@ -191,7 +191,7 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - **shell 集成**：PowerShell、bash、zsh、fish 在没有自定义启动参数时会加载 Solo 的集成脚本，这些脚本写在 `%TEMP%\solo-shell-integration`。PowerShell 用 `-NoExit -Command` 读取并执行这个脚本文件，不用 `-ExecutionPolicy Bypass`，也不用 `-EncodedCommand`。脚本先加载你自己的 profile，再加载集成。关闭方法：`"terminal": {"shell_integration": false}`。
 - **hooks 跑的程序**是安装目录里的 `solo-agent-hook.exe`。它从 stdin 读事件，往终端写一个转义序列，然后退出；它不联网，也不写文件。
 - **轮次快照**存在 `%LOCALAPPDATA%\Solo\agent_turns`，不碰你仓库里的东西。
-- **智能体任务**会在你的仓库里新建分支和 worktree，并往仓库的 git 配置里写 `branch.<分支>.solotask` / `solobase`（跨仓库任务还有 `sologroup`）。这些只在你新建任务时才会发生。
+- **agent 任务**会在你的仓库里新建分支和工作树，并往仓库的 git 配置里写 `branch.<分支>.solotask` / `solobase`（跨仓库任务还有 `sologroup`）。这些只在你新建任务时才会发生。
 - **更新**：只有你点了更新才会安装，由 `solo-update-helper.exe` 在 Solo 退出后静默运行安装包。
 - **`solo://` 链接**：安装程序为当前用户（`HKCU\Software\Classes\solo`）注册 `solo://` 链接，`solo://settings/terminal.font_size`（跳到这一项设置）或分享的技能链接因此会在 Solo 里打开，卸载时删除。Solo 不注册 `zed://`，那是 Zed 的，但传给 Solo 的 `zed://` 链接照样能打开。任何网页都能打开这种链接，所以打开文件、连接 SSH 主机、克隆或打开仓库的链接（`solo://file/...`、`solo://ssh/...`、`solo://git/...`）会先问你，写明是哪个文件、哪台主机、哪个仓库。
 - **终端宿主进程**：每个终端的 shell 跑在各自的 `solo-terminal-host.exe` 里，它从 `%LOCALAPPDATA%\Solo\terminal-host` 里的副本启动（这样更新时可以替换 Solo 的文件）。它和 Solo 之间用只有你这个用户能打开的命名管道通信；shell 结束、关掉标签，或者 Solo 结束而终端里没在运行东西时，它就结束（见第 6 节）。
@@ -214,9 +214,9 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
 - 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；
-- Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 去掉了智能体面板（Zed 自己的 agent 界面），它的下载（比如 WSL 沙箱要用的 Linux 版 Zed）也就不会发生。
-- 打开 ACP 智能体注册表，或使用从注册表配置的智能体：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
-- 在终端里运行的智能体（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
+- Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 去掉了 agent 面板（Zed 自己的 agent 界面），它的下载（比如 WSL 沙箱要用的 Linux 版 Zed）也就不会发生。
+- 打开 ACP agent 注册表，或使用从注册表配置的 agent：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
+- 在终端里运行的 agent（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
 
 **远程开发暂时关闭：** SSH、WSL、Docker（开发容器）远程开发要在远端运行一个服务端。Solo 的 release 现在带有自己构建的 Linux 版（x86_64 和 aarch64），但还在测试中，所以这些入口仍然隐藏，触发时会提示暂不可用。在终端里用 `ssh`、`wsl` 照常可以。想试用的话，设置环境变量 `SOLO_REMOTE_DEVELOPMENT=1` 后重新启动 Solo：连接时会从 Solo 的 GitHub release 下载与当前版本对应的远程服务端（`github.com`，按 GitHub 提供的 SHA-256 校验），上传到远端，从 `~/.solo_server` 运行，数据放在 `~/.local/share/solo`，与 Zed 的分开。不会访问 Zed 的服务器。暂不支持 macOS 和 Windows 远端。
 
@@ -238,14 +238,14 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - 如果你给 shell 设置了自定义启动参数，Solo 不会接入集成；这时命令块、输入编辑器和 Claude hooks 都不可用，但终端本身应该能打开。
 - 安装目录缺了 `conpty.dll` 或 `OpenConsole.exe` 时，Solo 会退回使用系统自带的 ConPTY。
 
-### 智能体状态不对
+### agent 状态不对
 - 确认终端用的是 PowerShell、bash、zsh 或 fish，并且没有自定义启动参数；System32 下的 `bash.exe`（WSL）不支持。
 - 如果你有自己的 `claude` 函数或别名，Solo 的包装函数不会生效，这时状态只能靠输出推断。
 - 改了 `claude_code_hooks`、`codex_hooks`、`copilot_hooks` 或 `opencode_hooks` 以后要新开终端才生效。
 - 在 Codex 启动时的 hooks 确认里信任 Solo 的 hooks 之前，Codex 的状态仍然是读屏幕得来的。
 - `solo-agent-hook.exe` 被拦截或丢失时，Solo 会改用 PowerShell 脚本，每次上报都会变慢。
 - 会话认错了：运行 `terminal: choose agent session` 手动选。
-- 其他智能体的状态本来就是推断出来的，可能会慢一两秒。
+- 其他 agent 的状态本来就是推断出来的，可能会慢一两秒。
 
 ### 日志和崩溃信息
 - 日志：`%LOCALAPPDATA%\Solo\logs\Solo.log`，更早的内容在 `Solo.log.old`（日志变大时移过去）。命令面板里的 `solo: open log` 打开日志，`solo: reveal log in file manager` 在资源管理器里显示。
@@ -267,22 +267,22 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `opencode_hooks` | `true` | 每次会话给 OpenCode 加载一个状态插件 |
 | `keep_running_on_quit` | `true` | Solo 退出、更新或崩溃时，正在运行东西的终端继续运行，之后自动连回去 |
 | `agent_usage_display` | `"always"` | 运行中的 agent 的上下文、模型和 token 显示在终端底部的细栏里（窗口窄时整段省略：先省掉本会话，再省掉本轮，再省掉模型，最后只留上下文进度条和百分比），标签上显示上下文圆环和百分比；`"tooltip"` 只在标签提示里显示 |
-| `agent_commands` | `[]` | 把其他程序也当作智能体 |
-| `agent_task_command` | `"claude"` | 新建智能体任务时运行的命令 |
+| `agent_commands` | `[]` | 把其他程序也当作 agent |
+| `agent_task_command` | `"claude"` | 新建 agent 任务时运行的命令 |
 | `confirm_close` | `"agents"` | 关闭前确认：`agents` / `commands` / `never` |
 | `follow_working_directory` | `false` | 文件树和搜索跟随当前终端所在的仓库 |
 | `restore_contents` | `false` | 重启后恢复终端内容 |
 | `input_editor` | `true` | 在底部用编辑器输入命令 |
 | `completions_as_you_type` | `true` | 输入框边输边弹补全；`false` 只在按 Tab 时出现 |
-| `ai_command_agent` | `"auto"` | 用哪个智能体把 `#` 请求变成命令：`auto` / `claude_code` / `codex` |
+| `ai_command_agent` | `"auto"` | 用哪个 agent 把 `#` 请求变成命令：`auto` / `claude_code` / `codex` |
 | `ai_command_claude_model` | `"haiku"` | Claude Code 生成命令用的模型 |
 | `ai_command_codex_model` | `""` | Codex 生成命令用的模型（空：用 Codex 的默认） |
 | `ai_command_include_last_failure` | `true` | `#` 请求带上最近一条失败的命令和它输出的最后一部分 |
 | `notify_long_commands_after_seconds` | `10` | 长命令跑完后通知；设为 0 关闭 |
-| `agent_input_notifications` | `true` | 智能体需要你输入或响铃时通知 |
-| `agent_stopped_notifications` | `false` | 智能体工作一段时间后停下时通知 |
+| `agent_input_notifications` | `true` | agent 需要你输入或响铃时通知 |
+| `agent_stopped_notifications` | `false` | agent 工作一段时间后停下时通知 |
 | `program_notifications` | `true` | 允许程序发桌面通知（OSC 9/777） |
 
 这些通知只在 Solo 处于后台时出现。四项也都可以在 设置 > 终端 > 通知 里改。
 
-不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`。`"disable_ai"`（以及 `"agent": { "enabled": false }`）只关闭 Zed 自己的 AI 功能（内联助手、编辑预测、提交信息生成），不影响工作区标签、终端和其中运行的智能体、按轮审阅。
+不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`。`"disable_ai"`（以及 `"agent": { "enabled": false }`）只关闭 Zed 自己的 AI 功能（内联助手、编辑预测、提交信息生成），不影响工作区标签、终端和其中运行的 agent、按轮审阅。

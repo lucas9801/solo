@@ -588,7 +588,7 @@ impl AgentTurnReview {
         } else if is_chinese() {
             Some(
                 format!(
-                    "这一轮之后又有人改过 {}，为了不覆盖这些改动，没有拒绝其中的改动。请手动修改。",
+                    "这一轮之后 {} 又被改过，没有拒绝。请手动修改。",
                     changed_since.join("、")
                 )
                 .into(),
@@ -596,7 +596,7 @@ impl AgentTurnReview {
         } else {
             Some(
                 format!(
-                    "{} changed after the turn, so its changes weren't rejected, not to overwrite those edits. Edit it by hand.",
+                    "{} changed after the turn and wasn't rejected. Edit it by hand.",
                     changed_since.join(", ")
                 )
                 .into(),
@@ -660,13 +660,10 @@ impl AgentTurnReview {
                 }
                 if !kept.is_empty() {
                     let message = if is_chinese() {
-                        format!(
-                            "{} 可能在这一轮之前就已存在（例如当时被 .gitignore 忽略），所以没有删除。请手动处理。",
-                            kept.join("、")
-                        )
+                        format!("{} 可能在这一轮之前就已存在，没有删除。", kept.join("、"))
                     } else {
                         format!(
-                            "{} may have existed before the turn (ignored by .gitignore then, say), so it wasn't deleted. Remove it by hand if you want.",
+                            "{} may have existed before the turn, so it wasn't deleted.",
                             kept.join(", ")
                         )
                     };
@@ -770,8 +767,8 @@ impl AgentTurnReview {
                             tr("Rollback stopped partway", "回滚中途失败"),
                             partly.error,
                             tr(
-                                "Some files are rolled back and some aren't. Click Undo Rollback to put every file back as it was before rolling back; if a file is open in another program, close it first.",
-                                "一部分文件已回滚，一部分没有。点“撤销回滚”可以把所有文件恢复到回滚之前的样子；如果有文件被别的程序打开，请先关掉它。",
+                                "Some files were rolled back and some weren't. Click Undo Rollback to restore them all.",
+                                "一部分文件已回滚，一部分没有。点“撤销回滚”可以全部恢复。",
                             )
                         )
                         .into(),
@@ -956,8 +953,8 @@ impl AgentTurnReview {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
             self.status = Some(
                 tr(
-                    "The agent isn't running in its terminal, or isn't taking pasted text; copied the message instead.",
-                    "agent 已不在终端里运行，或现在不接受粘贴，已改为复制。",
+                    "The agent isn't running; copied the message instead.",
+                    "agent 没有在运行，已改为复制。",
                 )
                 .into(),
             );
@@ -1038,13 +1035,7 @@ impl AgentTurnReview {
                 return muted(tr("Checking diagnostics…", "正在检查诊断…").to_string());
             }
             TurnDiagnostics::Unchecked => {
-                return muted(
-                    tr(
-                        "Diagnostics: not checked (no language server, or it didn't finish)",
-                        "诊断：未检查（没有语言服务器，或它没有及时完成）",
-                    )
-                    .to_string(),
-                );
+                return muted(tr("Diagnostics: not checked", "诊断：未检查").to_string());
             }
             TurnDiagnostics::Checked {
                 added,
@@ -1146,8 +1137,8 @@ impl AgentTurnReview {
                                 )
                                 .label_size(LabelSize::Small)
                                 .tooltip(Tooltip::text(tr(
-                                    "Paste the new problems into the agent's terminal to fix them",
-                                    "把新增的问题粘贴到 agent 终端，让它修复",
+                                    "Send the new problems to the agent to fix",
+                                    "把新增的问题发给 agent 修复",
                                 )))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.send_diagnostics(window, cx)
@@ -1174,11 +1165,11 @@ impl AgentTurnReview {
                         h_flex().px_3().child(
                             Label::new(if chinese {
                                 format!(
-                                    "另有 {added_uncertain} 个新错误在改动前没有打开的文件里，分不出是哪几个"
+                                    "另有 {added_uncertain} 个新错误在改动前没打开的文件里"
                                 )
                             } else {
                                 format!(
-                                    "and {added_uncertain} more errors in files that weren't open before the turn, which can't be told apart from the old ones"
+                                    "and {added_uncertain} more errors in files that weren't open before the turn"
                                 )
                             })
                             .size(LabelSize::Small)
@@ -1202,8 +1193,8 @@ impl AgentTurnReview {
         if !turn.attributed {
             notes.push(
                 tr(
-                    "This agent doesn't report which files it edits, so these are all the files that changed in the folder during its turn: some may not be this agent's (yours, or another agent's).",
-                    "这个 agent 不报告它改了哪些文件，所以这里是这一轮期间文件夹里所有改动过的文件：其中可能有不是这个 agent 改的（你自己或别的 agent 改的）。",
+                    "These are all the files that changed during the turn; some may not be this agent's.",
+                    "这里是这一轮期间改动过的所有文件，其中有些可能不是这个 agent 改的。",
                 )
                 .to_string(),
             );
@@ -1222,19 +1213,19 @@ impl AgentTurnReview {
             let count = turn.others.len();
             notes.push(if is_chinese() {
                 format!(
-                    "另有 {count} 个文件在这一轮期间改动过，但 agent 没有报告编辑过它们（可能是它运行的命令、你自己或别的 agent 改的），这里不显示，全部拒绝也不会动它们：{names}"
+                    "另有 {count} 个文件在这一轮期间改动过，但 agent 没有报告编辑过它们，这里不显示：{names}"
                 )
             } else {
                 format!(
-                    "{count} more files changed during the turn that the agent didn't report editing (its commands may have, or you, or another agent). They aren't shown, and rejecting leaves them alone: {names}"
+                    "{count} more files changed during the turn that the agent didn't report editing; they aren't shown: {names}"
                 )
             });
         }
         if !turn.edited_before_snapshot.is_empty() {
             notes.push(
                 tr(
-                    "The agent edited some files before the turn's snapshot was taken; their changes may show only in part.",
-                    "agent 在这一轮的快照拍完之前就改了一些文件，这些文件的改动可能只显示了一部分。",
+                    "Some changes made at the start of the turn may show only in part.",
+                    "这一轮开头的一些改动可能只显示了一部分。",
                 )
                 .to_string(),
             );
@@ -1268,8 +1259,8 @@ impl AgentTurnReview {
                             )
                             .style(ButtonStyle::Filled)
                             .tooltip(Tooltip::text(tr(
-                                "Paste the comments into the agent's terminal as one message",
-                                "把批注合成一条消息粘贴到 agent 终端",
+                                "Send all comments to the agent in one message",
+                                "把所有批注合成一条消息发给 agent",
                             )))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.send_comments(window, cx)),
@@ -1511,14 +1502,14 @@ fn skipped_message(skipped: &[String]) -> Option<SharedString> {
     }
     Some(if is_chinese() {
         format!(
-            "{} 个文件位于链接的文件夹（目录联接或符号链接）中，可能指向项目之外，所以没有动：{}",
+            "{} 个文件在链接的文件夹里，没有改动：{}",
             skipped.len(),
             names.join("、")
         )
         .into()
     } else {
         format!(
-            "{} files are in a linked folder (a junction or symlink) that may lead outside the project, so they were left alone: {}",
+            "{} files in linked folders were left alone: {}",
             skipped.len(),
             names.join(", ")
         )
@@ -2616,9 +2607,7 @@ mod tests {
     /// leaves the other's file alone (R3 M5). An agent that doesn't report
     /// its edits gets everything that changed, and the page says so.
     #[gpui::test]
-    async fn test_agents_in_one_repository_reject_only_their_own_files(
-        cx: &mut TestAppContext,
-    ) {
+    async fn test_agents_in_one_repository_reject_only_their_own_files(cx: &mut TestAppContext) {
         init_test(cx);
         cx.executor().allow_parking();
         let temp = tempfile::tempdir().unwrap();
@@ -2652,12 +2641,16 @@ mod tests {
             .output()
             .unwrap();
         let top_level = String::from_utf8(top_level.stdout).unwrap();
-        let repository = PathBuf::from(top_level.trim().replace('/', std::path::MAIN_SEPARATOR_STR));
+        let repository =
+            PathBuf::from(top_level.trim().replace('/', std::path::MAIN_SEPARATOR_STR));
 
         // The project's files are fake, mirroring the real ones git sees.
         let fs = FakeFs::new(cx.executor());
-        fs.insert_tree(&repository, json!({ "a.txt": "before\n", "b.txt": "before\n" }))
-            .await;
+        fs.insert_tree(
+            &repository,
+            json!({ "a.txt": "before\n", "b.txt": "before\n" }),
+        )
+        .await;
         let project = Project::test(fs.clone(), [repository.as_path()], cx).await;
         let (workspace, cx) =
             cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
@@ -2737,7 +2730,9 @@ mod tests {
             .await
             .unwrap();
             // As the hook reports it, through the terminal.
-            terminal.update(cx, |_, cx| cx.emit(crate::agent_status::AgentEditedFile(path)));
+            terminal.update(cx, |_, cx| {
+                cx.emit(crate::agent_status::AgentEditedFile(path))
+            });
         }
         turns.update(cx, |turns, cx| {
             for terminal in terminals {
@@ -2768,7 +2763,11 @@ mod tests {
         );
         assert_eq!(
             recorded(&unreported, cx),
-            (false, vec!["a.txt".to_string(), "b.txt".to_string()], vec![])
+            (
+                false,
+                vec!["a.txt".to_string(), "b.txt".to_string()],
+                vec![]
+            )
         );
 
         // Rejecting everything in the first agent's turn.

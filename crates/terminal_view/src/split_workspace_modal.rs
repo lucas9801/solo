@@ -310,8 +310,8 @@ impl Render for SplitWorkspaceModal {
                     .child(
                         small(
                             tr(
-                                "This workspace holds unrelated projects: split them into a tab each. Terminals go with their directories, and what runs in them carries on.",
-                                "这个工作区里有互不相关的项目，拆成各自的标签。终端跟着自己的目录走，正在运行的程序不受影响。",
+                                "Split unrelated projects into separate tabs.",
+                                "把互不相关的项目拆到各自的标签。",
                             )
                             .to_string(),
                         )

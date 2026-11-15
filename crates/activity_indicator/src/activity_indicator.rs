@@ -889,8 +889,8 @@ fn failure_hint(error: &str) -> Option<FailureHint> {
     ]) {
         return Some(FailureHint {
             reason: tr(
-                "Node.js, which it runs on, is missing or failed to install",
-                "它依赖的 Node.js 不存在或没装上",
+                "Node.js is missing or failed to install",
+                "Node.js 不存在或安装失败",
             )
             .to_string(),
             fix: tr(
@@ -909,7 +909,7 @@ fn failure_hint(error: &str) -> Option<FailureHint> {
     ]) {
         return Some(FailureHint {
             reason: tr(
-                "the Python it needs is missing",
+                "Python or a Python package it needs is missing",
                 "缺少它需要的 Python 或 Python 包",
             )
             .to_string(),

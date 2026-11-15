@@ -33,7 +33,9 @@ use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
 use util::ResultExt as _;
 use workspace::{Workspace, item::ItemEvent};
 
-use crate::{AgentTurnEvent, TerminalView, agent_status::AgentEditedFile, terminal_panel::TerminalPanel};
+use crate::{
+    AgentTurnEvent, TerminalView, agent_status::AgentEditedFile, terminal_panel::TerminalPanel,
+};
 use diagnostics::{DiagnosticsBefore, TurnDiagnostics};
 pub(crate) use review::AgentTurnReview;
 use snapshot::{ChangedFile, FileChange, SnapshotStore, SnapshotUnavailable, TreeId};
@@ -972,16 +974,13 @@ fn unsnapshotted_turn_menu(
                 format!("and {unlisted}{more} more files")
             });
         }
-        menu.separator().entry(
-            util::i18n::tr("Dismiss", "不再显示"),
-            None,
-            move |_, cx| {
+        menu.separator()
+            .entry(util::i18n::tr("Dismiss", "忽略"), None, move |_, cx| {
                 AgentTurns::global(cx).update(cx, |turns, cx| {
                     turns.dismiss_offer(terminal_view.entity_id(), cx)
                 });
                 update_tab(&terminal_view, cx);
-            },
-        )
+            })
     })
 }
 

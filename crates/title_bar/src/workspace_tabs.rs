@@ -433,7 +433,7 @@ fn task_label(task: &WorkspaceTask) -> SharedString {
     let chinese = util::i18n::is_chinese();
     let mut parts = Vec::new();
     if task.worktree.is_none() {
-        parts.push(tr("worktree gone", "worktree 已不在").to_string());
+        parts.push(tr("worktree gone", "工作树已不在").to_string());
     }
     if task.changed_files > 0 {
         parts.push(if chinese {
@@ -526,11 +526,11 @@ fn build_workspace_menu(
         menu = menu.separator();
         for (label, action) in [
             (
-                tr("New Agent Task…", "新建 agent 任务…"),
+                tr("New Terminal in New Worktree…", "在新工作树中新建终端…"),
                 NewAgentTask.boxed_clone(),
             ),
             (
-                tr("Manage Agent Tasks…", "管理 agent 任务…"),
+                tr("Manage Worktrees…", "管理工作树…"),
                 ManageAgentTasks.boxed_clone(),
             ),
         ] {
