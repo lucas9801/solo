@@ -29,57 +29,49 @@ Solo 是给 AI 编程 agent 用的编辑器，基于 [Zed](https://github.com/ze
 
 终端占满整个窗口；打开一个文件，编辑器就从右边出现，关掉最后一个文件又收回去。中间的分隔线可以拖动，比例会记住。左边一排工具按钮打开文件树、Git、大纲等侧栏。
 
-<!-- ![终端和编辑器分屏](docs/media/split.png) -->
-> **截图（待补）** `split.png`：左边 agent 终端在工作，右边编辑器打开着它刚改的文件。
+![终端和编辑器分屏](docs/media/split.png)
 
 ### 工作区标签：按项目分开
 
 每个项目文件夹是一个工作区，标题栏上一个标签，里面有它自己的终端、agent、编辑器和文件树；切换标签，这些一起换。标签上统计这个项目里有几个 agent 在工作、在等你、做完待看、出了错，后台项目有 agent 在等你也看得到；标签菜单列出它的终端，点一下直接跳过去。终端跑到了别的项目的目录里，标签上会标出来，并提示移过去。`Ctrl+Alt+1…9` 切换，重启后所有标签都回来。
 
-<!-- ![工作区标签](docs/media/workspaces.png) -->
-> **截图（待补）** `workspaces.png`：标题栏三四个工作区标签带状态计数，其中一个标签的菜单展开着。
+![工作区标签](docs/media/workspaces.png)
 
 ### agent 状态一眼看清
 
 运行 agent 的终端，标签上挂着红绿灯一样的状态点：蓝色在工作，黄色等你回复，绿色做完一轮待你看，红色出错；后面是上下文用了多少。悬停能看到状态、模型、上下文、目录和分支，以及这一轮和整个会话的 token。Solo 在后台时，agent 等你回复或做完一段较长的活，会发桌面通知。Claude Code、Codex、Copilot CLI 通过 Solo 为这次会话加的 hooks 准确上报（不改它们的配置），其他 agent 按各自的屏幕规则识别。
 
-<!-- ![agent 状态](docs/media/status.png) -->
-> **截图（待补）** `status.png`：几个终端标签分别处于工作中、等你回复、完成待看，带上下文百分比；一个标签的悬停卡片展开着。
+![agent 状态](docs/media/status.png)
 
 ### 按轮审阅和回滚
 
 agent 每做完一轮，终端标签上出现"N 个文件已修改"。点开就是这一轮的全部改动：逐块留下或撤回，在代码行上写意见，一次发回给 agent。Solo 还会告诉你这一轮**新增**了几个错误和警告、修掉了几个。可以回滚到这一轮之前，回滚本身也能撤销；快照存在 Solo 自己的目录里，不碰你的分支、暂存区和 stash。[详细 →](docs/site/zh/features/review.md)
 
-<!-- ![按轮审阅](docs/media/review.png) -->
-> **截图（待补）** `review.png`：这一轮 2–3 个文件的改动，其中一块已撤回，顶部显示错误增减。
+![按轮审阅](docs/media/review.png)
 
 ### 完整的代码编辑器
 
 编辑器就是 Zed：语言服务、跳到定义、查找引用、全项目搜索、多光标、Git 面板和 diff 都能用。审阅 agent 的改动时也一样能跳转和搜索。大仓库里语言服务默认更省资源，状态栏显示它们占了多少内存，还可以按项目暂停后台分析或关掉。
 
-<!-- ![代码编辑器](docs/media/editor.png) -->
-> **截图（待补）** `editor.png`：编辑器里一个函数的"查找引用"结果，旁边是 Git 面板。
+![代码编辑器](docs/media/editor.png)
 
 ### 终端里的链接一点就开
 
 终端输出里的文件路径，点一下就打开：代码在编辑器里，Markdown 在渲染好的预览里（Mermaid 图和图片都显示），图片在图片查看器里。agent 说"改了 src/app.ts:42"，点一下就跳到那一行；输出里只有行号（比如 `(:120)`）时，Solo 会到前面提到的文件里找有这一行的那个打开。
 
-<!-- ![终端里的链接](docs/media/links.gif) -->
-> **截图（待补）** `links.gif`：鼠标点 agent 输出里的一个路径，右边编辑器打开对应文件。
+![终端里的链接](docs/media/links.gif)
 
 ### Mermaid 图
 
 agent 输出里的 `mermaid` 代码块，点 `mermaid` 那一行就能看图；屏幕上只显示了一部分时，Solo 从 agent 的会话记录里取完整内容。Markdown 预览里的 Mermaid 图也直接渲染。
 
-<!-- ![Mermaid 图](docs/media/mermaid.png) -->
-> **截图（待补）** `mermaid.png`：左边终端里 agent 输出的 mermaid 代码，右边渲染出来的图。
+![Mermaid 图](docs/media/mermaid.png)
 
 ### 文档审阅
 
 agent 写的计划和设计文档在预览里打开，选中文字写批注，一次发回给 agent；文档再被改时，Solo 告诉你改了哪几块。[详细 →](docs/site/zh/features/documents.md)
 
-<!-- ![文档审阅](docs/media/documents.png) -->
-> **截图（待补）** `documents.png`：一份计划文档的预览，一段文字上挂着批注。
+![文档审阅](docs/media/documents.png)
 
 ### 关掉 Solo，agent 照样在跑
 
@@ -94,8 +86,7 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 
 [详细 →](docs/site/zh/features/terminal.md)
 
-<!-- ![好用的终端](docs/media/terminal.png) -->
-> **截图（待补）** `terminal.png`：几个命令块（其中一个失败标红）和正在弹出的补全。
+![好用的终端](docs/media/terminal.png)
 
 ### 好几个 agent 同时干活
 
