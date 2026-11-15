@@ -48,6 +48,15 @@ use workspace::{
 /// The GitHub repository Solo's releases are published in.
 pub const SOLO_GITHUB_REPO: &str = "lucas9801/solo";
 
+/// Solo's page in the Microsoft Store app.
+pub const STORE_PAGE_URL: &str = "ms-windows-store://pdp/?productid=9NBW452JVWN6";
+
+/// Whether this Solo was installed from the Microsoft Store (it runs as a
+/// packaged app), which then updates it: Solo's own updater stays off.
+pub fn is_store_package() -> bool {
+    util::packaged::is_packaged()
+}
+
 pub(crate) const LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/lucas9801/solo/releases/latest";
 const INSTALLER_PREFIX: &str = "Solo-Setup-";
@@ -760,9 +769,10 @@ struct UpdateAvailableNotification;
 struct UpdateStatusNotification;
 struct DownloadNotification;
 
-/// Starts the GitHub Releases updater (stable builds only).
+/// Starts the GitHub Releases updater (stable builds only, not the
+/// Microsoft Store's).
 pub fn init(cx: &mut App) {
-    if ReleaseChannel::try_global(cx) != Some(ReleaseChannel::Stable) {
+    if ReleaseChannel::try_global(cx) != Some(ReleaseChannel::Stable) || is_store_package() {
         return;
     }
     let current_version = release_channel::AppVersion::global(cx);
@@ -869,7 +879,33 @@ fn running_programs(cx: &App) -> Vec<RunningProgram> {
 }
 
 /// The "check for updates" command: always checks, and always reports back.
+/// The Microsoft Store's Solo offers to open its page in the Store instead.
 pub fn check_manually(window: &mut Window, cx: &mut App) {
+    if is_store_package() {
+        let answer = window.prompt(
+            gpui::PromptLevel::Info,
+            util::i18n::tr(
+                "Solo is updated by the Microsoft Store",
+                "Solo 由 Microsoft Store 更新",
+            ),
+            Some(util::i18n::tr(
+                "The Store installs new versions on its own. To get one now, open Solo Code's page in the Store or its Downloads.",
+                "Store 会自动安装新版本。想马上更新，可以在 Store 里打开 Solo Code 的页面或“下载”页。",
+            )),
+            &[
+                util::i18n::tr("Open the Microsoft Store", "打开 Microsoft Store"),
+                util::i18n::tr("OK", "确定"),
+            ],
+            cx,
+        );
+        cx.spawn(async move |cx| {
+            if answer.await == Ok(0) {
+                cx.update(|cx| cx.open_url(STORE_PAGE_URL));
+            }
+        })
+        .detach();
+        return;
+    }
     match cx.try_global::<GlobalSoloUpdater>() {
         Some(global) => {
             let updater = global.0.clone();

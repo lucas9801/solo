@@ -1596,6 +1596,13 @@ fn open_about_window(cx: &mut App) {
         fn update_status_text(&self, cx: &App) -> String {
             use auto_update::solo_update::UpdateStatus;
             let Some(updater) = &self.updater else {
+                if auto_update::solo_update::is_store_package() {
+                    return util::i18n::tr(
+                        "Updated by the Microsoft Store",
+                        "由 Microsoft Store 更新",
+                    )
+                    .to_string();
+                }
                 return util::i18n::tr(
                     "Only stable builds check for updates",
                     "只有正式版会检查更新",

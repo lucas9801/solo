@@ -342,6 +342,8 @@ fn main() {
     #[cfg(windows)]
     check_for_conpty_dll();
 
+    // SOLO: also what a packaged Solo is started with after a Store update.
+    let restart_after_update = restart_arguments.clone();
     let app = build_application()
         .with_assets(Assets)
         .with_restart_arguments(restart_arguments);
@@ -381,6 +383,9 @@ fn main() {
         println!("zed is already running");
         return;
     }
+    // SOLO: a Microsoft Store update can close Solo; Windows starts it again
+    // (with the same data folder) once the update is in.
+    util::packaged::register_restart_after_update(&restart_after_update);
     // SOLO: only once this is the only instance: an instance that hands its
     // paths to the running one and exits mustn't replace the last session it
     // would restore with its own, empty one.

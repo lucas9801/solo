@@ -66,14 +66,13 @@ pub const TERMINAL_ID_ENV: &str = "SOLO_TERMINAL_ID";
 pub const CLI_ENV: &str = "SOLO_CLI";
 
 /// SOLO: Gives a local terminal its id and the path of `solo-cli`.
+///
+/// When Solo is packaged (the Microsoft Store), that's the path of its
+/// execution alias, which still works in the terminal after Solo is updated
+/// (see [`util::packaged`]).
 pub fn add_terminal_env(env: &mut HashMap<String, String>) {
     env.insert(TERMINAL_ID_ENV.to_string(), new_nonce()[..8].to_string());
-    let cli = format!("solo-cli{}", std::env::consts::EXE_SUFFIX);
-    if let Some(cli) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join(cli)))
-        .filter(|cli| cli.is_file())
-    {
+    if let Some(cli) = util::packaged::bundled_executable("solo-cli") {
         env.insert(CLI_ENV.to_string(), cli.to_string_lossy().into_owned());
     }
 }
@@ -737,10 +736,13 @@ fn claude_code_settings_file_name(settings: &str) -> String {
 }
 
 /// Solo's hook program (the `solo_agent_hook` crate), shipped next to Solo.
+///
+/// When Solo is packaged, the path of its execution alias: agents keep the
+/// hook commands they're given for as long as they run, and their settings
+/// file and Codex's trust are keyed by the path, which mustn't change with
+/// each update (see [`util::packaged`]).
 fn agent_hook_executable() -> Option<PathBuf> {
-    let name = format!("solo-agent-hook{}", std::env::consts::EXE_SUFFIX);
-    let executable = std::env::current_exe().ok()?.parent()?.join(name);
-    executable.is_file().then_some(executable)
+    util::packaged::bundled_executable("solo-agent-hook")
 }
 
 /// What Claude Code runs for a hook.
@@ -1972,6 +1974,12 @@ mod tests {
                 true,
                 r"C:\Users\Admin\AppData\Local\Programs\Solo\solo-agent-hook.exe",
                 r"C:\Users\Admin\AppData\Local\Programs\Solo\solo-agent-hook.exe --agent codex",
+            ),
+            // A packaged Solo's execution alias.
+            (
+                true,
+                r"C:\Users\Admin\AppData\Local\Microsoft\WindowsApps\lucas9801.SoloCode_abc123xyz0p4e\solo-agent-hook.exe",
+                r"C:\Users\Admin\AppData\Local\Microsoft\WindowsApps\lucas9801.SoloCode_abc123xyz0p4e\solo-agent-hook.exe --agent codex",
             ),
             (
                 true,

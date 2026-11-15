@@ -19,6 +19,8 @@ default = ["nightly"]
 stable = []
 preview = []
 nightly = []
+# SOLO: for Solo's MSIX package (build with --no-default-features).
+solo = []
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = ["Win32_Globalization", "Win32_System_SystemServices"] }
