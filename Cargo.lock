@@ -16923,10 +16923,19 @@ dependencies = [
 name = "solo_terminal_host"
 version = "0.1.0"
 dependencies = [
+ "alacritty_terminal",
  "serde",
  "serde_json",
+ "solo_terminal_snapshot",
  "windows-sys 0.59.0",
  "windows_resources",
+]
+
+[[package]]
+name = "solo_terminal_snapshot"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
 ]
 
 [[package]]

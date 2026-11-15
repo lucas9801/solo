@@ -609,6 +609,15 @@ impl TerminalDb {
         }
     }
 
+    // SOLO: the hosts' pipes of all saved terminals.
+    query! {
+        pub fn terminal_hosts() -> Result<Vec<String>> {
+            SELECT terminal_host
+            FROM terminals
+            WHERE terminal_host IS NOT NULL AND length(terminal_host) > 0
+        }
+    }
+
     query! {
         pub fn get_agent_session(item_id: ItemId, workspace_id: WorkspaceId) -> Result<Option<String>> {
             SELECT agent_session

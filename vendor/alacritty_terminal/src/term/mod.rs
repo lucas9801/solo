@@ -651,6 +651,30 @@ impl<T> Term<T> {
         &mut self.grid
     }
 
+    // SOLO: read-only access to the state a screen snapshot needs
+    // (`crates/solo_terminal_snapshot`), which isn't otherwise public.
+
+    /// The grid not in use: the primary screen while the alternate one is
+    /// active, and the other way round.
+    pub fn inactive_grid(&self) -> &Grid<Cell> {
+        &self.inactive_grid
+    }
+
+    /// The scroll region, from the top of the viewport.
+    pub fn scroll_region(&self) -> &Range<Line> {
+        &self.scroll_region
+    }
+
+    /// The title the program set, if any.
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// The cursor style the program set, if any (no default applied).
+    pub fn program_cursor_style(&self) -> Option<CursorStyle> {
+        self.cursor_style
+    }
+
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
         let old_cols = self.columns();

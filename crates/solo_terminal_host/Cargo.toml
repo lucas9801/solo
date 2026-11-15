@@ -18,6 +18,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
+alacritty_terminal.workspace = true
+solo_terminal_snapshot.workspace = true
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -33,3 +35,8 @@ windows-sys = { version = "0.59", features = [
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 windows_resources.workspace = true
+
+[[test]]
+name = "reconnect_screen"
+path = "tests/reconnect_screen.rs"
+harness = false

@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::ffi::{OsStr, c_void};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
@@ -8,7 +8,7 @@ use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::ptr::{null, null_mut};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Security::Authorization::*;
@@ -20,7 +20,8 @@ use windows_sys::Win32::System::Pipes::*;
 use windows_sys::Win32::System::Threading::*;
 
 use crate::log::Log;
-use crate::{HEADER, PROTOCOL, REPLAY_END, RING_CAPACITY, Spec};
+use crate::screen::Screen;
+use crate::{HEADER, PROTOCOL, REPLAY_END, Running, Spec, running};
 
 /// Only the user who made the pipes (Solo's user) may open them.
 const OWNER_ONLY: &str = "D:P(A;;GA;;;OW)";
@@ -62,6 +63,24 @@ pub fn main() {
         console.pid,
         spec.working_directory.as_deref().unwrap_or("-")
     ));
+    running::add(
+        spec.running_dir.as_deref(),
+        Running {
+            protocol: PROTOCOL,
+            host_pid: std::process::id(),
+            host_created: running::own_creation_time(),
+            child_pid: console.pid,
+            pipe: spec.pipe.clone(),
+            terminal_id: spec.terminal_id.clone(),
+            command_line: spec.command_line.clone(),
+            working_directory: spec.working_directory.clone(),
+            started_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs()),
+            clients: 0,
+            connected: false,
+        },
+    );
     serve(spec, console, first, log);
 }
 
@@ -386,28 +405,12 @@ unsafe impl Send for Pipes {}
 /// between) ends rather than keep a shell running for no one.
 const FIRST_CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Output kept for the next client, and the client being written to.
+/// The screen the output drew, for the next client, and the client being
+/// written to. Output is parsed and passed on under one lock, so each byte
+/// is either in the screen a client gets or sent to it after.
 struct Shared {
-    ring: VecDeque<u8>,
-    /// Whether output was dropped from the ring's start.
-    truncated: bool,
+    screen: Screen,
     client: Option<File>,
-}
-
-impl Shared {
-    /// What to replay: from the first line start, if the ring lost the start
-    /// of the output, so the replay doesn't begin mid-sequence.
-    fn replay(&self) -> Vec<u8> {
-        let skip = if self.truncated {
-            self.ring
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map_or(0, |ix| ix + 1)
-        } else {
-            0
-        };
-        self.ring.iter().skip(skip).copied().collect()
-    }
 }
 
 /// [`make_pipe`], trying again for a few seconds if the pipe can't be made.
@@ -425,14 +428,14 @@ fn make_retrying(name: &str, outbound: bool, first: bool) -> Option<HANDLE> {
 
 /// Exits the host, saying why in its log.
 fn exit(log: &Log, code: i32, why: &str) -> ! {
+    running::remove();
     log.write(&format!("ending: {why}"));
     std::process::exit(code);
 }
 
 fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
     let shared = Arc::new(Mutex::new(Shared {
-        ring: VecDeque::new(),
-        truncated: false,
+        screen: Screen::new(spec.columns, spec.rows),
         client: None,
     }));
 
@@ -449,12 +452,7 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
                 };
                 let bytes = &buffer[..read];
                 let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
-                shared.ring.extend(bytes);
-                let excess = shared.ring.len().saturating_sub(RING_CAPACITY);
-                if excess > 0 {
-                    shared.ring.drain(..excess);
-                    shared.truncated = true;
-                }
+                shared.screen.feed(bytes);
                 let failed = shared
                     .client
                     .as_mut()
@@ -486,12 +484,14 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
         });
     }
 
-    let header = format!(
-        "{HEADER} {PROTOCOL} {} {} {}\n",
-        console.pid,
-        spec.nonce.as_deref().unwrap_or("-"),
-        spec.terminal_id.as_deref().unwrap_or("-"),
-    );
+    let header = |columns: u16, rows: u16| {
+        format!(
+            "{HEADER} {PROTOCOL} {} {} {} {columns} {rows}\n",
+            console.pid,
+            spec.nonce.as_deref().unwrap_or("-"),
+            spec.terminal_id.as_deref().unwrap_or("-"),
+        )
+    };
     let mut pipes = Some(first);
     // Whether a client said to keep running: then the host waits for the
     // next client, even past one that opened the pipes and went.
@@ -518,23 +518,38 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
             );
         };
         clients += 1;
-        // Whether to keep running when the client goes: a new client starts
-        // from "end with me", and says otherwise.
-        let mut keep = false;
-        {
+        // Whether to keep running when the client goes: the first client
+        // starts from "end with me", and says otherwise; the next ones from
+        // "keep running", as the last one said, so a client that connects
+        // and goes without a word (Solo crashing right away, say) doesn't end
+        // what was to keep running.
+        let mut keep = kept;
+        let size = {
             let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
-            let replay = shared.replay();
+            let (columns, rows) = (shared.screen.columns(), shared.screen.rows());
+            let screen = shared.screen.snapshot();
             log.write(&format!(
-                "client {clients} connected; replaying {} bytes",
-                replay.len()
+                "client {clients} connected; sending the {columns}x{rows} screen ({} bytes)",
+                screen.len()
             ));
-            if out.write_all(header.as_bytes()).is_ok()
-                && out.write_all(&replay).is_ok()
+            if out.write_all(header(columns, rows).as_bytes()).is_ok()
+                && out.write_all(&screen).is_ok()
                 && out.write_all(REPLAY_END).is_ok()
             {
                 shared.client = Some(out);
             }
-        }
+            (columns, rows)
+        };
+        // Windows' own console repaints the whole screen when resized, also
+        // to the size it has, so the client also gets the console's idea of
+        // the screen, should the two differ. (The newer one Solo bundles
+        // doesn't repaint, even for a new size; the screen sent is all the
+        // client gets then.)
+        console.resize(size.0, size.1);
+        running::update(|entry| {
+            entry.clients = clients;
+            entry.connected = true;
+        });
         let forward_input = {
             let console = console.clone();
             let mut input = input;
@@ -562,6 +577,12 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
                     let columns = u16::from_le_bytes([size[0], size[1]]);
                     let rows = u16::from_le_bytes([size[2], size[3]]);
                     log.write(&format!("got R {columns}x{rows}"));
+                    // The output after resizing is drawn for the new size.
+                    shared
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .screen
+                        .resize(columns, rows);
                     console.resize(columns, rows);
                 }
                 b'P' => {
@@ -598,6 +619,7 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
         kept = true;
         drop(control);
         shared.lock().unwrap_or_else(|e| e.into_inner()).client = None;
+        running::update(|entry| entry.connected = false);
         forward_input.join().ok();
     }
     // The pipes can't be made (someone else holds the name): end rather than
@@ -609,27 +631,6 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn shared(ring: &[u8], truncated: bool) -> Shared {
-        Shared {
-            ring: ring.iter().copied().collect(),
-            truncated,
-            client: None,
-        }
-    }
-
-    #[test]
-    fn test_replay_starts_at_a_line() {
-        // All the output: replayed as it is.
-        assert_eq!(
-            shared(b"ab\x1b[1mcd\nef", false).replay(),
-            b"ab\x1b[1mcd\nef"
-        );
-        // The start was dropped: from the first full line, not mid-sequence.
-        assert_eq!(shared(b"[1mcd\nef\ngh", true).replay(), b"ef\ngh");
-        // No line start: all of it, rather than nothing.
-        assert_eq!(shared(b"abc", true).replay(), b"abc");
-    }
 
     fn unique_pipe_name() -> String {
         let nanos = std::time::SystemTime::now()

@@ -22,7 +22,7 @@ use std::os::windows::io::IntoRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -135,20 +135,33 @@ pub(crate) fn add_to_claim(claim: &PipeClaim, pipe: &str) {
         .insert(pipe.to_string(), Arc::downgrade(claim));
 }
 
+/// What a host was last told about keeping running: `E`, `P`, or not yet
+/// (connected again to a host an earlier Solo left running, which hosts from
+/// before Solo 2.3 then take as `E`, later ones as `P`).
+const KEEP_NO: u8 = 0;
+const KEEP_YES: u8 = 1;
+const KEEP_UNTOLD: u8 = 2;
+
 /// Solo's side of a terminal host.
 #[derive(Clone)]
 pub struct HostLink {
     pipe: String,
-    keep_running: Arc<AtomicBool>,
+    keep_running: Arc<AtomicU8>,
     control: Arc<Mutex<Box<dyn Write + Send>>>,
     solo_going: SoloGoing,
 }
 
 impl HostLink {
-    fn new(pipe: &str, control: Box<dyn Write + Send>, solo_going: SoloGoing) -> Self {
+    fn new(
+        pipe: &str,
+        control: Box<dyn Write + Send>,
+        reconnected: bool,
+        solo_going: SoloGoing,
+    ) -> Self {
+        let keep = if reconnected { KEEP_UNTOLD } else { KEEP_NO };
         Self {
             pipe: pipe.to_string(),
-            keep_running: Arc::new(AtomicBool::new(false)),
+            keep_running: Arc::new(AtomicU8::new(keep)),
             control: Arc::new(Mutex::new(control)),
             solo_going,
         }
@@ -161,15 +174,18 @@ impl HostLink {
     /// Whether the host keeps running when Solo goes: while the terminal is
     /// running something. Told to the host when it changes.
     pub fn set_keep_running(&self, keep: bool) {
-        if self.keep_running.swap(keep, Ordering::SeqCst) != keep {
+        let value = if keep { KEEP_YES } else { KEEP_NO };
+        if self.keep_running.swap(value, Ordering::SeqCst) != value {
             let byte = if keep { b"P" } else { b"E" };
             log::debug!("terminal host {}: sent {}", self.pipe, char::from(byte[0]));
             self.control.lock().write_all(byte).ok();
         }
     }
 
+    /// Whether the host was told to keep running; one connected to again
+    /// keeps running until told otherwise.
     pub fn keeps_running(&self) -> bool {
-        self.keep_running.load(Ordering::SeqCst)
+        self.keep_running.load(Ordering::SeqCst) != KEEP_NO
     }
 
     /// Ends the program and the host now.
@@ -226,6 +242,9 @@ pub(crate) struct Connected {
     pub link: HostLink,
     pub nonce: Option<String>,
     pub terminal_id: Option<String>,
+    /// The size of the screen the host sends first, drawn for a new
+    /// terminal of that size; none from hosts that replay kept output.
+    pub screen_size: Option<(u16, u16)>,
 }
 
 #[derive(serde::Serialize)]
@@ -242,6 +261,8 @@ struct Spec<'a> {
     /// Where the host logs what it's told and why it ends: Solo's logs
     /// folder (that of `--user-data-dir` too). Hosts from before ignore it.
     log_dir: Option<String>,
+    /// Where the host lists itself while it runs, see [`running_hosts`].
+    running_dir: Option<String>,
 }
 
 /// Starts a host running what `options` say, and connects to it.
@@ -273,6 +294,7 @@ pub(crate) fn start(
         terminal_id,
         // Tests don't write to Solo's own logs.
         log_dir: (!cfg!(test)).then(|| paths::logs_dir().to_string_lossy().into_owned()),
+        running_dir: running_dir().map(|dir| dir.to_string_lossy().into_owned()),
     };
     let spec = serde_json::to_vec(&spec)?;
 
@@ -320,11 +342,12 @@ pub(crate) fn reconnect(pipe: &str, solo_going: SoloGoing) -> Result<Connected> 
     connect(pipe, Duration::ZERO, None, solo_going)
 }
 
-/// The host left on `reconnect` if it's still there, else a new host; `None`
-/// when neither works, for the terminal to hold its console itself. The bool
-/// tells whether it reconnected.
+/// The host left on `reconnect` if it's still there, else a new host
+/// (unless `only_reconnect`); `None` when neither works, for the terminal to
+/// hold its console itself. The bool tells whether it reconnected.
 pub(crate) fn open(
     reconnect_to: Option<&str>,
+    only_reconnect: bool,
     options: &tty::Options,
     window_size: WindowSize,
     nonce: Option<&str>,
@@ -334,6 +357,10 @@ pub(crate) fn open(
     if let Some(pipe) = reconnect_to {
         match reconnect(pipe, solo_going.clone()) {
             Ok(connected) => return Some((connected, true)),
+            Err(error) if only_reconnect => {
+                log::info!("the terminal's host is gone: {error:#}");
+                return None;
+            }
             Err(error) => log::info!("the terminal's host is gone, starting a new one: {error:#}"),
         }
     }
@@ -369,7 +396,13 @@ fn connect(
         START_TIMEOUT,
         host.as_deref_mut(),
     )?;
-    let control = open_pipe(&format!("{pipe}-ctl"), false, started, START_TIMEOUT, host)?;
+    let control = open_pipe(
+        &format!("{pipe}-ctl"),
+        false,
+        started,
+        START_TIMEOUT,
+        host.as_deref_mut(),
+    )?;
 
     let header = read_line(&mut output)?;
     let mut fields = header.split(' ');
@@ -384,6 +417,8 @@ fn connect(
     let field = |value: Option<&str>| value.filter(|value| *value != "-").map(str::to_string);
     let nonce = field(fields.next());
     let terminal_id = field(fields.next());
+    let size = |value: Option<&str>| value.and_then(|value| value.parse::<u16>().ok());
+    let screen_size = size(fields.next()).zip(size(fields.next()));
 
     let child = unsafe {
         OpenProcess(
@@ -394,7 +429,7 @@ fn connect(
     }
     .context("the terminal host's program is gone")?;
 
-    let link = HostLink::new(pipe, Box::new(control), solo_going);
+    let link = HostLink::new(pipe, Box::new(control), host.is_none(), solo_going);
     let control = Box::new(HostControl { link: link.clone() });
     let pty = unsafe {
         tty::windows::new_hosted(
@@ -409,6 +444,7 @@ fn connect(
         link,
         nonce,
         terminal_id,
+        screen_size,
     })
 }
 
@@ -560,6 +596,223 @@ fn remove_old_hosts(hosts: &Path, current: &Path) {
     }
 }
 
+/// Where hosts list themselves while they run (`<host pid>.json`, see
+/// `solo_terminal_host::Running`): in Solo's data folder, so each Solo
+/// (another `--user-data-dir`, another install) only sees its own hosts.
+fn running_dir() -> Option<PathBuf> {
+    if cfg!(test) {
+        TEST_RUNNING_DIR.lock().clone()
+    } else {
+        Some(paths::data_dir().join("terminal-host").join("running"))
+    }
+}
+
+/// Tests list their hosts here, if anywhere.
+static TEST_RUNNING_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// A host's entry in the list; see `solo_terminal_host::Running`.
+#[derive(Clone, Debug, serde::Deserialize)]
+struct RunningEntry {
+    host_pid: u32,
+    host_created: u64,
+    pipe: String,
+    #[serde(default)]
+    terminal_id: Option<String>,
+    #[serde(default)]
+    command_line: String,
+    #[serde(default)]
+    working_directory: Option<String>,
+    #[serde(default)]
+    clients: u32,
+    #[serde(default)]
+    connected: bool,
+}
+
+/// A host that runs, listed in this Solo's data folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningHost {
+    pub pipe: String,
+    pub host_pid: u32,
+    pub terminal_id: Option<String>,
+    pub command_line: String,
+    pub working_directory: Option<PathBuf>,
+    /// Whether a terminal is connected to it now (in this Solo or another
+    /// one using the same data folder).
+    pub connected: bool,
+    /// Whether a terminal was connected to it before: a host still waiting
+    /// for its first one was just started, and ends by itself if none
+    /// comes.
+    pub had_client: bool,
+}
+
+impl RunningHost {
+    /// Whether a terminal open in this Solo uses the host (connected to it,
+    /// or restored from it).
+    pub fn is_open_here(&self) -> bool {
+        let mut open = OPEN_TERMINALS.lock();
+        open.retain(|_, claim| claim.strong_count() > 0);
+        open.contains_key(&self.pipe)
+    }
+
+    /// Whether no terminal uses the host, nor will: no one is connected,
+    /// and the one that was went without ending it.
+    pub fn is_left_alone(&self) -> bool {
+        self.had_client && !self.connected && !self.is_open_here()
+    }
+}
+
+/// The hosts that run, from the list in this Solo's data folder. Entries of
+/// hosts that ended without removing theirs (ended from outside, or the
+/// computer stopped) are removed.
+pub fn running_hosts() -> Vec<RunningHost> {
+    let Some(dir) = running_dir() else {
+        return Vec::new();
+    };
+    let mut host_dirs = vec![paths::data_dir().join("terminal-host")];
+    if let Some(bundled) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.to_path_buf()))
+    {
+        host_dirs.push(bundled);
+    }
+    if cfg!(test)
+        && let Ok(host) = test_host_executable()
+        && let Some(parent) = host.parent()
+    {
+        host_dirs.push(parent.to_path_buf());
+    }
+    list_running(&dir, &host_dirs)
+}
+
+/// The entries in `dir` of hosts that run from one of `host_dirs`.
+fn list_running(dir: &Path, host_dirs: &[PathBuf]) -> Vec<RunningHost> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut hosts = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let named_by_pid = path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+            && path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.parse::<u32>().is_ok());
+        if !named_by_pid {
+            // Half-written ones the host is about to rename.
+            continue;
+        }
+        let parsed = std::fs::read(&path)
+            .ok()
+            .and_then(|json| serde_json::from_slice::<RunningEntry>(&json).ok());
+        let Some(running) = parsed else {
+            // Being replaced right now, or not a host's: left alone.
+            continue;
+        };
+        if !is_host_process(running.host_pid, running.host_created, host_dirs) {
+            log::info!(
+                "terminal host {} ({}) is gone, removing its entry",
+                running.host_pid,
+                running.pipe
+            );
+            std::fs::remove_file(&path).ok();
+            continue;
+        }
+        hosts.push(RunningHost {
+            pipe: running.pipe,
+            host_pid: running.host_pid,
+            terminal_id: running.terminal_id,
+            command_line: running.command_line,
+            working_directory: running.working_directory.map(PathBuf::from),
+            connected: running.connected,
+            had_client: running.clients > 0,
+        });
+    }
+    hosts.sort_by_key(|host| host.host_pid);
+    hosts
+}
+
+/// Whether `pid` is a running host, created at `created` (so not a later
+/// process given its pid), from one of `host_dirs`.
+fn is_host_process(pid: u32, created: u64, host_dirs: &[PathBuf]) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, FILETIME, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::{
+        GetProcessTimes, PROCESS_NAME_WIN32, QueryFullProcessImageNameW, WaitForSingleObject,
+    };
+    use windows::core::PWSTR;
+
+    let Ok(process) = (unsafe {
+        OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            false,
+            pid,
+        )
+    }) else {
+        return false;
+    };
+    let running = unsafe { WaitForSingleObject(process, 0) } == WAIT_TIMEOUT;
+    let mut times = [FILETIME::default(); 4];
+    let [creation, exit, kernel, user] = &mut times;
+    let same_process = unsafe { GetProcessTimes(process, creation, exit, kernel, user) }.is_ok()
+        && ((u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime))
+            == created;
+    let mut name = vec![0u16; 32 * 1024];
+    let mut length = name.len() as u32;
+    let exe = unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(name.as_mut_ptr()),
+            &mut length,
+        )
+    }
+    .ok()
+    .map(|()| PathBuf::from(String::from_utf16_lossy(&name[..length as usize])));
+    unsafe { CloseHandle(process).ok() };
+    running && same_process && exe.is_some_and(|exe| is_host_exe(&exe, host_dirs))
+}
+
+/// Whether `exe` is a host in one of `host_dirs` (or a folder in one, as
+/// the copies in Solo's data folder are).
+fn is_host_exe(exe: &Path, host_dirs: &[PathBuf]) -> bool {
+    let normalize = |path: &Path| {
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    };
+    let is_host = exe
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(HOST_EXE));
+    let folder = exe.parent().map(normalize).unwrap_or_default();
+    is_host
+        && host_dirs.iter().any(|dir| {
+            let dir = normalize(dir);
+            folder == dir
+                || folder
+                    .strip_prefix(&dir)
+                    .is_some_and(|rest| rest.starts_with('\\') && !rest[1..].contains('\\'))
+        })
+}
+
+/// Ends a host no terminal is connected to, and what it runs.
+pub fn end_running_host(pipe: &str) -> Result<()> {
+    let started = Instant::now();
+    let mut output = open_pipe(&format!("{pipe}-out"), true, started, Duration::ZERO, None)?;
+    let _input = open_pipe(&format!("{pipe}-in"), false, started, BUSY_TIMEOUT, None)?;
+    let mut control = open_pipe(&format!("{pipe}-ctl"), false, started, BUSY_TIMEOUT, None)?;
+    // The host sends the screen before it reads what it's told: read it,
+    // until the host ends and closes the pipe.
+    std::thread::spawn(move || {
+        let mut buffer = vec![0u8; 64 * 1024];
+        while matches!(output.read(&mut buffer), Ok(read) if read > 0) {}
+    });
+    log::info!("ending the terminal host {pipe}, which no terminal used");
+    control.write_all(b"K")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
@@ -701,9 +954,100 @@ mod tests {
             connected.pty.child_watcher().pid(),
             NonZeroU32::new(busy_pid)
         );
+        // It sends its screen, for a terminal of its size.
+        assert!(connected.screen_size.is_some());
+        // Kept running until told otherwise, as the host takes it.
+        assert!(connected.link.keeps_running());
         connected.link.end();
         drop(connected);
         assert!(ends(busy_pid), "K didn't end the program");
+    }
+
+    /// Hosts list themselves while they run. One whose terminal went while
+    /// Solo went (busy), and that no terminal connected to since, is left
+    /// alone, and can be ended; entries of hosts that are gone are removed.
+    #[gpui::test]
+    #[allow(clippy::disallowed_methods, reason = "a test")]
+    async fn test_hosts_left_alone_are_found_and_ended(cx: &mut TestAppContext) {
+        init_test(cx);
+        let dir = tempfile::tempdir().unwrap();
+        *TEST_RUNNING_DIR.lock() = Some(dir.path().to_path_buf());
+        // Not hosts: this test (another program), and one that ended.
+        let mut ended = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "exit"])
+            .spawn()
+            .unwrap();
+        ended.wait().unwrap();
+        let not_hosts = [std::process::id(), ended.id()].map(|pid| {
+            let path = dir.path().join(format!("{pid}.json"));
+            let entry = serde_json::json!({
+                "host_pid": pid,
+                "host_created": 1,
+                "pipe": format!(r"\\.\pipe\solo-terminal-test-not-a-host-{pid}"),
+                "clients": 1,
+                "connected": false,
+            });
+            std::fs::write(&path, entry.to_string()).unwrap();
+            path
+        });
+        let partial = dir.path().join("1.json.partial");
+        std::fs::write(&partial, "{").unwrap();
+
+        let busy = hosted_terminal(cx, "/c ping -n 120 127.0.0.1").await;
+        let (pipe, pid) = pipe_and_pid(&busy, cx);
+        busy.read_with(cx, |terminal, _| terminal.keep_running_after_quit(true));
+        let find = |pipe: &str| running_hosts().into_iter().find(|host| host.pipe == pipe);
+        let host = find(&pipe).expect("the host isn't listed");
+        assert!(host.connected && host.had_client && host.is_open_here());
+        assert!(!host.is_left_alone());
+        for path in &not_hosts {
+            assert!(!path.exists(), "{} wasn't removed", path.display());
+        }
+        assert!(partial.exists());
+
+        // Solo goes while it's busy: it keeps running, with no terminal.
+        cx.update(|cx| cx.shutdown());
+        drop_terminals(vec![busy], cx);
+        let started = Instant::now();
+        while find(&pipe).is_none_or(|host| host.connected) {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "{:?}",
+                find(&pipe)
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let host = find(&pipe).unwrap();
+        assert!(host.is_left_alone(), "{host:?}");
+        assert!(is_running(pid));
+
+        end_running_host(&pipe).unwrap();
+        assert!(ends(pid), "the host's program kept running");
+        let started = Instant::now();
+        while find(&pipe).is_some() {
+            assert!(started.elapsed() < Duration::from_secs(10), "still listed");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        *TEST_RUNNING_DIR.lock() = None;
+    }
+
+    /// A terminal only to connect to a host doesn't start a shell when the
+    /// host is gone.
+    #[gpui::test]
+    async fn test_only_reconnecting_fails_when_the_host_is_gone(cx: &mut TestAppContext) {
+        init_test(cx);
+        let env = HashMap::from_iter([
+            (
+                crate::HOST_RECONNECT_ENV.to_string(),
+                format!(
+                    r"\\.\pipe\solo-terminal-test-gone-{}",
+                    crate::shell_integration::new_nonce()
+                ),
+            ),
+            (crate::HOST_RECONNECT_ONLY_ENV.to_string(), "1".to_string()),
+        ]);
+        let error = build("/k", env, cx).await.err().expect("a shell started");
+        assert!(error.to_string().contains("is gone"), "{error:#}");
     }
 
     /// Closing a terminal (or its workspace, or a window) while Solo keeps
@@ -812,7 +1156,7 @@ mod tests {
             if going {
                 solo_going.set("test");
             }
-            let link = HostLink::new("test", Box::new(sent.clone()), solo_going);
+            let link = HostLink::new("test", Box::new(sent.clone()), false, solo_going);
             link.set_keep_running(keep);
             link.release();
             String::from_utf8(sent.0.lock().clone()).unwrap()

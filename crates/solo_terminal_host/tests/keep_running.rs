@@ -1,5 +1,5 @@
-//! A host outlives its client only when last told `P`, and logs what it was
-//! told and why it ended.
+//! A host outlives its client only when last told `P`, logs what it was
+//! told and why it ended, and lists itself while it runs.
 #![cfg(windows)]
 #![allow(clippy::disallowed_methods, reason = "a test starting the host")]
 
@@ -30,6 +30,7 @@ fn start(pipe: &str, command_line: &str, log_dir: &Path) -> Child {
         "nonce": null,
         "terminal_id": null,
         "log_dir": log_dir,
+        "running_dir": log_dir.join("running"),
     });
     let mut stdin = child.stdin.take().expect("no stdin");
     stdin
@@ -173,5 +174,74 @@ fn an_idle_host_ends_with_its_client() {
         log.contains("ending: the client went while the terminal wasn't to keep running"),
         "{log}"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+fn entry(path: &Path) -> Option<serde_json::Value> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// Waits for the host's entry to say `connected`, ten seconds at most.
+fn wait_for_entry(path: &Path, connected: bool, clients: u64) -> serde_json::Value {
+    let started = Instant::now();
+    loop {
+        if let Some(entry) = entry(path)
+            && entry["connected"] == connected
+            && entry["clients"] == clients
+        {
+            return entry;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the entry never said connected: {connected}, clients: {clients}: {:?}",
+            entry(path)
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_host_lists_itself_while_it_runs() {
+    let dir = log_dir("running");
+    let pipe = format!(
+        r"\\.\pipe\solo-terminal-test-running-{}",
+        std::process::id()
+    );
+    let mut host = start(&pipe, "cmd.exe /d /q /c ping -n 60 127.0.0.1", &dir);
+    let path = dir.join("running").join(format!("{}.json", host.id()));
+
+    let client = connect(&pipe, Duration::from_secs(30)).expect("first client");
+    let entry = wait_for_entry(&path, true, 1);
+    assert_eq!(entry["pipe"], pipe.as_str());
+    assert_eq!(entry["host_pid"], host.id());
+    assert_eq!(entry["child_pid"], client.child_pid);
+    assert_eq!(
+        entry["command_line"],
+        "cmd.exe /d /q /c ping -n 60 127.0.0.1"
+    );
+    assert!(
+        entry["host_created"]
+            .as_u64()
+            .is_some_and(|created| created > 0)
+    );
+
+    let mut client = client;
+    client.control.write_all(b"P").unwrap();
+    drop(client);
+    wait_for_entry(&path, false, 1);
+
+    // Connecting and going without a word (looking, or crashing right away)
+    // doesn't end what was to keep running.
+    let probe = connect(&pipe, Duration::from_secs(10)).expect("second client");
+    wait_for_entry(&path, true, 2);
+    drop(probe);
+    wait_for_entry(&path, false, 2);
+    thread::sleep(Duration::from_millis(500));
+    assert!(host.try_wait().unwrap().is_none(), "the host ended");
+
+    let mut last = connect(&pipe, Duration::from_secs(10)).expect("third client");
+    last.control.write_all(b"K").unwrap();
+    assert!(ended(&mut host), "K didn't end the host");
+    assert!(!path.exists(), "the host's entry is still there");
     std::fs::remove_dir_all(&dir).ok();
 }

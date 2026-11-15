@@ -14,6 +14,8 @@ mod command_notifications;
 mod failures;
 mod follow_working_directory;
 pub mod input;
+#[cfg(windows)]
+mod lone_hosts;
 mod mermaid_preview;
 mod mermaid_viewer;
 #[cfg(test)]
@@ -34,6 +36,12 @@ mod workspace_grouping;
 mod workspace_terminals;
 
 pub use agent_status::AgentTurnEvent;
+#[cfg(windows)]
+pub use lone_hosts::look_for_lone_terminal_hosts;
+
+/// SOLO: terminal hosts only run on Windows.
+#[cfg(not(windows))]
+pub fn look_for_lone_terminal_hosts(_: &mut App) {}
 use command_blocks::{
     CopyCommandBlock, CopyCommandBlockCommand, CopyCommandBlockOutput, SaveCommandBlockAsWorkflow,
     SendCommandBlockToAgent, SendFailuresToAgent,
@@ -1435,9 +1443,10 @@ impl TerminalView {
     /// command, so the next Solo finds it still running.
     fn update_keep_running(&self, cx: &App) -> bool {
         let terminal = self.terminal.read(cx);
-        // A terminal an earlier Solo left running was busy then; if its
-        // output kept for this Solo lost the shell's marks (it's long), what
-        // runs is unknown until the shell's next prompt: kept meanwhile.
+        // A terminal an earlier Solo left running was busy then; its host
+        // sends the screen, not the shell's marks (nor did older hosts once
+        // their kept output was long), so what runs is unknown until the
+        // shell's next prompt: kept meanwhile.
         let unknown =
             terminal.reconnected_to_host() && terminal.shell_integration().blocks().is_empty();
         let keep = self.agent_status().is_some()

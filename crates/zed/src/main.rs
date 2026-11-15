@@ -1001,6 +1001,17 @@ fn main() {
         })
         .detach_and_log_err(cx);
 
+        // SOLO: terminal hosts that kept running for a terminal this Solo
+        // didn't restore.
+        cx.spawn({
+            let restore_finished = restore_finished.clone();
+            async move |cx| {
+                restore_finished.await;
+                cx.update(terminal_view::look_for_lone_terminal_hosts);
+            }
+        })
+        .detach();
+
         let app_state = app_state.clone();
 
         component_preview::init(app_state.clone(), cx);

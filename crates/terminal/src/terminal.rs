@@ -4,7 +4,7 @@ mod alacritty;
 #[cfg(windows)]
 mod host;
 #[cfg(windows)]
-pub use host::HostLink;
+pub use host::{HostLink, RunningHost, end_running_host, running_hosts};
 mod mermaid;
 pub use mermaid::is_complete as mermaid_diagram_is_complete;
 mod pty_info;
@@ -863,6 +863,22 @@ impl TerminalBounds {
     }
 }
 
+/// SOLO: bounds of `columns` by `rows` cells, in the default cell size.
+#[cfg(windows)]
+fn host_screen_bounds(columns: u16, rows: u16) -> TerminalBounds {
+    TerminalBounds::new(
+        DEBUG_LINE_HEIGHT,
+        DEBUG_CELL_WIDTH,
+        Bounds {
+            origin: GpuiPoint::default(),
+            size: Size {
+                width: DEBUG_CELL_WIDTH * columns.max(2) as f32,
+                height: DEBUG_LINE_HEIGHT * rows.max(1) as f32,
+            },
+        },
+    )
+}
+
 impl Default for TerminalBounds {
     fn default() -> Self {
         TerminalBounds::new(
@@ -1056,6 +1072,11 @@ const REPLAY_TIMEOUT: Duration = Duration::from_secs(3);
 /// host on this pipe (see [`Terminal::host_pipe`]) instead of starting a
 /// shell; Solo sets it when it restores a terminal. It isn't passed on.
 pub const HOST_RECONNECT_ENV: &str = "SOLO_TERMINAL_HOST_RECONNECT";
+
+/// SOLO: with [`HOST_RECONNECT_ENV`], the terminal fails rather than start a
+/// shell when the host is gone (for a host found running without a
+/// terminal). It isn't passed on either.
+pub const HOST_RECONNECT_ONLY_ENV: &str = "SOLO_TERMINAL_HOST_RECONNECT_ONLY";
 
 /// SOLO: has terminal hosts keep what runs in them when Solo goes (quits,
 /// closes its last window), and end otherwise when Solo lets go of their
@@ -1252,8 +1273,9 @@ impl TerminalBuilder {
             env.remove("SHLVL");
             // SOLO: the host a restored terminal ran in.
             let host_reconnect = env.remove(HOST_RECONNECT_ENV);
+            let only_reconnect = env.remove(HOST_RECONNECT_ONLY_ENV).is_some();
             #[cfg(not(windows))]
-            drop(host_reconnect);
+            drop((host_reconnect, only_reconnect));
             // SOLO: what tells the shell's integration from output posing as it.
             #[cfg_attr(not(windows), allow(unused_mut))]
             let mut shell_nonce = env.get(shell_integration::SHELL_NONCE_ENV).cloned();
@@ -1427,6 +1449,7 @@ impl TerminalBuilder {
                 let hosted = if use_host && task.is_none() && !is_remote_terminal {
                     host::open(
                         host_reconnect.as_deref(),
+                        only_reconnect,
                         &pty_options,
                         window_size_from_terminal_bounds(TerminalBounds::default()),
                         shell_nonce.as_deref(),
@@ -1444,11 +1467,19 @@ impl TerminalBuilder {
                             shell_nonce = connected.nonce;
                             terminal_id = connected.terminal_id;
                         }
+                        // The host draws its screen for a terminal of its
+                        // size, then the view resizes it.
+                        if let Some((columns, rows)) = connected.screen_size {
+                            resize(&mut term.lock(), host_screen_bounds(columns, rows));
+                        }
                         let claim = host_claim.get_or_insert_default();
                         host::add_to_claim(claim, connected.link.pipe());
                         host_link = Some(connected.link);
                         reconnected_to_host = reconnected;
                         Ok(connected.pty)
+                    }
+                    None if only_reconnect => {
+                        bail!("the terminal host {host_reconnect:?} is gone");
                     }
                     None => {
                         host_failed = use_host && task.is_none() && !is_remote_terminal;
