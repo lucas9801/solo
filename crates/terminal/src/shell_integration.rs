@@ -608,7 +608,18 @@ fn write_claude_code_settings(is_windows: bool) -> std::io::Result<String> {
     };
     let settings = claude_code_settings(&hook);
     let settings = serde_json::to_string_pretty(&settings).map_err(std::io::Error::other)?;
-    write_script("claude-settings.json", &settings)
+    write_script(&claude_code_settings_file_name(&settings), &settings)
+}
+
+/// The settings file's name, after its contents: Solos installed in
+/// different places (or different versions of a packaged one) write different
+/// hook paths, and a Claude Code already running in one of their terminals
+/// keeps reading its own file.
+fn claude_code_settings_file_name(settings: &str) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(settings.as_bytes());
+    let short: String = digest[..8].iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("claude-settings-{short}.json")
 }
 
 /// Solo's hook program (the `solo_agent_hook` crate), shipped next to Solo.
@@ -1901,5 +1912,14 @@ mod tests {
         let zdotdir = PathBuf::from(&env["ZDOTDIR"]);
         assert!(zdotdir.join(".zshrc").is_file());
         assert!(PathBuf::from(&env["SOLO_ZSH_INTEGRATION"]).is_file());
+    }
+
+    #[test]
+    fn test_claude_code_settings_file_differs_by_hook() {
+        let one = claude_code_settings_file_name("{\"hook\":\"C:\\A\\solo-agent-hook.exe\"}");
+        let other = claude_code_settings_file_name("{\"hook\":\"C:\\B\\solo-agent-hook.exe\"}");
+        assert_ne!(one, other);
+        assert_eq!(one, claude_code_settings_file_name("{\"hook\":\"C:\\A\\solo-agent-hook.exe\"}"));
+        assert!(one.starts_with("claude-settings-") && one.ends_with(".json"));
     }
 }
