@@ -88,3 +88,45 @@ version, built from the tagged commit), packages the installer
 and the zip, and creates a draft GitHub release with them and the notes in
 `docs/release-notes/<version>.md`. Running copies of Solo only update to
 published releases.
+
+## The Microsoft Store package
+
+Solo is also packaged as an MSIX for the Microsoft Store, where it's listed
+as Solo Code. `script\package-solo-msix.ps1` makes the package from a release
+build staged by `package-solo.ps1`; it refuses a debug build (one reads its
+assets and shaders from the source tree, so it crashes once installed) and,
+for the Store, a build that isn't of the stable channel:
+
+```powershell
+script\package-solo.ps1 -Step Stage     # release build in dist\Solo
+cargo build --profile solo-dist -p explorer_command_injector --no-default-features --features solo
+script\package-solo-msix.ps1 -Store     # dist\SoloCode-<version>.0-x64.msix and .msixupload
+script\msix\test-msix-version.ps1       # tests of the version mapping
+```
+
+The second command builds the Explorer context menu ("Open with Solo Code",
+a COM `IExplorerCommand` in `crates\explorer_command_injector`), which the
+script finds in the cargo target folder. The Store package is unsigned (the
+Store signs it), has Solo Code's identity from Partner Center, and the version
+`x.y.z.0` for Solo `x.y.z`. Its manifest is `script\msix\AppxManifest.xml.in`:
+execution aliases (`solo`, `solo-cli`, `solo-agent-hook`), `solo://` links,
+"Open with" for text and code files, the context menu, and the restricted
+capability `unvirtualizedResources`, so Solo and the unpackaged shells and
+agents in its terminals share the real `%APPDATA%` and `%LOCALAPPDATA%`. The
+Solo package workflow also builds the Store package and keeps it as the
+`solo-windows-x64-msix` artifact; it isn't part of the GitHub release.
+
+Without `-Store` the script makes a test package to sideload, signed with a
+certificate given by `-CertificateThumbprint`; the comments at the top of the
+script show how to keep it apart from an installed Solo.
+
+A packaged Solo:
+
+- doesn't use its own updater: the Store updates it. **Check for Updates**
+  offers to open its page in the Store.
+- gives its terminals (`SOLO_CLI`, `SOLO_AGENT_HOOK`) and agents' hooks the
+  paths of its execution aliases in
+  `%LOCALAPPDATA%\Microsoft\WindowsApps\<package family name>`, which stay
+  the same across updates, rather than the versioned folder it runs from.
+- asks Windows to start it again (`RegisterApplicationRestart`) when an
+  update closes it.

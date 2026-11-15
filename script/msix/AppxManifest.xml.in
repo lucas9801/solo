@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Solo's MSIX manifest (R12 trial: packaging Solo for the Microsoft Store).
-  script\package-solo-msix.ps1 fills in the @...@ placeholders and the
-  @UNVIRTUALIZED_*@ blocks. Solo runs as a full-trust desktop app
-  (runFullTrust); the execution aliases put solo, solo-cli and
-  solo-agent-hook in %LOCALAPPDATA%\Microsoft\WindowsApps, which is on PATH.
+  Solo's MSIX manifest, for the Microsoft Store ("Solo Code") and for test
+  packages. script\package-solo-msix.ps1 fills in the @...@ placeholders and
+  replaces the placeholder comments. Solo runs as a full-trust desktop app
+  (runFullTrust). The execution aliases put solo, solo-cli and
+  solo-agent-hook in %LOCALAPPDATA%\Microsoft\WindowsApps, which is on PATH,
+  and in its PackageFamilyName folder, whose paths Solo gives its terminals
+  and agents' hooks since they don't change with updates.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -13,9 +15,11 @@
   xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
   xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap3 uap5 uap10 desktop4 desktop6 rescap">
+  IgnorableNamespaces="uap uap3 uap5 uap10 desktop4 desktop5 desktop6 com rescap">
 
   <Identity
     Name="@IDENTITY_NAME@"
@@ -61,6 +65,16 @@
             <uap:DisplayName>@DISPLAY_NAME@</uap:DisplayName>
           </uap3:Protocol>
         </uap3:Extension>
+        <!-- Text and code files: Solo is offered under "Open with"; it never becomes their default app on its own. -->
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="solo.code" Parameters="@FILE_PARAMETERS@">
+            <uap:DisplayName>@DISPLAY_NAME@</uap:DisplayName>
+            <uap:SupportedFileTypes>
+<!--@FILE_TYPES@-->
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+<!--@CONTEXT_MENU@-->
       </Extensions>
     </Application>
 
@@ -82,7 +96,7 @@
       </Extensions>
     </Application>
 
-    <!-- What agents' hooks run to report their status. -->
+    <!-- What agents' hooks run to report their status (SOLO_AGENT_HOOK). -->
     <Application Id="SoloAgentHook" Executable="solo-agent-hook.exe" EntryPoint="Windows.FullTrustApplication" desktop4:SupportsMultipleInstances="true">
       <uap:VisualElements
         DisplayName="Solo agent hook"
