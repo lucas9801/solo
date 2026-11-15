@@ -1677,6 +1677,9 @@ fn subscribe_for_terminal_events(
                 Event::AgentEditedFile(path) => {
                     cx.emit(agent_status::AgentEditedFile(path.clone()))
                 }
+                Event::AgentResponse(response) => {
+                    terminal_view.agent_response_reported(response, cx)
+                }
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
                     MaybeNavigationTarget::Url(url) => cx.open_url(url),
                     MaybeNavigationTarget::PathLike(_)

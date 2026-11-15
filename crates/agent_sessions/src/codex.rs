@@ -7,7 +7,8 @@
 //! `payload.type`):
 //! - `session_meta`: the first record, with `payload.id` (the session id the
 //!   hooks report) and `payload.cwd`, where it started.
-//! - `turn_context`: each turn's `payload.model` and `payload.cwd`.
+//! - `turn_context`: each turn's `payload.model`, `payload.cwd` and
+//!   `payload.effort` (its reasoning effort).
 //! - `event_msg` / `user_message`: a prompt the user sent, `payload.message`.
 //!   (`response_item` user messages also carry context Codex adds, so they're
 //!   skipped.)
@@ -36,8 +37,8 @@ use std::{
 use serde_json::Value;
 
 use crate::{
-    AgentAdapter, AgentKind, MatchedBy, Message, Role, SessionLocation, TerminalProbe,
-    TokenUsage, ToolCall, ToolKind, ToolOutcome, TranscriptEntry,
+    AgentAdapter, AgentKind, MatchedBy, Message, Role, SessionLocation, TerminalProbe, TokenUsage,
+    ToolCall, ToolKind, ToolOutcome, TranscriptEntry, response_timing::effort_level,
 };
 
 /// A session written to this long before the agent started (file times and
@@ -155,7 +156,13 @@ fn session_cwd(path: &Path) -> Option<PathBuf> {
     BufReader::new(file).read_line(&mut first).ok()?;
     let record: Value = serde_json::from_str(&first).ok()?;
     (record.get("type")?.as_str()? == "session_meta")
-        .then(|| record.get("payload")?.get("cwd")?.as_str().map(PathBuf::from))
+        .then(|| {
+            record
+                .get("payload")?
+                .get("cwd")?
+                .as_str()
+                .map(PathBuf::from)
+        })
         .flatten()
 }
 
@@ -198,8 +205,7 @@ fn find_session_in(sessions: &Path, probe: &TerminalProbe) -> Option<SessionLoca
             since.is_none_or(|since| location.modified.is_some_and(|modified| modified >= since))
         })
         .filter(|location| {
-            session_cwd(&location.path)
-                .is_some_and(|cwd| same_directory(&cwd, working_directory))
+            session_cwd(&location.path).is_some_and(|cwd| same_directory(&cwd, working_directory))
         });
     let mut newest = candidates.next()?;
     newest.matched_by = MatchedBy::Recent {
@@ -212,9 +218,7 @@ fn sessions_in(sessions: &Path, working_directory: &Path) -> Vec<SessionLocation
     let mut locations: Vec<SessionLocation> = session_files(sessions)
         .into_iter()
         .take(MAX_SESSIONS_LOOKED_AT)
-        .filter(|path| {
-            session_cwd(path).is_some_and(|cwd| same_directory(&cwd, working_directory))
-        })
+        .filter(|path| session_cwd(path).is_some_and(|cwd| same_directory(&cwd, working_directory)))
         .filter_map(|path| location(path, MatchedBy::Chosen))
         .collect();
     locations.sort_by_key(|location| std::cmp::Reverse(location.modified));
@@ -267,13 +271,20 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
         record.get("type").and_then(Value::as_str),
         str_field("type"),
     ) {
-        (Some("turn_context"), _) => match str_field("model") {
-            Some(model) => vec![TranscriptEntry::ModelInfo {
-                model: Some(model.to_string()),
-                context_window: None,
-            }],
-            None => Vec::new(),
-        },
+        (Some("turn_context"), _) => {
+            let mut entries = Vec::new();
+            if let Some(model) = str_field("model") {
+                entries.push(TranscriptEntry::ModelInfo {
+                    model: Some(model.to_string()),
+                    context_window: None,
+                });
+            }
+            // SOLO: the reasoning effort the turn runs at.
+            if let Some(effort) = str_field("effort").and_then(effort_level) {
+                entries.push(TranscriptEntry::Effort(effort));
+            }
+            entries
+        }
         (Some("event_msg"), Some("user_message")) => match str_field("message") {
             Some(text) if !text.trim().is_empty() => {
                 vec![TranscriptEntry::Message(Message {
@@ -293,7 +304,9 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter(|content| content.get("type").and_then(Value::as_str) == Some("output_text"))
+                .filter(|content| {
+                    content.get("type").and_then(Value::as_str) == Some("output_text")
+                })
                 .filter_map(|content| content.get("text").and_then(Value::as_str))
                 .collect::<Vec<_>>()
                 .join("\n\n");
@@ -309,7 +322,10 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
                 sidechain: false,
             })]
         }
-        (Some("response_item"), Some(kind @ ("function_call" | "custom_tool_call" | "local_shell_call"))) => {
+        (
+            Some("response_item"),
+            Some(kind @ ("function_call" | "custom_tool_call" | "local_shell_call")),
+        ) => {
             let Some(id) = str_field("call_id").or_else(|| str_field("id")) else {
                 return Vec::new();
             };
@@ -321,7 +337,9 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
                 "function_call" => str_field("arguments")
                     .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok())
                     .unwrap_or(Value::Null),
-                "custom_tool_call" => Value::String(str_field("input").unwrap_or_default().to_string()),
+                "custom_tool_call" => {
+                    Value::String(str_field("input").unwrap_or_default().to_string())
+                }
                 _ => payload.get("action").cloned().unwrap_or(Value::Null),
             };
             let command = command_of(&input);
@@ -361,7 +379,11 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
                     TranscriptEntry::ToolCall(ToolCall {
                         id: format!("{call_id}:{path}"),
                         name: "apply_patch".to_string(),
-                        kind: if added { ToolKind::Write } else { ToolKind::Edit },
+                        kind: if added {
+                            ToolKind::Write
+                        } else {
+                            ToolKind::Edit
+                        },
                         file_path: Some(PathBuf::from(path)),
                         command: None,
                         description: None,
@@ -383,7 +405,8 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
             let Some(info) = payload.get("info").filter(|info| !info.is_null()) else {
                 return Vec::new();
             };
-            let number = |usage: &Value, name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+            let number =
+                |usage: &Value, name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
             let mut entries = Vec::new();
             if let Some(window) = info.get("model_context_window").and_then(Value::as_u64) {
                 entries.push(TranscriptEntry::ModelInfo {
@@ -431,9 +454,7 @@ fn command_of(input: &Value) -> Option<String> {
             let parts: Vec<&str> = parts.iter().filter_map(Value::as_str).collect();
             // `["powershell.exe", "-Command", "ls"]`: what it runs.
             match parts.as_slice() {
-                [_, flag, command]
-                    if matches!(*flag, "-c" | "-lc" | "-Command" | "/c" | "/C") =>
-                {
+                [_, flag, command] if matches!(*flag, "-c" | "-lc" | "-Command" | "/c" | "/C") => {
                     command.to_string()
                 }
                 _ => parts.join(" "),
@@ -480,7 +501,7 @@ mod tests {
     /// A made-up session in the shape of a real Codex one.
     const SESSION: &str = r#"{"timestamp":"2026-11-09T10:00:00.000Z","type":"session_meta","payload":{"id":"01a182bf-336d-7c13-9879-86020812dc44","cwd":"G:\\Work\\game","cli_version":"0.130.0"}}
 {"timestamp":"2026-11-09T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>cwd</environment_context>"}]}}
-{"timestamp":"2026-11-09T10:00:01.000Z","type":"turn_context","payload":{"turn_id":"t1","cwd":"G:\\Work\\game","model":"gpt-5.5-codex"}}
+{"timestamp":"2026-11-09T10:00:01.000Z","type":"turn_context","payload":{"turn_id":"t1","cwd":"G:\\Work\\game","model":"gpt-5.5-codex","effort":"xhigh"}}
 {"timestamp":"2026-11-09T10:00:01.100Z","type":"event_msg","payload":{"type":"user_message","message":"Fix the save bug\nIt crashes on load.","images":[]}}
 {"timestamp":"2026-11-09T10:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":null}}
 {"timestamp":"2026-11-09T10:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"shell_command","arguments":"{\"command\":\"git status\",\"workdir\":\"G:\\\\Work\\\\game\"}","call_id":"call_1"}}
@@ -490,6 +511,7 @@ mod tests {
 {"timestamp":"2026-11-09T10:00:06.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"call_2","success":true,"changes":{"G:\\Work\\game\\save.rs":{"type":"update","unified_diff":"@@"},"G:\\Work\\game\\load.rs":{"type":"add","unified_diff":"@@"}}}}
 {"timestamp":"2026-11-09T10:00:07.000Z","type":"response_item","payload":{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"Fixed it."}]}}
 {"timestamp":"2026-11-09T10:00:08.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":25000,"cached_input_tokens":20000,"cache_write_input_tokens":0,"output_tokens":500,"total_tokens":25500},"last_token_usage":{"input_tokens":13000,"cached_input_tokens":12000,"cache_write_input_tokens":0,"output_tokens":200,"total_tokens":13200},"model_context_window":258400}}}
+{"timestamp":"2026-11-09T10:00:08.500Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","duration_ms":7400,"time_to_first_token_ms":17400}}
 {"timestamp":"2026-11-09T10:00:09.000Z","type":"future_record","payload":{"type":"whatever"}}
 {"timestamp":"2026-11-09T10:00:10.000Z","type":"event_msg","payload":{"type":"user_message","message":"Thanks"#;
 
@@ -515,7 +537,9 @@ mod tests {
         assert_eq!(prompts, ["Fix the save bug\nIt crashes on load."]);
         assert_eq!(state.title.as_deref(), Some("Fix the save bug"));
         assert_eq!(
-            state.last_assistant_message().map(|message| message.text.as_str()),
+            state
+                .last_assistant_message()
+                .map(|message| message.text.as_str()),
             Some("Fixed it.")
         );
         // The command, and the files the patch changed.
@@ -529,6 +553,16 @@ mod tests {
             .collect();
         assert!(changed.contains(&(PathBuf::from("G:\\Work\\game\\save.rs"), ToolKind::Edit)));
         assert!(changed.contains(&(PathBuf::from("G:\\Work\\game\\load.rs"), ToolKind::Write)));
+    }
+
+    /// SOLO: the turn's effort shows; the turn's time to first token
+    /// (which includes hidden reasoning, and is one per turn rather than
+    /// per request) isn't taken as a request's.
+    #[test]
+    fn test_effort_and_no_timing() {
+        let state = state();
+        assert_eq!(state.effort.as_deref(), Some("xhigh"));
+        assert!(state.responses.is_empty());
     }
 
     #[test]
@@ -550,8 +584,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let day = dir.path().join("2026").join("11").join("09");
         std::fs::create_dir_all(&day).unwrap();
-        let older = day.join("rollout-2026-11-09T09-00-00-01a182bf-336d-7c13-9879-86020812dc44.jsonl");
-        let newer = day.join("rollout-2026-11-09T10-00-00-0f6ed4b2-755b-4e18-8bd1-f60252548036.jsonl");
+        let older =
+            day.join("rollout-2026-11-09T09-00-00-01a182bf-336d-7c13-9879-86020812dc44.jsonl");
+        let newer =
+            day.join("rollout-2026-11-09T10-00-00-0f6ed4b2-755b-4e18-8bd1-f60252548036.jsonl");
         std::fs::write(&older, format!("{}\n", SESSION.lines().next().unwrap())).unwrap();
         std::fs::write(
             &newer,

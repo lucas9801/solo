@@ -149,6 +149,96 @@ export function createReporter({ rootOf, accept = () => true, directory } = {}) 
   }
 }
 
+/** Message parts that are the model's output: its first one is its first token. */
+const OUTPUT_PARTS = new Set(["text", "reasoning", "tool"])
+/** How many messages are timed at once, at most. */
+const MAX_TIMED_MESSAGES = 200
+
+/**
+ * Times the model's answers from OpenCode's message events, by when this
+ * process sees them: an assistant message is the request, its first output
+ * part (or delta) the first token, and its completion the last. Solo shows
+ * the time to the first token and the output speed.
+ *
+ * Unverified against a real OpenCode: the events' shapes are from its
+ * message schema (`time.created`, `time.completed`, `tokens.output`,
+ * `tokens.reasoning`, `variant`), not from a recorded session.
+ *
+ * - `now`: the clock, in ms;
+ * - `rootOf(id)`, `accept(session)`: as for `createReporter`. Only the
+ *   main conversation's messages are timed, not subagents'.
+ */
+export function createResponseTimer({ now = Date.now, rootOf = (id) => id, accept = () => true } = {}) {
+  const messages = new Map()
+  const variants = new Map()
+  const number = (value) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined)
+  const main = (session) => typeof session === "string" && (rootOf(session) ?? session) === session && accept(session)
+
+  const track = (id, session, start) => {
+    if (messages.size >= MAX_TIMED_MESSAGES) messages.delete(messages.keys().next().value)
+    const message = { session, start, first: undefined }
+    messages.set(id, message)
+    return message
+  }
+
+  const output = (messageID, at) => {
+    const message = messages.get(messageID)
+    if (message && message.first === undefined) message.first = at
+  }
+
+  return {
+    /** The response report for an OpenCode event, or null. */
+    handle(event) {
+      if (!event || typeof event.type !== "string") return null
+      const data = event.data ?? event.properties ?? {}
+      const at = now()
+      switch (event.type) {
+        case "message.part.updated": {
+          const part = data.part ?? data
+          if (!OUTPUT_PARTS.has(part?.type) || typeof part.messageID !== "string") return null
+          // A text part is created before its first text arrives.
+          const empty = part.type !== "tool" && !part.text && !data.delta
+          if (!empty) output(part.messageID, at)
+          return null
+        }
+        case "message.part.delta":
+          if (typeof data.messageID === "string" && data.delta) output(data.messageID, at)
+          return null
+        case "message.updated": {
+          const info = data.info ?? data
+          if (typeof info?.id !== "string" || !main(info.sessionID)) return null
+          if (typeof info.variant === "string") variants.set(info.sessionID, info.variant)
+          if (info.role !== "assistant") return null
+          let message = messages.get(info.id)
+          if (!message) {
+            if (info.time?.completed !== undefined) return null
+            // OpenCode's own time of the request, when it's this machine's.
+            const created = number(info.time?.created)
+            message = track(info.id, info.sessionID, created !== undefined && created <= at ? created : at)
+          }
+          if (number(info.time?.completed) === undefined || message.done) return null
+          message.done = true
+          messages.delete(info.id)
+          if (info.error) return null
+          const measurements = {}
+          if (message.first !== undefined) {
+            measurements.firstTokenMs = Math.round(message.first - message.start)
+            measurements.generationMs = Math.round(at - message.first)
+          }
+          const tokens = number(info.tokens?.output)
+          if (tokens !== undefined) measurements.outputTokens = tokens + (number(info.tokens?.reasoning) ?? 0)
+          const variant = variants.get(info.sessionID)
+          if (typeof variant === "string") measurements.effort = variant
+          if (Object.keys(measurements).length === 0) return null
+          return { state: "response", session: info.sessionID, ...measurements }
+        }
+        default:
+          return null
+      }
+    },
+  }
+}
+
 /** Whether a session status (OpenCode 2's `data.session.status`) is a busy one. */
 export function isBusy(status) {
   const type = typeof status === "string" ? status : status?.type
@@ -161,6 +251,15 @@ export function reportArguments(report, seq) {
   if (isSessionId(report.session)) args.push("--session", report.session)
   if (typeof report.directory === "string" && report.directory.trim() !== "") {
     args.push("--directory", report.directory)
+  }
+  if (report.state === "response") {
+    const count = (value) => Number.isInteger(value) && value >= 0
+    if (count(report.firstTokenMs)) args.push("--first-token-ms", String(report.firstTokenMs))
+    if (count(report.outputTokens)) args.push("--output-tokens", String(report.outputTokens))
+    if (count(report.generationMs)) args.push("--generation-ms", String(report.generationMs))
+    if (typeof report.effort === "string" && /^[A-Za-z0-9_-]{1,24}$/.test(report.effort)) {
+      args.push("--effort", report.effort)
+    }
   }
   return args
 }

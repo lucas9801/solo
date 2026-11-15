@@ -94,7 +94,8 @@ fn main() {
 }
 
 const REPORT_USAGE: &str = "usage: solo-agent-hook report --state <working|blocked|idle> \
-[--agent <name>] [--session <id>] [--seq <n>] [--directory <path>]";
+[--agent <name>] [--session <id>] [--seq <n>] [--directory <path>]
+       solo-agent-hook report --state response [--agent <name>] [--session <id>] [--seq <n>] [--first-token-ms <ms>] [--output-tokens <n>] [--generation-ms <ms>] [--effort <level>]";
 
 /// The terminal's agent key (`SOLO_AGENT_TOKEN`), which tells the terminal a
 /// report comes from a program started in it rather than from output posing
@@ -128,6 +129,8 @@ fn report_sequence(args: &[String], sent_at_ms: &str, nonce: &str) -> Result<Str
     let mut session = String::new();
     let mut order = sent_at_ms.to_string();
     let mut directory = None;
+    // SOLO: how fast the model answered, for `--state response`.
+    let mut measurements = Vec::new();
     let mut args = args.iter();
     while let Some(flag) = args.next() {
         let mut value = || {
@@ -141,6 +144,27 @@ fn report_sequence(args: &[String], sent_at_ms: &str, nonce: &str) -> Result<Str
             "--session" => session = value()?,
             "--seq" => order = value()?,
             "--directory" => directory = Some(value()?),
+            "--first-token-ms" | "--output-tokens" | "--generation-ms" => {
+                let number = value()?;
+                if number.parse::<u64>().is_err() {
+                    return Err(format!("{flag} {number:?} isn't a number"));
+                }
+                let key = flag.trim_start_matches("--").replace('-', "_");
+                measurements.push(format!("{key}={number}"));
+            }
+            "--effort" => {
+                let effort = value()?;
+                if !(1..=24).contains(&effort.len())
+                    || !effort
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                {
+                    return Err(format!(
+                        "--effort {effort:?} must be up to 24 letters, digits, '-' or '_'"
+                    ));
+                }
+                measurements.push(format!("effort={effort}"));
+            }
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -149,6 +173,7 @@ fn report_sequence(args: &[String], sent_at_ms: &str, nonce: &str) -> Result<Str
         Some("blocked" | "input") => "input",
         Some("idle" | "stop") => "stop",
         Some("start") => "start",
+        Some("response") => "response",
         Some(other) => return Err(format!("unknown state {other:?}")),
         None => return Err("--state is required".to_string()),
     };
@@ -165,6 +190,18 @@ fn report_sequence(args: &[String], sent_at_ms: &str, nonce: &str) -> Result<Str
         return Err(format!(
             "--agent {agent:?} must be up to 40 letters, digits, spaces, '-', '_' or '.'"
         ));
+    }
+    if kind == "response" {
+        if measurements.is_empty() {
+            return Err("--state response needs a measurement".to_string());
+        }
+        let measurements = measurements.join(",");
+        return Ok(format!(
+            "\x1b]6973;agent;nonce={nonce};response;{order};{session};{agent};{measurements}\x07"
+        ));
+    }
+    if !measurements.is_empty() {
+        return Err("measurements go with --state response only".to_string());
     }
     let directory = directory
         .map(|directory| directory.trim().to_string())
@@ -569,7 +606,37 @@ mod tests {
                     .to_string()
             )
         );
+        // How fast the model answered, from OpenCode's plugin.
+        assert_eq!(
+            report_sequence(
+                &args(&[
+                    "--state",
+                    "response",
+                    "--agent",
+                    "opencode",
+                    "--seq",
+                    "9",
+                    "--session",
+                    "ses_4f2a1cB9",
+                    "--first-token-ms",
+                    "1500",
+                    "--output-tokens",
+                    "2000",
+                    "--generation-ms",
+                    "10000",
+                    "--effort",
+                    "high",
+                ]),
+                "123",
+                "n0nce"
+            ),
+            Ok("\x1b]6973;agent;nonce=n0nce;response;9;ses_4f2a1cB9;opencode;first_token_ms=1500,output_tokens=2000,generation_ms=10000,effort=high\x07".to_string())
+        );
         for bad in [
+            &["--state", "response"][..],
+            &["--state", "response", "--first-token-ms", "1.5"][..],
+            &["--state", "response", "--effort", "a;b"][..],
+            &["--state", "idle", "--output-tokens", "5"][..],
             &["--state", "dancing"][..],
             &[][..],
             &["--state"][..],

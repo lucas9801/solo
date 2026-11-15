@@ -115,6 +115,99 @@ pub(crate) struct AgentActivity {
     /// Whether the screen was read for this run (the agent has rules).
     screen_read: bool,
     screen_read_at: Option<Instant>,
+    /// SOLO: how long the agent has worked in its turns.
+    pub(crate) clock: TurnClock,
+    /// SOLO: how fast the model answered, as the agent (or Solo's plugin for
+    /// it) reported, for agents whose own records don't tell.
+    pub(crate) responses: agent_sessions::ResponseTimings,
+    /// SOLO: the reasoning effort the agent reported.
+    pub(crate) reported_effort: Option<String>,
+    /// SOLO: reads Copilot CLI's telemetry file for how fast its model
+    /// answers, while Copilot runs.
+    pub(crate) copilot_telemetry: Option<Task<()>>,
+}
+
+/// SOLO: how long an agent works in its turns: from when it's shown working
+/// until it stops, less the time it waits for you in between. A turn the
+/// agent is in shows how long it's been so far; after it, the last turn's.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct TurnClock {
+    /// Since when the agent works, if it does now.
+    working_since: Option<Instant>,
+    /// Whether a turn is under way (working, or waiting for you within it).
+    in_turn: bool,
+    /// The turn's working time before `working_since`.
+    turn_worked: Duration,
+    last_turn: Option<Duration>,
+    /// The finished turns' working time.
+    session_worked: Duration,
+}
+
+impl TurnClock {
+    /// The agent is shown as `status` from `now` on. A stop only inferred
+    /// from the agent going quiet ended at `ended_at`, its last sign of work.
+    pub(crate) fn update(&mut self, status: Option<AgentStatus>, now: Instant, ended_at: Instant) {
+        match status {
+            Some(AgentStatus::Working) => {
+                self.in_turn = true;
+                self.working_since.get_or_insert(now);
+            }
+            Some(AgentStatus::NeedsInput) => {
+                if let Some(since) = self.working_since.take() {
+                    self.turn_worked += now.saturating_duration_since(since);
+                }
+            }
+            _ => {
+                if let Some(since) = self.working_since.take() {
+                    let end = if ended_at >= since {
+                        ended_at.min(now)
+                    } else {
+                        now
+                    };
+                    self.turn_worked += end.saturating_duration_since(since);
+                }
+                if std::mem::take(&mut self.in_turn) {
+                    let worked = std::mem::take(&mut self.turn_worked);
+                    self.last_turn = Some(worked);
+                    self.session_worked += worked;
+                }
+            }
+        }
+    }
+
+    /// How long the agent has worked in the turn it's in, or else the last.
+    pub(crate) fn turn(&self, now: Instant) -> Option<Duration> {
+        if self.in_turn {
+            Some(self.turn_worked + self.working_for(now))
+        } else {
+            self.last_turn
+        }
+    }
+
+    /// How long the agent has worked in all its turns.
+    pub(crate) fn session(&self, now: Instant) -> Option<Duration> {
+        (self.in_turn || self.last_turn.is_some())
+            .then(|| self.session_worked + self.turn_worked + self.working_for(now))
+    }
+
+    /// Whether it's counting now.
+    pub(crate) fn is_running(&self) -> bool {
+        self.working_since.is_some()
+    }
+
+    /// Starts the session's count again (a new session in the same run),
+    /// leaving the turn under way.
+    pub(crate) fn restart_session(&mut self) {
+        self.session_worked = Duration::ZERO;
+        if !self.in_turn {
+            self.last_turn = None;
+        }
+    }
+
+    fn working_for(&self, now: Instant) -> Duration {
+        self.working_since
+            .map_or(Duration::ZERO, |since| now.saturating_duration_since(since))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -276,6 +369,11 @@ impl TerminalView {
         self.agent_activity.reported_directory.as_ref()
     }
 
+    /// SOLO: when the agent run Solo sees started, if it saw it start.
+    pub(crate) fn agent_run_started_at(&self) -> Option<Instant> {
+        self.agent_activity.started_at
+    }
+
     /// The agent this terminal runs or last ran, with what it's doing.
     pub(crate) fn agent_status(&self) -> Option<(&str, AgentStatus)> {
         self.agent_activity
@@ -423,6 +521,14 @@ impl TerminalView {
             self.agent_activity.unseen_finish = false;
         }
         let new = status.as_ref().map(|(_, status)| *status);
+        // SOLO: the turn's time. A stop inferred from quiet came with the
+        // agent's last output.
+        let ended_at = if self.agent_activity.stop_confirmed() {
+            now
+        } else {
+            self.agent_activity.output_at.unwrap_or(now)
+        };
+        self.agent_activity.clock.update(new, now, ended_at);
         // Agents without hooks start a turn when their screen shows them at work.
         if new == Some(AgentStatus::Working)
             && !self.agent_activity.in_turn
@@ -448,6 +554,7 @@ impl TerminalView {
         }
         if new.is_some_and(AgentStatus::is_running) {
             self.keep_agent_session(cx);
+            self.keep_copilot_telemetry(cx);
         }
         if previous != new {
             log::debug!("agent status {previous:?} -> {new:?}");
@@ -490,10 +597,23 @@ impl TerminalView {
                     .is_none_or(|(animated, _)| *animated != new)
                 {
                     let task = cx.spawn(async move |this, cx| {
+                        let mut shown_second = None;
                         loop {
                             cx.background_executor().timer(step).await;
                             let animating = this.update(cx, |this, cx| {
                                 cx.emit(ItemEvent::UpdateTab);
+                                // SOLO: the usage bar shows the turn's time
+                                // to the second.
+                                let second = this
+                                    .agent_activity
+                                    .clock
+                                    .turn(Instant::now())
+                                    .map(|turn| turn.as_secs());
+                                if this.agent_activity.clock.is_running() && second != shown_second
+                                {
+                                    shown_second = second;
+                                    cx.notify();
+                                }
                                 this.agent_status_phase().is_some()
                             });
                             if !matches!(animating, Ok(true)) {
@@ -612,6 +732,11 @@ impl TerminalView {
                         activity.screen = ScreenReading::default();
                         activity.screen_read = false;
                         activity.screen_read_at = None;
+                        // SOLO: and its times and speeds are its own.
+                        activity.clock = TurnClock::default();
+                        activity.responses = Default::default();
+                        activity.reported_effort = None;
+                        activity.copilot_telemetry = None;
                     }
                     activity.started_at = block.started_at;
                 } else if activity.started_at != block.started_at {
@@ -950,6 +1075,60 @@ mod tests {
         assert!(supersedes(Some(5), Some(5)));
         assert!(supersedes(Some(5), Some(6)));
         assert!(!supersedes(Some(6), Some(5)));
+    }
+
+    #[test]
+    fn test_turn_clock() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut clock = TurnClock::default();
+        assert_eq!(clock.turn(at(0)), None);
+        assert_eq!(clock.session(at(0)), None);
+        // Idle before any turn: nothing.
+        clock.update(Some(AgentStatus::Idle), at(0), at(0));
+        assert_eq!(clock.turn(at(1)), None);
+
+        // Working: counts.
+        clock.update(Some(AgentStatus::Working), at(10), at(10));
+        assert_eq!(clock.turn(at(25)), Some(Duration::from_secs(15)));
+        assert!(clock.is_running());
+        // Waiting for you within the turn: paused.
+        clock.update(Some(AgentStatus::NeedsInput), at(30), at(30));
+        assert!(!clock.is_running());
+        assert_eq!(clock.turn(at(100)), Some(Duration::from_secs(20)));
+        // Working again, then stopped as reported: 20 s + 30 s.
+        clock.update(Some(AgentStatus::Working), at(100), at(100));
+        assert_eq!(clock.turn(at(110)), Some(Duration::from_secs(30)));
+        clock.update(Some(AgentStatus::Finished), at(130), at(130));
+        assert_eq!(clock.turn(at(500)), Some(Duration::from_secs(50)));
+        assert_eq!(clock.session(at(500)), Some(Duration::from_secs(50)));
+        // Seen: still the last turn's.
+        clock.update(Some(AgentStatus::Idle), at(140), at(140));
+        assert_eq!(clock.turn(at(500)), Some(Duration::from_secs(50)));
+
+        // A stop only inferred from quiet ends with the last output.
+        clock.update(Some(AgentStatus::Working), at(200), at(200));
+        clock.update(Some(AgentStatus::Idle), at(213), at(210));
+        assert_eq!(clock.turn(at(300)), Some(Duration::from_secs(10)));
+        assert_eq!(clock.session(at(300)), Some(Duration::from_secs(60)));
+        // A turn under way counts toward the session.
+        clock.update(Some(AgentStatus::Working), at(400), at(400));
+        assert_eq!(clock.session(at(405)), Some(Duration::from_secs(65)));
+        // The agent exits mid-turn.
+        clock.update(Some(AgentStatus::Done), at(420), at(420));
+        assert_eq!(clock.turn(at(500)), Some(Duration::from_secs(20)));
+        assert_eq!(clock.session(at(500)), Some(Duration::from_secs(80)));
+
+        // A new session starts its count again.
+        clock.restart_session();
+        assert_eq!(clock.session(at(500)), None);
+        clock.update(Some(AgentStatus::Working), at(600), at(600));
+        assert_eq!(clock.session(at(601)), Some(Duration::from_secs(1)));
+        // Waiting for you before any work isn't a turn.
+        let mut clock = TurnClock::default();
+        clock.update(Some(AgentStatus::NeedsInput), at(0), at(0));
+        clock.update(Some(AgentStatus::Idle), at(5), at(5));
+        assert_eq!(clock.turn(at(6)), None);
     }
 
     #[test]

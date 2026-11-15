@@ -1,15 +1,17 @@
 //! SOLO: how an agent's terminal tab shows the agent: its icon with its
 //! status on it, how full its context is, and the card shown on hover.
 
+use std::time::Duration;
+
 use agent_sessions::{
-    CONTEXT_ALMOST_OUT, CONTEXT_NEARLY_FULL, MatchedBy, SessionState, TokenUsage,
+    CONTEXT_ALMOST_OUT, CONTEXT_NEARLY_FULL, MatchedBy, ResponseSummary, SessionState, TokenUsage,
 };
 use gpui::{AnyElement, App, FontWeight, Hsla};
 use ui::{CircularProgress, Divider, prelude::*};
 use util::i18n::tr;
 use workspace::agent_activity::{AgentStateIcon, legible_on};
 
-use crate::{TerminalView, agent_status::AgentStatus};
+use crate::{TerminalView, agent_session::AgentMetrics, agent_status::AgentStatus};
 
 impl TerminalView {
     /// The card shown on the terminal's tab; `None` before its process runs.
@@ -22,6 +24,7 @@ impl TerminalView {
                 name,
                 Some(status),
                 session.map(|session| (session.state(), session.location().matched_by)),
+                &self.agent_metrics(cx),
             )
         });
         Some(TabCard {
@@ -98,6 +101,27 @@ pub(crate) fn format_tokens_short(tokens: u64) -> String {
         &rounded
     };
     format!("{rounded}{unit}")
+}
+
+/// SOLO: a time to first token: "5.1 s".
+pub(crate) fn format_first_token(first_token: Duration) -> String {
+    format!("{:.1} s", first_token.as_secs_f64())
+}
+
+/// SOLO: an output speed: "128 token/s".
+pub(crate) fn format_speed(tokens_per_second: f64) -> String {
+    format!("{tokens_per_second:.0} token/s")
+}
+
+/// SOLO: how long an agent worked: "0:42", "2:14", "1:12:05".
+pub(crate) fn format_work_time(time: Duration) -> String {
+    let seconds = time.as_secs();
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
 }
 
 /// The model's name without what the agent already says: claude-opus-5-5 is
@@ -282,7 +306,8 @@ pub(crate) struct AgentCard {
     /// The agent's name as it ran (`claude`), for its mark.
     pub agent: String,
     pub status: Option<AgentStatus>,
-    /// The agent and its model: "Claude Code · claude-opus-5-5".
+    /// The agent, its model and its effort: "Claude Code · claude-opus-5-5
+    /// · xhigh".
     pub agent_line: String,
     pub session_title: Option<String>,
     /// Whether the session was only guessed from the directory.
@@ -290,6 +315,11 @@ pub(crate) struct AgentCard {
     pub context: Option<ContextLine>,
     pub turn: TokenUsage,
     pub session: TokenUsage,
+    /// SOLO: how long the agent worked in the turn and in the session.
+    pub turn_time: Option<Duration>,
+    pub session_time: Option<Duration>,
+    /// SOLO: how fast the model answered.
+    pub responses: ResponseSummary,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -305,14 +335,24 @@ impl AgentCard {
         name: &str,
         status: Option<AgentStatus>,
         session: Option<(&SessionState, MatchedBy)>,
+        metrics: &AgentMetrics,
     ) -> Self {
         let mut card = AgentCard {
             agent: name.to_string(),
             status,
             agent_line: name.to_string(),
+            turn_time: metrics.turn_time,
+            session_time: metrics.session_time,
+            responses: metrics.responses,
             ..Default::default()
         };
+        let effort = metrics
+            .effort
+            .as_deref()
+            .map(|effort| format!(" · {effort}"))
+            .unwrap_or_default();
         let Some((state, matched_by)) = session else {
+            card.agent_line.push_str(&effort);
             return card;
         };
         let usage = &state.usage;
@@ -320,6 +360,7 @@ impl AgentCard {
         if let Some(model) = usage.model.as_deref().filter(|model| !model.is_empty()) {
             card.agent_line.push_str(&format!(" · {model}"));
         }
+        card.agent_line.push_str(&effort);
         card.session_title = state.title.clone();
         card.guessed = matches!(matched_by, MatchedBy::Recent { ambiguous: true });
         card.context = usage.context_tokens.map(|tokens| {
@@ -514,13 +555,11 @@ impl TabCard {
             );
         }
 
-        // Its tokens.
-        if let Some(agent) = self
-            .agent
-            .as_ref()
-            .filter(|agent| !agent.session.is_empty())
-        {
-            let row = |what: String, input: String, output: String, color: Color, mono: bool| {
+        // Its tokens and time.
+        if let Some(agent) = self.agent.as_ref() {
+            let has_tokens = !agent.session.is_empty();
+            let has_time = agent.turn_time.is_some() || agent.session_time.is_some();
+            let row = |what: String, values: Vec<String>, color: Color, mono: bool| {
                 let value = |text: String| {
                     div().flex_1().flex().justify_end().child(
                         small(text)
@@ -534,42 +573,116 @@ impl TabCard {
                     .child(
                         div()
                             .flex_none()
-                            .w(rems_from_px(LABEL_COLUMN))
+                            .min_w(rems_from_px(LABEL_COLUMN))
                             .child(small(what).color(if mono { Color::Default } else { color })),
                     )
-                    .child(value(input))
-                    .child(value(output))
+                    .children(values.into_iter().map(value))
             };
-            card = card
-                .child(Divider::horizontal())
-                .child(
+            let time = |time: Option<Duration>| time.map(format_work_time).unwrap_or_default();
+            if has_tokens || has_time {
+                let columns = |input: String, output: String, time: String| {
+                    let mut values = Vec::new();
+                    if has_tokens {
+                        values.extend([input, output]);
+                    }
+                    if has_time {
+                        values.push(time);
+                    }
+                    values
+                };
+                card = card
+                    .child(Divider::horizontal())
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(row(
+                                if has_tokens {
+                                    "token".to_string()
+                                } else {
+                                    String::new()
+                                },
+                                columns(
+                                    tr("Input", "输入").to_string(),
+                                    tr("Output", "输出").to_string(),
+                                    tr("Time", "用时").to_string(),
+                                ),
+                                Color::Muted,
+                                false,
+                            ))
+                            .child(row(
+                                tr("Turn", "本轮").to_string(),
+                                columns(
+                                    format_tokens(agent.turn.total_input()),
+                                    format_tokens(agent.turn.output),
+                                    time(agent.turn_time),
+                                ),
+                                Color::Default,
+                                true,
+                            ))
+                            .child(row(
+                                tr("Session", "本会话").to_string(),
+                                columns(
+                                    format_tokens(agent.session.total_input()),
+                                    format_tokens(agent.session.output),
+                                    time(agent.session_time),
+                                ),
+                                Color::Default,
+                                true,
+                            )),
+                    )
+                    .when_some(agent.cache_line(), |this, line| {
+                        this.child(small(line).untranslated().color(Color::Muted))
+                    });
+            }
+
+            // How fast the model answered.
+            let responses = &agent.responses;
+            let first_token = |first_token: Option<Duration>| {
+                first_token.map(format_first_token).unwrap_or_default()
+            };
+            let speed = |speed: Option<f64>| speed.map(format_speed).unwrap_or_default();
+            let latest = (responses.latest_first_token.is_some()
+                || responses.latest_speed.is_some())
+            .then(|| {
+                row(
+                    tr("Latest", "最近").to_string(),
+                    vec![
+                        first_token(responses.latest_first_token),
+                        speed(responses.latest_speed),
+                    ],
+                    Color::Default,
+                    true,
+                )
+            });
+            let mean = (responses.mean_first_token.is_some() || responses.mean_speed.is_some())
+                .then(|| {
+                    row(
+                        tr("Session average", "本会话平均").to_string(),
+                        vec![
+                            first_token(responses.mean_first_token),
+                            speed(responses.mean_speed),
+                        ],
+                        Color::Default,
+                        true,
+                    )
+                });
+            if latest.is_some() || mean.is_some() {
+                card = card.child(Divider::horizontal()).child(
                     v_flex()
                         .gap_1()
                         .child(row(
-                            "token".to_string(),
-                            tr("Input", "输入").to_string(),
-                            tr("Output", "输出").to_string(),
+                            tr("Response", "响应").to_string(),
+                            vec![
+                                tr("First token", "首字").to_string(),
+                                tr("Speed", "速度").to_string(),
+                            ],
                             Color::Muted,
                             false,
                         ))
-                        .child(row(
-                            tr("Turn", "本轮").to_string(),
-                            format_tokens(agent.turn.total_input()),
-                            format_tokens(agent.turn.output),
-                            Color::Default,
-                            true,
-                        ))
-                        .child(row(
-                            tr("Session", "本会话").to_string(),
-                            format_tokens(agent.session.total_input()),
-                            format_tokens(agent.session.output),
-                            Color::Default,
-                            true,
-                        )),
-                )
-                .when_some(agent.cache_line(), |this, line| {
-                    this.child(small(line).untranslated().color(Color::Muted))
-                });
+                        .children(latest)
+                        .children(mean),
+                );
+            }
         }
 
         if let Some(pid) = self.pid {
@@ -682,6 +795,16 @@ mod tests {
     }
 
     #[test]
+    fn test_format_speeds_and_times() {
+        assert_eq!(format_first_token(Duration::from_millis(5_140)), "5.1 s");
+        assert_eq!(format_first_token(Duration::from_millis(860)), "0.9 s");
+        assert_eq!(format_speed(127.6), "128 token/s");
+        assert_eq!(format_work_time(Duration::from_secs(42)), "0:42");
+        assert_eq!(format_work_time(Duration::from_millis(134_900)), "2:14");
+        assert_eq!(format_work_time(Duration::from_secs(4325)), "1:12:05");
+    }
+
+    #[test]
     fn test_short_model() {
         assert_eq!(short_model("claude-opus-5-5"), "opus-5-5");
         assert_eq!(short_model("claude-haiku-4-5-20251001"), "haiku-4-5");
@@ -698,8 +821,14 @@ mod tests {
 
     #[test]
     fn test_agent_card() {
-        let card = AgentCard::new("aider", Some(AgentStatus::Idle), None);
+        let card = AgentCard::new(
+            "aider",
+            Some(AgentStatus::Idle),
+            None,
+            &AgentMetrics::default(),
+        );
         assert_eq!(card.agent_line, "aider");
+        assert_eq!(card.turn_time, None);
         assert_eq!(card.context, None);
         assert!(card.session.is_empty() && card.cache_line().is_none());
 
@@ -711,12 +840,22 @@ mod tests {
         ] {
             state.apply_all(ClaudeCode.parse_line(line));
         }
+        let metrics = AgentMetrics {
+            effort: Some("xhigh".to_string()),
+            turn_time: Some(Duration::from_secs(134)),
+            ..Default::default()
+        };
         let card = AgentCard::new(
             "claude",
             Some(AgentStatus::Working),
             Some((&state, MatchedBy::Recent { ambiguous: true })),
+            &metrics,
         );
-        assert_eq!(card.agent_line, "Claude Code · claude-haiku-4-5");
+        assert_eq!(card.agent_line, "Claude Code · claude-haiku-4-5 · xhigh");
+        assert_eq!(card.turn_time, Some(Duration::from_secs(134)));
+        // Without a session, the effort the agent reported still shows.
+        let no_session = AgentCard::new("opencode", None, None, &metrics);
+        assert_eq!(no_session.agent_line, "opencode · xhigh");
         assert_eq!(card.session_title.as_deref(), Some("Fix the build"));
         assert!(card.guessed);
         let context = card.context.clone().expect("context");

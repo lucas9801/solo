@@ -8,7 +8,7 @@ import { join, dirname } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { test } from "node:test"
 
-import { createReporter, hookSender, isBusy, reportArguments, sessionOf, stateOf } from "./solo-opencode.js"
+import { createReporter, createResponseTimer, hookSender, isBusy, reportArguments, sessionOf, stateOf } from "./solo-opencode.js"
 
 const here = dirname(fileURLToPath(import.meta.url))
 const states = (reports) => reports.filter(Boolean).map((report) => `${report.state} ${report.session}`)
@@ -104,6 +104,60 @@ test("OpenCode 2 events, for the session this TUI shows only", () => {
   assert.deepEqual(states(reporter.focus("ses_b", true)), ["start ses_b", "working ses_b"])
   assert.equal(reporter.handle({ type: "session.execution.started", data: { sessionID: "ses_b" } }), null)
   assert.equal(reporter.handle({ type: "session.execution.failed", data: { sessionID: "ses_b" } }).state, "idle")
+})
+
+test("times the model's answers (synthetic events: unverified against OpenCode)", () => {
+  let clock = 10_000
+  const timer = createResponseTimer({ now: () => clock, rootOf: (id) => (id === "ses_child" ? "ses_a" : id) })
+  const v1 = (type, properties) => timer.handle({ type, properties })
+  const reports = []
+  const at = (ms, report) => {
+    clock = ms
+    const result = report()
+    if (result) reports.push(result)
+  }
+  // The user's message carries the variant (effort).
+  at(10_000, () => v1("message.updated", { info: { id: "msg_u", sessionID: "ses_a", role: "user", variant: "high" } }))
+  // The request, created by OpenCode a little before this process saw it.
+  at(10_050, () => v1("message.updated", { info: { id: "msg_1", sessionID: "ses_a", role: "assistant", time: { created: 10_000 } } }))
+  // An empty text part, then the first output.
+  at(10_100, () => v1("message.part.updated", { part: { id: "p0", messageID: "msg_1", type: "step-start" } }))
+  at(10_200, () => v1("message.part.updated", { part: { id: "p1", messageID: "msg_1", type: "text", text: "" } }))
+  at(11_500, () => v1("message.part.updated", { part: { id: "p1", messageID: "msg_1", type: "text", text: "H" }, delta: "H" }))
+  at(12_000, () => v1("message.part.updated", { part: { id: "p1", messageID: "msg_1", type: "text", text: "Hi" }, delta: "i" }))
+  // Completed: 1500 output and 500 reasoning tokens.
+  at(21_500, () =>
+    v1("message.updated", {
+      info: { id: "msg_1", sessionID: "ses_a", role: "assistant", time: { created: 10_000, completed: 21_500 }, tokens: { output: 1500, reasoning: 500 } },
+    }),
+  )
+  // Reported once.
+  at(21_600, () =>
+    v1("message.updated", {
+      info: { id: "msg_1", sessionID: "ses_a", role: "assistant", time: { created: 10_000, completed: 21_500 }, tokens: { output: 1500, reasoning: 500 } },
+    }),
+  )
+  // A subagent's message isn't timed, nor one that failed, nor one whose
+  // start wasn't seen.
+  at(30_000, () => v1("message.updated", { info: { id: "msg_c", sessionID: "ses_child", role: "assistant", time: { created: 30_000 } } }))
+  at(31_000, () => v1("message.updated", { info: { id: "msg_c", sessionID: "ses_child", role: "assistant", time: { created: 30_000, completed: 31_000 }, tokens: { output: 9 } } }))
+  at(40_000, () => v1("message.updated", { info: { id: "msg_2", sessionID: "ses_a", role: "assistant", time: { created: 40_000 } } }))
+  at(40_500, () => timer.handle({ type: "message.part.delta", data: { sessionID: "ses_a", messageID: "msg_2", partID: "p", field: "text", delta: "x" } }))
+  at(41_000, () => v1("message.updated", { info: { id: "msg_2", sessionID: "ses_a", role: "assistant", time: { created: 40_000, completed: 41_000 }, error: { name: "APIError" } } }))
+  at(50_000, () => v1("message.updated", { info: { id: "msg_3", sessionID: "ses_a", role: "assistant", time: { created: 49_000, completed: 50_000 }, tokens: { output: 9 } } }))
+  // A tool call as the first output, in OpenCode 2's shape.
+  at(60_000, () => timer.handle({ type: "message.updated", data: { info: { id: "msg_4", sessionID: "ses_a", role: "assistant", time: { created: 60_000 } } } }))
+  at(60_800, () => timer.handle({ type: "message.part.updated", data: { part: { id: "t", messageID: "msg_4", type: "tool", state: { status: "pending" } } } }))
+  at(62_800, () => timer.handle({ type: "message.updated", data: { info: { id: "msg_4", sessionID: "ses_a", role: "assistant", time: { created: 60_000, completed: 62_800 }, tokens: { output: 40, reasoning: 0 } } } }))
+  assert.deepEqual(reports, [
+    { state: "response", session: "ses_a", firstTokenMs: 1500, generationMs: 10_000, outputTokens: 2000, effort: "high" },
+    { state: "response", session: "ses_a", firstTokenMs: 800, generationMs: 2000, outputTokens: 40, effort: "high" },
+  ])
+  assert.deepEqual(reportArguments(reports[0], 5).slice(7), [
+    "--session", "ses_a", "--first-token-ms", "1500", "--output-tokens", "2000", "--generation-ms", "10000", "--effort", "high",
+  ])
+  // Nothing that could break the escape sequence.
+  assert.deepEqual(reportArguments({ state: "response", firstTokenMs: 1.5, outputTokens: -1, effort: "a;b" }, 5).slice(7), [])
 })
 
 test("hook arguments", () => {

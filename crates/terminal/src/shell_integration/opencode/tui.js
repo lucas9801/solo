@@ -8,7 +8,7 @@
 // session this TUI shows. See https://opencode.ai/docs/build/plugins/cli/.
 
 import { Plugin } from "@opencode/plugin/tui"
-import { createReporter, hookSender, isBusy } from "./solo-opencode.js"
+import { createReporter, createResponseTimer, hookSender, isBusy } from "./solo-opencode.js"
 
 /** How often to check which session the TUI shows. */
 const FOCUS_POLL_MS = 300
@@ -34,8 +34,20 @@ export default Plugin.define({
       directory: directory(),
     })
 
+    const responses = createResponseTimer({
+      rootOf: (id) => {
+        try {
+          return context.data.session.root(id) ?? id
+        } catch {
+          return id
+        }
+      },
+      accept: (session) => session === shown,
+    })
+
     const stopListening = context.data.listen((event) => {
       send(reporter.handle(event?.details ?? event))
+      send(responses.handle(event?.details ?? event))
     })
 
     const checkFocus = () => {

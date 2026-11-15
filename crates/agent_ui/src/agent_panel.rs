@@ -2247,7 +2247,8 @@ impl AgentPanel {
                 | TerminalEvent::PromptStarted
                 | TerminalEvent::Notification { .. }
                 | TerminalEvent::AgentHook(_)
-                | TerminalEvent::AgentEditedFile(_) => {}
+                | TerminalEvent::AgentEditedFile(_)
+                | TerminalEvent::AgentResponse(_) => {}
             },
         );
 

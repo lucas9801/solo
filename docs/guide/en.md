@@ -117,12 +117,31 @@ finished while you weren't looking); a turning blue ring, **working**; a gray
 hollow circle, **idle**; a gray dash, **exited**. The title is the session's
 (or the agent's name), followed by a ring and percentage of how full the
 context is: gray below 80%, yellow to 95%, red above. Hovering over the tab
-shows a card with the status, agent and model, the context, the directory,
-branch and command, and the tokens of the turn and the session. While Solo is
+shows a card with the status, agent, model and reasoning effort, the context,
+the directory, branch and command, the tokens and time of the turn and the
+session, and how fast the model answers: the time to the first token and the
+output speed of the latest request and their session averages. While Solo is
 in the background, you get a desktop notification when an agent needs your
 input. A notification when an agent stops after working for a while is off by
 default; turn it on in Settings > Terminal > Notifications
 (`agent_stopped_notifications`).
+
+#### First token, speed, turn time and effort
+What each agent shows; a value Solo can't tell for sure isn't shown:
+
+| Agent | First token and speed | Effort | From |
+|---|---|---|---|
+| Claude Code | most requests (not one that starts with plain text) | yes | its session transcript |
+| Codex | yes | yes | its telemetry, which Solo has it send to Solo for the sessions Solo starts; the effort from its session file |
+| GitHub Copilot CLI | streamed requests | no | its telemetry, which Solo has it write to a file of the terminal's |
+| OpenCode | yes (not yet checked against a real OpenCode) | when its message has a variant | Solo's plugin |
+| Others (Gemini CLI, aider, ...) | no | no | |
+
+The turn's time is for every agent: from when it starts working until it
+stops, less the time it waits for you. The session's is the sum of its
+turns since Solo saw the agent start; a session resumed from earlier shows
+none. Solo leaves Codex's and Copilot's telemetry alone when you set up
+telemetry of your own.
 
 ### Per-turn review
 Solo takes a snapshot of the working directory when each agent turn starts
@@ -630,7 +649,7 @@ Solo's own settings, under `"terminal"`:
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
 | `opencode_hooks` | `true` | load a status plugin into OpenCode for each session |
 | `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
-| `agent_usage_display` | `"always"` | a running agent's context, model and tokens in a bar at the bottom of its terminal (when narrow, whole parts go: the session's tokens first, then the turn's, then the model, leaving the context's bar and percentage) and its context on the tab; `"tooltip"` shows them only in the tab's tooltip |
+| `agent_usage_display` | `"always"` | a running agent's context, model and effort, first token and speed, turn time and tokens in a bar at the bottom of its terminal (when narrow, whole parts go: the session's tokens first, then the turn's, then the first token and speed, then the model, leaving the context's bar and percentage) and its context on the tab; `"tooltip"` shows them only in the tab's tooltip |
 | `agent_commands` | `[]` | more programs to treat as agents |
 | `agent_task_command` | `"claude"` | what a new agent task runs |
 | `confirm_close` | `"agents"` | when to ask before closing: `agents` / `commands` / `never` |

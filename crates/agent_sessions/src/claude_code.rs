@@ -22,6 +22,14 @@
 //!   (not by every version), and counting requests with no transcript entries.
 //! - `system` with `subtype` `compact_boundary`: the conversation was
 //!   compacted; `compactMetadata.postTokens` is what's left.
+//! - `api-request`: a model request was sent, at its `timestamp`, with its
+//!   `id`. Each `assistant` entry of its response names it in `requestRef`,
+//!   with the block's place in the response (`apiBlockIndex`), when it was
+//!   written (`timestamp`, once the block was generated) and, for thinking
+//!   and tool calls, how long it streamed (`thinkingDurationMs`,
+//!   `toolInputStreamMs`). `message.usage.output_tokens` is the whole
+//!   response's on every block. `perTurnEffort` (or else `effort`) is the
+//!   reasoning effort the request ran at.
 //!
 //! Others (`attachment`, `file-history-snapshot`, `last-prompt`, `mode`, ...)
 //! are skipped, as are fields not named here.
@@ -38,8 +46,9 @@ use std::{
 use serde_json::Value;
 
 use crate::{
-    AgentAdapter, AgentKind, MatchedBy, Message, ReportedUsage, Role, SessionLocation,
-    TerminalProbe, TokenUsage, ToolCall, ToolKind, ToolOutcome, TranscriptEntry,
+    AgentAdapter, AgentKind, MatchedBy, Message, ReportedUsage, ResponseBlock, Role,
+    SessionLocation, TerminalProbe, TokenUsage, ToolCall, ToolKind, ToolOutcome, TranscriptEntry,
+    response_timing::{effort_level, parse_timestamp_ms},
 };
 
 /// Strings in tool inputs longer than this (file contents) are cut short.
@@ -360,6 +369,17 @@ pub(crate) fn parse_line(line: &str) -> Vec<TranscriptEntry> {
             parse_user(&entry, sidechain)
         }
         Some("assistant") => parse_assistant(&entry, sidechain),
+        Some("api-request") => {
+            match (field("id"), field("timestamp").and_then(parse_timestamp_ms)) {
+                (Some(id), Some(at_ms)) if !id.is_empty() => {
+                    vec![TranscriptEntry::RequestStarted {
+                        request_id: id.to_string(),
+                        at_ms,
+                    }]
+                }
+                _ => Vec::new(),
+            }
+        }
         Some("ai-title") => field("aiTitle")
             .filter(|title| !title.trim().is_empty())
             .map(|title| vec![TranscriptEntry::Title(title.trim().to_string())])
@@ -442,6 +462,42 @@ fn parse_assistant(entry: &Value, sidechain: bool) -> Vec<TranscriptEntry> {
     let model = string_field(message, "model").filter(|model| !model.starts_with('<'));
     let timestamp = string_field(entry, "timestamp");
     let mut entries = Vec::new();
+    // SOLO: when the block was written and how long it streamed, for the
+    // response's timing.
+    if let (Some(request_id), Some(index), Some(written_at_ms)) = (
+        entry.get("requestRef").and_then(Value::as_str),
+        entry.get("apiBlockIndex").and_then(Value::as_u64),
+        timestamp.as_deref().and_then(parse_timestamp_ms),
+    ) {
+        let first_kind = message.pointer("/content/0/type").and_then(Value::as_str);
+        let duration_field = match first_kind {
+            Some("thinking") => Some("thinkingDurationMs"),
+            Some("tool_use") => Some("toolInputStreamMs"),
+            _ => None,
+        };
+        let streamed = duration_field
+            .and_then(|name| entry.get(name))
+            .and_then(Value::as_u64)
+            .map(Duration::from_millis);
+        entries.push(TranscriptEntry::ResponseBlock(ResponseBlock {
+            request_id: request_id.to_string(),
+            index,
+            written_at_ms,
+            streamed,
+            output_tokens: message
+                .pointer("/usage/output_tokens")
+                .and_then(Value::as_u64),
+            sidechain,
+        }));
+    }
+    if !sidechain
+        && let Some(effort) = ["perTurnEffort", "effort"]
+            .iter()
+            .find_map(|name| entry.get(*name).and_then(Value::as_str))
+            .and_then(effort_level)
+    {
+        entries.push(TranscriptEntry::Effort(effort));
+    }
     for block in message
         .get("content")
         .and_then(Value::as_array)
@@ -827,6 +883,48 @@ mod tests {
             r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto","preTokens":257985,"postTokens":8019}}"#,
         ));
         assert_eq!(state.usage.context_tokens, Some(8019));
+    }
+
+    /// SOLO: made-up requests in the shape of Claude Code 2.1.32x's records.
+    const TIMED: &str = r#"{"type":"user","message":{"role":"user","content":"Go"},"uuid":"u1","timestamp":"2026-11-01T10:00:00.000Z"}
+{"type":"api-request","id":"r1","timestamp":"2026-11-01T10:00:00.000Z"}
+{"type":"assistant","requestRef":"r1","apiBlockIndex":0,"thinkingDurationMs":1500,"perTurnEffort":"xhigh","effort":"medium","message":{"model":"claude-opus-5-5","id":"m1","content":[{"type":"thinking","thinking":""}],"usage":{"input_tokens":5,"output_tokens":1300}},"uuid":"a1","timestamp":"2026-11-01T10:00:04.000Z"}
+{"type":"assistant","requestRef":"r1","apiBlockIndex":1,"perTurnEffort":"xhigh","message":{"model":"claude-opus-5-5","id":"m1","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":5,"output_tokens":1300}},"uuid":"a2","timestamp":"2026-11-01T10:00:09.000Z"}
+{"type":"api-request","id":"r2","timestamp":"2026-11-01T10:01:00.000Z"}
+{"type":"assistant","requestRef":"r2","apiBlockIndex":0,"message":{"model":"claude-opus-5-5","id":"m2","content":[{"type":"text","text":"Text first: no time."}],"usage":{"input_tokens":5,"output_tokens":900}},"uuid":"a3","timestamp":"2026-11-01T10:01:03.000Z"}
+{"type":"api-request","id":"r3","timestamp":"2026-11-01T10:02:00.000Z"}
+{"type":"assistant","requestRef":"r3","apiBlockIndex":0,"toolInputStreamMs":500,"message":{"model":"claude-opus-5-5","id":"m3","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a"}}],"usage":{"input_tokens":5,"output_tokens":150}},"uuid":"a4","timestamp":"2026-11-01T10:02:01.500Z"}
+{"type":"api-request","id":"r4","timestamp":"2026-11-01T10:03:00.000Z"}
+{"type":"assistant","requestRef":"r4","apiBlockIndex":0,"message":{"model":"claude-opus-5-5","id":"m4","content":[{"type":"thinking","thinking":""}],"usage":{"input_tokens":5,"output_tokens":800}},"uuid":"a5","timestamp":"2026-11-01T10:03:02.000Z"}
+{"type":"api-request","id":"r5","timestamp":"2026-11-01T10:04:00.000Z"}
+{"type":"assistant","requestRef":"r5","apiBlockIndex":0,"thinkingDurationMs":9000,"message":{"model":"claude-opus-5-5","id":"m5","content":[{"type":"thinking","thinking":""}],"usage":{"input_tokens":5,"output_tokens":800}},"uuid":"a6","timestamp":"2026-11-01T10:04:02.000Z"}
+{"type":"assistant","requestRef":"r6","message":{"model":"claude-opus-5-5","id":"m6","content":[{"type":"thinking","thinking":""}],"usage":{"input_tokens":5,"output_tokens":800}},"uuid":"a7","timestamp":"2026-11-01T10:05:02.000Z"}"#;
+
+    /// SOLO: the first token is when block 0 started to stream; the speed is
+    /// over the rest of the response.
+    #[test]
+    fn test_response_timing() {
+        let mut state = SessionState::new(AgentKind::ClaudeCode);
+        for line in TIMED.lines() {
+            state.apply_all(parse_line(line));
+        }
+        // r1: block 0 written 4 s in after streaming 1.5 s, so the first
+        // token came at 2.5 s; 1300 tokens over the 6.5 s up to the last
+        // block. r2 opened with text, r4 recorded no streaming time and r5
+        // more than its whole time: no first token. r3 had one at 1 s but
+        // too few tokens for a speed. r6 has no request.
+        assert_eq!(state.responses.len(), 5);
+        let summary = state.responses.summary();
+        assert_eq!(summary.latest_first_token, Some(Duration::from_secs(1)));
+        assert_eq!(summary.latest_speed, Some(200.));
+        assert_eq!(summary.mean_first_token, Some(Duration::from_millis(1750)));
+        assert_eq!(summary.mean_speed, Some(200.));
+        // The effort of the turn wins over the session's.
+        assert_eq!(state.effort.as_deref(), Some("xhigh"));
+        assert_eq!(
+            state.first_prompt_at_ms(),
+            parse_timestamp_ms("2026-11-01T10:00:00.000Z")
+        );
     }
 
     #[test]

@@ -107,6 +107,31 @@ Solo's own hook for Claude Code, Codex and Copilot CLI sends
 `ESC ] 6973 ; agent ; nonce=<nonce> ; <kind> ; <ms since the epoch> ; <session id> ; <agent> ; <directory> BEL`,
 with the directory from the hook's `cwd`, which is the same format.
 
+## How fast the model answers
+
+An agent can also report how fast its model answered a request, which Solo
+shows on the usage bar and the tab's card (the time to the first token and
+the output speed):
+
+```sh
+"$SOLO_AGENT_HOOK" report --state response --agent my-agent --session <id> \
+    --first-token-ms 812 --output-tokens 640 --generation-ms 5120 --effort high
+```
+
+| Option | Meaning |
+|---|---|
+| `--first-token-ms <ms>` | From sending the request to the first token of the answer. |
+| `--output-tokens <n>` | The answer's tokens, thinking included. |
+| `--generation-ms <ms>` | From the first token to the last. |
+| `--effort <level>` | The reasoning effort the request ran at: up to 24 letters, digits, `-` or `_`. |
+
+Give at least one of them. Solo works out the speed only for answers of 200
+tokens or more that took half a second or more. The escape sequence is
+`ESC ] 6973 ; agent ; nonce=<nonce> ; response ; <order> ; <session id> ; <agent> ; <measurements> BEL`,
+the measurements `key=value` pairs separated by `,`
+(`first_token_ms=812,output_tokens=640,generation_ms=5120,effort=high`).
+These reports don't change the agent's status.
+
 ## OpenCode
 
 OpenCode has no command hooks, only JavaScript plugins. In a Solo terminal,
@@ -136,6 +161,14 @@ opencode --session <its session id> --directory <where it works>`:
   version.
 - Events of subagents' sessions don't start or end the turn; their
   permission requests do report `blocked`.
+- The plugin also times the model's answers in its own process and reports
+  them with `--state response`: an assistant message (`message.updated`) is
+  the request, its first text, reasoning or tool part
+  (`message.part.updated`, `message.part.delta`) the first token, and its
+  completion (`time.completed`, with `tokens.output` and `tokens.reasoning`)
+  the last; the effort is the messages' `variant`. Subagents' messages
+  aren't timed. This hasn't been checked against a real OpenCode yet, only
+  with made-up events.
 
 ## What Solo shows
 

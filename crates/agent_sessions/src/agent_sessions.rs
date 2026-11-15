@@ -13,7 +13,10 @@
 
 mod claude_code;
 mod codex;
+pub mod codex_otel;
+pub mod copilot_otel;
 mod live;
+pub mod response_timing;
 
 use std::{
     io::{Read as _, Seek as _, SeekFrom},
@@ -26,6 +29,7 @@ use collections::HashMap;
 pub use claude_code::ClaudeCode;
 pub use codex::Codex;
 pub use live::{AgentSession, AgentSessionEvent};
+pub use response_timing::{ResponseSummary, ResponseTiming, ResponseTimings};
 
 /// The agents Solo reads sessions of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -285,6 +289,68 @@ pub enum TranscriptEntry {
         model: Option<String>,
         context_window: Option<u64>,
     },
+    /// SOLO: a model request was sent (Claude Code's `api-request` entries).
+    RequestStarted {
+        request_id: String,
+        at_ms: i64,
+    },
+    /// SOLO: one content block of a request's response was written.
+    ResponseBlock(ResponseBlock),
+    /// SOLO: the reasoning effort the main conversation's model runs at
+    /// ("medium", "xhigh"), as the agent recorded it.
+    Effort(String),
+}
+
+/// SOLO: one content block of a model response, as Claude Code records it:
+/// each block is written once it's generated, with how long it took to
+/// stream (for thinking and tool calls).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResponseBlock {
+    pub request_id: String,
+    /// Its place in the response, from 0.
+    pub index: u64,
+    pub written_at_ms: i64,
+    /// How long it streamed; unknown for text.
+    pub streamed: Option<std::time::Duration>,
+    /// The whole response's output tokens, as recorded with the block.
+    pub output_tokens: Option<u64>,
+    pub sidechain: bool,
+}
+
+/// SOLO: what's known of a request whose response Claude Code records block
+/// by block.
+#[derive(Clone, Debug, Default)]
+struct BlockedRequest {
+    started_at_ms: Option<i64>,
+    /// When block 0 was written and how long it streamed.
+    first_block: Option<(i64, Option<std::time::Duration>)>,
+    last_written_ms: Option<i64>,
+    output_tokens: Option<u64>,
+    sidechain: bool,
+}
+
+impl BlockedRequest {
+    /// The first token is when block 0 started to stream: written, less its
+    /// streaming time. Unknown when it was text, which records no time. The
+    /// speed is over the rest of the response, up to its last block.
+    fn timing(&self) -> ResponseTiming {
+        let Some(started) = self.started_at_ms else {
+            return ResponseTiming::default();
+        };
+        let first_token = self.first_block.and_then(|(written, streamed)| {
+            let streamed = i64::try_from(streamed?.as_millis()).ok()?;
+            response_timing::millis_between(started, written.checked_sub(streamed)?)
+        });
+        let generation = first_token.and_then(|first_token| {
+            let first_at = started.checked_add(i64::try_from(first_token.as_millis()).ok()?)?;
+            response_timing::millis_between(first_at, self.last_written_ms?)
+        });
+        ResponseTiming {
+            first_token,
+            output_tokens: self.output_tokens,
+            generation,
+        }
+    }
 }
 
 /// Token usage of a session.
@@ -350,6 +416,12 @@ pub struct SessionState {
     /// The context window the agent recorded, for models the adapter doesn't
     /// know.
     recorded_context_window: Option<u64>,
+    /// SOLO: how fast the model answered each request, when the transcript
+    /// tells (Claude Code's does).
+    pub responses: ResponseTimings,
+    /// SOLO: the reasoning effort of the main conversation's latest request.
+    pub effort: Option<String>,
+    blocked_requests: HashMap<String, BlockedRequest>,
 }
 
 impl SessionState {
@@ -367,6 +439,9 @@ impl SessionState {
             request_usage: HashMap::default(),
             turn: 0,
             recorded_context_window: None,
+            responses: ResponseTimings::default(),
+            effort: None,
+            blocked_requests: HashMap::default(),
         }
     }
 
@@ -476,6 +551,35 @@ impl SessionState {
                     .and_then(|model| self.agent.adapter().context_window(model))
                     .or(self.recorded_context_window);
             }
+            TranscriptEntry::RequestStarted { request_id, at_ms } => {
+                let request = self.blocked_requests.entry(request_id.clone()).or_default();
+                request.started_at_ms = Some(at_ms);
+                let (timing, sidechain) = (request.timing(), request.sidechain);
+                self.responses.record(&request_id, timing, sidechain);
+            }
+            TranscriptEntry::ResponseBlock(block) => {
+                let request = self
+                    .blocked_requests
+                    .entry(block.request_id.clone())
+                    .or_default();
+                if block.index == 0 {
+                    request.first_block = Some((block.written_at_ms, block.streamed));
+                }
+                request.last_written_ms = Some(
+                    request
+                        .last_written_ms
+                        .map_or(block.written_at_ms, |last| last.max(block.written_at_ms)),
+                );
+                if block.output_tokens.is_some() {
+                    request.output_tokens = request.output_tokens.max(block.output_tokens);
+                }
+                request.sidechain = block.sidechain;
+                if request.started_at_ms.is_some() {
+                    let (timing, sidechain) = (request.timing(), request.sidechain);
+                    self.responses.record(&block.request_id, timing, sidechain);
+                }
+            }
+            TranscriptEntry::Effort(effort) => self.effort = Some(effort),
         }
     }
 
@@ -525,6 +629,14 @@ impl SessionState {
         }
     }
 
+    /// SOLO: when the user sent the main conversation's first prompt, in
+    /// milliseconds since the epoch, as recorded.
+    pub fn first_prompt_at_ms(&self) -> Option<i64> {
+        let start = self.turn_starts.first()?;
+        let message = self.messages.get(start.message_ix)?;
+        response_timing::parse_timestamp_ms(message.timestamp.as_deref()?)
+    }
+
     /// The main conversation's last assistant message.
     pub fn last_assistant_message(&self) -> Option<&Message> {
         self.messages
@@ -565,6 +677,17 @@ impl TranscriptReader {
         Self {
             path,
             offset: 0,
+            partial_line: Vec::new(),
+        }
+    }
+
+    /// SOLO: reads only what's appended from now on (from the start, if the
+    /// file isn't there yet).
+    pub fn from_end(path: PathBuf) -> Self {
+        let offset = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
+        Self {
+            path,
+            offset,
             partial_line: Vec::new(),
         }
     }

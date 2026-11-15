@@ -13,22 +13,23 @@ use std::{
 };
 
 use agent_sessions::{
-    AgentAdapter, AgentSession, AgentSessionEvent, MatchedBy, SessionLocation, SessionState,
-    TerminalProbe,
+    AgentAdapter, AgentKind, AgentSession, AgentSessionEvent, MatchedBy, ResponseSummary,
+    ResponseTiming, SessionLocation, SessionState, TerminalProbe, TranscriptReader,
 };
 use gpui::{
     App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     Stateful, Subscription, Task, WeakEntity, Window, actions,
 };
 use picker::{Picker, PickerDelegate};
-use terminal::shell_integration::AgentSessionId;
+use terminal::shell_integration::{AgentResponse, AgentSessionId};
 use ui::{ListItem, ListItemSpacing, prelude::*};
 use workspace::ModalView;
 
 use crate::{
     TerminalView,
     agent_tab::{
-        context_color, context_hsla, format_tokens_short, render_context_bar, short_model,
+        context_color, context_hsla, format_first_token, format_speed, format_tokens_short,
+        format_work_time, render_context_bar, short_model,
     },
 };
 
@@ -43,6 +44,24 @@ actions!(
 
 /// How long to wait before looking for a session again after not finding one.
 const RETRY_AFTER: Duration = Duration::from_secs(5);
+/// How often Copilot CLI's telemetry file is read.
+const COPILOT_TELEMETRY_POLL: Duration = Duration::from_secs(1);
+/// A session whose first prompt came this long before the agent's run
+/// started was resumed: its earlier turns' time isn't known.
+const RESUMED_SLACK: Duration = Duration::from_secs(5);
+
+/// SOLO: what's shown of how the agent works, besides its tokens: its
+/// reasoning effort, how fast its model answers, and how long it worked.
+/// Each is `None` when it can't be told for sure.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct AgentMetrics {
+    pub effort: Option<String>,
+    pub responses: ResponseSummary,
+    /// The turn under way, or else the last one.
+    pub turn_time: Option<Duration>,
+    /// All the session's turns.
+    pub session_time: Option<Duration>,
+}
 
 /// The agent session a terminal runs.
 #[derive(Default)]
@@ -73,28 +92,169 @@ impl TerminalView {
         self.agent_session.session.as_ref()
     }
 
-    /// SOLO: the usage of the agent running in this terminal, when it's to
-    /// be shown outside the tooltip (`agent_usage_display`).
-    fn shown_agent_usage(&self, cx: &App) -> Option<agent_sessions::UsageSummary> {
+    /// SOLO: whether the running agent's usage is to be shown outside the
+    /// tooltip (`agent_usage_display`).
+    fn shows_agent_usage(&self, cx: &App) -> bool {
         use settings::Settings as _;
         let display =
             terminal::terminal_settings::TerminalSettings::get_global(cx).agent_usage_display;
-        if display != terminal::terminal_settings::AgentUsageDisplay::Always {
-            return None;
-        }
-        let (_, status) = self.agent_status()?;
-        if !status.is_running() {
+        display == terminal::terminal_settings::AgentUsageDisplay::Always
+            && self
+                .agent_status()
+                .is_some_and(|(_, status)| status.is_running())
+    }
+
+    /// SOLO: the usage of the agent running in this terminal, when it's to
+    /// be shown outside the tooltip (`agent_usage_display`).
+    fn shown_agent_usage(&self, cx: &App) -> Option<agent_sessions::UsageSummary> {
+        if !self.shows_agent_usage(cx) {
             return None;
         }
         Some(self.agent_session()?.read(cx).state().usage.clone())
     }
 
     /// SOLO: the thin bar at the bottom of an agent's terminal with its
-    /// context and token usage (see [`usage_bar`]).
+    /// context and token usage, how fast its model answers and how long it
+    /// worked (see [`usage_bar`]).
     pub(crate) fn render_agent_usage_bar(&self, cx: &App) -> Option<AnyElement> {
-        let usage = self.shown_agent_usage(cx)?;
-        let contents = UsageBar::new(&usage)?;
+        if !self.shows_agent_usage(cx) {
+            return None;
+        }
+        let session = self.agent_session().map(|session| session.read(cx));
+        let usage = session.map(|session| &session.state().usage);
+        let contents = UsageBar::new(usage, &self.agent_metrics(cx))?;
         Some(usage_bar(&contents, cx).into_any_element())
+    }
+
+    /// SOLO: the agent's effort, how fast its model answers and how long it
+    /// worked, from the surest source for the agent: its own records (Claude
+    /// Code's transcript, Codex's telemetry, Codex's rollout for the effort),
+    /// else what it reported (OpenCode, through Solo's plugin) or Copilot
+    /// CLI's telemetry file. The times are from its status.
+    pub(crate) fn agent_metrics(&self, cx: &App) -> AgentMetrics {
+        let now = Instant::now();
+        let activity = &self.agent_activity;
+        let session = self.agent_session().map(|session| session.read(cx));
+        let state = session.map(|session| session.state());
+        let mut responses = state
+            .map(|state| state.responses.summary())
+            .filter(|summary| !summary.is_empty());
+        let mut effort = state.and_then(|state| state.effort.clone());
+        if let Some(session) = session
+            && session.location().agent == AgentKind::Codex
+            && let Some(receiver) = agent_sessions::codex_otel::running_receiver()
+        {
+            let conversation = &session.location().session_id;
+            responses = responses.or_else(|| receiver.summary(conversation));
+            effort = effort.or_else(|| receiver.effort(conversation));
+        }
+        let responses = responses.unwrap_or_else(|| activity.responses.summary());
+        let effort = effort.or_else(|| activity.reported_effort.clone());
+        // A resumed session's earlier turns weren't timed: no total then.
+        let resumed = state
+            .and_then(|state| state.first_prompt_at_ms())
+            .map(|first_prompt| {
+                let run_started = self
+                    .agent_run_started_at()
+                    .and_then(|started_at| SystemTime::now().checked_sub(started_at.elapsed()))
+                    .and_then(|started_at| started_at.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|since_epoch| since_epoch.as_millis() as i64);
+                run_started.is_none_or(|run_started| {
+                    first_prompt < run_started - RESUMED_SLACK.as_millis() as i64
+                })
+            });
+        AgentMetrics {
+            effort,
+            responses,
+            turn_time: activity.clock.turn(now),
+            session_time: activity
+                .clock
+                .session(now)
+                .filter(|_| resumed != Some(true)),
+        }
+    }
+
+    /// SOLO: the agent (OpenCode, through Solo's plugin) reported how fast
+    /// its model answered a request.
+    pub(crate) fn agent_response_reported(
+        &mut self,
+        response: &AgentResponse,
+        cx: &mut Context<Self>,
+    ) {
+        let activity = &mut self.agent_activity;
+        let timing = ResponseTiming {
+            first_token: response.first_token_ms.map(Duration::from_millis),
+            output_tokens: response.output_tokens,
+            generation: response.generation_ms.map(Duration::from_millis),
+        };
+        if timing.first_token.is_some() || timing.generation.is_some() {
+            let key = activity.responses.len().to_string();
+            activity.responses.record(&key, timing, false);
+        }
+        if let Some(effort) = &response.effort {
+            activity.reported_effort = Some(effort.clone());
+        }
+        cx.notify();
+    }
+
+    /// SOLO: while Copilot CLI runs, reads what it appends to the telemetry
+    /// file Solo gave this terminal (see
+    /// `terminal::shell_integration::integrate_copilot`).
+    pub(crate) fn keep_copilot_telemetry(&mut self, cx: &mut Context<Self>) {
+        if self.agent_activity.copilot_telemetry.is_some()
+            || self
+                .agent_status()
+                .is_none_or(|(name, _)| !name.eq_ignore_ascii_case("copilot"))
+        {
+            return;
+        }
+        let Some(path) = self
+            .terminal
+            .read(cx)
+            .shell_integration()
+            .terminal_id()
+            .and_then(terminal::shell_integration::copilot_telemetry_file)
+        else {
+            return;
+        };
+        let task = cx.spawn(async move |this, cx| {
+            let mut reader = TranscriptReader::from_end(path);
+            let mut spans = 0usize;
+            loop {
+                cx.background_executor().timer(COPILOT_TELEMETRY_POLL).await;
+                let (returned, timings) = cx
+                    .background_spawn(async move {
+                        let timings = reader
+                            .read_new_lines()
+                            .map(|new_lines| {
+                                new_lines
+                                    .lines
+                                    .iter()
+                                    .flat_map(|line| agent_sessions::copilot_otel::parse_line(line))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        (reader, timings)
+                    })
+                    .await;
+                reader = returned;
+                let updated = this.update(cx, |this, cx| {
+                    if timings.is_empty() {
+                        return;
+                    }
+                    for (id, timing) in timings {
+                        spans += 1;
+                        let key = id.unwrap_or_else(|| format!("span-{spans}"));
+                        this.agent_activity.responses.record(&key, timing, false);
+                    }
+                    cx.notify();
+                });
+                if updated.is_err() {
+                    break;
+                }
+            }
+        });
+        self.agent_activity.copilot_telemetry = Some(task);
     }
 
     /// SOLO: how full the running agent's context is, for its tab.
@@ -221,6 +381,13 @@ impl TerminalView {
             location.session_id,
             location.matched_by
         );
+        // SOLO: another session in the same run (`/clear`, say) counts its
+        // time afresh.
+        if let Some(previous) = &self.agent_session.session
+            && previous.read(cx).location().session_id != location.session_id
+        {
+            self.agent_activity.clock.restart_session();
+        }
         let session = cx.new(|cx| AgentSession::new(location, cx));
         self.agent_session._subscription = Some(cx.subscribe(&session, Self::agent_session_event));
         self.agent_session.session = Some(session.clone());
@@ -413,14 +580,21 @@ pub(crate) struct UsageBar {
     /// The context's tokens out of the window ("542k / 1M"), and how full
     /// it is.
     context: Option<(String, Option<f64>)>,
+    /// The model and its reasoning effort: "opus-5-5 · xhigh".
     model: Option<String>,
+    /// The latest request's first token and speed: "5.1 s", "128 token/s".
+    response: Option<(Option<String>, Option<String>)>,
+    /// How long the turn has taken: "2:14".
+    turn_time: Option<String>,
     /// The turn's and the session's tokens, in and out.
     turn: Option<(String, String)>,
     session: Option<(String, String)>,
 }
 
 impl UsageBar {
-    fn new(usage: &agent_sessions::UsageSummary) -> Option<Self> {
+    fn new(usage: Option<&agent_sessions::UsageSummary>, metrics: &AgentMetrics) -> Option<Self> {
+        let default_usage = agent_sessions::UsageSummary::default();
+        let usage = usage.unwrap_or(&default_usage);
         let context = usage.context_tokens.map(|tokens| {
             let text = match usage.context_window {
                 Some(window) => format!(
@@ -443,24 +617,40 @@ impl UsageBar {
         } else {
             (Some(tokens(&usage.turn)), Some(tokens(&usage.session)))
         };
+        let model = usage
+            .model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+            .map(|model| short_model(model).to_string());
+        let model = match (model, metrics.effort.clone()) {
+            (Some(model), Some(effort)) => Some(format!("{model} · {effort}")),
+            (model, effort) => model.or(effort),
+        };
+        let first_token = metrics.responses.latest_first_token.map(format_first_token);
+        let speed = metrics.responses.latest_speed.map(format_speed);
         let bar = Self {
             context,
-            model: usage
-                .model
-                .as_deref()
-                .filter(|model| !model.is_empty())
-                .map(|model| short_model(model).to_string()),
+            model,
+            response: (first_token.is_some() || speed.is_some()).then_some((first_token, speed)),
+            turn_time: metrics.turn_time.map(format_work_time),
             turn,
             session,
         };
-        (bar.context.is_some() || bar.model.is_some() || bar.session.is_some()).then_some(bar)
+        (bar.context.is_some()
+            || bar.model.is_some()
+            || bar.session.is_some()
+            || bar.response.is_some()
+            || bar.turn_time.is_some())
+        .then_some(bar)
     }
 }
 
 /// SOLO: the usage bar: the context (a short bar, its percentage and
-/// tokens), the model, the turn's tokens and the session's. When narrow,
+/// tokens), the model and its effort, the latest request's first token and
+/// speed, the turn's time and tokens and the session's tokens. When narrow,
 /// whole parts go: the session's tokens first, then the turn's, then the
-/// model; last, only the context's bar and percentage stay.
+/// first token and speed, then the model; last, only the context's bar and
+/// percentage stay.
 ///
 /// Parts that don't fit wrap to a second line, which is cut off. They come
 /// after an empty first part, so even the context can wrap away; then the
@@ -507,23 +697,30 @@ fn usage_bar(contents: &UsageBar, cx: &App) -> Stateful<Div> {
             ))
             .child(number(format!("{:.0}%", fraction * 100.)).color(color))
     };
-    let tokens = |name: &'static str, what: &str, (input, output): (String, String)| {
-        part(name)
-            .ml_3()
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(1.))
-                    .h(rems_from_px(14_f32))
-                    .mr_1()
-                    .bg(cx.theme().colors().border),
-            )
-            .child(muted(what))
-            .child(muted(util::i18n::tr("in", "输入")))
-            .child(number(input))
-            .child(muted(util::i18n::tr("out", "输出")))
-            .child(number(output))
+    let separated = |name: &'static str| {
+        part(name).ml_3().child(
+            div()
+                .flex_none()
+                .w(px(1.))
+                .h(rems_from_px(14_f32))
+                .mr_1()
+                .bg(cx.theme().colors().border),
+        )
     };
+    let tokens =
+        |name: &'static str, what: &str, time: Option<String>, tokens: Option<(String, String)>| {
+            let has_time = time.is_some();
+            separated(name)
+                .child(muted(what))
+                .when_some(time, |this, time| this.child(number(time)))
+                .when_some(tokens, |this, (input, output)| {
+                    this.when(has_time, |this| this.child(muted("·")))
+                        .child(muted(util::i18n::tr("in", "输入")))
+                        .child(number(input))
+                        .child(muted(util::i18n::tr("out", "输出")))
+                        .child(number(output))
+                })
+        };
 
     let minimal = contents
         .context
@@ -559,14 +756,32 @@ fn usage_bar(contents: &UsageBar, cx: &App) -> Stateful<Div> {
             ),
         );
     }
-    if let Some(turn) = contents.turn.clone() {
-        parts = parts.child(tokens("turn", util::i18n::tr("Turn", "本轮"), turn));
+    if let Some((first_token, speed)) = contents.response.clone() {
+        let both = first_token.is_some() && speed.is_some();
+        parts = parts.child(
+            separated("response")
+                .when_some(first_token, |this, first_token| {
+                    this.child(muted(util::i18n::tr("First token", "首字")))
+                        .child(number(first_token))
+                })
+                .when(both, |this| this.child(muted("·")))
+                .when_some(speed, |this, speed| this.child(number(speed))),
+        );
+    }
+    if contents.turn.is_some() || contents.turn_time.is_some() {
+        parts = parts.child(tokens(
+            "turn",
+            util::i18n::tr("Turn", "本轮"),
+            contents.turn_time.clone(),
+            contents.turn.clone(),
+        ));
     }
     if let Some(session) = contents.session.clone() {
         parts = parts.child(tokens(
             "session",
             util::i18n::tr("Session", "本会话"),
-            session,
+            None,
+            Some(session),
         ));
     }
     div()
@@ -770,19 +985,144 @@ mod tests {
         }
     }
 
+    fn metrics() -> AgentMetrics {
+        AgentMetrics {
+            effort: Some("xhigh".to_string()),
+            responses: ResponseSummary {
+                latest_first_token: Some(Duration::from_millis(5_100)),
+                latest_speed: Some(128.),
+                mean_first_token: Some(Duration::from_millis(5_300)),
+                mean_speed: Some(96.),
+            },
+            turn_time: Some(Duration::from_secs(134)),
+            session_time: Some(Duration::from_secs(4325)),
+        }
+    }
+
     #[test]
     fn test_usage_bar_contents() {
         // Nothing known: no bar.
-        assert_eq!(UsageBar::new(&Default::default()), None);
+        assert_eq!(UsageBar::new(None, &AgentMetrics::default()), None);
         assert_eq!(
-            UsageBar::new(&usage()),
+            UsageBar::new(Some(&Default::default()), &AgentMetrics::default()),
+            None
+        );
+        assert_eq!(
+            UsageBar::new(Some(&usage()), &AgentMetrics::default()),
             Some(UsageBar {
                 context: Some(("850k / 1M".to_string(), Some(0.85))),
                 model: Some("opus-5-5".to_string()),
+                response: None,
+                turn_time: None,
                 turn: Some(("542k".to_string(), "482".to_string())),
                 session: Some(("211M".to_string(), "30k".to_string())),
             })
         );
+        assert_eq!(
+            UsageBar::new(Some(&usage()), &metrics()),
+            Some(UsageBar {
+                context: Some(("850k / 1M".to_string(), Some(0.85))),
+                model: Some("opus-5-5 · xhigh".to_string()),
+                response: Some((Some("5.1 s".to_string()), Some("128 token/s".to_string()))),
+                turn_time: Some("2:14".to_string()),
+                turn: Some(("542k".to_string(), "482".to_string())),
+                session: Some(("211M".to_string(), "30k".to_string())),
+            })
+        );
+        // An agent whose screen only is read: its turn's time alone.
+        let screen_only = AgentMetrics {
+            turn_time: Some(Duration::from_secs(42)),
+            ..Default::default()
+        };
+        assert_eq!(
+            UsageBar::new(None, &screen_only),
+            Some(UsageBar {
+                context: None,
+                model: None,
+                response: None,
+                turn_time: Some("0:42".to_string()),
+                turn: None,
+                session: None,
+            })
+        );
+        // Only what's known of the response.
+        let speed_only = AgentMetrics {
+            responses: ResponseSummary {
+                latest_speed: Some(64.4),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            UsageBar::new(None, &speed_only).unwrap().response,
+            Some((None, Some("64 token/s".to_string())))
+        );
+    }
+
+    /// The times come from the agent's status and the speeds from what it
+    /// reported.
+    #[gpui::test]
+    async fn test_agent_metrics(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let (project, workspace) = crate::tests::init_test(cx).await;
+        let terminal = cx.new(|cx| {
+            terminal::TerminalBuilder::new_display_only(
+                Default::default(),
+                settings::AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                util::paths::PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal.clone(),
+                workspace.downgrade(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+        view.update(cx, |view, cx| {
+            assert_eq!(view.agent_metrics(cx), AgentMetrics::default());
+            let start = Instant::now() - Duration::from_secs(10);
+            view.agent_activity.clock.update(
+                Some(crate::agent_status::AgentStatus::Working),
+                start,
+                start,
+            );
+            view.agent_response_reported(
+                &AgentResponse {
+                    raw_session_id: None,
+                    first_token_ms: Some(1500),
+                    output_tokens: Some(2000),
+                    generation_ms: Some(10_000),
+                    effort: Some("high".to_string()),
+                },
+                cx,
+            );
+            // Nothing measured: not counted.
+            view.agent_response_reported(
+                &AgentResponse {
+                    output_tokens: Some(10),
+                    ..Default::default()
+                },
+                cx,
+            );
+            let metrics = view.agent_metrics(cx);
+            assert_eq!(metrics.effort.as_deref(), Some("high"));
+            assert_eq!(
+                metrics.responses.latest_first_token,
+                Some(Duration::from_millis(1500))
+            );
+            assert_eq!(metrics.responses.latest_speed, Some(200.));
+            assert_eq!(metrics.responses.mean_speed, Some(200.));
+            assert!(metrics.turn_time.unwrap() >= Duration::from_secs(10));
+            assert!(metrics.session_time.unwrap() >= Duration::from_secs(10));
+        });
     }
 
     #[gpui::test]
@@ -793,7 +1133,7 @@ mod tests {
         }
         impl Render for Bar {
             fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                let contents = UsageBar::new(&usage()).unwrap();
+                let contents = UsageBar::new(Some(&usage()), &metrics()).unwrap();
                 div().w(self.width).child(usage_bar(&contents, cx))
             }
         }
@@ -810,6 +1150,7 @@ mod tests {
             [
                 "agent-usage-context",
                 "agent-usage-model",
+                "agent-usage-response",
                 "agent-usage-turn",
                 "agent-usage-session",
             ]
@@ -824,28 +1165,32 @@ mod tests {
             parts.iter().map(|(shown, _)| *shown).collect::<Vec<_>>()
         };
         let wide = shown_at(px(2000.));
-        assert_eq!(shown(&wide), [true, true, true, true]);
+        assert_eq!(shown(&wide), [true, true, true, true, true]);
         let padding = wide[0].1.left();
         let end_of = |ix: usize| wide[ix].1.right() + padding;
 
         // One pixel short of the session's tokens: they go, the rest stays.
         assert_eq!(
-            shown(&shown_at(end_of(3) - px(1.))),
-            [true, true, true, false]
+            shown(&shown_at(end_of(4) - px(1.))),
+            [true, true, true, true, false]
         );
-        // Then the turn's, then the model.
+        // Then the turn's, then the first token and speed, then the model.
+        assert_eq!(
+            shown(&shown_at(end_of(3) - px(1.))),
+            [true, true, true, false, false]
+        );
         assert_eq!(
             shown(&shown_at(end_of(2) - px(1.))),
-            [true, true, false, false]
+            [true, true, false, false, false]
         );
         assert_eq!(
             shown(&shown_at(end_of(1) - px(1.))),
-            [true, false, false, false]
+            [true, false, false, false, false]
         );
         // Then the context with its label and tokens goes too, and only its
         // bar and percentage, drawn below, show.
         let narrow = shown_at(end_of(0) - px(1.));
-        assert_eq!(shown(&narrow), [false, false, false, false]);
+        assert_eq!(shown(&narrow), [false, false, false, false, false]);
         let minimal = cx
             .debug_bounds("agent-usage-minimal")
             .expect("the short context");

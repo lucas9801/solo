@@ -425,6 +425,7 @@ name = "agent_sessions"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "collections",
  "gpui",
  "log",
@@ -432,6 +433,7 @@ dependencies = [
  "serde_json",
  "sysinfo 0.39.6",
  "tempfile",
+ "toml 0.9.8",
  "util",
 ]
 
@@ -17999,6 +18001,7 @@ dependencies = [
 name = "terminal"
 version = "0.1.0"
 dependencies = [
+ "agent_sessions",
  "alacritty_terminal",
  "anyhow",
  "async-channel 2.5.0",

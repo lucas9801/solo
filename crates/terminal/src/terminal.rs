@@ -714,6 +714,9 @@ pub enum Event {
     /// SOLO: an AI agent's hook reported the agent edited this file (see
     /// [`shell_integration::parse_agent_edit`]).
     AgentEditedFile(PathBuf),
+    /// SOLO: an AI agent (or Solo's plugin for it) reported how fast its
+    /// model answered a request (see [`shell_integration::AgentResponse`]).
+    AgentResponse(shell_integration::AgentResponse),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2007,6 +2010,10 @@ impl Terminal {
                 };
                 if let Some(path) = shell_integration::parse_agent_edit(params) {
                     cx.emit(Event::AgentEditedFile(path));
+                    return;
+                }
+                if let Some(response) = shell_integration::AgentResponse::parse(params) {
+                    cx.emit(Event::AgentResponse(response));
                     return;
                 }
                 match shell_integration::AgentHook::parse(params) {

@@ -52,7 +52,10 @@ pub fn agent_token(nonce: &str) -> String {
         .chain_update(b"solo-agent-report\0")
         .chain_update(nonce.as_bytes())
         .finalize();
-    digest[..16].iter().map(|byte| format!("{byte:02x}")).collect()
+    digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// The environment variable with the terminal's id, which `solo-cli agent`
@@ -313,7 +316,13 @@ pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
         return;
     };
     match codex_hook_args(is_windows, &hook.to_string_lossy()) {
-        Some(args) => {
+        Some(mut args) => {
+            // SOLO: and its log events, for how fast its model answers.
+            if !codex_has_own_telemetry(env)
+                && let Some(receiver) = agent_sessions::codex_otel::receiver()
+            {
+                args.extend(receiver.codex_config_overrides());
+            }
             env.insert("SOLO_CODEX_ARGS".to_string(), args.join("\n"));
         }
         None => log::warn!(
@@ -321,6 +330,38 @@ pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
             hook.display()
         ),
     }
+}
+
+/// SOLO: Whether the user (or an administrator) set up Codex's telemetry
+/// themselves: Solo's `-c otel.exporter=...` would replace theirs, so it's
+/// left out. Codex reads it from its config, managed config and
+/// requirements files.
+fn codex_has_own_telemetry(env: &HashMap<String, String>) -> bool {
+    let var = |name: &str| {
+        env.get(name)
+            .cloned()
+            .or_else(|| std::env::var(name).ok())
+            .filter(|value| !value.is_empty())
+    };
+    let home = var("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| util::paths::home_dir().join(".codex"));
+    let mut files = vec![
+        home.join("config.toml"),
+        home.join("managed_config.toml"),
+        home.join("requirements.toml"),
+    ];
+    if cfg!(windows) {
+        if let Some(program_data) = var("ProgramData") {
+            let dir = Path::new(&program_data).join("OpenAI").join("Codex");
+            files.push(dir.join("requirements.toml"));
+            files.push(dir.join("managed_config.toml"));
+        }
+    } else {
+        files.push(PathBuf::from("/etc/codex/requirements.toml"));
+        files.push(PathBuf::from("/etc/codex/managed_config.toml"));
+    }
+    agent_sessions::codex_otel::user_configures_telemetry(&files)
 }
 
 /// SOLO: Lets GitHub Copilot CLI started from the integrated shell report
@@ -343,6 +384,76 @@ pub fn integrate_copilot(is_windows: bool, env: &mut HashMap<String, String>) {
             env.insert("SOLO_COPILOT_PLUGIN".to_string(), dir);
         }
         Err(error) => log::warn!("failed to write the Copilot hook plugin: {error}"),
+    }
+    // SOLO: and its telemetry to a file of this terminal's, for how fast its
+    // model answers, unless the user set up telemetry of their own.
+    if !copilot_has_own_telemetry(env)
+        && let Some(path) = env
+            .get(TERMINAL_ID_ENV)
+            .and_then(|terminal_id| copilot_telemetry_file(terminal_id))
+    {
+        remove_old_copilot_telemetry(&path);
+        env.insert(
+            COPILOT_TELEMETRY_FILE_ENV.to_string(),
+            path.to_string_lossy().into_owned(),
+        );
+    }
+}
+
+/// SOLO: Makes Copilot CLI write its OpenTelemetry signals to this file, as
+/// JSON lines (and turns its telemetry on). Prompts and answers aren't in
+/// them unless the user asks for that.
+const COPILOT_TELEMETRY_FILE_ENV: &str = "COPILOT_OTEL_FILE_EXPORTER_PATH";
+/// Telemetry files of terminals older than this are deleted.
+const COPILOT_TELEMETRY_KEPT_FOR: std::time::Duration =
+    std::time::Duration::from_secs(3 * 24 * 60 * 60);
+
+/// SOLO: The file the Copilot CLI sessions of the terminal with id
+/// `terminal_id` write their telemetry to.
+pub fn copilot_telemetry_file(terminal_id: &str) -> Option<PathBuf> {
+    let valid = !terminal_id.is_empty()
+        && terminal_id.len() <= 64
+        && terminal_id.chars().all(|c| c.is_ascii_alphanumeric());
+    valid.then(|| scripts_dir().ok()).flatten().map(|dir| {
+        dir.join("copilot-otel")
+            .join(format!("{terminal_id}.jsonl"))
+    })
+}
+
+/// Whether the user set up Copilot's telemetry themselves.
+fn copilot_has_own_telemetry(env: &HashMap<String, String>) -> bool {
+    let own = |name: &str| {
+        name.starts_with("COPILOT_OTEL_")
+            || name == "OTEL_EXPORTER_OTLP_ENDPOINT"
+            || name == "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+    };
+    env.keys().any(|name| own(name))
+        || std::env::vars_os().any(|(name, _)| own(&name.to_string_lossy()))
+}
+
+/// Deletes other terminals' telemetry files that are a few days old, and
+/// makes the folder for this one's.
+fn remove_old_copilot_telemetry(path: &Path) {
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    if let Err(error) = std::fs::create_dir_all(dir) {
+        log::warn!("failed to make the Copilot telemetry folder: {error}");
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > COPILOT_TELEMETRY_KEPT_FOR);
+        if old {
+            std::fs::remove_file(entry.path()).ok();
+        }
     }
 }
 
@@ -618,7 +729,10 @@ fn write_claude_code_settings(is_windows: bool) -> std::io::Result<String> {
 fn claude_code_settings_file_name(settings: &str) -> String {
     use sha2::Digest as _;
     let digest = sha2::Sha256::digest(settings.as_bytes());
-    let short: String = digest[..8].iter().map(|byte| format!("{byte:02x}")).collect();
+    let short: String = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     format!("claude-settings-{short}.json")
 }
 
@@ -732,6 +846,70 @@ pub fn parse_agent_edit(params: &[String]) -> Option<PathBuf> {
     percent_decode(&rest[3..].join(";"))
         .map(PathBuf::from)
         .filter(|path| path.is_absolute() && !is_network_path(path))
+}
+
+/// SOLO: The kind of an agent report on how fast the model answered one
+/// request: `OSC 6973 ; agent ; nonce=<nonce> ; response ; <order> ;
+/// <session id> ; <agent> ; <measurements>`, the measurements
+/// `key=value` pairs separated by `,` (see [`AgentResponse`]).
+pub const AGENT_RESPONSE_REPORT: &str = "response";
+
+/// SOLO: How fast an agent's model answered one request, as the agent (or
+/// Solo's plugin for it) measured it. Each value may be missing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentResponse {
+    pub raw_session_id: Option<String>,
+    /// `first_token_ms`: from sending the request to its first token.
+    pub first_token_ms: Option<u64>,
+    /// `output_tokens`: the response's tokens, thinking included.
+    pub output_tokens: Option<u64>,
+    /// `generation_ms`: from the first token to the last.
+    pub generation_ms: Option<u64>,
+    /// `effort`: the reasoning effort the request ran at.
+    pub effort: Option<String>,
+}
+
+impl AgentResponse {
+    /// Parses the parameters after the nonce, if it's a response report.
+    pub fn parse(params: &[String]) -> Option<Self> {
+        let (kind, rest) = params.split_first()?;
+        if kind.trim() != AGENT_RESPONSE_REPORT {
+            return None;
+        }
+        let mut response = AgentResponse {
+            raw_session_id: rest
+                .get(1)
+                .map(|id| id.trim())
+                .filter(|id| is_session_id(id))
+                .map(str::to_string),
+            ..Default::default()
+        };
+        let measurements = rest.get(3..).map(|rest| rest.join(";")).unwrap_or_default();
+        for pair in measurements.split(',') {
+            let Some((key, value)) = pair.split_once('=') else {
+                continue;
+            };
+            let value = value.trim();
+            let number = || value.parse::<u64>().ok();
+            match key.trim() {
+                "first_token_ms" => response.first_token_ms = number(),
+                "output_tokens" => response.output_tokens = number(),
+                "generation_ms" => response.generation_ms = number(),
+                "effort" => {
+                    response.effort = ((1..=24).contains(&value.len())
+                        && value
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+                    .then(|| value.to_ascii_lowercase())
+                }
+                _ => {}
+            }
+        }
+        let measured = response.first_token_ms.is_some()
+            || response.generation_ms.is_some()
+            || response.effort.is_some();
+        measured.then_some(response)
+    }
 }
 
 /// SOLO: What an AI agent's hook reported it's doing.
@@ -1315,10 +1493,9 @@ mod tests {
         // Only the nonce (and the hook program, when it's next to Solo):
         // these shells take their scripts as arguments.
         assert!(
-            env.keys()
-                .all(|key| key == SHELL_NONCE_ENV
-                    || key == AGENT_TOKEN_ENV
-                    || key == AGENT_HOOK_ENV),
+            env.keys().all(|key| key == SHELL_NONCE_ENV
+                || key == AGENT_TOKEN_ENV
+                || key == AGENT_HOOK_ENV),
             "{env:?}"
         );
 
@@ -1698,6 +1875,66 @@ mod tests {
     }
 
     #[test]
+    fn parses_response_reports() {
+        let params = |params: &[&str]| -> Vec<String> {
+            params.iter().map(|param| param.to_string()).collect()
+        };
+        let response = AgentResponse::parse(&params(&[
+            "response",
+            "1793624689993",
+            "ses_4f2a1cB9",
+            "opencode",
+            "first_token_ms=812,output_tokens=640, generation_ms=5120,effort=High,future=1",
+        ]))
+        .unwrap();
+        assert_eq!(
+            response,
+            AgentResponse {
+                raw_session_id: Some("ses_4f2a1cB9".to_string()),
+                first_token_ms: Some(812),
+                output_tokens: Some(640),
+                generation_ms: Some(5120),
+                effort: Some("high".to_string()),
+            }
+        );
+        // Only what's measured; nothing that's no number or no effort.
+        let partial = AgentResponse::parse(&params(&[
+            "response",
+            "",
+            "x;y",
+            "",
+            "first_token_ms=-1,output_tokens=12,effort=a b",
+        ]));
+        assert_eq!(partial, None);
+        let partial =
+            AgentResponse::parse(&params(&["response", "", "", "", "effort=low"])).unwrap();
+        assert_eq!(partial.effort.as_deref(), Some("low"));
+        assert_eq!(partial.raw_session_id, None);
+        assert_eq!(AgentResponse::parse(&params(&["response", "1"])), None);
+        // Other reports aren't responses, nor responses hooks.
+        assert_eq!(
+            AgentResponse::parse(&params(&["prompt", "1", "", "x"])),
+            None
+        );
+        assert_eq!(AgentHook::parse(&params(&["response", "1", "", "x"])), None);
+    }
+
+    #[test]
+    fn copilot_telemetry_goes_to_a_file_per_terminal() {
+        let path = copilot_telemetry_file("a1b2c3d4").unwrap();
+        assert!(path.ends_with("copilot-otel/a1b2c3d4.jsonl"), "{path:?}");
+        assert_eq!(copilot_telemetry_file(""), None);
+        assert_eq!(copilot_telemetry_file("../x"), None);
+        // Not over telemetry the user set up.
+        let mut env = HashMap::default();
+        env.insert(
+            "COPILOT_OTEL_EXPORTER_TYPE".to_string(),
+            "otlp-http".to_string(),
+        );
+        assert!(copilot_has_own_telemetry(&env));
+    }
+
+    #[test]
     fn opencode_session_ids_are_kept_raw() {
         let params = |params: &[&str]| -> Vec<String> {
             params.iter().map(|param| param.to_string()).collect()
@@ -1725,7 +1962,11 @@ mod tests {
     #[test]
     fn codex_hook_args_are_valid_toml() {
         let cases = [
-            (false, "/opt/solo/solo-agent-hook", r#""$SOLO_AGENT_HOOK" --agent codex"#),
+            (
+                false,
+                "/opt/solo/solo-agent-hook",
+                r#""$SOLO_AGENT_HOOK" --agent codex"#,
+            ),
             // Runs in both PowerShell and cmd as is.
             (
                 true,
@@ -1919,7 +2160,10 @@ mod tests {
         let one = claude_code_settings_file_name("{\"hook\":\"C:\\A\\solo-agent-hook.exe\"}");
         let other = claude_code_settings_file_name("{\"hook\":\"C:\\B\\solo-agent-hook.exe\"}");
         assert_ne!(one, other);
-        assert_eq!(one, claude_code_settings_file_name("{\"hook\":\"C:\\A\\solo-agent-hook.exe\"}"));
+        assert_eq!(
+            one,
+            claude_code_settings_file_name("{\"hook\":\"C:\\A\\solo-agent-hook.exe\"}")
+        );
         assert!(one.starts_with("claude-settings-") && one.ends_with(".json"));
     }
 }
