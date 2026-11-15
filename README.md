@@ -6,8 +6,7 @@ Solo 是给 AI 编程 agent 用的编辑器，基于 [Zed](https://github.com/ze
 
 [下载 Windows 版](https://github.com/lucas9801/solo/releases/latest) · [用户指南](docs/guide/zh-CN.md) · [和其他工具比较](docs/site/zh/compare/index.md) · [English](docs/site/en/index.md)
 
-<!-- 演示视频：把 GitHub 上传后得到的 https://github.com/user-attachments/assets/… 链接单独放在这一行 -->
-> **演示视频（待补，约 60 秒）**：分屏和工作区标签 → agent 工作时标签显示状态 → 点终端里的链接打开代码和 Mermaid 图 → 一轮结束后审阅、撤回一块改动 → 关掉 Solo 再打开，agent 还在跑。
+https://github.com/user-attachments/assets/df4a53d7-075a-44b7-9874-f3f71f2eaf61
 
 ## 功能
 

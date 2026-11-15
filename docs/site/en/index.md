@@ -8,6 +8,8 @@ It's made for people who still read the code and the documents themselves: after
 
 [Download (Windows)](https://github.com/lucas9801/solo/releases) · [User guide](../../guide/en.md) · [Compared with other tools](compare/index.md) · [中文](../zh/index.md)
 
+https://github.com/user-attachments/assets/85627f07-1bb5-4f68-8199-c3afbdc9fa3b
+
 ---
 
 ## Read: what the agent changed, at a glance
