@@ -47,3 +47,4 @@ if ($failures) {
     exit 1
 }
 Write-Host "All MSIX version tests passed"
+exit 0
