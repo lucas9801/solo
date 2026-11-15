@@ -127,12 +127,20 @@ impl IClassFactory_Impl for ExplorerCommandInjectorFactory_Impl {
     }
 }
 
+// SOLO: the "solo" feature builds the handler for Solo's MSIX package
+// (script/package-solo-msix.ps1, script/msix/AppxManifest.xml.in), which
+// declares this class.
 const MODULE_ID: GUID = cfg_select! {
+    feature = "solo" => { GUID::from_u128(0x7ce78673_39cf_4de5_a3dc_1fe09600cdf6) },
     feature = "stable" => { GUID::from_u128(0x6a1f6b13_3b82_48a1_9e06_7bb0a6d0bffd) },
     feature = "preview" => { GUID::from_u128(0xaf8e85ea_fb20_4db2_93cf_56513c1ec697) },
     feature = "nightly" => { GUID::from_u128(0x266f2cfe_1653_42af_b55c_fe3590c83871) },
     _ => { GUID::from_u128(0x685f4d49_6718_4c55_b271_ebb5c6a48d6f) },
 };
+
+/// SOLO: the class of test packages (script/package-solo-msix.ps1 without
+/// -Store), so one can be installed next to the Store's Solo.
+const SOLO_TEST_MODULE_ID: GUID = GUID::from_u128(0xfc3eeb9f_ca0a_4cf8_9fe9_f0c668e0fde4);
 
 #[unsafe(no_mangle)]
 extern "system" fn DllGetClassObject(
@@ -148,7 +156,7 @@ extern "system" fn DllGetClassObject(
         *out = std::ptr::null_mut();
     }
     let class_id = unsafe { *class_id };
-    if class_id == MODULE_ID {
+    if class_id == MODULE_ID || (cfg!(feature = "solo") && class_id == SOLO_TEST_MODULE_ID) {
         let instance: IClassFactory = ExplorerCommandInjectorFactory {}.into();
         unsafe { instance.query(iid, out) }
     } else {
@@ -169,14 +177,39 @@ fn get_zed_install_folder() -> Option<PathBuf> {
         .into_string()
         .ok()?
         .into();
+    // SOLO: Solo's package has the DLL next to solo.exe.
+    if cfg!(feature = "solo") {
+        return Some(path.parent()?.to_path_buf());
+    }
     Some(path.parent()?.parent()?.to_path_buf())
 }
 
 #[inline]
 fn get_zed_exe_path() -> Option<String> {
-    get_zed_install_folder().map(|path| path.join("Zed.exe").to_string_lossy().into_owned())
+    let exe = if cfg!(feature = "solo") {
+        "solo.exe"
+    } else {
+        "Zed.exe"
+    };
+    get_zed_install_folder().map(|path| path.join(exe).to_string_lossy().into_owned())
 }
 
+/// SOLO: the command's title in the language of Windows' interface, like the
+/// Start menu's "Solo Code" (the installer's registry title isn't there).
+#[cfg(feature = "solo")]
+#[inline]
+fn retrieve_command_description() -> Result<HSTRING> {
+    const LANG_CHINESE: u16 = 0x04;
+    // SAFETY: no arguments.
+    let language = unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() };
+    Ok(HSTRING::from(if language & 0x3ff == LANG_CHINESE {
+        "通过 Solo Code 打开"
+    } else {
+        "Open with Solo Code"
+    }))
+}
+
+#[cfg(not(feature = "solo"))]
 #[inline]
 fn retrieve_command_description() -> Result<HSTRING> {
     const REG_PATH: &str = cfg_select! {

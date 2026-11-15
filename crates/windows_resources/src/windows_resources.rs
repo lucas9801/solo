@@ -99,6 +99,14 @@ pub fn compile_with_description(
         String::new()
     };
 
+    // SOLO: VS_FF_DEBUG on builds with debug assertions (the dev profile), so
+    // packaging can tell them apart (script/package-solo-msix.ps1 refuses
+    // them: they read assets and shaders from the source tree).
+    let file_flags = if std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some() {
+        "0x1L"
+    } else {
+        "0x0L"
+    };
     let pkg_version = solo_version();
     let build = build_metadata(&pkg_version);
     let description = description.unwrap_or(product_name);
@@ -128,7 +136,7 @@ pub fn compile_with_description(
 FILEVERSION {file_version}
 PRODUCTVERSION {file_version}
 FILEFLAGSMASK 0x3fL
-FILEFLAGS 0x0L
+FILEFLAGS {file_flags}
 FILEOS 0x40004L
 FILETYPE 0x1L
 FILESUBTYPE 0x0L
