@@ -35,7 +35,6 @@ use crate::{
     agent_tasks::agent_tasks,
     agent_turns::AgentTurns,
     command_blocks::{activate_terminal_view, terminal_views},
-    terminal_panel::TerminalPanel,
 };
 
 actions!(
@@ -454,23 +453,6 @@ impl AgentBoard {
             window.dispatch_action(ManageAgentTasks.boxed_clone(), cx);
             return;
         };
-        let in_terminal_panel =
-            workspace
-                .read(cx)
-                .panel::<TerminalPanel>(cx)
-                .is_some_and(|panel| {
-                    panel
-                        .read(cx)
-                        .center
-                        .panes()
-                        .into_iter()
-                        .any(|pane| pane.read(cx).index_for_item(&view).is_some())
-                });
-        if in_terminal_panel {
-            workspace.update(cx, |workspace, cx| {
-                workspace.open_panel::<TerminalPanel>(window, cx)
-            });
-        }
         activate_terminal_view(&workspace, &view, window, cx);
     }
 

@@ -8,8 +8,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use gpui::{
-    AnyWindowHandle, App, Context, Focusable, Global, SharedString, SystemNotification, WeakEntity,
-    Window,
+    AnyWindowHandle, App, Context, Global, SharedString, SystemNotification, WeakEntity, Window,
 };
 use settings::Settings;
 use terminal::terminal_settings::TerminalSettings;
@@ -35,8 +34,7 @@ pub(crate) fn init(cx: &mut App) {
             .update(cx, |_, window, cx| {
                 window.activate_window();
                 if let Some(view) = view.upgrade() {
-                    let focus_handle = view.focus_handle(cx);
-                    window.focus(&focus_handle, cx);
+                    crate::workspace_terminals::show_terminal(&view, window, cx);
                 }
             })
             .ok();
