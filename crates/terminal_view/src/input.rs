@@ -186,6 +186,8 @@ pub struct TerminalInput {
     /// rather than ending the history walk like edits by the user.
     replaced_text: Option<String>,
     git_branch: Option<(PathBuf, Option<String>)>,
+    /// SOLO: reads the git branch off the UI thread (R3 M11).
+    _git_branch_read: Task<()>,
     /// A command being generated from a `#` request.
     generating: Option<Task<()>>,
     /// Stops the agent generating the command.
@@ -277,6 +279,7 @@ impl TerminalInput {
             show_auto_menu_hint: false,
             replaced_text: None,
             git_branch: None,
+            _git_branch_read: Task::ready(()),
             generating: None,
             generation_cancel: None,
             generating_since: None,
@@ -1026,9 +1029,13 @@ impl TerminalInput {
         });
     }
 
-    fn update_git_branch(&mut self, cwd: Option<&Path>, cx: &App) {
+    /// SOLO: reads the git branch of `cwd` again when it changed or a command
+    /// finished, in the background: the disk may be slow (R3 M11). The
+    /// branch read before for the same directory shows meanwhile.
+    fn update_git_branch(&mut self, cwd: Option<&Path>, cx: &mut Context<Self>) {
         let Some(cwd) = cwd else {
             self.git_branch = None;
+            self._git_branch_read = Task::ready(());
             return;
         };
         let blocks = self.terminal.read(cx).shell_integration().blocks().len();
@@ -1041,7 +1048,29 @@ impl TerminalInput {
         {
             return;
         }
-        self.git_branch = Some((key, git_branch(cwd)));
+        let previous = self
+            .git_branch
+            .take()
+            .filter(|(cached, _)| cached.parent() == Some(cwd))
+            .and_then(|(_, branch)| branch);
+        self.git_branch = Some((key.clone(), previous));
+        let read = cx.background_spawn({
+            let cwd = cwd.to_path_buf();
+            async move { git_branch(&cwd) }
+        });
+        self._git_branch_read = cx.spawn(async move |this, cx| {
+            let branch = read.await;
+            this.update(cx, |this, cx| {
+                if let Some((cached, shown)) = this.git_branch.as_mut()
+                    && *cached == key
+                    && *shown != branch
+                {
+                    *shown = branch;
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
     }
 
     fn editor_style(&self, cx: &App) -> EditorStyle {
@@ -1466,9 +1495,9 @@ impl TerminalView {
 /// The current git branch of the repository containing `dir`, or a short
 /// commit id for a detached HEAD.
 ///
-/// SOLO: Read on the UI thread, so never on a network share (`\\server\...`,
-/// which the shell's reported directory or a `.git` file could name): that
-/// could hang and would connect to another machine.
+/// SOLO: Never on a network share (`\\server\...`, which the shell's
+/// reported directory or a `.git` file could name): that could hang and would
+/// connect to another machine. Callers read it in the background.
 pub(crate) fn git_branch(dir: &Path) -> Option<String> {
     if terminal::shell_integration::is_network_path(dir) {
         return None;
@@ -1957,6 +1986,75 @@ mod tests {
         std::fs::write(linked.join(".git"), "gitdir: //attacker/share/.git\n").unwrap();
         assert_eq!(git_branch(&linked), None);
         assert_eq!(git_branch(Path::new("//attacker/share/repo")), None);
+    }
+
+    fn file_uri(directory: &Path) -> String {
+        let path = directory.to_string_lossy().replace('\\', "/");
+        if path.starts_with('/') {
+            format!("file://host{path}")
+        } else {
+            format!("file://host/{path}")
+        }
+    }
+
+    /// The git branch shown in the tab title and the input is read off the
+    /// UI thread (R3 M11): it shows once the read is done.
+    #[gpui::test]
+    async fn test_git_branch_is_read_in_the_background(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = |name: &str, branch: &str| {
+            let directory = temp.path().join(name);
+            std::fs::create_dir_all(directory.join(".git")).unwrap();
+            std::fs::write(
+                directory.join(".git/HEAD"),
+                format!("ref: refs/heads/{branch}\n"),
+            )
+            .unwrap();
+            directory
+        };
+        let main = repository("main-repo", "main");
+        let dev = repository("dev-repo", "dev");
+        let fix = repository("fix-repo", "fix");
+        let osc7 = |directory: &Path| format!("\x1b]7;{}\x07", file_uri(directory));
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        write(&terminal, SHELL_PROMPT, cx);
+        let title_branch = |cx: &mut VisualTestContext| {
+            view.read_with(cx, |view, cx| {
+                view.cached_git_branch(cx).map(str::to_string)
+            })
+        };
+        // The title reads the branch on output after the directory changed.
+        write(&terminal, osc7(&main).as_bytes(), cx);
+        view.update(cx, |view, cx| view.update_title_git_branch(cx));
+        cx.run_until_parked();
+        assert_eq!(title_branch(cx), Some("main".to_string()));
+
+        // Not there and then, but in the background.
+        write(&terminal, osc7(&dev).as_bytes(), cx);
+        view.update(cx, |view, cx| view.update_title_git_branch(cx));
+        assert_eq!(title_branch(cx), None);
+        cx.run_until_parked();
+        assert_eq!(title_branch(cx), Some("dev".to_string()));
+
+        let input = input(&view, cx);
+        let branch = |input: &TerminalInput| {
+            input
+                .git_branch
+                .as_ref()
+                .and_then(|(_, branch)| branch.clone())
+        };
+        assert_eq!(
+            input.read_with(cx, |input, _| branch(input)),
+            Some("dev".to_string())
+        );
+        input.update(cx, |input, cx| input.update_git_branch(Some(&fix), cx));
+        assert_eq!(input.read_with(cx, |input, _| branch(input)), None);
+        // Drawing reads the shell's directory again, in the background too.
+        cx.run_until_parked();
+        assert_eq!(
+            input.read_with(cx, |input, _| branch(input)),
+            Some("dev".to_string())
+        );
     }
 
     /// A shell with no history file, so the user's own history stays out.
