@@ -172,14 +172,6 @@ fn start_host(
         )
     }
     .ok()?;
-    // Chromium freezes pages in windows it finds hidden, and a frozen page
-    // never answers: the window has to be shown (without activating it).
-    unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
-            parent,
-            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE,
-        );
-    }
     let (tx, mut rx) = mpsc::unbounded();
     let host = WebViewHost::new(
         parent,
