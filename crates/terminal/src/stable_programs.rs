@@ -5,8 +5,9 @@
 //! path; `SOLO_CLI` stays in a terminal's environment. A packaged Solo (the
 //! Microsoft Store edition) runs from a folder that changes with every
 //! update, whose old version is removed once nothing runs from it, so it
-//! copies the two programs to `bin` in its data folder and hands out that
-//! path. (Execution aliases would need an `Application` without a Start menu
+//! copies the two programs to `bin` in the package's shared folder
+//! ([`util::packaged::package_shared_dir`], which programs outside the
+//! package see too) and hands out that path. (Execution aliases would need an `Application` without a Start menu
 //! entry for each, which the Store doesn't accept.) Installed by the
 //! installer or from the zip, Solo's folder stays the same and the programs
 //! next to it are used.
@@ -19,7 +20,9 @@ use anyhow::{Context as _, Result};
 
 /// The folder a packaged Solo copies the programs to.
 pub fn stable_programs_dir() -> PathBuf {
-    paths::data_dir().join("bin")
+    util::packaged::package_shared_dir()
+        .unwrap_or_else(|| paths::data_dir().clone())
+        .join("bin")
 }
 
 /// The path to give out for `stem` (`solo-cli`, `solo-agent-hook`), or
@@ -108,11 +111,8 @@ fn remove_leftovers(dir: &Path, name: &str) {
     }
 }
 
-/// Where `path` really is on disk. Without the `unvirtualizedResources`
-/// capability Windows redirects a packaged app's writes to `%LOCALAPPDATA%`
-/// into the package's own `LocalCache`, a place only the app sees at the
-/// original path; programs outside the package (the agents running the hook)
-/// need the real one.
+/// Where `path` really is on disk, without links in it: what agents keep
+/// as the hook's path.
 fn real_path(path: &Path) -> Result<PathBuf> {
     dunce::canonicalize(path).with_context(|| format!("resolving {}", path.display()))
 }

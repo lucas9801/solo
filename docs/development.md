@@ -110,10 +110,11 @@ script finds in the cargo target folder. The Store package is unsigned (the
 Store signs it), has Solo Code's identity from Partner Center, and the version
 `x.y.z.0` for Solo `x.y.z`. Its manifest is `script\msix\AppxManifest.xml.in`:
 one application, Solo, with the execution alias `solo`, `solo://` links,
-"Open with" for text and code files, the context menu, and the restricted
-capability `unvirtualizedResources`, so Solo and the unpackaged shells and
-agents in its terminals share the real `%APPDATA%` and `%LOCALAPPDATA%`. The
-Solo package workflow also builds the Store package and keeps it as the
+"Open with" for text and code files, and the context menu. It doesn't have
+the restricted capability `unvirtualizedResources` (the Store refused it), so
+Windows redirects Solo's new files in `%APPDATA%` and `%LOCALAPPDATA%` (its
+data folder among them) to the package's own folder; the script refuses a
+manifest with it. The Solo package workflow also builds the Store package and keeps it as the
 `solo-windows-x64-msix` artifact; it isn't part of the GitHub release.
 
 Without `-Store` the script makes a test package to sideload, signed with a
@@ -124,10 +125,17 @@ A packaged Solo:
 
 - doesn't use its own updater: the Store updates it. **Check for Updates**
   offers to open its page in the Store.
-- copies `solo-cli.exe` and `solo-agent-hook.exe` to `bin` in its data
-  folder (when they changed) and gives its terminals (`SOLO_CLI`,
-  `SOLO_AGENT_HOOK`) and agents' hooks those paths, which stay the same
-  across updates, rather than the versioned folder it runs from. That folder
+- starts the programs in its terminals outside the package
+  (`PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY`, set by `solo-terminal-host`),
+  so the user's tools and agents write to the real `%APPDATA%` and
+  `%LOCALAPPDATA%`.
+- puts what it hands to them in the package's `LocalCache\Solo` folder
+  (`util::packaged::package_shared_dir`), which they see at the same path:
+  the shell integration scripts, and the copies of `solo-cli.exe` and
+  `solo-agent-hook.exe` in `bin` (made when they changed). It gives its
+  terminals (`SOLO_CLI`, `SOLO_AGENT_HOOK`) and agents' hooks those paths,
+  which stay the same across updates, rather than the versioned folder it
+  runs from. `bin`
   goes first on `PATH` in Solo's terminals, so `solo-cli` works there;
   outside Solo there's no `solo-cli` command. The package has no other
   application than Solo: the Store rejects one without a Start menu entry
