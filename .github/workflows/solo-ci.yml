@@ -61,6 +61,12 @@ jobs:
           ./script/test-release-solo.ps1
           if ($LASTEXITCODE -ne 0) { throw "The release script tests failed" }
 
+      # What solo-store.yml writes as the Store listing's release notes.
+      - name: Test the Store release notes script
+        run: |
+          ./script/msix/test-store-release-notes.ps1
+          if ($LASTEXITCODE -ne 0) { throw "The Store release notes tests failed" }
+
       - name: Show free disk space
         run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
 

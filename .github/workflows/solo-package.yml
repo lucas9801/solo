@@ -13,8 +13,11 @@
 #   msix:    packages the built files as Solo Code's Microsoft Store package
 #            (script/package-solo-msix.ps1 -Store), unsigned (the Store
 #            signs it), and uploads the .msixupload and the .msix as an
-#            artifact. It isn't put in the release: the package is uploaded
-#            to Partner Center by hand.
+#            artifact. It isn't put in the release: publishing the release
+#            starts the Solo Store submission workflow (solo-store.yml),
+#            which submits the artifact to Partner Center once the repository
+#            variable SOLO_STORE_SUBMIT_ENABLED is "true"; until then it's
+#            uploaded to Partner Center by hand.
 #   remote-server: builds the remote server for SSH, WSL and dev container
 #            projects (crates/remote_server) for Linux x86_64 and aarch64 as
 #            static musl binaries and uploads them gzipped

@@ -142,3 +142,72 @@ A packaged Solo:
   (`AppListEntry="none"`), and the script refuses to make such a package.
 - asks Windows to start it again (`RegisterApplicationRestart`) when an
   update closes it.
+
+### Submitting to the Store
+
+Publishing a GitHub release starts the
+[Solo Store submission workflow](../.github/workflows/solo-store.yml). It
+finds the tag's successful Solo package run (it builds nothing), checks that
+the `.msixupload` in its `solo-windows-x64-msix` artifact is version
+`x.y.z.0` for the tag `vx.y.z`, and with the
+[Microsoft Store Developer CLI](https://learn.microsoft.com/windows/apps/publish/msstore-dev-cli/overview)
+(`msstore`) uploads it to a new submission, writes "What's new in this
+version" in each Store listing, and submits it for certification. It doesn't
+wait for certification (up to three business days): the log ends with the
+submission's status and a link to it in Partner Center. Prereleases aren't
+submitted.
+
+"What's new in this version" comes from `docs/release-notes/<version>.md`
+(`script\msix\store-release-notes.ps1`, tested by
+`script\msix\test-store-release-notes.ps1` in Solo CI): the summary line and
+the titles of the items, in Chinese for the `zh-*` listings and in English
+for the others; if that's over the Store's 1500 characters, just the summary.
+
+**The switch.** A published release is submitted only when the repository
+variable `SOLO_STORE_SUBMIT_ENABLED` is `true`. While it isn't, the workflow
+skips the submission and says so in its log, and the package is submitted by
+hand: download the `solo-windows-x64-msix` artifact of the tag's Solo package
+run, unzip it, upload the `.msixupload` to a new submission in Partner
+Center, fill in "What's new in this version" (`script\msix\store-release-notes.ps1
+-Path docs\release-notes\<version>.md -Languages zh-cn,en-us` prints it) and
+submit it. Keep the switch off until the setup below is done.
+
+**Setting it up (once).**
+
+1. Solo Code's first submission is made by hand in Partner Center; `msstore`
+   can't make it, and it only updates free apps (Solo Code is free).
+2. Associate the Partner Center account with a Microsoft Entra tenant
+   (Partner Center: Account settings > Tenants), if it isn't already.
+3. In the Microsoft Entra admin center, register an application (App
+   registrations > New registration) and create a client secret for it
+   (Certificates & secrets). Copy the secret's value right away; it isn't
+   shown again.
+4. In Partner Center, Account settings > User management > Microsoft Entra
+   applications, add that application with the **Manager** role.
+5. In the GitHub repository, Settings > Environments, create the environment
+   `microsoft-store` (only the workflow's submit job uses it; its deployment
+   branches and tags can be limited to `main` and `v*` tags). Give it:
+   - the secret `SOLO_STORE_CLIENT_SECRET`: the client secret;
+   - the variables `SOLO_STORE_TENANT_ID` (the Entra tenant ID),
+     `SOLO_STORE_CLIENT_ID` (the application's client ID),
+     `SOLO_STORE_SELLER_ID` (Partner Center's seller ID, in Account settings)
+     and `SOLO_STORE_ID` (Solo Code's Store ID, in Partner Center under
+     Product identity).
+   The job fails, naming them, if any is missing.
+6. Try it: Actions > Solo Store submission > Run workflow, with the latest
+   release's tag and **Only upload** ticked. Partner Center then has a draft
+   submission with the package and the notes, which isn't submitted; check
+   it, then submit or delete it there.
+7. Set the repository variable `SOLO_STORE_SUBMIT_ENABLED` to `true`. From the
+   next release on, publishing the GitHub release submits the Store package.
+
+Client secrets expire (at most two years after they're made, as chosen in
+Entra). Before it does, create a new one for the same application and replace
+`SOLO_STORE_CLIENT_SECRET`; with an expired one the job fails at signing in.
+
+**Retrying.** Run the workflow by hand with the tag and **Only upload**
+unticked; a run by hand doesn't look at the switch. A draft submission
+already in Partner Center (from an "only upload" run, or made there) is
+deleted and replaced, and whatever was changed in it is lost. If a submission
+is being certified or published, the job fails and says so: wait for it to
+finish, or cancel it in Partner Center, and run the workflow again.
