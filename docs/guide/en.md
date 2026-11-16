@@ -48,9 +48,21 @@ files.
 
 - Solo checks [its GitHub releases](https://github.com/lucas9801/solo/releases)
   30 seconds after it starts and every 6 hours after that (stable builds only).
-- A newer version shows a notification with a one-line summary: update and
-  restart, skip this version, or view the release notes. Nothing is installed
-  without you agreeing to it.
+- A newer version shows an "↑ Update to <version>" button at the right end of
+  the title bar, left of the window buttons; there's no notification. Its menu
+  has a one-line summary and Update and Restart, Install When Solo Quits, View
+  Release Notes and Skip This Version. With agents running it says which ones
+  updating now would end, and puts Install When Solo Quits first. The download
+  progress, "update on quit" and "Update failed" (the menu says why, with
+  Retry) show on the same button. A skipped version isn't offered again; a
+  newer one brings the button back. Nothing is installed without you agreeing
+  to it.
+- Solo Code from the Microsoft Store updates inside Solo too, with the same
+  button and without opening the Store: when the Store allows it (automatic
+  app updates on in the Store, a network that isn't metered) the update is
+  downloaded silently first; Update and Restart lets the Store install it and
+  Windows opens Solo again. When the Store can't install silently it shows its
+  small confirmation dialog.
 - **About Solo** shows the version, its release date and commit (click it to
   copy), whether Solo is up to date with a **Check for Updates** button, and
   links to this guide, the release notes, the repository and the license.

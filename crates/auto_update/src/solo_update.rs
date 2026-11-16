@@ -5,8 +5,10 @@
 //! module is a separate, much smaller updater:
 //!
 //! - it asks the GitHub API for the latest release of [`SOLO_GITHUB_REPO`],
-//! - tells the user about a newer version with a notification
-//!   ("update and restart", "skip this version", "view release notes"),
+//! - tells the user about a newer version with the update button at the right
+//!   end of the title bar ([`crate::update_button`]), whose menu offers
+//!   "update and restart", "install when Solo quits", "view release notes"
+//!   and "skip this version" (no notifications: the button stays),
 //! - and on Windows downloads the Inno Setup installer (checked against the
 //!   SHA-256 GitHub reports) and starts `solo-update-helper`, which waits for
 //!   Solo to exit and runs the installer silently. "Update and restart" then
@@ -17,12 +19,11 @@
 //! Only stable builds check. Automatic checks follow the `auto_update`
 //! setting; the "check for updates" command always checks.
 
+use crate::update_button::{self, ButtonState, UpdateAction, UpdateEntry, UpdateOffer};
 use crate::{AutoUpdateSetting, UpdateCheckType};
 use anyhow::{Context as _, Result};
 use db::kvp::KeyValueStore;
-use gpui::{
-    App, AppContext as _, AsyncApp, Context, Entity, Global, IntoElement as _, Task, Window,
-};
+use gpui::{App, AppContext as _, AsyncApp, Context, Entity, Global, Task, Window};
 use http_client::{AsyncBody, HttpClient, HttpRequestExt as _, RedirectPolicy, Request};
 use release_channel::ReleaseChannel;
 use semver::Version;
@@ -39,20 +40,16 @@ use workspace::{
     MultiWorkspace,
     item::RunningProgram,
     notifications::{
-        NotificationId, dismiss_app_notification, show_app_notification,
-        simple_message_notification::MessageNotification,
+        NotificationId, show_app_notification, simple_message_notification::MessageNotification,
     },
-    ui::Label,
 };
 
 /// The GitHub repository Solo's releases are published in.
 pub const SOLO_GITHUB_REPO: &str = "lucas9801/solo";
 
-/// Solo's page in the Microsoft Store app.
-pub const STORE_PAGE_URL: &str = "ms-windows-store://pdp/?productid=9NBW452JVWN6";
-
 /// Whether this Solo was installed from the Microsoft Store (it runs as a
-/// packaged app), which then updates it: Solo's own updater stays off.
+/// packaged app): the Store updates it ([`crate::store_update`]) and Solo's
+/// own updater stays off.
 pub fn is_store_package() -> bool {
     util::packaged::is_packaged()
 }
@@ -547,17 +544,17 @@ fn can_install() -> bool {
     cfg!(target_os = "windows")
 }
 
-/// The most characters of the release notes' summary the notification shows.
+/// The most characters of the release notes' summary the update menu shows.
 const SUMMARY_MAX_CHARS: usize = 200;
 
-/// One sentence of the release notes for the notification, in the UI's
+/// One sentence of the release notes for the update menu, in the UI's
 /// language, as plain text.
 ///
 /// Solo's release notes start with a summary in Chinese on the first line and
 /// in English on the second, each one plain sentence (checked by
 /// `script/release-solo.ps1`). Notes that don't (older releases') give the
 /// plain text of their first paragraph that isn't only headings.
-fn notes_summary(notes: &str, chinese: bool) -> Option<String> {
+pub fn notes_summary(notes: &str, chinese: bool) -> Option<String> {
     let mut lines = notes.lines().map(str::trim).filter(|line| !line.is_empty());
     let summary = match (lines.next(), lines.next()) {
         (Some(zh), Some(en)) if is_summary_line(zh, true) && is_summary_line(en, false) => {
@@ -711,8 +708,21 @@ pub struct SoloUpdater {
     ready_on_quit: Option<ReadyOnQuit>,
     /// What the last check found.
     checked: UpdateStatus,
+    /// The release the update button offers.
+    release: Option<SoloRelease>,
+    /// What "retry" in the update button's menu does after a failure.
+    retry: Option<Retry>,
+    /// The update button's state, which this keeps up to date.
+    entry: Entity<UpdateEntry>,
     poll_task: Option<Task<()>>,
-    _quit_subscription: gpui::Subscription,
+    _quit_subscription: Option<gpui::Subscription>,
+}
+
+/// What failed, to try again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Retry {
+    Check,
+    Install(InstallWhen),
 }
 
 /// What Solo knows about updates, for the About window.
@@ -765,9 +775,7 @@ struct GlobalSoloUpdater(Entity<SoloUpdater>);
 
 impl Global for GlobalSoloUpdater {}
 
-struct UpdateAvailableNotification;
 struct UpdateStatusNotification;
-struct DownloadNotification;
 
 /// Starts the GitHub Releases updater (stable builds only, not the
 /// Microsoft Store's).
@@ -776,22 +784,25 @@ pub fn init(cx: &mut App) {
         return;
     }
     let current_version = release_channel::AppVersion::global(cx);
+    let entry = update_button::entry_or_init(cx);
     let updater = cx.new(|cx| {
-        let mut updater = SoloUpdater {
-            current_version,
-            activity: Activity::Idle,
-            ready_on_quit: None,
-            checked: UpdateStatus::NotChecked,
-            poll_task: None,
-            _quit_subscription: cx.on_app_quit(|updater: &mut SoloUpdater, _| {
-                updater.install_ready_update_at_quit();
-                async {}
-            }),
-        };
+        let mut updater = SoloUpdater::new(current_version, entry.clone());
+        updater._quit_subscription = Some(cx.on_app_quit(|updater: &mut SoloUpdater, _| {
+            updater.install_ready_update_at_quit();
+            async {}
+        }));
         updater.sync_polling(cx);
         cx.observe_global::<SettingsStore>(|updater, cx| updater.sync_polling(cx))
             .detach();
         updater
+    });
+    let weak = updater.downgrade();
+    entry.update(cx, |entry, _| {
+        entry.set_handler(move |action, _window, cx| {
+            if let Some(updater) = weak.upgrade() {
+                updater.update(cx, |updater, cx| updater.act(action, cx));
+            }
+        })
     });
     cx.set_global(GlobalSoloUpdater(updater.clone()));
     report_last_update(updater.read(cx).current_version.clone(), cx);
@@ -858,6 +869,14 @@ fn update_download_dir() -> PathBuf {
         .join(std::process::id().to_string())
 }
 
+/// The names of the programs (agents) that quitting Solo now would end.
+pub fn running_program_names(cx: &App) -> Vec<String> {
+    running_programs(cx)
+        .iter()
+        .map(|program| program.name.to_string())
+        .collect()
+}
+
 /// The programs running in Solo's windows that quitting would end, e.g.
 /// agents in terminals (not those that keep running in a terminal host).
 fn running_programs(cx: &App) -> Vec<RunningProgram> {
@@ -878,32 +897,12 @@ fn running_programs(cx: &App) -> Vec<RunningProgram> {
         .collect()
 }
 
-/// The "check for updates" command: always checks, and always reports back.
-/// The Microsoft Store's Solo offers to open its page in the Store instead.
+/// The "check for updates" command: always checks, and reports back on the
+/// update button. The Microsoft Store's Solo asks the Store
+/// ([`crate::store_update`]).
 pub fn check_manually(window: &mut Window, cx: &mut App) {
     if is_store_package() {
-        let answer = window.prompt(
-            gpui::PromptLevel::Info,
-            util::i18n::tr(
-                "Solo is updated by the Microsoft Store",
-                "Solo 由 Microsoft Store 更新",
-            ),
-            Some(util::i18n::tr(
-                "The Store installs new versions on its own. To get one now, open Solo Code's page in the Store or its Downloads.",
-                "Store 会自动安装新版本。想马上更新，可以在 Store 里打开 Solo Code 的页面或“下载”页。",
-            )),
-            &[
-                util::i18n::tr("Open the Microsoft Store", "打开 Microsoft Store"),
-                util::i18n::tr("OK", "确定"),
-            ],
-            cx,
-        );
-        cx.spawn(async move |cx| {
-            if answer.await == Ok(0) {
-                cx.update(|cx| cx.open_url(STORE_PAGE_URL));
-            }
-        })
-        .detach();
+        crate::store_update::check_manually(cx);
         return;
     }
     match cx.try_global::<GlobalSoloUpdater>() {
@@ -940,7 +939,40 @@ fn show_status_message(message: String, cx: &mut App) {
     );
 }
 
+/// The most characters of a failure's reason the update menu shows.
+const REASON_MAX_CHARS: usize = 160;
+
+/// Why a check or an update failed, for the update menu: `prefix` and the
+/// error, cut short.
+fn failure_reason(prefix: &str, error: &anyhow::Error) -> String {
+    truncate_at_boundary(&format!("{prefix}{error:#}"), REASON_MAX_CHARS)
+}
+
+/// What the update button offers for `release`.
+fn offer_for(release: &SoloRelease) -> UpdateOffer {
+    UpdateOffer {
+        version: Some(release.version.clone()),
+        notes: Some(release.notes.clone()),
+        notes_url: Some(release.html_url.clone()),
+        can_install: can_install() && release.installer.is_some(),
+    }
+}
+
 impl SoloUpdater {
+    fn new(current_version: Version, entry: Entity<UpdateEntry>) -> Self {
+        SoloUpdater {
+            current_version,
+            activity: Activity::Idle,
+            ready_on_quit: None,
+            checked: UpdateStatus::NotChecked,
+            release: None,
+            retry: None,
+            entry,
+            poll_task: None,
+            _quit_subscription: None,
+        }
+    }
+
     /// What's known about updates: whether a check runs, or what the last
     /// one found.
     pub fn status(&self) -> UpdateStatus {
@@ -948,6 +980,34 @@ impl SoloUpdater {
             Activity::Checking => UpdateStatus::Checking,
             _ => self.checked.clone(),
         }
+    }
+
+    fn show(&self, state: ButtonState, cx: &mut Context<Self>) {
+        self.entry
+            .update(cx, |entry, cx| entry.set_state(state, cx));
+    }
+
+    /// Offers `release` on the update button.
+    fn offer(&mut self, release: SoloRelease, state: ButtonState, cx: &mut Context<Self>) {
+        let offer = offer_for(&release);
+        self.release = Some(release);
+        self.entry.update(cx, |entry, cx| {
+            entry.set_offer(Some(offer), cx);
+            entry.set_state(state, cx);
+        });
+    }
+
+    /// No update to offer: the button goes (or says "up to date" first).
+    fn withdraw(&mut self, up_to_date: bool, cx: &mut Context<Self>) {
+        self.release = None;
+        self.entry.update(cx, |entry, cx| {
+            entry.set_offer(None, cx);
+            if up_to_date {
+                entry.show_up_to_date(cx);
+            } else {
+                entry.set_state(ButtonState::Hidden, cx);
+            }
+        });
     }
 
     fn sync_polling(&mut self, cx: &mut Context<Self>) {
@@ -970,32 +1030,63 @@ impl SoloUpdater {
         }
     }
 
-    fn check(&mut self, check_type: UpdateCheckType, cx: &mut Context<Self>) {
-        match &self.activity {
-            Activity::Idle => {}
-            Activity::Checking => return,
-            Activity::Downloading { version, .. } => {
-                if check_type.is_manual() {
-                    show_status_message(
-                        if util::i18n::is_chinese() {
-                            format!("正在下载 Solo {version}…")
-                        } else {
-                            format!("Downloading Solo {version}…")
-                        },
-                        cx,
-                    );
+    /// Carries out what the user picked in the update button's menu.
+    fn act(&mut self, action: UpdateAction, cx: &mut Context<Self>) {
+        match action {
+            UpdateAction::Restart | UpdateAction::OnQuit => {
+                let when = if action == UpdateAction::Restart {
+                    InstallWhen::Restart
+                } else {
+                    InstallWhen::OnQuit
+                };
+                if let Some(release) = self.release.clone() {
+                    self.install(release, when, false, cx);
                 }
-                return;
             }
-            Activity::Installing => return,
+            UpdateAction::ViewNotes => {
+                if let Some(release) = &self.release {
+                    cx.open_url(&release.html_url);
+                }
+            }
+            UpdateAction::Skip => self.skip(cx),
+            UpdateAction::Retry => match (self.retry.take(), self.release.clone()) {
+                (Some(Retry::Install(when)), Some(release)) => {
+                    self.install(release, when, false, cx)
+                }
+                _ => self.check(UpdateCheckType::Manual, cx),
+            },
+        }
+    }
+
+    /// "Skip this version": the button goes until a newer version comes out.
+    fn skip(&mut self, cx: &mut Context<Self>) {
+        let Some(release) = self.release.clone() else {
+            return;
+        };
+        let version = release.version;
+        self.forget_skipped(&version);
+        if let Some(kvp) = crate::store_update::key_value_store(cx) {
+            let skipped = version.to_string();
+            cx.background_spawn(async move {
+                kvp.write_kvp(SKIPPED_VERSION_KEY.to_string(), skipped)
+                    .await
+                    .log_err();
+            })
+            .detach();
+        }
+        log::info!("solo update: skipping {version}");
+        self.withdraw(false, cx);
+    }
+
+    fn check(&mut self, check_type: UpdateCheckType, cx: &mut Context<Self>) {
+        // A download or an install shows on the button already.
+        if !matches!(self.activity, Activity::Idle) {
+            return;
         }
         self.activity = Activity::Checking;
         cx.notify();
         if check_type.is_manual() {
-            show_status_message(
-                util::i18n::tr("Checking for updates…", "正在检查更新…").to_string(),
-                cx,
-            );
+            self.show(ButtonState::Checking, cx);
         }
 
         let http = cx.http_client();
@@ -1014,6 +1105,7 @@ impl SoloUpdater {
         .detach();
     }
 
+    /// Shows what a check found on the update button: never a notification.
     fn handle_outcome(
         &mut self,
         outcome: Result<CheckOutcome>,
@@ -1021,16 +1113,14 @@ impl SoloUpdater {
         cx: &mut Context<Self>,
     ) {
         self.checked = update_status(&outcome);
+        let ready = self
+            .ready_on_quit
+            .as_ref()
+            .map(|ready| ready.version.clone());
         match outcome {
-            Ok(CheckOutcome::UpdateAvailable(release)) if self.ready_on_quit.is_some() => {
-                let ready = self
-                    .ready_on_quit
-                    .as_ref()
-                    .map(|ready| ready.version.clone());
+            Ok(CheckOutcome::UpdateAvailable(release)) if ready.is_some() => {
                 if ready.as_ref() == Some(&release.version) {
-                    if check_type.is_manual() {
-                        show_status_message(on_quit_message(&release.version), cx);
-                    }
+                    self.offer(release, ButtonState::OnQuit, cx);
                 } else {
                     // The user chose to update when Solo quits: they get the
                     // newest version then, without being asked again.
@@ -1038,70 +1128,45 @@ impl SoloUpdater {
                         "solo update: {} replaces the update waiting for Solo to quit",
                         release.version
                     );
+                    self.show(ButtonState::OnQuit, cx);
                     self.install(release, InstallWhen::OnQuit, true, cx);
                 }
             }
             Ok(CheckOutcome::UpdateAvailable(release)) => {
                 log::info!("solo update: {} is available", release.version);
-                if check_type.is_manual() {
-                    dismiss_app_notification(
-                        &NotificationId::unique::<UpdateStatusNotification>(),
-                        cx,
-                    );
-                }
-                show_update_available(release, cx);
+                self.offer(release, ButtonState::Available, cx);
             }
             Ok(CheckOutcome::UpToDate) => {
                 log::info!("solo update: up to date ({})", self.current_version);
-                if check_type.is_manual() {
-                    let version = &self.current_version;
-                    show_status_message(
-                        if util::i18n::is_chinese() {
-                            format!("已是最新版本 {version}")
-                        } else {
-                            format!("Solo is up to date ({version})")
-                        },
-                        cx,
-                    );
-                }
+                self.withdraw(check_type.is_manual(), cx);
             }
             Ok(CheckOutcome::Skipped(version)) => {
                 log::info!("solo update: {version} is available but was skipped");
+                if ready.is_some() {
+                    self.show(ButtonState::OnQuit, cx);
+                } else {
+                    self.withdraw(false, cx);
+                }
             }
             Err(error) => {
                 log::warn!("solo update: check failed: {error:#}");
                 if check_type.is_manual() {
-                    show_status_message(
-                        if util::i18n::is_chinese() {
-                            format!("检查更新失败：{error:#}")
-                        } else {
-                            format!("Couldn't check for updates: {error:#}")
+                    self.retry = Some(Retry::Check);
+                    let prefix = util::i18n::tr("Couldn't check for updates: ", "检查更新失败：");
+                    self.show(
+                        ButtonState::Failed {
+                            reason: failure_reason(prefix, &error),
                         },
                         cx,
                     );
+                } else if ready.is_some() {
+                    self.show(ButtonState::OnQuit, cx);
+                } else if self.release.is_some() {
+                    self.show(ButtonState::Available, cx);
                 }
+                // Otherwise an automatic check says nothing; it's tried again
+                // later.
             }
-        }
-    }
-
-    fn progress_text(&self) -> String {
-        match &self.activity {
-            Activity::Downloading {
-                version, percent, ..
-            } => {
-                let percent = percent.map(|p| format!(" {p}%")).unwrap_or_default();
-                if util::i18n::is_chinese() {
-                    format!("正在下载 Solo {version}…{percent}")
-                } else {
-                    format!("Downloading Solo {version}…{percent}")
-                }
-            }
-            Activity::Installing => util::i18n::tr(
-                "Closing Solo to install the update…",
-                "正在关闭 Solo 以安装更新…",
-            )
-            .to_string(),
-            _ => String::new(),
         }
     }
 
@@ -1115,20 +1180,18 @@ impl SoloUpdater {
         if !matches!(self.activity, Activity::Idle) {
             return;
         }
-        let Some(installer) = release.installer else {
+        let Some(installer) = release.installer.clone() else {
             cx.open_url(&release.html_url);
             return;
         };
-        let version = release.version;
+        let version = release.version.clone();
         // Already downloaded, to install when Solo quits.
         let downloaded = self
             .ready_on_quit
             .clone()
             .filter(|ready| ready.version == version && ready.installer.is_file());
-        if let Some(ready) = &downloaded
-            && when == InstallWhen::OnQuit
-        {
-            show_status_message(on_quit_message(&ready.version), cx);
+        if downloaded.is_some() && when == InstallWhen::OnQuit {
+            self.offer(release, ButtonState::OnQuit, cx);
             return;
         }
         self.activity = Activity::Downloading {
@@ -1139,7 +1202,7 @@ impl SoloUpdater {
         };
         cx.notify();
         if !quiet {
-            show_download_notification(cx.entity(), cx);
+            self.show(ButtonState::Downloading { percent: None }, cx);
         }
 
         let http = cx.http_client();
@@ -1169,41 +1232,51 @@ impl SoloUpdater {
                             "solo update: {} will be installed when Solo quits",
                             ready.version
                         );
-                        Ok(InstallResult::OnQuit(ready.version))
+                        Ok(InstallResult::OnQuit)
                     }
                 }
             }
             .await;
-            cx.update(|cx| {
-                dismiss_app_notification(&NotificationId::unique::<DownloadNotification>(), cx)
-            });
-            let message = match result {
-                Ok(InstallResult::Quitting) => return,
-                Ok(InstallResult::OnQuit(version)) => on_quit_message(&version),
-                Ok(InstallResult::QuitCancelled) => util::i18n::tr(
-                    "Update cancelled because Solo didn't quit.",
-                    "Solo 没有退出，更新已取消。",
-                )
-                .to_string(),
-                Err(error) => {
-                    log::error!("solo update: install failed: {error:#}");
-                    if util::i18n::is_chinese() {
-                        format!("更新失败：{error:#}")
-                    } else {
-                        format!("Update failed: {error:#}")
-                    }
-                }
-            };
             this.update(cx, |this, cx| {
-                this.activity = Activity::Idle;
-                cx.notify();
-                if !quiet {
-                    show_status_message(message, cx);
-                }
+                this.finish_install(result, release, when, quiet, cx)
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Shows how an update went on the button.
+    fn finish_install(
+        &mut self,
+        result: Result<InstallResult>,
+        release: SoloRelease,
+        when: InstallWhen,
+        quiet: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(result, Ok(InstallResult::Quitting)) {
+            self.activity = Activity::Idle;
+            cx.notify();
+        }
+        match result {
+            Ok(InstallResult::Quitting) => {}
+            Ok(InstallResult::OnQuit) => self.offer(release, ButtonState::OnQuit, cx),
+            Ok(InstallResult::QuitCancelled) => {
+                log::info!("solo update: cancelled because Solo didn't quit");
+                self.offer(release, ButtonState::Available, cx);
+            }
+            Err(error) => {
+                log::error!("solo update: install failed: {error:#}");
+                if quiet {
+                    // The update already waiting for Solo to quit still is.
+                    self.show(ButtonState::OnQuit, cx);
+                    return;
+                }
+                self.retry = Some(Retry::Install(when));
+                let reason = failure_reason("", &error);
+                self.offer(release, ButtonState::Failed { reason }, cx);
+            }
+        }
     }
 
     /// Starts the helper for an update waiting for Solo to quit. It can't stop
@@ -1237,18 +1310,10 @@ impl SoloUpdater {
     }
 }
 
-fn on_quit_message(version: &Version) -> String {
-    if util::i18n::is_chinese() {
-        format!("Solo {version} 会在你退出 Solo 时安装。")
-    } else {
-        format!("Solo {version} will be installed when you quit Solo.")
-    }
-}
-
 enum InstallResult {
     Quitting,
     QuitCancelled,
-    OnQuit(Version),
+    OnQuit,
 }
 
 /// Downloads and checks the installer.
@@ -1279,9 +1344,21 @@ async fn download(
 
     download_installer(http, &installer, &current, &target, move |percent| {
         this.update(&mut cx.clone(), |this, cx| {
-            if let Activity::Downloading { percent: p, .. } = &mut this.activity {
+            if let Activity::Downloading {
+                percent: p, quiet, ..
+            } = &mut this.activity
+            {
                 *p = Some(percent);
+                let quiet = *quiet;
                 cx.notify();
+                if !quiet {
+                    this.show(
+                        ButtonState::Downloading {
+                            percent: Some(percent),
+                        },
+                        cx,
+                    );
+                }
             }
         })
         .ok();
@@ -1305,6 +1382,7 @@ async fn install_and_restart(
     this.update(cx, |this, cx| {
         this.activity = Activity::Installing;
         cx.notify();
+        this.show(ButtonState::Installing, cx);
     })?;
 
     // Close every window the way Quit does, so unsaved files still prompt.
@@ -1327,125 +1405,6 @@ async fn install_and_restart(
     );
     cx.update(|cx| cx.quit());
     Ok(InstallResult::Quitting)
-}
-
-fn show_download_notification(updater: Entity<SoloUpdater>, cx: &mut App) {
-    show_app_notification(
-        NotificationId::unique::<DownloadNotification>(),
-        cx,
-        move |cx| {
-            let updater = updater.clone();
-            cx.new(|cx| {
-                cx.observe(&updater, |_, _, cx| cx.notify()).detach();
-                let updater = updater.downgrade();
-                MessageNotification::new_from_builder(cx, move |_, cx| {
-                    let text = updater
-                        .upgrade()
-                        .map(|updater| updater.read(cx).progress_text())
-                        .unwrap_or_default();
-                    Label::new(text).into_any_element()
-                })
-                .show_suppress_button(false)
-            })
-        },
-    );
-}
-
-fn show_update_available(release: SoloRelease, cx: &mut App) {
-    show_app_notification(
-        NotificationId::unique::<UpdateAvailableNotification>(),
-        cx,
-        move |cx| {
-            let release = release.clone();
-            cx.new(|cx| {
-                let version = release.version.clone();
-                let title = if util::i18n::is_chinese() {
-                    format!("Solo {version} 可用")
-                } else {
-                    format!("Solo {version} is available")
-                };
-                let excerpt = notes_summary(&release.notes, util::i18n::is_chinese());
-                let mut notification = MessageNotification::new_from_builder(cx, move |_, _| {
-                    Label::new(title.clone()).into_any_element()
-                })
-                .show_suppress_button(false);
-                if let Some(excerpt) = excerpt {
-                    notification = notification.secondary_content(excerpt);
-                }
-                let skip = {
-                    move |_: &mut Window, cx: &mut Context<MessageNotification>| {
-                        let kvp = KeyValueStore::global(cx);
-                        if let Some(global) = cx.try_global::<GlobalSoloUpdater>() {
-                            let updater = global.0.clone();
-                            updater.update(cx, |updater, _| updater.forget_skipped(&version));
-                        }
-                        let version = version.to_string();
-                        cx.background_spawn(async move {
-                            kvp.write_kvp(SKIPPED_VERSION_KEY.to_string(), version)
-                                .await
-                                .log_err();
-                        })
-                        .detach();
-                    }
-                };
-                if !(can_install() && release.installer.is_some()) {
-                    return notification
-                        .secondary_message(util::i18n::tr("Skip This Version", "跳过此版本"))
-                        .secondary_on_click(skip)
-                        .more_info_message(util::i18n::tr("View Release Notes", "查看更新内容"))
-                        .more_info_url(release.html_url.clone());
-                }
-                let install = |when: InstallWhen| {
-                    let release = release.clone();
-                    move |_: &mut Window, cx: &mut Context<MessageNotification>| {
-                        if let Some(global) = cx.try_global::<GlobalSoloUpdater>() {
-                            let updater = global.0.clone();
-                            let release = release.clone();
-                            updater.update(cx, |updater, cx| {
-                                updater.install(release, when, false, cx)
-                            });
-                        }
-                    }
-                };
-                let restart = util::i18n::tr("Update and Restart", "更新并重启");
-                let on_quit = util::i18n::tr("Install When Solo Quits", "退出时安装");
-                // With agents running, updating now would end them: installing
-                // when the user quits comes first.
-                let running = running_programs(cx);
-                let notification = if running.is_empty() {
-                    notification
-                        .primary_message(restart)
-                        .primary_on_click(install(InstallWhen::Restart))
-                        .secondary_message(on_quit)
-                        .secondary_on_click(install(InstallWhen::OnQuit))
-                } else {
-                    let names = running
-                        .iter()
-                        .map(|program| program.name.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let warning = if util::i18n::is_chinese() {
-                        format!("现在更新并重启会结束：{names}")
-                    } else {
-                        format!("Updating and restarting now ends: {names}")
-                    };
-                    let notes = notes_summary(&release.notes, util::i18n::is_chinese())
-                        .map(|excerpt| format!("{warning}\n\n{excerpt}"))
-                        .unwrap_or(warning);
-                    notification
-                        .secondary_content(notes)
-                        .primary_message(on_quit)
-                        .primary_on_click(install(InstallWhen::OnQuit))
-                        .secondary_message(restart)
-                        .secondary_on_click(install(InstallWhen::Restart))
-                };
-                notification
-                    .secondary_menu_entry(util::i18n::tr("Skip This Version", "跳过此版本"), skip)
-                    .more_info_message(util::i18n::tr("View Release Notes", "查看更新内容"))
-                    .more_info_url(release.html_url.clone())
-            })
-        },
-    );
 }
 
 #[cfg(test)]
@@ -1886,6 +1845,139 @@ mod tests {
             startup_notice(&version("1.28.3"), Some(&version("1.28.4"))),
             Some(StartupNotice::NotInstalled(version("1.28.4")))
         );
+    }
+
+    fn button_updater(cx: &mut TestAppContext) -> (Entity<SoloUpdater>, Entity<UpdateEntry>) {
+        cx.update(|cx| {
+            let entry = update_button::entry_or_init(cx);
+            let updater = cx.new(|_| SoloUpdater::new(version("1.28.1"), entry.clone()));
+            (updater, entry)
+        })
+    }
+
+    fn installable(text: &str) -> SoloRelease {
+        SoloRelease {
+            notes: "Solo 1.29：更快。
+Solo 1.29: faster."
+                .into(),
+            installer: Some(SoloInstaller {
+                name: format!("Solo-Setup-{text}.exe"),
+                url: "https://example.com/setup.exe".into(),
+                size: 1,
+                sha256: None,
+            }),
+            ..release(text)
+        }
+    }
+
+    #[gpui::test]
+    async fn checks_show_on_the_button_not_in_notifications(cx: &mut TestAppContext) {
+        let (updater, entry) = button_updater(cx);
+        let state = |cx: &mut TestAppContext| entry.read_with(cx, |e, _| e.state().clone());
+
+        // An automatic check finding a version: the button, nothing else
+        // (the updater has no way to show a notification any more).
+        updater.update(cx, |updater, cx| {
+            updater.handle_outcome(
+                Ok(CheckOutcome::UpdateAvailable(installable("1.29.0"))),
+                UpdateCheckType::Automatic,
+                cx,
+            )
+        });
+        assert_eq!(state(cx), ButtonState::Available);
+        let offer = entry.read_with(cx, |e, _| e.offer().cloned()).unwrap();
+        assert_eq!(offer.version, Some(version("1.29.0")));
+        assert_eq!(offer.can_install, cfg!(target_os = "windows"));
+        assert_eq!(
+            update_button::offer_summary(&offer, true).as_deref(),
+            Some("Solo 1.29：更快。")
+        );
+
+        // A failed automatic check keeps the offer; a failed manual one says so.
+        updater.update(cx, |updater, cx| {
+            updater.handle_outcome(
+                Err(anyhow::anyhow!("offline")),
+                UpdateCheckType::Automatic,
+                cx,
+            )
+        });
+        assert_eq!(state(cx), ButtonState::Available);
+        updater.update(cx, |updater, cx| {
+            updater.handle_outcome(Err(anyhow::anyhow!("offline")), UpdateCheckType::Manual, cx)
+        });
+        let ButtonState::Failed { reason } = state(cx) else {
+            panic!("expected a failure");
+        };
+        assert!(reason.contains("offline"), "{reason}");
+
+        // Skipped: gone, and automatic checks keep it gone.
+        updater.update(cx, |updater, cx| updater.act(UpdateAction::Skip, cx));
+        assert_eq!(state(cx), ButtonState::Hidden);
+        updater.update(cx, |updater, cx| {
+            updater.handle_outcome(
+                Ok(CheckOutcome::Skipped(version("1.29.0"))),
+                UpdateCheckType::Automatic,
+                cx,
+            )
+        });
+        assert_eq!(state(cx), ButtonState::Hidden);
+        // A newer version brings it back.
+        updater.update(cx, |updater, cx| {
+            updater.handle_outcome(
+                Ok(CheckOutcome::UpdateAvailable(installable("1.29.1"))),
+                UpdateCheckType::Automatic,
+                cx,
+            )
+        });
+        assert_eq!(state(cx), ButtonState::Available);
+
+        // Up to date: said for a few seconds after a manual check only.
+        updater.update(cx, |updater, cx| {
+            updater.handle_outcome(Ok(CheckOutcome::UpToDate), UpdateCheckType::Manual, cx)
+        });
+        assert_eq!(state(cx), ButtonState::UpToDate);
+        cx.executor()
+            .advance_clock(update_button::UP_TO_DATE_DURATION * 2);
+        assert_eq!(state(cx), ButtonState::Hidden);
+        updater.update(cx, |updater, cx| {
+            updater.handle_outcome(Ok(CheckOutcome::UpToDate), UpdateCheckType::Automatic, cx)
+        });
+        assert_eq!(state(cx), ButtonState::Hidden);
+    }
+
+    #[gpui::test]
+    async fn install_results_show_on_the_button(cx: &mut TestAppContext) {
+        let (updater, entry) = button_updater(cx);
+        let state = |cx: &mut TestAppContext| entry.read_with(cx, |e, _| e.state().clone());
+        let finish = |result: Result<InstallResult>, quiet: bool, cx: &mut TestAppContext| {
+            updater.update(cx, |updater, cx| {
+                updater.finish_install(
+                    result,
+                    installable("1.29.0"),
+                    InstallWhen::OnQuit,
+                    quiet,
+                    cx,
+                )
+            })
+        };
+        finish(Ok(InstallResult::OnQuit), false, cx);
+        assert_eq!(state(cx), ButtonState::OnQuit);
+        finish(Ok(InstallResult::QuitCancelled), false, cx);
+        assert_eq!(state(cx), ButtonState::Available);
+        finish(Err(anyhow::anyhow!("disk full")), false, cx);
+        assert_eq!(
+            state(cx),
+            ButtonState::Failed {
+                reason: "disk full".into()
+            }
+        );
+        assert_eq!(
+            updater.read_with(cx, |updater, _| updater.retry),
+            Some(Retry::Install(InstallWhen::OnQuit))
+        );
+        // Replacing an update waiting for Solo to quit failed: that one stays.
+        finish(Err(anyhow::anyhow!("disk full")), true, cx);
+        assert_eq!(state(cx), ButtonState::OnQuit);
     }
 
     #[test]

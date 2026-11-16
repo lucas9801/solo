@@ -108,6 +108,31 @@ fn register_restart(command_line: &str) {
 #[cfg(not(windows))]
 fn register_restart(_command_line: &str) {}
 
+/// Undoes [`register_restart_after_update`]: an update that closes Solo
+/// doesn't start it again (the user is quitting it).
+pub fn unregister_restart_after_update() {
+    if !is_packaged() {
+        return;
+    }
+    unregister_restart();
+}
+
+#[cfg(windows)]
+fn unregister_restart() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn UnregisterApplicationRestart() -> i32;
+    }
+    // SAFETY: takes no arguments.
+    let result = unsafe { UnregisterApplicationRestart() };
+    if result < 0 {
+        log::warn!("UnregisterApplicationRestart failed: {result:#x}");
+    }
+}
+
+#[cfg(not(windows))]
+fn unregister_restart() {}
+
 /// The arguments for `RegisterApplicationRestart` (without the program, which
 /// Windows puts first), quoted the way `CommandLineToArgvW` splits them;
 /// `None` if they're too long.
