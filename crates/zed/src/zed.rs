@@ -6446,6 +6446,7 @@ mod tests {
                 "branch_picker",
                 "bedrock",
                 "branches",
+                "browser",
                 "buffer_search",
                 "call_hierarchy",
                 "channel_modal",
@@ -6730,6 +6731,7 @@ mod tests {
                 cx,
             );
             image_viewer::init(cx);
+            browser::init(cx);
             language_model::init(cx);
             client::RefreshLlmTokenListener::register(
                 app_state.client.clone(),

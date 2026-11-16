@@ -109,6 +109,7 @@ nothing to clean up there.
 | --- | --- |
 | `%APPDATA%\Solo` | Settings: `settings.json`, `keymap.json`, `tasks.json`, `debug.json`, `AGENTS.md`, `workflows.json` (saved commands) |
 | `%LOCALAPPDATA%\Solo` | Data: `logs\`, `db\` (workspace and session state), `extensions\`, `languages\` (downloaded language servers), `node\`, `external_agents\`, `terminal_sessions\` (restored terminal contents, removed after 30 days), `agent_turns\` (agent turn snapshots), `terminal-host\` (the terminal host's copy), `hang_traces\` |
+| `%LOCALAPPDATA%\Solo\browser` | The built-in browser's cookies, site data and element screenshots (`picks\`, kept for a week) |
 | `%TEMP%\solo-shell-integration` | Shell integration scripts and Claude Code hook settings |
 | `%TEMP%\solo-update` | Downloaded update installers and their logs |
 | `.solo\` in a project | Project settings, tasks and debug scenarios (Zed's `.zed\` is read too) |
@@ -317,6 +318,66 @@ an agent waiting in the background; its menu lists the terminals.
 - **Enable Remote Control** in a Claude Code terminal's menu types
   `/remote-control` into Claude Code, so you can carry on from the Claude app
   on your phone.
+
+### The browser
+Web pages open in a tab of the editor area, next to the terminal, shown by the
+Microsoft Edge WebView2 runtime that comes with Windows 11 (on a computer
+without it, the tab says so and offers the download).
+
+- **Opening pages**: `ctrl`-click a link in a terminal, the Markdown preview
+  or the timeline. Where it opens follows Settings > Browser > **Open Links
+  In**: local addresses (localhost, 127.0.0.1, [::1], *.localhost) in Solo and
+  the rest in the system browser by default, or all in Solo, or all in the
+  system browser. `ctrl-shift`-click opens a link the other way. A page that
+  is already open is switched to rather than opened again. The command
+  palette's **browser: open browser** opens an empty tab.
+- **Toolbar**: back, forward, reload (right-click: reload without the cache),
+  the address (`5173` and `localhost:5173` both mean
+  `http://localhost:5173/`; only http, https and local HTML files open), the
+  viewport (desktop, tablet 768 x 1024, phone 390 x 844), **Pick**, and the
+  `...` menu: developer tools (`f12`), find in page (`ctrl-f`), open in the
+  system browser, copy address.
+- Links that open a new window open a new tab. Open tabs come back after a
+  restart (only their addresses are kept).
+- While a page has focus, Solo's shortcuts with `ctrl` or `alt` (and function
+  keys) still work, except those pages need for text: `ctrl-a/c/v/x/z/y`,
+  word moves and deletes, `ctrl-b/i/u/k`, `ctrl-enter`. `esc` and `tab` stay
+  with the page.
+- Cookies and site data are kept in `%LOCALAPPDATA%\Solo\browser`.
+
+**Comments on page elements.** **Pick** outlines the element under the mouse
+with its selector and size; clicking one (the page's own click handlers don't
+run) opens a box for your comment. Added elements get a number on the page;
+click it to change or delete the comment. `esc` stops picking. **Send to
+Agent · n** pastes the comments into the prompt of the agent used last
+(without sending it); the arrow next to it lets you choose the agent. Each
+comment comes with the element's selector, text, HTML (cut at about 1 KB), a
+few computed styles, and the path of a screenshot of the element, kept in
+`%LOCALAPPDATA%\Solo\browser\picks` for a week. With no agent running, the
+comments are copied to the clipboard. After a reload or a hot update the
+elements are found again by their selectors.
+
+**Letting agents use the browser.** With Settings > Browser > **Allow Agents
+to Control the Browser** on (off by default; takes effect after Solo
+restarts), Solo's browser opens a debugging port on 127.0.0.1 (a random one),
+and agents started afterwards in Solo's terminals can open pages, read them,
+click, fill in forms and take screenshots in it, while you watch. **This
+includes pages you are signed in to, and any program on this computer that
+finds the port can do the same**, so turn it on only while you need it.
+
+- Claude Code gets a `solo-browser` MCP server (Playwright MCP, run with
+  `npx`; Node.js is needed): the `claude` wrapper adds `--mcp-config` before
+  `--settings`, which adds it to your own MCP servers without changing them.
+  It needs `"claude_code_hooks"` on, like the wrapper itself.
+- Codex gets the same server through a `-c mcp_servers.solo-browser=...`
+  override for each session (needs `"codex_hooks"`).
+- Every terminal gets `SOLO_BROWSER_CDP=http://127.0.0.1:<port>`. For other
+  agents (Copilot CLI, OpenCode), add an MCP server that runs
+  `npx -y @playwright/mcp@0.0.85 --cdp-endpoint $SOLO_BROWSER_CDP` in their
+  own MCP configuration.
+- Pages an agent opens appear as tabs in the editor area without taking the
+  focus. At least one browser tab must be open for the agent to find the
+  browser.
 
 ### Agents keep running when Solo closes
 Each terminal's shell runs in a small background process,

@@ -1691,6 +1691,22 @@
     },
   },
   {
+    "context": "BrowserView",
+    "bindings": {
+      "alt-left": "browser::GoBack",
+      "alt-right": "browser::GoForward",
+      "f5": "browser::Reload",
+      "ctrl-r": "browser::Reload",
+      "ctrl-f5": "browser::HardReload",
+      "ctrl-shift-r": "browser::HardReload",
+      "ctrl-l": "browser::FocusAddressBar",
+      "alt-d": "browser::FocusAddressBar",
+      "ctrl-shift-i": "browser::OpenDevTools",
+      "f12": "browser::OpenDevTools",
+      "ctrl-f": "browser::FindInPage",
+    },
+  },
+  {
     "context": "ImageViewer",
     "bindings": {
       "ctrl-=": "image_viewer::ZoomIn",

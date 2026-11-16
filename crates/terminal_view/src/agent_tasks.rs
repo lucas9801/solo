@@ -2079,7 +2079,9 @@ impl AgentTasksModal {
                                         .style(ButtonStyle::Subtle)
                                         .label_size(LabelSize::Small)
                                         .tooltip(ui::Tooltip::text(url.clone()))
-                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                        .on_click(move |_, window, cx| {
+                                            workspace::Workspace::open_web_link(&url, window, cx)
+                                        }),
                                     )
                                     .child(
                                         Button::new(

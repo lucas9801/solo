@@ -844,7 +844,7 @@ impl AgentTimeline {
 
     fn open_link(&mut self, link: &str, window: &mut Window, cx: &mut Context<Self>) {
         match parse_link(link, self.root.as_deref()) {
-            Link::Url(url) => cx.open_url(&url),
+            Link::Url(url) => workspace::Workspace::open_web_link(&url, window, cx),
             Link::File { path, line } => self.open_file(path, line, None, window, cx),
         }
     }

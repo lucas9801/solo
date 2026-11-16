@@ -1385,7 +1385,7 @@ fn open_preview_url(
             workspace.open_url_or_file(&decoded_path, base_directory.as_deref(), window, cx);
         });
     } else {
-        cx.open_url(url.as_ref());
+        Workspace::open_web_link(url.as_ref(), window, cx);
     }
 }
 

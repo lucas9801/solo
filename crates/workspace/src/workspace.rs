@@ -5369,6 +5369,22 @@ impl Workspace {
     /// This method provides a unified way to handle links that may be either URLs
     /// or file paths, such as those found in markdown documents, terminal output,
     /// or LSP responses.
+    /// SOLO: opens a web link where the "open links" setting says: Solo's
+    /// browser or the system browser. Ctrl+Shift opens it the other way.
+    pub fn open_web_link(url: &str, window: &mut Window, cx: &mut App) {
+        let modifiers = window.modifiers();
+        let action = zed_actions::browser::OpenUrl {
+            url: url.to_string(),
+            alternate: modifiers.control && modifiers.shift,
+            in_background: false,
+        };
+        if window.is_action_available(&action, cx) {
+            window.dispatch_action(action.boxed_clone(), cx);
+        } else {
+            cx.open_url(url);
+        }
+    }
+
     pub fn open_url_or_file(
         &mut self,
         url_or_path: &str,
@@ -5398,7 +5414,7 @@ impl Workspace {
 
         if let Ok(url) = Url::parse(url_or_path) {
             match url.scheme() {
-                "http" | "https" => cx.open_url(url_or_path),
+                "http" | "https" => Self::open_web_link(url_or_path, window, cx),
                 "file" => open_abs_path(self, PathBuf::from(url.path()), cx),
                 _ => cx.open_url(url_or_path),
             }
