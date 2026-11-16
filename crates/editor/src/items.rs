@@ -26,7 +26,7 @@ use language::{
 use lsp::DiagnosticSeverity;
 use multi_buffer::{BufferOffset, MultiBufferOffset, MultiBufferRow, PathKey};
 use project::{
-    File, Project, ProjectItem as _, ProjectPath,
+    File, Project, ProjectEntryId, ProjectItem as _, ProjectPath,
     git_store::GitStore,
     lsp_store::{FormatTrigger, LanguageServerShowDocumentRequest},
     project_settings::ProjectSettings,
@@ -48,7 +48,7 @@ use text::{BufferId, BufferSnapshot, OffsetRangeExt, Selection, ToPoint as _};
 use ui::{IconDecorationKind, prelude::*};
 use util::{
     ResultExt, TryFutureExt, debug_panic,
-    paths::{PathExt, UrlExt as _},
+    paths::{PathExt, SanitizedPath, UrlExt as _},
     rel_path::RelPath,
 };
 use workspace::item::{Dedup, ItemSettings, SerializableItem, TabContentParams};
@@ -2188,12 +2188,17 @@ pub fn active_match_index(
 
 /// Opens a path-like target (e.g. `items.rs:100:5`) in the workspace, moving the cursor
 /// to the one-based row/column if present. Returns whether the target was opened.
+///
+/// SOLO: a directory never becomes a worktree; see [`open_directory_target`].
 pub async fn open_resolved_target(
     workspace: &WeakEntity<Workspace>,
     open_target: &workspace::path_link::OpenTarget,
     cx: &mut AsyncWindowContext,
 ) -> Result<bool> {
     let path_to_open = open_target.path();
+    if open_target.is_dir() {
+        return open_directory_target(workspace, &path_to_open.path, cx).await;
+    }
     let mut opened_items = workspace
         .update_in(cx, |workspace, window, cx| {
             workspace.open_paths(
@@ -2243,16 +2248,96 @@ pub async fn open_resolved_target(
                 .log_err();
         }
         Ok(true)
-    } else if open_target.is_dir() {
-        workspace.update(cx, |workspace, cx| {
-            workspace.project().update(cx, |_, cx| {
-                cx.emit(project::Event::ActivateProjectPanel);
-            })
-        })?;
-        Ok(true)
     } else {
         Ok(false)
     }
+}
+
+/// SOLO: a clicked directory link (in a terminal or a Markdown preview) is
+/// never added to the workspace as a root: one inside a visible worktree is
+/// expanded and selected in the project panel, and one outside every root is
+/// shown in the system's file manager. Adding a folder to the workspace stays
+/// with "Add Folder to Project".
+async fn open_directory_target(
+    workspace: &WeakEntity<Workspace>,
+    abs_path: &Path,
+    cx: &mut AsyncWindowContext,
+) -> Result<bool> {
+    enum Found {
+        Entry(ProjectEntryId),
+        Scan(Task<Result<Option<project::Entry>>>),
+        Outside { is_local: bool },
+    }
+
+    let (project, found) = workspace.update(cx, |workspace, cx| {
+        let project = workspace.project().clone();
+        let found = match visible_worktree_containing(project.read(cx), abs_path, cx) {
+            Some((worktree, rel_path)) => {
+                let entry_id = worktree
+                    .read(cx)
+                    .entry_for_path(&rel_path)
+                    .map(|entry| entry.id);
+                match entry_id {
+                    Some(entry_id) => Found::Entry(entry_id),
+                    // Inside a root but not scanned yet, e.g. within an ignored directory.
+                    None => match worktree.update(cx, |worktree, cx| {
+                        let local = worktree.as_local()?;
+                        Some(local.refresh_entry(rel_path, None, cx))
+                    }) {
+                        Some(scan) => Found::Scan(scan),
+                        None => Found::Outside { is_local: false },
+                    },
+                }
+            }
+            None => Found::Outside {
+                is_local: project.read(cx).is_local(),
+            },
+        };
+        (project, found)
+    })?;
+
+    let entry_id = match found {
+        Found::Entry(entry_id) => Some(entry_id),
+        Found::Scan(scan) => scan.await.log_err().flatten().map(|entry| entry.id),
+        Found::Outside { is_local } => {
+            if is_local {
+                cx.update(|_, cx| cx.open_with_system(abs_path))?;
+            }
+            return Ok(true);
+        }
+    };
+    match entry_id {
+        Some(entry_id) => project.update(cx, |_, cx| {
+            cx.emit(project::Event::RevealInProjectPanel(entry_id));
+        }),
+        // Excluded from the worktree by `file_scan_exclusions`.
+        None => cx.update(|_, cx| cx.open_with_system(abs_path))?,
+    }
+    Ok(true)
+}
+
+/// The innermost visible worktree whose root is `abs_path` or one of its ancestors.
+fn visible_worktree_containing(
+    project: &Project,
+    abs_path: &Path,
+    cx: &App,
+) -> Option<(Entity<project::Worktree>, Arc<RelPath>)> {
+    let abs_path = SanitizedPath::new(abs_path);
+    project
+        .visible_worktrees(cx)
+        .filter_map(|worktree| {
+            let tree = worktree.read(cx);
+            let path_style = tree.path_style();
+            let rel_path = path_style
+                .strip_prefix(abs_path.as_path(), tree.abs_path().as_ref())
+                .ok()
+                .and_then(|path| RelPath::new(path, path_style).ok())?
+                .into_arc();
+            let depth = tree.abs_path().components().count();
+            Some((depth, (worktree, rel_path)))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, found)| found)
 }
 
 pub fn entry_label_color(selected: bool) -> Color {
@@ -2613,7 +2698,12 @@ mod tests {
     use project::FakeFs;
     use serde_json::json;
     use std::path::{Path, PathBuf};
-    use util::{path, paths::PathWithPosition, rel_path::RelPath};
+    use std::{cell::RefCell, rc::Rc};
+    use util::{
+        path,
+        paths::PathWithPosition,
+        rel_path::{RelPath, rel_path},
+    };
     use workspace::path_link::{OpenTarget, OpenTargetFoundBy};
 
     #[gpui::test]
@@ -3312,6 +3402,188 @@ mod tests {
         });
         // Column 4 is the fourth character of `aéøbc` (the `b`), which starts at byte 5.
         assert_eq!(cursor, language::Point::new(1, 5));
+    }
+
+    async fn open_target_in(
+        workspace: &Entity<Workspace>,
+        open_target: OpenTarget,
+        cx: &mut VisualTestContext,
+    ) -> bool {
+        let opened = workspace
+            .update_in(cx, |_, window, cx| {
+                cx.spawn_in(window, async move |workspace, cx| {
+                    open_resolved_target(&workspace, &open_target, cx).await
+                })
+            })
+            .await
+            .expect("opening the target should succeed");
+        cx.run_until_parked();
+        opened
+    }
+
+    fn directory_target(path: &str) -> OpenTarget {
+        OpenTarget::Path(
+            PathWithPosition::from_path(PathBuf::from(path)),
+            true,
+            OpenTargetFoundBy::BackgroundPathResolution,
+        )
+    }
+
+    fn pane_items(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .panes()
+                .iter()
+                .map(|pane| pane.read(cx).items_len())
+                .sum::<usize>()
+        })
+    }
+
+    // SOLO: a directory clicked in a terminal inside a root is revealed in the
+    // project panel; it never becomes a worktree of its own.
+    #[gpui::test]
+    async fn test_open_resolved_directory_inside_a_root(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |_| {});
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/solo"),
+            json!({
+                ".git": {},
+                ".gitignore": "target\n",
+                "crates": { "terminal_view": { "lib.rs": "" } },
+                "target": { "debug": { "solo.exe": "" } },
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/solo").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        cx.run_until_parked();
+
+        let revealed = Rc::new(RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let revealed = revealed.clone();
+            cx.subscribe(&project, move |_, event, _| {
+                if let project::Event::RevealInProjectPanel(entry_id) = event {
+                    revealed.borrow_mut().push(*entry_id);
+                }
+            })
+            .detach();
+        });
+
+        for (dir, rel) in [
+            (path!("/solo/crates/terminal_view"), "crates/terminal_view"),
+            (path!("/solo"), ""),
+            // Ignored, so not scanned until it is asked for.
+            (path!("/solo/target/debug"), "target/debug"),
+        ] {
+            assert!(open_target_in(&workspace, directory_target(dir), cx).await);
+            let expected = project.read_with(cx, |project, cx| {
+                let worktree = project.visible_worktrees(cx).next().unwrap();
+                let worktree = worktree.read(cx);
+                let entry = if rel.is_empty() {
+                    worktree.root_entry()
+                } else {
+                    worktree.entry_for_path(rel_path(rel))
+                };
+                entry.expect("the directory should be in the worktree").id
+            });
+            assert_eq!(revealed.borrow().last(), Some(&expected), "{dir}");
+        }
+
+        assert_eq!(revealed.borrow().len(), 3);
+        assert_eq!(
+            project.read_with(cx, |project, cx| project.worktrees(cx).count()),
+            1
+        );
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace.root_paths(cx)),
+            vec![Arc::from(Path::new(path!("/solo")))]
+        );
+        assert_eq!(
+            pane_items(&workspace, cx),
+            0,
+            "no tab is opened for a directory"
+        );
+        assert!(cx.opened_with_system().is_empty());
+    }
+
+    // SOLO: a directory outside every root, even a drive's root, is shown in
+    // the system's file manager and is not added to the workspace, so the
+    // serialized roots (`Workspace::root_paths`) stay as they were.
+    #[gpui::test]
+    async fn test_open_resolved_directory_outside_the_roots(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |_| {});
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/solo"), json!({ "README.md": "" }))
+            .await;
+        fs.insert_tree(path!("/Windows"), json!({ "System32": {} }))
+            .await;
+        let project = Project::test(fs.clone(), [path!("/solo").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        cx.run_until_parked();
+
+        let drive_root = path!("/");
+        for dir in [drive_root, path!("/Windows")] {
+            assert!(open_target_in(&workspace, directory_target(dir), cx).await);
+        }
+
+        assert_eq!(
+            cx.opened_with_system(),
+            vec![PathBuf::from(drive_root), PathBuf::from(path!("/Windows"))]
+        );
+        assert_eq!(
+            project.read_with(cx, |project, cx| project.worktrees(cx).count()),
+            1
+        );
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace.root_paths(cx)),
+            vec![Arc::from(Path::new(path!("/solo")))]
+        );
+        assert_eq!(pane_items(&workspace, cx), 0);
+    }
+
+    // SOLO: a file outside the roots still opens, in a hidden worktree that is
+    // not one of the workspace's roots.
+    #[gpui::test]
+    async fn test_open_resolved_file_outside_the_roots(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |_| {});
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/solo"), json!({ "README.md": "" }))
+            .await;
+        fs.insert_tree(path!("/notes"), json!({ "todo.txt": "one\ntwo\n" }))
+            .await;
+        let project = Project::test(fs.clone(), [path!("/solo").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let open_target = OpenTarget::Path(
+            PathWithPosition::from_path(PathBuf::from(path!("/notes/todo.txt"))),
+            false,
+            OpenTargetFoundBy::BackgroundPathResolution,
+        );
+        assert!(open_target_in(&workspace, open_target, cx).await);
+
+        let editor = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_item(cx)
+                .and_then(|item| item.act_as::<Editor>(cx))
+                .expect("the file should open in an editor")
+        });
+        let text = editor.update(cx, |editor, cx| editor.text(cx));
+        assert_eq!(text, "one\ntwo\n");
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace.root_paths(cx)),
+            vec![Arc::from(Path::new(path!("/solo")))]
+        );
+        assert!(cx.opened_with_system().is_empty());
     }
 
     #[gpui::test]

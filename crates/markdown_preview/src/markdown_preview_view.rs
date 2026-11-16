@@ -1378,6 +1378,15 @@ fn open_preview_url(
             );
             return;
         }
+
+        open_preview_path(
+            decoded_path.into_owned(),
+            base_directory,
+            workspace,
+            window,
+            cx,
+        );
+        return;
     }
 
     if let Some(workspace) = workspace.upgrade() {
@@ -1487,6 +1496,43 @@ fn open_markdown_link_in_preview(
             preview.update(cx, |view, cx| {
                 view.navigate_to_link_target(link_target, window, cx);
             });
+        })?;
+        anyhow::Ok(())
+    });
+    task.detach_and_notify_err(workspace_for_error, window, cx);
+}
+
+/// SOLO: a link to a directory opens like one clicked in a terminal (see
+/// [`open_resolved_target`]): revealed in the project panel, or shown in the
+/// system's file manager, never added as a worktree. Anything else opens as
+/// before.
+fn open_preview_path(
+    path: String,
+    base_directory: Option<PathBuf>,
+    workspace: &WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let open_target = resolve_open_target(
+        workspace,
+        PathMatching::Exact,
+        &path,
+        base_directory.as_deref(),
+        cx,
+    );
+    let workspace = workspace.clone();
+    let workspace_for_error = workspace.clone();
+    let task = window.spawn(cx, async move |cx| {
+        if let Some(open_target) = open_target.await
+            && open_target.is_dir()
+        {
+            open_resolved_target(&workspace, &open_target, cx)
+                .await
+                .context("opening Markdown preview link")?;
+            return anyhow::Ok(());
+        }
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.open_url_or_file(&path, base_directory.as_deref(), window, cx);
         })?;
         anyhow::Ok(())
     });
@@ -2782,6 +2828,87 @@ mod tests {
                 worktree_id: source_project_path.worktree_id,
                 path: rel_path("images/root.png").into(),
             })
+        );
+    }
+
+    // SOLO: a directory link in a preview opens like one clicked in a
+    // terminal: inside a root it is revealed in the project panel, outside
+    // every root it is shown in the system's file manager, and either way no
+    // worktree is added for it.
+    #[gpui::test]
+    async fn preview_directory_links_never_add_worktrees(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                "docs": {"guide.md": "# Guide\n"},
+                "crates": {"terminal_view": {"lib.rs": ""}},
+            }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({ "data": { "a.txt": "" } }))
+            .await;
+        let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+        register_markdown_language(&project, cx);
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let workspace_weak = workspace.downgrade();
+        cx.run_until_parked();
+
+        let revealed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let revealed = revealed.clone();
+            cx.subscribe(&project, move |_, event, _| {
+                if let project::Event::RevealInProjectPanel(entry_id) = event {
+                    revealed.borrow_mut().push(*entry_id);
+                }
+            })
+            .detach();
+        });
+
+        for (url, fragment) in [
+            ("../crates/terminal_view", None),
+            ("../crates/terminal_view", Some("L3")),
+            (path!("/outside/data"), None),
+        ] {
+            multi_workspace.update_in(cx, |_, window, cx| {
+                open_preview_url(
+                    url.into(),
+                    fragment.map(Into::into),
+                    Some(PathBuf::from(path!("/project/docs"))),
+                    None,
+                    &workspace_weak,
+                    window,
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+        }
+
+        let terminal_view = project.read_with(cx, |project, cx| {
+            let worktree = project.visible_worktrees(cx).next().unwrap();
+            worktree
+                .read(cx)
+                .entry_for_path(rel_path("crates/terminal_view"))
+                .unwrap()
+                .id
+        });
+        assert_eq!(*revealed.borrow(), vec![terminal_view, terminal_view]);
+        assert_eq!(
+            cx.opened_with_system(),
+            vec![PathBuf::from(path!("/outside/data"))]
+        );
+        assert_eq!(
+            project.read_with(cx, |project, cx| project.worktrees(cx).count()),
+            1
+        );
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace.items(cx).count()),
+            0
         );
     }
 
