@@ -61,6 +61,28 @@ pub fn bundled_executable(stem: &str) -> Option<PathBuf> {
     select_bundled_executable(stem, exe.parent()?)
 }
 
+/// When Solo is packaged, a folder of its own that programs outside the
+/// package see at the same path: in the package's `LocalCache` folder
+/// (`%LOCALAPPDATA%\Packages\<family name>\LocalCache\Solo`), which Windows
+/// removes with the package. `None` when Solo isn't packaged.
+///
+/// Files Solo hands to its terminals' shells and agents go here. Without the
+/// `unvirtualizedResources` capability (which the Store doesn't grant Solo),
+/// a package's new files in `%LOCALAPPDATA%` and `%APPDATA%` (Solo's data
+/// folder among them) are redirected to a place only the package sees at
+/// the original path, while the shells in Solo's terminals run outside it.
+pub fn package_shared_dir() -> Option<PathBuf> {
+    let family_name = package_family_name()?;
+    let local = dirs::data_local_dir()?;
+    Some(
+        local
+            .join("Packages")
+            .join(family_name)
+            .join("LocalCache")
+            .join("Solo"),
+    )
+}
+
 fn select_bundled_executable(stem: &str, exe_dir: &Path) -> Option<PathBuf> {
     let bundled = exe_dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
     bundled.is_file().then_some(bundled)

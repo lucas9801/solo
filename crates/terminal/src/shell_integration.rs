@@ -253,6 +253,11 @@ fn scripts_dir() -> std::io::Result<PathBuf> {
     }
     #[cfg(not(unix))]
     {
+        // A packaged Solo's writes to the temp dir may be redirected to a
+        // place the shells (outside the package) don't see.
+        if let Some(dir) = util::packaged::package_shared_dir() {
+            return Ok(dir.join("solo-shell-integration"));
+        }
         // Windows' temp dir is the user's own.
         Ok(std::env::temp_dir().join("solo-shell-integration"))
     }

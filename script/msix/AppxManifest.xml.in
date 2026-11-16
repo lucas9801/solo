@@ -9,8 +9,14 @@
   Solo is the only application: the Store doesn't accept one without a
   Start menu entry (AppListEntry="none") unless Microsoft grants a waiver
   (HeadlessAppBypass). Solo copies solo-cli.exe and solo-agent-hook.exe to
-  its data folder (bin) and gives its terminals and agents' hooks that path,
-  which doesn't change with updates.
+  bin in the package's LocalCache folder and gives its terminals and agents'
+  hooks that path, which doesn't change with updates.
+
+  Nor does it have the restricted capability unvirtualizedResources, which
+  the Store refused: Windows redirects Solo's new files in %APPDATA% and
+  %LOCALAPPDATA% to the package's own folder. Solo's terminals start their
+  programs outside the package, so they write to the real folders, and what
+  Solo hands them goes to the LocalCache folder, which they see.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -20,10 +26,9 @@
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
   xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
-  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
   xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap3 uap5 uap10 desktop4 desktop5 desktop6 com rescap">
+  IgnorableNamespaces="uap uap3 uap5 uap10 desktop4 desktop5 com rescap">
 
   <Identity
     Name="@IDENTITY_NAME@"
@@ -36,7 +41,6 @@
     <PublisherDisplayName>@PUBLISHER_DISPLAY_NAME@</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <Description>A terminal-first code editor for coding agents.</Description>
-<!--@UNVIRTUALIZED_PROPERTIES@-->
   </Properties>
 
   <Dependencies>
@@ -85,6 +89,5 @@
 
   <Capabilities>
     <rescap:Capability Name="runFullTrust" />
-<!--@UNVIRTUALIZED_CAPABILITY@-->
   </Capabilities>
 </Package>
