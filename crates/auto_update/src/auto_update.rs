@@ -33,6 +33,8 @@ use workspace::Workspace;
 
 pub mod solo_remote_server;
 pub mod solo_update;
+pub mod store_update;
+pub mod update_button;
 
 const SHOULD_SHOW_UPDATE_NOTIFICATION_KEY: &str = "auto-updater-should-show-updated-notification";
 
@@ -308,8 +310,10 @@ pub fn init(client: Arc<Client>, cx: &mut App) {
     });
     cx.set_global(GlobalAutoUpdate(Some(auto_updater)));
 
-    // SOLO: Solo's own updater, fed by GitHub Releases.
+    // SOLO: Solo's own updater, fed by GitHub Releases, and the Microsoft
+    // Store edition's.
     solo_update::init(cx);
+    store_update::init(cx);
 }
 
 pub fn check(_: &Check, window: &mut Window, cx: &mut App) {

@@ -3,7 +3,7 @@ pub mod collab;
 mod onboarding_banner;
 mod plan_chip;
 mod title_bar_settings;
-mod update_version;
+mod update_button;
 mod workspace_tabs;
 
 use crate::application_menu::{ApplicationMenu, show_menus};
@@ -52,7 +52,7 @@ use ui::{
     Avatar, ButtonLike, ContextMenu, ContextMenuEntry, IconWithIndicator, Indicator, PopoverMenu,
     PopoverMenuHandle, TintColor, Tooltip, prelude::*, utils::platform_title_bar_height,
 };
-use update_version::UpdateVersion;
+use update_button::UpdateButton;
 use util::ResultExt;
 use workspace::{
     AccessibleMode, MultiWorkspace, ToggleWorktreeSecurity, Workspace,
@@ -223,7 +223,7 @@ pub struct TitleBar {
     application_menu: Option<Entity<ApplicationMenu>>,
     _subscriptions: Vec<Subscription>,
     banner: Option<Entity<OnboardingBanner>>,
-    update_version: Entity<UpdateVersion>,
+    update_button: Entity<UpdateButton>,
     screen_share_popover_handle: PopoverMenuHandle<ContextMenu>,
     _diagnostics_subscription: Option<gpui::Subscription>,
 }
@@ -430,7 +430,7 @@ impl Render for TitleBar {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(self.render_call_controls(window, cx))
                 .children(self.render_connection_status(status, cx))
-                .child(self.update_version.clone())
+                .child(self.update_button.clone())
                 .when(
                     user.is_none()
                         && is_signed_out_or_auth_error
@@ -558,7 +558,7 @@ impl TitleBar {
             }));
         }
 
-        let update_version = cx.new(|cx| UpdateVersion::new(cx));
+        let update_button = cx.new(|cx| UpdateButton::new(cx));
         let platform_titlebar = cx.new(|cx| {
             let mut titlebar = PlatformTitleBar::new(id, cx);
             if let Some(mw) = multi_workspace.clone() {
@@ -579,7 +579,7 @@ impl TitleBar {
             client,
             _subscriptions: subscriptions,
             banner,
-            update_version,
+            update_button,
             screen_share_popover_handle: PopoverMenuHandle::default(),
             _diagnostics_subscription: None,
         };
@@ -612,8 +612,8 @@ impl TitleBar {
     }
 
     fn toggle_update_simulation(&mut self, cx: &mut Context<Self>) {
-        self.update_version
-            .update(cx, |banner, cx| banner.update_simulation(cx));
+        self.update_button
+            .update(cx, |button, cx| button.simulate(cx));
         cx.notify();
     }
 
@@ -1289,7 +1289,8 @@ impl TitleBar {
     }
 
     pub fn render_user_menu_button(&mut self, cx: &mut Context<Self>) -> impl Element {
-        let show_update_button = self.update_version.read(cx).show_update_in_menu_bar();
+        // SOLO: updates show on the update button next to this menu.
+        let show_update_button = false;
 
         let user_store = self.user_store.clone();
         let workspace = self.workspace.clone();

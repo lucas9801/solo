@@ -125,7 +125,7 @@ Solo 目前只有 Windows x64 版。两种方式都只为当前用户安装，�
 
 **开始用**：打开 Solo，打开一个项目文件夹，在终端里运行 `claude`、`codex` 或你常用的 agent（agent 要你自己先装好）。
 
-**更新**：Solo 启动 30 秒后检查一次 GitHub Releases，之后每 6 小时一次。有新版本时弹出通知，你同意了才会更新；有 agent 在跑时可以选"退出时安装"。不想自动检查，在设置里写 `"auto_update": false`。
+**更新**：Solo 启动 30 秒后检查一次 GitHub Releases，之后每 6 小时一次。有新版本时标题栏最右边出现更新按钮（不弹通知），你同意了才会更新；有 agent 在跑时可以选"退出时安装"。不想自动检查，在设置里写 `"auto_update": false`。
 
 **卸载**：安装包版在"设置 → 应用"里卸载；zip 版运行 `install.ps1 -Uninstall`（命令见[用户指南](docs/guide/zh-CN.md#4-卸载与彻底清除)）。卸载不会删除设置和数据，彻底清除的方法也在那一节。
 

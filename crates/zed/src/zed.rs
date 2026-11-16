@@ -1598,8 +1598,8 @@ fn open_about_window(cx: &mut App) {
             let Some(updater) = &self.updater else {
                 if auto_update::solo_update::is_store_package() {
                     return util::i18n::tr(
-                        "Updated by the Microsoft Store",
-                        "由 Microsoft Store 更新",
+                        "Updates come from the Microsoft Store",
+                        "更新来自 Microsoft Store",
                     )
                     .to_string();
                 }
