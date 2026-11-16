@@ -63,6 +63,9 @@ pub struct UpdateOffer {
     /// Whether Solo can install it itself (otherwise only the release page
     /// helps).
     pub can_install: bool,
+    /// Whether "Install When Solo Quits" can work: not for a Store update the
+    /// Store won't install without asking.
+    pub can_install_on_quit: bool,
 }
 
 /// The button's text and whether it's a warning (yellow).
@@ -202,12 +205,15 @@ pub fn update_menu(
         ButtonState::Available => {
             let offer = offer?;
             if offer.can_install {
+                let on_quit = offer.can_install_on_quit.then_some(on_quit);
                 if running.is_empty() {
-                    items.extend([restart, on_quit]);
+                    items.push(restart);
+                    items.extend(on_quit);
                 } else {
                     // Updating now would end the agents: installing when the
                     // user quits comes first.
-                    items.extend([on_quit, restart]);
+                    items.extend(on_quit);
+                    items.push(restart);
                 }
             }
             tail(&mut items);
@@ -348,6 +354,7 @@ impl UpdateEntry {
                     notes: Some("Solo 9.9：示例更新。\nSolo 9.9: a sample update.".into()),
                     notes_url: Some("https://github.com/lucas9801/solo/releases".into()),
                     can_install: true,
+                    can_install_on_quit: true,
                 }),
                 cx,
             );
@@ -380,6 +387,7 @@ mod tests {
             notes: None,
             notes_url: Some("https://example.com/notes".into()),
             can_install: true,
+            can_install_on_quit: true,
         }
     }
 
@@ -494,6 +502,20 @@ mod tests {
     }
 
     #[test]
+    fn menu_without_installing_at_quit() {
+        let offer = UpdateOffer {
+            can_install_on_quit: false,
+            ..offer("2.5.0")
+        };
+        for running in [vec![], vec!["claude".to_string()]] {
+            let menu =
+                update_menu(&ButtonState::Available, Some(&offer), None, &running, true).unwrap();
+            assert!(!actions(&menu).contains(&Some(UpdateAction::OnQuit)));
+            assert_eq!(actions(&menu)[0], Some(UpdateAction::Restart));
+        }
+    }
+
+    #[test]
     fn menu_with_agents_running_installs_on_quit_first() {
         let running = ["claude".to_string(), "codex".to_string()];
         let menu = update_menu(
@@ -599,6 +621,7 @@ mod tests {
         // Solo can't install it itself: only the release page.
         let page_only = UpdateOffer {
             can_install: false,
+            can_install_on_quit: true,
             ..offer("2.5.0")
         };
         let menu = update_menu(
