@@ -43059,6 +43059,7 @@ async fn test_inlay_hints_request_timeout(cx: &mut TestAppContext) {
                     button: Some(true),
                     notifications: None,
                     semantic_token_rules: None,
+                    ..Default::default()
                 });
             });
         });
@@ -43162,6 +43163,7 @@ async fn test_inlay_hints_request_timeout(cx: &mut TestAppContext) {
                     button: Some(true),
                     notifications: None,
                     semantic_token_rules: None,
+                    ..Default::default()
                 });
             });
         });

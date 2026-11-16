@@ -12910,6 +12910,72 @@ async fn test_focus_follows_mouse_keeps_rename_and_context_menu_open(
     });
 }
 
+// SOLO: a directory clicked in a terminal or a Markdown preview is expanded
+// and selected in the project panel, and no worktree is added for it.
+#[gpui::test]
+async fn test_open_resolved_directory_target_selects_it(cx: &mut gpui::TestAppContext) {
+    init_test_with_editor(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/solo"),
+        json!({
+            "crates": {
+                "editor": { "lib.rs": "" },
+                "terminal_view": { "src": { "lib.rs": "" } },
+            },
+            "README.md": "",
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/solo").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |mw, _| mw.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let panel = workspace.update_in(cx, ProjectPanel::new);
+    cx.run_until_parked();
+
+    let open_target = workspace::path_link::OpenTarget::Path(
+        util::paths::PathWithPosition::from_path(PathBuf::from(path!(
+            "/solo/crates/terminal_view"
+        ))),
+        true,
+        workspace::path_link::OpenTargetFoundBy::BackgroundPathResolution,
+    );
+    let opened = workspace
+        .update_in(cx, |_, window, cx| {
+            cx.spawn_in(window, async move |workspace, cx| {
+                editor::items::open_resolved_target(&workspace, &open_target, cx).await
+            })
+        })
+        .await
+        .unwrap();
+    assert!(opened);
+    cx.run_until_parked();
+
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..20, cx),
+        &[
+            "v solo",
+            "    v crates",
+            "        > editor",
+            "        v terminal_view  <== selected  <== marked",
+            "            > src",
+            "      README.md",
+        ]
+    );
+    assert_eq!(
+        project.read_with(cx, |project, cx| project.worktrees(cx).count()),
+        1
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.items(cx).count()),
+        0
+    );
+}
+
 pub(crate) fn init_test(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let settings_store = SettingsStore::test(cx);
