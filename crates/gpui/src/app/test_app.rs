@@ -281,6 +281,11 @@ impl TestApp {
         self.platform.opened_url.borrow().clone()
     }
 
+    /// Paths that have been opened via `cx.open_with_system()`, in order.
+    pub fn opened_with_system(&self) -> Vec<std::path::PathBuf> {
+        self.platform.opened_with_system.borrow().clone()
+    }
+
     /// Check if a file path prompt is pending.
     pub fn did_prompt_for_new_path(&self) -> bool {
         self.platform.did_prompt_for_new_path()
