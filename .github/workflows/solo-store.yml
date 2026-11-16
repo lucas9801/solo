@@ -1,0 +1,340 @@
+# SOLO: submits Solo Code's Microsoft Store package to Partner Center when a
+# GitHub release of Solo is published, so the Store edition updates without
+# anyone downloading or uploading the package by hand.
+#
+#   check:  decides whether to submit, and says why not in the log. A
+#           published release (a person publishing the draft that the Solo
+#           package workflow made; events made with GITHUB_TOKEN don't start
+#           workflows, a person's do) is submitted only when the repository
+#           variable SOLO_STORE_SUBMIT_ENABLED is "true", its tag is v<x.y.z>
+#           and it isn't a prerelease.
+#   submit: finds the successful Solo package run of the tag (it isn't built
+#           again here), downloads its solo-windows-x64-msix artifact, checks
+#           the .msixupload is version <x.y.z>.0, and with the Microsoft Store
+#           Developer CLI (msstore) uploads it to a new submission, writes
+#           "What's new in this version" in each Store listing language from
+#           docs/release-notes/<x.y.z>.md (script/msix/store-release-notes.ps1)
+#           and submits it for certification. It doesn't wait for
+#           certification (up to three business days): it ends once the Store
+#           has taken the submission, printing its status and a link to it in
+#           Partner Center.
+#
+# Running it by hand (Actions > Solo Store submission > Run workflow) takes a
+# tag and "Only upload": with that ticked (the default) the package and the
+# notes go into a draft submission that isn't submitted, to try things out;
+# unticked it submits, to retry a release. A run by hand doesn't look at
+# SOLO_STORE_SUBMIT_ENABLED.
+#
+# The first submission of an app has to be made in Partner Center (msstore
+# can't), and msstore only updates free apps; Solo Code is free. Setting it up
+# (a Microsoft Entra app with the Manager role in Partner Center) is described
+# in docs/development.md. The submit job runs in the GitHub environment
+# microsoft-store, which holds the secret SOLO_STORE_CLIENT_SECRET (the Entra
+# app's client secret) and the variables SOLO_STORE_TENANT_ID,
+# SOLO_STORE_CLIENT_ID, SOLO_STORE_SELLER_ID and SOLO_STORE_ID (Solo Code's
+# Store ID). Only that job uses the environment, and the log shows neither
+# the secret nor the submission's JSON (it holds an upload URL with a key).
+
+name: Solo Store submission
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The published release's tag, e.g. v2.5.0"
+        required: true
+        type: string
+      only-upload:
+        description: "Only upload: leave the submission as a draft in Partner Center"
+        required: false
+        type: boolean
+        default: true
+
+# One submission at a time: a second would replace the first's draft.
+concurrency:
+  group: solo-store
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Decide whether to submit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      submit: ${{ steps.decide.outputs.submit }}
+      tag: ${{ steps.decide.outputs.tag }}
+      only-upload: ${{ steps.decide.outputs.only-upload }}
+    steps:
+      # Everything from the event through the environment: a tag name may
+      # hold $( ), which would run if it were put into the script.
+      - name: Decide
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          ENABLED: ${{ vars.SOLO_STORE_SUBMIT_ENABLED }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_ONLY_UPLOAD: ${{ inputs.only-upload }}
+        run: |
+          set -euo pipefail
+          skip() {
+            echo "::notice title=Not submitted to the Microsoft Store::$1"
+            echo "submit=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          if [ "$EVENT" = "release" ]; then
+            tag="$RELEASE_TAG"
+            only_upload=false
+            if [ "$ENABLED" != "true" ]; then
+              skip "The repository variable SOLO_STORE_SUBMIT_ENABLED isn't \"true\", so $tag isn't submitted; upload the solo-windows-x64-msix artifact of its Solo package run to Partner Center by hand (docs/development.md)."
+            fi
+            if [ "$RELEASE_PRERELEASE" = "true" ]; then
+              skip "$tag is a prerelease; the Store only gets releases."
+            fi
+            if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              skip "$tag isn't a version tag (v<x.y.z>)."
+            fi
+          else
+            tag="$INPUT_TAG"
+            only_upload="$INPUT_ONLY_UPLOAD"
+            if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::'$tag' isn't a version tag (v<x.y.z>)."
+              exit 1
+            fi
+            if ! release=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"'); then
+              echo "::error::There's no GitHub release $tag."
+              exit 1
+            fi
+            if [ "$release" != "false false" ]; then
+              echo "::error::The release $tag is a draft or a prerelease (draft, prerelease: $release); only published releases go to the Store."
+              exit 1
+            fi
+          fi
+          echo "Submitting $tag to the Microsoft Store (only upload: $only_upload)"
+          {
+            echo "submit=true"
+            echo "tag=$tag"
+            echo "only-upload=$only_upload"
+          } >> "$GITHUB_OUTPUT"
+
+  submit:
+    name: Submit Solo Code to the Microsoft Store
+    needs: check
+    if: needs.check.outputs.submit == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    environment: microsoft-store
+    permissions:
+      contents: read
+      # Finding the Solo package run and downloading its artifact.
+      actions: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+      ONLY_UPLOAD: ${{ needs.check.outputs.only-upload }}
+      STORE_ID: ${{ vars.SOLO_STORE_ID }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the Store settings
+        env:
+          TENANT_ID: ${{ vars.SOLO_STORE_TENANT_ID }}
+          CLIENT_ID: ${{ vars.SOLO_STORE_CLIENT_ID }}
+          SELLER_ID: ${{ vars.SOLO_STORE_SELLER_ID }}
+          HAS_CLIENT_SECRET: ${{ secrets.SOLO_STORE_CLIENT_SECRET != '' }}
+        run: |
+          $missing = @()
+          if (-not $env:TENANT_ID) { $missing += "variable SOLO_STORE_TENANT_ID" }
+          if (-not $env:CLIENT_ID) { $missing += "variable SOLO_STORE_CLIENT_ID" }
+          if (-not $env:SELLER_ID) { $missing += "variable SOLO_STORE_SELLER_ID" }
+          if (-not $env:STORE_ID) { $missing += "variable SOLO_STORE_ID" }
+          if ($env:HAS_CLIENT_SECRET -ne "true") { $missing += "secret SOLO_STORE_CLIENT_SECRET" }
+          if ($missing) {
+            throw "Missing in the microsoft-store environment (or the repository): $($missing -join ', '). docs/development.md says how to set them up."
+          }
+          if ($env:STORE_ID -notmatch '^[0-9A-Z]{12}$') { throw "SOLO_STORE_ID '$env:STORE_ID' isn't a Store ID (12 letters and digits, e.g. 9NBLGGH4R315)" }
+
+      # The latest successful run of the Solo package workflow for the tag
+      # push (its head_branch is the tag), built from the commit the tag is on.
+      - name: Find the Solo package run
+        id: package-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $runs = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/solo-package.yml/runs?branch=$env:TAG&event=push&status=success&per_page=20"
+          if ($LASTEXITCODE -ne 0) { throw "Couldn't list the Solo package runs" }
+          $run = ($runs -join "`n" | ConvertFrom-Json).workflow_runs | Where-Object { $_.head_branch -eq $env:TAG } | Sort-Object { [datetime]$_.created_at } -Descending | Select-Object -First 1
+          if (-not $run) { throw "No successful Solo package run for $env:TAG; the package is made there (run or re-run it for the tag first)." }
+          $commit = gh api "repos/$env:GITHUB_REPOSITORY/commits/$env:TAG" --jq .sha
+          if ($LASTEXITCODE -ne 0) { throw "Couldn't find the commit of $env:TAG" }
+          if ($run.head_sha -ne $commit) { throw "The Solo package run $($run.html_url) built $($run.head_sha), but $env:TAG is on $commit" }
+          Write-Host "Solo package run $($run.id) for $env:TAG ($commit): $($run.html_url)"
+          "run-id=$($run.id)" >> $env:GITHUB_OUTPUT
+          "commit=$commit" >> $env:GITHUB_OUTPUT
+
+      # The notes as they are in the tagged commit.
+      - name: Check out the release notes of the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.package-run.outputs.commit }}
+          path: tagged
+          sparse-checkout: docs/release-notes
+          persist-credentials: false
+
+      - name: Download the Store package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: solo-windows-x64-msix
+          path: dist/msix
+          run-id: ${{ steps.package-run.outputs.run-id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      # The package script names it SoloCode-<version>-x64.msixupload with
+      # the MSIX version of Solo's version (script/msix/msix-version.ps1).
+      - name: Check the Store package
+        run: |
+          . ./script/msix/msix-version.ps1
+          $version = $env:TAG.Substring(1)
+          $expected = ConvertTo-MsixVersion $version
+          $uploads = @(Get-ChildItem dist/msix -Filter *.msixupload)
+          if ($uploads.Count -ne 1) { throw "Expected one .msixupload in the artifact, found $($uploads.Count): $($uploads.Name -join ', ')" }
+          $upload = $uploads[0]
+          if ($upload.Name -notmatch '^SoloCode-(\d+\.\d+\.\d+\.\d+)-x64\.msixupload$') { throw "$($upload.Name) isn't named SoloCode-<version>-x64.msixupload" }
+          if ($Matches[1] -ne $expected) { throw "$($upload.Name) is version $($Matches[1]), but $env:TAG needs $expected" }
+          Write-Host "$($upload.Name): $([math]::Round($upload.Length / 1MB)) MB"
+          "SOLO_VERSION=$version" >> $env:GITHUB_ENV
+          "UPLOAD=$($upload.FullName)" >> $env:GITHUB_ENV
+
+      # Before anything goes to the Store, so bad notes stop it here.
+      - name: Write the Store release notes
+        run: |
+          $notes = "tagged/docs/release-notes/$env:SOLO_VERSION.md"
+          if (-not (Test-Path $notes)) { throw "$notes is missing in $env:TAG" }
+          foreach ($listing in ./script/msix/store-release-notes.ps1 -Path $notes -Languages zh-cn, en-us) {
+            $how = if ($listing.Shortened) { " (only the summary: with the titles it's over the Store's limit)" } else { "" }
+            Write-Host "--- $($listing.Language)$how"
+            Write-Host $listing.Text
+          }
+
+      # msstore is a native (AOT) exe: it needs no .NET runtime, whatever its
+      # README says. The action downloads the given release of it.
+      - name: Install the Microsoft Store Developer CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.4
+
+      - name: Sign in to Partner Center
+        env:
+          TENANT_ID: ${{ vars.SOLO_STORE_TENANT_ID }}
+          CLIENT_ID: ${{ vars.SOLO_STORE_CLIENT_ID }}
+          SELLER_ID: ${{ vars.SOLO_STORE_SELLER_ID }}
+          CLIENT_SECRET: ${{ secrets.SOLO_STORE_CLIENT_SECRET }}
+        run: |
+          msstore --version
+          if ($LASTEXITCODE -ne 0) { throw "msstore doesn't run on this runner" }
+          msstore settings --enableTelemetry false
+          if ($LASTEXITCODE -ne 0) { throw "Couldn't turn off msstore's telemetry" }
+          msstore reconfigure --tenantId $env:TENANT_ID --sellerId $env:SELLER_ID --clientId $env:CLIENT_ID --clientSecret $env:CLIENT_SECRET
+          if ($LASTEXITCODE -ne 0) {
+            throw "msstore couldn't sign in to Partner Center: check the SOLO_STORE_* variables, that the Entra app has the Manager role in Partner Center, and that its client secret hasn't expired"
+          }
+
+      # A draft (left by an earlier run that only uploaded, or made in Partner
+      # Center) is deleted and made again by msstore publish. A submission
+      # that's being certified or published can't be replaced: it has to
+      # finish (or be cancelled in Partner Center) first.
+      - name: Check the existing submissions
+        run: |
+          function Invoke-MsStoreJson {
+            $out = & msstore @args
+            if ($LASTEXITCODE -ne 0) { throw "msstore $($args[0]) $($args[1]) failed (exit code $LASTEXITCODE)" }
+            $out -join "`n" | ConvertFrom-Json
+          }
+          msstore submission status $env:STORE_ID
+          if ($LASTEXITCODE -ne 0) { throw "Couldn't read Solo Code's submission status (Store ID $env:STORE_ID)" }
+          $app = Invoke-MsStoreJson apps get $env:STORE_ID
+          if (-not $app.LastPublishedApplicationSubmission.Id) {
+            throw "Solo Code has no published submission. The first one has to be made in Partner Center; msstore can't."
+          }
+          if ($app.PendingApplicationSubmission.Id) {
+            $pending = Invoke-MsStoreJson submission get $env:STORE_ID
+            if ($pending.Status -in "PendingCommit", "CommitFailed") {
+              Write-Host "::notice::A draft submission ($($pending.Status)) is in Partner Center; it's deleted and replaced by a new one for $env:TAG, and whatever was changed in it is lost."
+            } else {
+              throw "A submission is in progress in Partner Center (status $($pending.Status)): https://partner.microsoft.com/dashboard/products/$env:STORE_ID/submissions/$($pending.Id). Wait until it's published (or cancel it in Partner Center), then run this workflow by hand for $env:TAG with 'Only upload' unticked."
+            }
+          }
+
+      # --noCommit: the package goes into a draft, which is submitted once its
+      # notes are written. Not --verbose, which would log the upload URL.
+      - name: Upload the package
+        run: |
+          msstore publish $env:UPLOAD --appId $env:STORE_ID --noCommit --uploadTimeout 3600
+          if ($LASTEXITCODE -ne 0) { throw "Uploading $env:UPLOAD to Partner Center failed (msstore exit code $LASTEXITCODE)" }
+
+      - name: Write the release notes into the submission
+        run: |
+          function Invoke-MsStore {
+            $out = & msstore @args
+            if ($LASTEXITCODE -ne 0) { throw "msstore $($args[0]) $($args[1]) failed (exit code $LASTEXITCODE)" }
+            $out -join "`n"
+          }
+          # Dates stay as they came (PowerShell 7.5 and later).
+          $json = @{}
+          if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey("DateKind")) { $json.DateKind = "String" }
+          $submission = Invoke-MsStore submission get $env:STORE_ID | ConvertFrom-Json @json
+          if ($submission.Status -ne "PendingCommit") { throw "Expected the draft msstore publish made, but the submission is $($submission.Status)" }
+          Write-Host "Draft submission $($submission.Id), packages:"
+          foreach ($package in $submission.ApplicationPackages) { Write-Host "  $($package.FileName) $($package.Version) $($package.FileStatus)" }
+          # msstore refuses to update a submission without a valid price.
+          if ($submission.Pricing.PriceId -ne "Free") { throw "Solo Code's price is '$($submission.Pricing.PriceId)', not Free; msstore only updates free apps" }
+
+          $languages = @($submission.Listings.PSObject.Properties.Name)
+          if (-not $languages) { throw "The submission has no Store listings" }
+          foreach ($listing in ./script/msix/store-release-notes.ps1 -Path "tagged/docs/release-notes/$env:SOLO_VERSION.md" -Languages $languages) {
+            $base = $submission.Listings.($listing.Language).BaseListing
+            if (-not $base) { throw "The $($listing.Language) listing has no BaseListing" }
+            $base | Add-Member -NotePropertyName ReleaseNotes -NotePropertyValue $listing.Text -Force
+            Write-Host "$($listing.Language): $($listing.Text.Length) characters$(if ($listing.Shortened) { ', only the summary' })"
+          }
+
+          # Through a file: the JSON can be longer than a command line, and
+          # it isn't logged (it holds the upload URL).
+          $payload = Join-Path $env:RUNNER_TEMP "submission.json"
+          try {
+            [IO.File]::WriteAllText($payload, ($submission | ConvertTo-Json -Depth 100), (New-Object System.Text.UTF8Encoding $false))
+            Invoke-MsStore submission update $env:STORE_ID --payload $payload | Out-Null
+          } finally {
+            Remove-Item -Force $payload -ErrorAction SilentlyContinue
+          }
+          "SUBMISSION_ID=$($submission.Id)" >> $env:GITHUB_ENV
+
+      # Waits only while the Store takes the submission in (status
+      # CommitStarted, a few minutes), not for certification.
+      - name: Submit for certification
+        run: |
+          $link = "https://partner.microsoft.com/dashboard/products/$env:STORE_ID/submissions/$env:SUBMISSION_ID"
+          if ($env:ONLY_UPLOAD -eq "true") {
+            Write-Host "::notice::Solo Code $env:SOLO_VERSION and its notes are in a draft submission, not submitted (only upload): $link"
+            exit 0
+          }
+          msstore submission publish $env:STORE_ID
+          if ($LASTEXITCODE -ne 0) { throw "Submitting failed (msstore exit code $LASTEXITCODE); see the draft in Partner Center: $link" }
+          msstore submission poll $env:STORE_ID
+          $status = (msstore submission get $env:STORE_ID | Out-String | ConvertFrom-Json).Status
+          if (-not $status) { throw "Submitted, but couldn't read the submission's status; see Partner Center: $link" }
+          if ($status -eq "CommitFailed") { throw "Partner Center refused the submission (CommitFailed); see the errors above and in Partner Center: $link" }
+          Write-Host "::notice::Solo Code $env:SOLO_VERSION was submitted to the Microsoft Store (status $status); certification takes up to three business days: $link"

@@ -7,7 +7,12 @@
 # docs\code-signing-policy.md), packages the installer and the zip, and creates
 # a draft GitHub release with them and the notes. Check the draft, then publish
 # it (on GitHub, or `gh release edit v<version> --draft=false`); running
-# copies of Solo update only from published releases.
+# copies of Solo update only from published releases. Publishing it also
+# submits the Microsoft Store package (Solo Code) to Partner Center
+# (.github/workflows/solo-store.yml) when the repository variable
+# SOLO_STORE_SUBMIT_ENABLED is "true"; while it isn't, download the
+# solo-windows-x64-msix artifact of the Solo package run and upload the
+# .msixupload in Partner Center by hand (docs\development.md).
 #
 #   script\release-solo.ps1 (-Notes <text> | -NotesFile <file>) (-Bump patch|minor|major | -Version <x.y.z>) [-DryRun] [-SkipCiCheck]
 #
