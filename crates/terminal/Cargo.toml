@@ -50,6 +50,7 @@ util.workspace = true
 urlencoding.workspace = true
 vte.workspace = true
 parking_lot.workspace = true
+dunce.workspace = true
 paths.workspace = true
 percent-encoding.workspace = true
 

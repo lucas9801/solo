@@ -18007,6 +18007,7 @@ dependencies = [
  "async-channel 2.5.0",
  "base64 0.22.1",
  "collections",
+ "dunce",
  "futures 0.3.34",
  "futures-lite 2.6.1",
  "gpui",

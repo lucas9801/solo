@@ -109,7 +109,7 @@ a COM `IExplorerCommand` in `crates\explorer_command_injector`), which the
 script finds in the cargo target folder. The Store package is unsigned (the
 Store signs it), has Solo Code's identity from Partner Center, and the version
 `x.y.z.0` for Solo `x.y.z`. Its manifest is `script\msix\AppxManifest.xml.in`:
-execution aliases (`solo`, `solo-cli`, `solo-agent-hook`), `solo://` links,
+one application, Solo, with the execution alias `solo`, `solo://` links,
 "Open with" for text and code files, the context menu, and the restricted
 capability `unvirtualizedResources`, so Solo and the unpackaged shells and
 agents in its terminals share the real `%APPDATA%` and `%LOCALAPPDATA%`. The
@@ -124,9 +124,13 @@ A packaged Solo:
 
 - doesn't use its own updater: the Store updates it. **Check for Updates**
   offers to open its page in the Store.
-- gives its terminals (`SOLO_CLI`, `SOLO_AGENT_HOOK`) and agents' hooks the
-  paths of its execution aliases in
-  `%LOCALAPPDATA%\Microsoft\WindowsApps\<package family name>`, which stay
-  the same across updates, rather than the versioned folder it runs from.
+- copies `solo-cli.exe` and `solo-agent-hook.exe` to `bin` in its data
+  folder (when they changed) and gives its terminals (`SOLO_CLI`,
+  `SOLO_AGENT_HOOK`) and agents' hooks those paths, which stay the same
+  across updates, rather than the versioned folder it runs from. That folder
+  goes first on `PATH` in Solo's terminals, so `solo-cli` works there;
+  outside Solo there's no `solo-cli` command. The package has no other
+  application than Solo: the Store rejects one without a Start menu entry
+  (`AppListEntry="none"`), and the script refuses to make such a package.
 - asks Windows to start it again (`RegisterApplicationRestart`) when an
   update closes it.
