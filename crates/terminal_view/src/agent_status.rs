@@ -387,6 +387,18 @@ impl TerminalView {
         self.agent_activity.status = Some((name.to_string(), status));
     }
 
+    /// Shows a turn the agent finished while nobody was looking.
+    #[cfg(test)]
+    pub(crate) fn set_unseen_finish_for_test(&mut self, name: &str) {
+        self.agent_activity.status = Some((name.to_string(), AgentStatus::Finished));
+        self.agent_activity.unseen_finish = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_unseen_finish(&self) -> bool {
+        self.agent_activity.unseen_finish
+    }
+
     /// The terminal printed something: if the agent did on its own, it's working.
     pub(crate) fn agent_output(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();

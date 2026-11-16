@@ -392,6 +392,13 @@ impl TerminalView {
             focus_in,
             focus_out,
             cx.observe(&blink_manager, |_, _, cx| cx.notify()),
+            // SOLO: coming back to the window sees the terminal you were in,
+            // even if the window wasn't redrawn while away.
+            cx.observe_window_activation(window, |terminal_view, window, cx| {
+                if terminal_view.is_watched(window, cx) {
+                    terminal_view.agent_seen(window, cx);
+                }
+            }),
             cx.observe_global::<SettingsStore>(Self::settings_changed),
             cx.on_app_quit(|terminal_view, cx| {
                 let keep = terminal_view.update_keep_running(cx);

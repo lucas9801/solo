@@ -6,7 +6,7 @@ use gpui::{App, ClipboardItem, Context, Entity, Window, actions};
 use settings::Settings as _;
 use terminal::shell_integration::CommandBlock;
 use terminal::terminal_settings::TerminalSettings;
-use workspace::{Toast, Workspace, notifications::NotificationId};
+use workspace::{MultiWorkspace, Toast, Workspace, notifications::NotificationId};
 
 use crate::{TerminalView, terminal_panel::TerminalPanel};
 
@@ -530,13 +530,29 @@ fn find_agent_terminal(
         .map(|(view, _)| view.clone())
 }
 
+/// Shows the terminal `view` of `workspace` and focuses it: switches to the
+/// workspace's tab and opens the terminal panel if it's in there.
 pub(crate) fn activate_terminal_view(
     workspace: &Entity<Workspace>,
     view: &Entity<TerminalView>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    let panes = workspace
+    // Switching first, so the focus switching gives the workspace doesn't
+    // replace the terminal's.
+    if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
+        let multi_workspace_ref = multi_workspace.read(cx);
+        if multi_workspace_ref.workspace() != workspace
+            && multi_workspace_ref
+                .workspaces()
+                .any(|held| held == workspace)
+        {
+            multi_workspace.update(cx, |multi_workspace, cx| {
+                multi_workspace.activate(workspace.clone(), None, window, cx)
+            });
+        }
+    }
+    let panel_panes = workspace
         .read(cx)
         .panel::<TerminalPanel>(cx)
         .map(|panel| {
@@ -548,10 +564,20 @@ pub(crate) fn activate_terminal_view(
                 .cloned()
                 .collect::<Vec<_>>()
         })
-        .unwrap_or_default()
-        .into_iter()
-        .chain(workspace.read(cx).panes().iter().cloned())
-        .collect::<Vec<_>>();
+        .unwrap_or_default();
+    if let Some((pane, index)) = panel_panes
+        .iter()
+        .find_map(|pane| Some((pane, pane.read(cx).index_for_item(view)?)))
+    {
+        workspace.update(cx, |workspace, cx| {
+            workspace.open_panel::<TerminalPanel>(window, cx)
+        });
+        pane.update(cx, |pane, cx| {
+            pane.activate_item(index, true, true, window, cx)
+        });
+        return;
+    }
+    let panes = workspace.read(cx).panes().to_vec();
     for pane in panes {
         if let Some(index) = pane.read(cx).index_for_item(view) {
             pane.update(cx, |pane, cx| {
