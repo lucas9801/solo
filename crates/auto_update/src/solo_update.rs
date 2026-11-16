@@ -955,6 +955,7 @@ fn offer_for(release: &SoloRelease) -> UpdateOffer {
         notes: Some(release.notes.clone()),
         notes_url: Some(release.html_url.clone()),
         can_install: can_install() && release.installer.is_some(),
+        can_install_on_quit: true,
     }
 }
 

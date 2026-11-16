@@ -110,6 +110,9 @@ pub struct StoreUpdater {
     downloaded: bool,
     /// Whether the user chose to install it when Solo quits.
     on_quit: bool,
+    /// Whether the Store installs updates without asking, which installing
+    /// when Solo quits needs (known once a background download was tried).
+    silent: bool,
     retry: Option<Retry>,
     /// The version the user skipped.
     skipped: Option<Version>,
@@ -225,6 +228,7 @@ impl StoreUpdater {
             update: None,
             downloaded: false,
             on_quit: false,
+            silent: false,
             retry: None,
             skipped: None,
             window: None,
@@ -281,6 +285,7 @@ impl StoreUpdater {
                 .as_ref()
                 .map(crate::solo_update::release_page_url),
             can_install: true,
+            can_install_on_quit: self.silent,
         }
     }
 
@@ -391,6 +396,17 @@ impl StoreUpdater {
                 .await;
             this.update(cx, |this, cx| {
                 this.activity = Activity::Idle;
+                let silent = matches!(result, Ok(Some(_)));
+                if silent != this.silent {
+                    this.silent = silent;
+                    if !silent {
+                        this.on_quit = false;
+                    }
+                    if let Some(offer) = this.update.as_ref().map(|update| this.offer(update)) {
+                        this.entry
+                            .update(cx, |entry, cx| entry.set_offer(Some(offer), cx));
+                    }
+                }
                 match result {
                     Ok(Some(StoreOutcome::Completed)) => {
                         log::info!("store update: downloaded");
@@ -877,6 +893,16 @@ mod tests {
         })
     }
 
+    fn offered_on_quit(cx: &mut TestAppContext) -> Option<bool> {
+        cx.update(|cx| {
+            update_button::entry(cx)
+                .unwrap()
+                .read(cx)
+                .offer()
+                .map(|offer| offer.can_install_on_quit)
+        })
+    }
+
     fn act(updater: &Entity<StoreUpdater>, action: UpdateAction, cx: &mut TestAppContext) {
         updater.update(cx, |updater, cx| updater.act(action, cx));
         cx.run_until_parked();
@@ -927,6 +953,7 @@ mod tests {
         assert!(updater.read_with(cx, |updater, _| updater.downloaded));
         assert_eq!(button(cx), ButtonState::Available);
         assert_eq!(offered_version(cx), Some(Version::new(2, 5, 0)));
+        assert_eq!(offered_on_quit(cx), Some(true));
 
         // Installing now: silently, and the Store closes Solo.
         act(&updater, UpdateAction::Restart, cx);
@@ -942,6 +969,8 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(store.calls(), ["find"]);
         assert_eq!(button(cx), ButtonState::Available);
+        // Installing at quit can't work without silent installs: not offered.
+        assert_eq!(offered_on_quit(cx), Some(false));
 
         // The user asks: the Store's dialog; cancelling it keeps the offer.
         *store.install.lock() = Some(Ok(StoreOutcome::Canceled));
