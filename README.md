@@ -4,7 +4,7 @@
 
 Solo 是给 AI 编程 agent 用的编辑器，基于 [Zed](https://github.com/zed-industries/zed)：终端占满窗口，Claude Code、Codex 这些 agent 在真终端里跑；需要看代码时，完整的代码编辑器从右边打开，随时看 agent 改了什么。
 
-[下载 Windows 版](https://github.com/lucas9801/solo/releases/latest) · [用户指南](docs/guide/zh-CN.md) · [和其他工具比较](docs/site/zh/compare/index.md) · [English](docs/site/en/index.md)
+[下载 Windows 版（Microsoft Store）](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct) · [GitHub 安装包](https://github.com/lucas9801/solo/releases/latest) · [用户指南](docs/guide/zh-CN.md) · [和其他工具比较](docs/site/zh/compare/index.md) · [English](docs/site/en/index.md)
 
 https://github.com/user-attachments/assets/df4a53d7-075a-44b7-9874-f3f71f2eaf61
 
@@ -106,9 +106,13 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 
 ## 安装
 
-Solo 目前只有 Windows x64 版。两种方式都只为当前用户安装，不需要管理员权限，默认装到 `%LOCALAPPDATA%\Programs\Solo`。
+Solo 目前只有 Windows x64 版。
 
-**方式一：安装包（推荐）**
+**Microsoft Store（推荐）**：点[这里](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct)下载一个小安装程序，运行后直接装好 Solo Code，不打开商店应用。更新也在 Solo 里完成，见下面的"更新"。
+
+下面两种方式只为当前用户安装，不需要管理员权限，默认装到 `%LOCALAPPDATA%\Programs\Solo`。
+
+**方式一：安装包**
 
 1. 从 [Releases](https://github.com/lucas9801/solo/releases/latest) 下载 `Solo-Setup-<版本>.exe`。
 2. 运行安装包（有中文和英文界面）。它会创建开始菜单项，桌面图标可选（默认不勾），在资源管理器右键菜单里加上"通过 Solo 打开"（默认勾选，Windows 11 上在"显示更多选项"里），并在"设置 → 应用"里加上卸载入口。
