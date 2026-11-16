@@ -11,7 +11,7 @@
 //! puts in a folder replace the bundled ones.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
@@ -266,14 +266,18 @@ enum Region {
     OscProgress,
 }
 
-/// `n` in `name(n)`: a positive decimal without a leading zero.
+/// `n` in `name(n)`: for `top_non_empty_lines`, a positive decimal without a
+/// leading zero; for the others, any count Rust parses, as Herdr takes them
+/// (SOLO: Solo first asked them all to be positive, which turned down rules
+/// written for Herdr).
 fn region_count(text: &str, name: &str) -> Option<Result<usize>> {
     let count = text
         .strip_prefix(name)?
         .strip_prefix('(')?
         .strip_suffix(')')?;
-    let valid =
+    let canonical =
         !count.is_empty() && count.chars().all(|c| c.is_ascii_digit()) && !count.starts_with('0');
+    let valid = canonical || name != "top_non_empty_lines";
     Some(
         count
             .parse::<usize>()
@@ -461,6 +465,8 @@ fn compile_gate(gate: GateFile, depth: usize, negated: bool, budget: &mut Budget
 pub struct Manifest {
     pub id: String,
     pub aliases: Vec<String>,
+    /// SOLO: the user's file the rules came from; `None` for bundled ones.
+    pub origin: Option<PathBuf>,
     rules: Vec<Rule>,
 }
 
@@ -488,6 +494,7 @@ impl Manifest {
         Ok(Self {
             id: file.id,
             aliases: file.aliases,
+            origin: None,
             rules,
         })
     }
@@ -629,7 +636,8 @@ pub fn load_with_overrides(directory: &Path) -> (HashMap<String, Manifest>, Vec<
             .context("reading it")
             .and_then(|text| Manifest::parse(&text));
         match parsed {
-            Ok(manifest) => {
+            Ok(mut manifest) => {
+                manifest.origin = Some(path);
                 manifests.insert(manifest.id.clone(), manifest);
             }
             Err(error) => errors.push(format!("{}: {error:#}", path.display())),
@@ -812,5 +820,7 @@ fn after_last_horizontal_rule(content: &str) -> &str {
     }
 }
 
+#[cfg(test)]
+mod accuracy_tests;
 #[cfg(test)]
 mod tests;

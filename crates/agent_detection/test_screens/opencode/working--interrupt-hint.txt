@@ -1,0 +1,9 @@
+---
+  ┃  explain the lexer
+
+  → Read src/lexer.rs
+
+  ┃
+  ┃  Plan  gpt-5
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  esc to interrupt                 tab agents  ctrl+p commands

@@ -41,7 +41,7 @@ fn manifest_for(program: &str) -> Option<&'static Manifest> {
 }
 
 /// What an agent's screen last said, kept between readings.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct ScreenReading {
     pub status: Option<AgentStatus>,
     /// The screen plainly shows a question or a permission prompt.
@@ -52,6 +52,13 @@ pub(crate) struct ScreenReading {
     pub visible_working: bool,
     /// When the screen first read as idle while the status was working.
     idle_since: Option<Instant>,
+    /// SOLO: for "why this status": the rules read with,
+    pub manifest: Option<&'static Manifest>,
+    /// the rule that gave `status` (`None`: none matched, so idle),
+    pub rule: Option<String>,
+    /// and the rule that last left it alone (a menu, a transcript viewer),
+    /// if the last reading did.
+    pub skipped_by: Option<String>,
 }
 
 /// Reads the screen of the agent run as `program`, if there are rules for
@@ -63,6 +70,7 @@ pub(crate) fn read_screen(
     now: Instant,
 ) -> Option<()> {
     let manifest = manifest_for(program)?;
+    reading.manifest = Some(manifest);
     let screen = terminal.agent_detection_text();
     let detection = manifest.detect(&DetectionInput {
         screen: &screen,
@@ -70,7 +78,7 @@ pub(crate) fn read_screen(
         // Solo's terminal doesn't pass OSC 9 progress reports on yet.
         osc_progress: "",
     });
-    *reading = next_reading(*reading, &detection, now);
+    *reading = next_reading(std::mem::take(reading), &detection, now);
     Some(())
 }
 
@@ -81,7 +89,10 @@ fn next_reading(
 ) -> ScreenReading {
     if detection.skip_state_update || detection.state == DetectedState::Unknown {
         // A menu or a transcript viewer: it says nothing new.
-        return reading;
+        return ScreenReading {
+            skipped_by: detection.rule.clone(),
+            ..reading
+        };
     }
     let status = match detection.state {
         DetectedState::Working => AgentStatus::Working,
@@ -97,6 +108,7 @@ fn next_reading(
         if now.duration_since(idle_since) < HOLD_WORKING {
             return ScreenReading {
                 idle_since: Some(idle_since),
+                skipped_by: None,
                 ..reading
             };
         }
@@ -107,12 +119,21 @@ fn next_reading(
         visible_idle: detection.visible_idle,
         visible_working: detection.visible_working,
         idle_since: None,
+        manifest: reading.manifest,
+        rule: detection.rule.clone(),
+        skipped_by: None,
     }
 }
 
 /// When a held reading should be looked at again.
 pub(crate) fn recheck_at(reading: &ScreenReading) -> Option<Instant> {
     reading.idle_since.map(|since| since + HOLD_WORKING)
+}
+
+/// SOLO: Whether the reading holds on to working for a moment, while the
+/// screen reads as idle.
+pub(crate) fn holds_working(reading: &ScreenReading) -> bool {
+    reading.idle_since.is_some()
 }
 
 #[cfg(test)]
@@ -142,7 +163,11 @@ mod tests {
         assert_eq!(working.status, Some(AgentStatus::Working));
 
         // A frame without the spinner doesn't end the turn...
-        let held = next_reading(working, &detection(DetectedState::Idle, false), start);
+        let held = next_reading(
+            working.clone(),
+            &detection(DetectedState::Idle, false),
+            start,
+        );
         assert_eq!(held.status, Some(AgentStatus::Working));
         assert_eq!(recheck_at(&held), Some(start + HOLD_WORKING));
         // ...unless it lasts,
@@ -154,7 +179,11 @@ mod tests {
         assert_eq!(idle.status, Some(AgentStatus::Idle));
         assert_eq!(recheck_at(&idle), None);
         // or the idle prompt is plain to see.
-        let shown = next_reading(working, &detection(DetectedState::Idle, true), start);
+        let shown = next_reading(
+            working.clone(),
+            &detection(DetectedState::Idle, true),
+            start,
+        );
         assert_eq!(shown.status, Some(AgentStatus::Idle));
 
         let blocked = next_reading(working, &detection(DetectedState::Blocked, true), start);

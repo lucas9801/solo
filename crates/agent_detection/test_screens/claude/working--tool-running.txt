@@ -1,0 +1,15 @@
+title: ✶ Fix failing tests
+---
+❯ fix the failing tests in crates/parser
+
+⏺ I'll run the tests first to see what fails.
+
+⏺ Bash(cargo test -p parser)
+  ⎿  Running…
+
+✶ Compiling… (8s · ↓ 312 tokens · esc to interrupt)
+
+────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle)

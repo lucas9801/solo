@@ -1,0 +1,11 @@
+---
+• Before I start I need to know which database to target.
+
+  Question 1/1
+  Which database should I use?
+
+› 1. PostgreSQL (Recommended)
+  2. SQLite
+  3. None of the above
+
+  tab to add notes | enter to submit answer | esc to interrupt

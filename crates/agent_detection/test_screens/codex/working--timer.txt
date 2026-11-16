@@ -1,0 +1,11 @@
+---
+› fix the failing tests
+
+• Ran cargo test -p parser
+  └ test result: FAILED. 41 passed; 1 failed
+
+• Working (12s • esc to interrupt)
+
+› Implement {feature}
+
+  ? for shortcuts                                       96% context left
