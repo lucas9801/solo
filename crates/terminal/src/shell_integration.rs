@@ -67,13 +67,40 @@ pub const CLI_ENV: &str = "SOLO_CLI";
 
 /// SOLO: Gives a local terminal its id and the path of `solo-cli`.
 ///
-/// When Solo is packaged (the Microsoft Store), that's the path of its
-/// execution alias, which still works in the terminal after Solo is updated
-/// (see [`util::packaged`]).
+/// When Solo is packaged (the Microsoft Store), that's its copy in Solo's
+/// data folder, which still works in the terminal after Solo is updated (see
+/// [`crate::stable_programs`]), and that folder goes first on `PATH`, so
+/// `solo-cli` can be typed: the installer puts Solo's folder on `PATH`, a
+/// package can't.
 pub fn add_terminal_env(env: &mut HashMap<String, String>) {
     env.insert(TERMINAL_ID_ENV.to_string(), new_nonce()[..8].to_string());
-    if let Some(cli) = util::packaged::bundled_executable("solo-cli") {
+    if let Some(cli) = crate::stable_programs::program_path("solo-cli") {
+        if util::packaged::is_packaged()
+            && let Some(dir) = cli.parent()
+        {
+            prepend_to_path(env, dir);
+        }
         env.insert(CLI_ENV.to_string(), cli.to_string_lossy().into_owned());
+    }
+}
+
+/// Puts `dir` first on the `PATH` in `env` (whatever its case, as Windows
+/// spells it `Path`), or on Solo's own `PATH` if `env` has none.
+fn prepend_to_path(env: &mut HashMap<String, String>, dir: &std::path::Path) {
+    let key = env
+        .keys()
+        .find(|key| key.eq_ignore_ascii_case("PATH"))
+        .cloned()
+        .unwrap_or_else(|| "PATH".to_string());
+    let current = env
+        .get(&key)
+        .cloned()
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    let mut dirs = vec![dir.to_path_buf()];
+    dirs.extend(std::env::split_paths(&current).filter(|path| path != dir));
+    if let Ok(joined) = std::env::join_paths(dirs) {
+        env.insert(key, joined.to_string_lossy().into_owned());
     }
 }
 
@@ -737,12 +764,12 @@ fn claude_code_settings_file_name(settings: &str) -> String {
 
 /// Solo's hook program (the `solo_agent_hook` crate), shipped next to Solo.
 ///
-/// When Solo is packaged, the path of its execution alias: agents keep the
+/// When Solo is packaged, its copy in Solo's data folder: agents keep the
 /// hook commands they're given for as long as they run, and their settings
 /// file and Codex's trust are keyed by the path, which mustn't change with
-/// each update (see [`util::packaged`]).
+/// each update (see [`crate::stable_programs`]).
 fn agent_hook_executable() -> Option<PathBuf> {
-    util::packaged::bundled_executable("solo-agent-hook")
+    crate::stable_programs::program_path("solo-agent-hook")
 }
 
 /// What Claude Code runs for a hook.
@@ -1400,6 +1427,34 @@ fn path_from_file_uri(uri: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepends_to_path_keeping_its_spelling() {
+        let dir = std::path::Path::new(if cfg!(windows) {
+            r"C:\Data\bin"
+        } else {
+            "/data/bin"
+        });
+        let (first, second) = if cfg!(windows) {
+            (r"C:\Windows", r"C:\Tools")
+        } else {
+            ("/usr/bin", "/bin")
+        };
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        let dir_str = dir.to_str().unwrap();
+
+        let mut env: HashMap<String, String> =
+            [("Path".to_string(), [first, dir_str, second].join(separator))]
+                .into_iter()
+                .collect();
+        prepend_to_path(&mut env, dir);
+        assert_eq!(env.len(), 1);
+        assert_eq!(env["Path"], [dir_str, first, second].join(separator));
+
+        let mut env = HashMap::default();
+        prepend_to_path(&mut env, dir);
+        assert!(env["PATH"].starts_with(dir_str));
+    }
 
     #[test]
     fn tracks_a_command_block() {

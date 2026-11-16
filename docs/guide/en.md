@@ -300,6 +300,8 @@ an agent waiting in the background; its menu lists the terminals.
 - An agent can drive the other terminals with `solo-cli agent` (list them,
   send to one, wait for it, read its answer, start a new task); see
   [agent-cli.md](../agent-cli.md). The `agent_control` setting limits this.
+  In Solo Code from the Microsoft Store, `solo-cli` works only in Solo's
+  terminals.
 - **Enable Remote Control** in a Claude Code terminal's menu types
   `/remote-control` into Claude Code, so you can carry on from the Claude app
   on your phone.

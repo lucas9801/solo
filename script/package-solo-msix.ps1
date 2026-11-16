@@ -35,7 +35,7 @@
 # The package holds solo.exe, solo-cli.exe, solo-agent-hook.exe,
 # solo-terminal-host.exe and solo-update-helper.exe (with conpty.dll and
 # OpenConsole.exe) and runs Solo as a full-trust desktop app (runFullTrust),
-# with execution aliases for solo, solo-cli and solo-agent-hook, solo://
+# with an execution alias for solo, solo://
 # links, "Open with" for text and code files, and "Open with Solo Code" on
 # folders and files in Explorer's context menu.
 #
@@ -289,7 +289,10 @@ $manifest = $manifest.
     Replace("<!--@UNVIRTUALIZED_PROPERTIES@-->", $unvirtualizedProperties).
     Replace("<!--@UNVIRTUALIZED_CAPABILITY@-->", $unvirtualizedCapability)
 if ($manifest -match '@[A-Z_]+@') { throw "AppxManifest.xml.in has a placeholder this script doesn't fill: $($Matches[0])" }
-$null = [xml]$manifest
+$manifestXml = [xml]$manifest
+# The Store rejects an application without a Start menu entry ("headless")
+# unless Microsoft granted a waiver.
+if ($manifestXml.SelectNodes("//*[@AppListEntry='none']").Count) { throw "The manifest has an application with AppListEntry=`"none`", which the Store rejects" }
 $manifestPath = Join-Path (Resolve-Path $layout).Path "AppxManifest.xml"
 [System.IO.File]::WriteAllText($manifestPath, $manifest, (New-Object System.Text.UTF8Encoding $false))
 

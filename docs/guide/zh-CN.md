@@ -137,7 +137,7 @@ Solo 不会在 agent 工作时自动打开它改的文件。
 - 终端里选中一个命令块（`ctrl-up/down` 或点左侧边栏），按 `alt-enter` 把命令和输出发给另一个终端里的 agent。
 - 命令失败时，退出码旁边（以及右键菜单里）有 **发给 agent**：只挑出失败的部分，比如编译错误和位置、失败的测试和断言（支持 cargo、tsc、gcc/clang、MSVC、pytest、go、jest），其他情况取输出的最后一段，粘贴给在同一目录里工作的 agent。
 - 在 Markdown 预览里选中文字，右键选 **批注…**。批注列在文档下方；点 **发给 agent**，所有批注连同行号和原文一起粘贴给最近改过这份文档的 agent（没有的话给最近用过的）。你读过之后文档又被改了，上方会提示新增和删除了多少行；**显示改动** 会标出改过的段落，**标为已读** 表示看完了。
-- agent 可以用 `solo-cli agent` 驱动其他终端（列出终端、发消息、等它完成、读它的回答、新开任务），见 [agent-cli.md](../agent-cli.md)。设置项 `agent_control` 控制它能做到什么程度。
+- agent 可以用 `solo-cli agent` 驱动其他终端（列出终端、发消息、等它完成、读它的回答、新开任务），见 [agent-cli.md](../agent-cli.md)。设置项 `agent_control` 控制它能做到什么程度。从微软商店装的 Solo Code 里，`solo-cli` 只在 Solo 的终端里能用。
 - 在 Claude Code 终端的菜单里选“开启手机控制”，Solo 会往 Claude Code 里输入 `/remote-control`，之后可以用手机上的 Claude App 继续这个会话。
 
 ### 关掉 Solo，agent 照样在跑

@@ -9,6 +9,7 @@ mod mermaid;
 pub use mermaid::is_complete as mermaid_diagram_is_complete;
 mod pty_info;
 pub mod shell_integration;
+pub mod stable_programs;
 pub mod terminal_settings;
 
 #[cfg(not(windows))]

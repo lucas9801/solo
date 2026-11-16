@@ -2,11 +2,9 @@
 //!
 //! A packaged Solo runs from `C:\Program Files\WindowsApps\<Name>_<Version>_...`,
 //! a folder that changes with every update (and whose old version is removed
-//! once nothing runs from it). Paths handed to programs that outlive Solo,
-//! such as `SOLO_CLI` in a terminal or the hook commands agents are given,
-//! use the package's execution aliases instead: Windows keeps them in
-//! `%LOCALAPPDATA%\Microsoft\WindowsApps\<PackageFamilyName>`, a folder named
-//! after the package family, which stays the same across versions.
+//! once nothing runs from it). Programs handed to processes that outlive
+//! Solo, such as `SOLO_CLI` in a terminal or the hook commands agents are
+//! given, are copied to Solo's data folder first (`terminal::stable_programs`).
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -56,66 +54,16 @@ fn current_package_family_name() -> Option<String> {
 }
 
 /// A program Solo ships next to its own executable (`solo-cli`,
-/// `solo-agent-hook`), by a path that keeps working after Solo is updated:
-/// when packaged, its execution alias; otherwise the program next to Solo.
-/// `None` if there's neither.
+/// `solo-agent-hook`), or `None` if it isn't there. When Solo is packaged,
+/// this folder changes with each update.
 pub fn bundled_executable(stem: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let alias_dir = package_family_name().and_then(execution_alias_dir);
-    select_bundled_executable(stem, exe.parent()?, alias_dir.as_deref())
+    select_bundled_executable(stem, exe.parent()?)
 }
 
-/// The folder with the execution aliases of the package family `family`.
-fn execution_alias_dir(family: &str) -> Option<PathBuf> {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-        .or_else(dirs::data_local_dir)?;
-    Some(local.join("Microsoft").join("WindowsApps").join(family))
-}
-
-/// [`bundled_executable`], given the folder Solo runs from and, when
-/// packaged, the folder with the package's execution aliases.
-fn select_bundled_executable(
-    stem: &str,
-    exe_dir: &Path,
-    alias_dir: Option<&Path>,
-) -> Option<PathBuf> {
-    if let Some(alias) = alias_dir.and_then(|dir| execution_alias(dir, stem)) {
-        return Some(alias);
-    }
+fn select_bundled_executable(stem: &str, exe_dir: &Path) -> Option<PathBuf> {
     let bundled = exe_dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
     bundled.is_file().then_some(bundled)
-}
-
-/// The execution alias for `stem` in `dir`: `<stem>.exe`, or else the one
-/// `<stem>-<suffix>.exe` (a test package's aliases have a suffix, so they
-/// don't shadow an installed Solo's on PATH).
-///
-/// Aliases are reparse points that only Windows' process creation follows,
-/// so they're looked at without following them.
-fn execution_alias(dir: &Path, stem: &str) -> Option<PathBuf> {
-    let exact = dir.join(format!("{stem}.exe"));
-    if exact.symlink_metadata().is_ok() {
-        return Some(exact);
-    }
-    let prefix = format!("{stem}-").to_lowercase();
-    let mut suffixed = std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            let Some(name) = path.file_name().and_then(OsStr::to_str) else {
-                return false;
-            };
-            let name = name.to_lowercase();
-            name.strip_prefix(&prefix)
-                .and_then(|rest| rest.strip_suffix(".exe"))
-                .is_some_and(|suffix| !suffix.is_empty() && !suffix.contains('.'))
-        });
-    let alias = suffixed.next()?;
-    // Ambiguous: another program's alias with the same start.
-    suffixed.next().is_none().then_some(alias)
 }
 
 /// Flags for `RegisterApplicationRestart`: restart only after an update
@@ -208,67 +156,17 @@ mod tests {
     }
 
     #[test]
-    fn unpackaged_uses_the_program_next_to_solo() {
+    fn finds_the_program_next_to_solo() {
         let install = tempfile::tempdir().unwrap();
         let hook = install
             .path()
             .join(format!("solo-agent-hook{}", std::env::consts::EXE_SUFFIX));
         touch(&hook);
         assert_eq!(
-            select_bundled_executable("solo-agent-hook", install.path(), None),
+            select_bundled_executable("solo-agent-hook", install.path()),
             Some(hook)
         );
-        assert_eq!(
-            select_bundled_executable("solo-cli", install.path(), None),
-            None
-        );
-    }
-
-    #[test]
-    fn packaged_prefers_the_execution_alias() {
-        let install = tempfile::tempdir().unwrap();
-        let aliases = tempfile::tempdir().unwrap();
-        let bundled = install
-            .path()
-            .join(format!("solo-cli{}", std::env::consts::EXE_SUFFIX));
-        touch(&bundled);
-        let alias = aliases.path().join("solo-cli.exe");
-        touch(&alias);
-        touch(&aliases.path().join("solo.exe"));
-        assert_eq!(
-            select_bundled_executable("solo-cli", install.path(), Some(aliases.path())),
-            Some(alias)
-        );
-        // No alias (the alias folder is missing, say): the versioned folder.
-        let empty = aliases.path().join("missing");
-        assert_eq!(
-            select_bundled_executable("solo-cli", install.path(), Some(&empty)),
-            Some(bundled)
-        );
-    }
-
-    #[test]
-    fn finds_a_test_packages_suffixed_alias() {
-        let aliases = tempfile::tempdir().unwrap();
-        for name in [
-            "solo-msixtest.exe",
-            "solo-cli-msixtest.exe",
-            "solo-agent-hook-msixtest.exe",
-        ] {
-            touch(&aliases.path().join(name));
-        }
-        assert_eq!(
-            execution_alias(aliases.path(), "solo-cli"),
-            Some(aliases.path().join("solo-cli-msixtest.exe"))
-        );
-        assert_eq!(
-            execution_alias(aliases.path(), "solo-agent-hook"),
-            Some(aliases.path().join("solo-agent-hook-msixtest.exe"))
-        );
-        // `solo-cli-msixtest.exe` and `solo-agent-hook-...` start with
-        // `solo-` too: no single alias for `solo`.
-        assert_eq!(execution_alias(aliases.path(), "solo"), None);
-        assert_eq!(execution_alias(aliases.path(), "solo-update-helper"), None);
+        assert_eq!(select_bundled_executable("solo-cli", install.path()), None);
     }
 
     #[test]

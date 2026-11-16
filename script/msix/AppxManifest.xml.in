@@ -3,10 +3,14 @@
   Solo's MSIX manifest, for the Microsoft Store ("Solo Code") and for test
   packages. script\package-solo-msix.ps1 fills in the @...@ placeholders and
   replaces the placeholder comments. Solo runs as a full-trust desktop app
-  (runFullTrust). The execution aliases put solo, solo-cli and
-  solo-agent-hook in %LOCALAPPDATA%\Microsoft\WindowsApps, which is on PATH,
-  and in its PackageFamilyName folder, whose paths Solo gives its terminals
-  and agents' hooks since they don't change with updates.
+  (runFullTrust). Its execution alias puts solo in
+  %LOCALAPPDATA%\Microsoft\WindowsApps, which is on PATH.
+
+  Solo is the only application: the Store doesn't accept one without a
+  Start menu entry (AppListEntry="none") unless Microsoft grants a waiver
+  (HeadlessAppBypass). Solo copies solo-cli.exe and solo-agent-hook.exe to
+  its data folder (bin) and gives its terminals and agents' hooks that path,
+  which doesn't change with updates.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -75,42 +79,6 @@
           </uap3:FileTypeAssociation>
         </uap3:Extension>
 <!--@CONTEXT_MENU@-->
-      </Extensions>
-    </Application>
-
-    <!-- The command line (SOLO_CLI in Solo's terminals). -->
-    <Application Id="SoloCli" Executable="solo-cli.exe" EntryPoint="Windows.FullTrustApplication" desktop4:SupportsMultipleInstances="true">
-      <uap:VisualElements
-        DisplayName="Solo CLI"
-        Description="Solo's command line."
-        BackgroundColor="transparent"
-        Square150x150Logo="Assets\Square150x150Logo.png"
-        Square44x44Logo="Assets\Square44x44Logo.png"
-        AppListEntry="none" />
-      <Extensions>
-        <uap5:Extension Category="windows.appExecutionAlias">
-          <uap5:AppExecutionAlias desktop4:Subsystem="console">
-            <uap5:ExecutionAlias Alias="solo-cli@ALIAS_SUFFIX@.exe" />
-          </uap5:AppExecutionAlias>
-        </uap5:Extension>
-      </Extensions>
-    </Application>
-
-    <!-- What agents' hooks run to report their status (SOLO_AGENT_HOOK). -->
-    <Application Id="SoloAgentHook" Executable="solo-agent-hook.exe" EntryPoint="Windows.FullTrustApplication" desktop4:SupportsMultipleInstances="true">
-      <uap:VisualElements
-        DisplayName="Solo agent hook"
-        Description="Reports coding agents' status to Solo."
-        BackgroundColor="transparent"
-        Square150x150Logo="Assets\Square150x150Logo.png"
-        Square44x44Logo="Assets\Square44x44Logo.png"
-        AppListEntry="none" />
-      <Extensions>
-        <uap5:Extension Category="windows.appExecutionAlias">
-          <uap5:AppExecutionAlias desktop4:Subsystem="console">
-            <uap5:ExecutionAlias Alias="solo-agent-hook@ALIAS_SUFFIX@.exe" />
-          </uap5:AppExecutionAlias>
-        </uap5:Extension>
       </Extensions>
     </Application>
   </Applications>
