@@ -2,9 +2,9 @@
 # zed-industries' repositories or on their self-hosted runners, so this is what
 # checks Solo on GitHub-hosted runners.
 #
-# On every push and pull request to main it checks that the `solo` binary
-# builds and runs the tests of the crates Solo changes most. It never uploads
-# or publishes anything.
+# On every push and pull request to main and release/<x.y> branches it
+# checks that the `solo` binary builds and runs the tests of the crates Solo
+# changes most. It never uploads or publishes anything.
 #
 # WebRTC: livekit's webrtc-sys (pulled in through call/livekit_client) links a
 # prebuilt libwebrtc. Without LK_CUSTOM_WEBRTC its build script downloads it
@@ -18,9 +18,9 @@ name: Solo CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
   workflow_dispatch:
 
 concurrency:
@@ -54,6 +54,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Quick, so before the build: the release script's version rules.
+      - name: Test the release script
+        run: |
+          ./script/test-release-solo.ps1
+          if ($LASTEXITCODE -ne 0) { throw "The release script tests failed" }
 
       - name: Show free disk space
         run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
