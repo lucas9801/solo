@@ -49,7 +49,7 @@ pub fn main() {
             "couldn't make the pipes (someone else has the name)",
         );
     };
-    let console = match Console::spawn(&spec) {
+    let console = match Console::spawn(&spec, &log) {
         Ok(console) => Arc::new(console),
         Err(error) => exit(
             &log,
@@ -141,6 +141,23 @@ impl ConptyApi {
     }
 }
 
+/// `PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY`'s value for "the process
+/// being created starts its children outside the package".
+const PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE: u32 = 0x01;
+
+/// Whether the host runs in a package (Solo from the Microsoft Store).
+fn is_packaged() -> bool {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentPackageFamilyName(length: *mut u32, name: *mut u16) -> i32;
+    }
+    let mut length = 0u32;
+    // SAFETY: with no buffer it only writes the length it needs; it fails
+    // with APPMODEL_ERROR_NO_PACKAGE in a process without a package.
+    let result = unsafe { GetCurrentPackageFamilyName(&mut length, null_mut()) };
+    result == ERROR_INSUFFICIENT_BUFFER as i32
+}
+
 /// A pseudo console with the program running in it.
 struct Console {
     api: ConptyApi,
@@ -155,7 +172,7 @@ unsafe impl Send for Console {}
 unsafe impl Sync for Console {}
 
 impl Console {
-    fn spawn(spec: &Spec) -> io::Result<Console> {
+    fn spawn(spec: &Spec, log: &Log) -> io::Result<Console> {
         let api = ConptyApi::load();
         unsafe {
             let (mut in_read, mut in_write) = (null_mut(), null_mut());
@@ -177,11 +194,13 @@ impl Console {
                 return Err(io::Error::from_raw_os_error(result));
             }
 
+            let packaged = is_packaged();
+            let attributes = if packaged { 2 } else { 1 };
             let mut list_size = 0usize;
-            InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut list_size);
+            InitializeProcThreadAttributeList(null_mut(), attributes, 0, &mut list_size);
             let mut list_buffer = vec![0u8; list_size];
             let list = list_buffer.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
-            if InitializeProcThreadAttributeList(list, 1, 0, &mut list_size) == 0
+            if InitializeProcThreadAttributeList(list, attributes, 0, &mut list_size) == 0
                 || UpdateProcThreadAttribute(
                     list,
                     0,
@@ -193,6 +212,28 @@ impl Console {
                 ) == 0
             {
                 return Err(io::Error::last_os_error());
+            }
+            // Started by a packaged Solo (the Store edition), the host runs in
+            // Solo's package, whose writes to %APPDATA% and %LOCALAPPDATA%
+            // Windows redirects to a folder of the package's own. What runs
+            // in the terminal (the user's tools and agents, signing in,
+            // installing) mustn't be: it's started outside the package.
+            let breakaway: u32 = PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE;
+            if packaged
+                && UpdateProcThreadAttribute(
+                    list,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY as usize,
+                    &breakaway as *const u32 as *const c_void,
+                    size_of::<u32>(),
+                    null_mut(),
+                    null(),
+                ) == 0
+            {
+                log.write(&format!(
+                    "starting the program in Solo's package: {}",
+                    io::Error::last_os_error()
+                ));
             }
             let mut startup: STARTUPINFOEXW = zeroed();
             startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;

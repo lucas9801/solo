@@ -11,8 +11,7 @@
 #
 # writes dist\SoloCode-<version>-x64.msix and .msixupload, unsigned (the Store
 # signs it), with the identity Partner Center gives Solo Code (Product
-# identity), the unvirtualized file system and registry (the restricted
-# capability unvirtualizedResources) and the Explorer context menu. It refuses
+# identity) and the Explorer context menu. It refuses
 # a debug build (it reads assets and shaders from the source tree, so it
 # crashes once installed) and a build that isn't of the stable channel.
 #
@@ -20,12 +19,12 @@
 #
 #   script\package-solo-msix.ps1 [-SourceDir dist\Solo] [-OutDir dist] [-Version 2.3.0.0]
 #       [-IdentityName Solo] [-Publisher "CN=..."] [-PublisherDisplayName Solo]
-#       [-DisplayName Solo] [-Unvirtualized] [-SoloArguments "..."] [-AliasSuffix ""]
+#       [-DisplayName Solo] [-SoloArguments "..."] [-AliasSuffix ""]
 #       [-Protocol solo] [-CertificateThumbprint <sha1>] [-ExplorerCommandDll <path>]
 #       [-NoContextMenu] [-KeepLayout]
 #
 # e.g. with -IdentityName SoloMsixTest -DisplayName "Solo MSIX Test"
-# -AliasSuffix -msixtest -Protocol solo-msixtest -Unvirtualized
+# -AliasSuffix -msixtest -Protocol solo-msixtest
 # -SoloArguments "--user-data-dir C:\scratch\solo" -CertificateThumbprint ...,
 # so it doesn't get in the way of an installed Solo. It's signed with
 # -CertificateThumbprint, a code-signing certificate in Cert:\CurrentUser\My
@@ -49,12 +48,13 @@
 # (CARGO_TARGET_DIR or target, solo-dist\explorer_command_injector.dll). A
 # test package goes without the menu if there's none (or with -NoContextMenu).
 #
-# -Unvirtualized declares the restricted capability unvirtualizedResources and
-# turns file system and registry write virtualization off, so Solo's writes to
-# %APPDATA% and %LOCALAPPDATA% land in the real folders rather than in the
-# package's private ones; the shells and agents in Solo's terminals, which
-# aren't packaged, see the same folders as Solo. The Store package always has
-# it.
+# No package declares the restricted capability unvirtualizedResources: the
+# Store refused it to Solo Code. So Windows redirects Solo's new files in
+# %APPDATA% and %LOCALAPPDATA% (its data folder among them) to the package's
+# own folder; what Solo hands to the shells and agents in its terminals,
+# which run outside the package, goes to a folder they see too (see
+# util::packaged::package_shared_dir). The script refuses a manifest with
+# the capability.
 #
 # -SoloArguments are passed to solo.exe whenever it's started from the
 # package (Start menu, solo://, files), e.g. "--user-data-dir C:\scratch" for
@@ -74,7 +74,6 @@ param(
     [string]$Publisher = "CN=Solo MSIX Test",
     [string]$PublisherDisplayName = "Solo",
     [string]$DisplayName = "Solo",
-    [switch]$Unvirtualized,
     [string]$SoloArguments = "",
     [string]$AliasSuffix = "",
     [string]$Protocol = "solo",
@@ -111,7 +110,6 @@ if ($Store) {
     $Publisher = $storeIdentity.Publisher
     $PublisherDisplayName = $storeIdentity.PublisherDisplayName
     $DisplayName = $storeIdentity.DisplayName
-    $Unvirtualized = $true
 }
 
 $files = @("solo.exe", "solo-cli.exe", "solo-agent-hook.exe", "solo-terminal-host.exe", "solo-update-helper.exe")
@@ -233,16 +231,6 @@ if ($SoloArguments) { $soloParameters = " uap10:Parameters=`"$(ConvertTo-XmlAttr
 # What solo:// links and opened files start solo.exe with.
 $targetParameters = (($SoloArguments, '"%1"') | Where-Object { $_ }) -join " "
 
-$unvirtualizedProperties = ""
-$unvirtualizedCapability = ""
-if ($Unvirtualized) {
-    $unvirtualizedProperties = @"
-    <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
-    <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
-"@
-    $unvirtualizedCapability = '    <rescap:Capability Name="unvirtualizedResources" />'
-}
-
 $fileTypeElements = ($fileTypes | ForEach-Object { "              <uap:FileType>$_</uap:FileType>" }) -join "`r`n"
 
 $contextMenu = ""
@@ -285,14 +273,14 @@ $manifest = $manifest.
     Replace("@FILE_PARAMETERS@", (ConvertTo-XmlAttribute $targetParameters)).
     Replace("@SOLO_PARAMETERS@", $soloParameters).
     Replace("<!--@FILE_TYPES@-->", $fileTypeElements).
-    Replace("<!--@CONTEXT_MENU@-->", $contextMenu).
-    Replace("<!--@UNVIRTUALIZED_PROPERTIES@-->", $unvirtualizedProperties).
-    Replace("<!--@UNVIRTUALIZED_CAPABILITY@-->", $unvirtualizedCapability)
+    Replace("<!--@CONTEXT_MENU@-->", $contextMenu)
 if ($manifest -match '@[A-Z_]+@') { throw "AppxManifest.xml.in has a placeholder this script doesn't fill: $($Matches[0])" }
 $manifestXml = [xml]$manifest
 # The Store rejects an application without a Start menu entry ("headless")
 # unless Microsoft granted a waiver.
 if ($manifestXml.SelectNodes("//*[@AppListEntry='none']").Count) { throw "The manifest has an application with AppListEntry=`"none`", which the Store rejects" }
+# Nor did it grant Solo Code the restricted capability unvirtualizedResources.
+if ($manifestXml.SelectNodes("//*[local-name()='Capability'][@Name='unvirtualizedResources']").Count) { throw "The manifest declares unvirtualizedResources, which the Store refused" }
 $manifestPath = Join-Path (Resolve-Path $layout).Path "AppxManifest.xml"
 [System.IO.File]::WriteAllText($manifestPath, $manifest, (New-Object System.Text.UTF8Encoding $false))
 
