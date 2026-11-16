@@ -73,7 +73,11 @@ if [[ -n ${SOLO_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} )); then
                     ;;
             esac
         done
-        if [[ -r $SOLO_CLAUDE_SETTINGS ]]; then
+        if [[ -r $SOLO_CLAUDE_SETTINGS && -n ${SOLO_CLAUDE_MCP_CONFIG-} && -r $SOLO_CLAUDE_MCP_CONFIG ]]; then
+            # Solo's browser, when agents may control it (before --settings,
+            # which ends --mcp-config's list of files).
+            command claude --mcp-config "$SOLO_CLAUDE_MCP_CONFIG" --settings "$SOLO_CLAUDE_SETTINGS" "$@"
+        elif [[ -r $SOLO_CLAUDE_SETTINGS ]]; then
             command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
         else
             command claude "$@"

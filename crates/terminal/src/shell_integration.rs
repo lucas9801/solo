@@ -326,6 +326,107 @@ pub fn integrate_claude_code(is_windows: bool, env: &mut HashMap<String, String>
     }
 }
 
+/// SOLO: the remote debugging port of Solo's browser, when agents may control
+/// it (the `browser.allow_agent_control` setting). 0 when they may not.
+static BROWSER_DEBUGGING_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// SOLO: The Playwright MCP server agents use to control Solo's browser, at a
+/// fixed version so a new release can't change what agents can do unnoticed.
+pub const PLAYWRIGHT_MCP_PACKAGE: &str = "@playwright/mcp@0.0.85";
+
+/// The name agents see the browser's MCP server under.
+pub const BROWSER_MCP_SERVER_NAME: &str = "solo-browser";
+
+/// SOLO: Sets the port terminals started from now on hand to agents, or `None`
+/// to hand them nothing.
+pub fn set_browser_debugging_port(port: Option<u16>) {
+    BROWSER_DEBUGGING_PORT.store(port.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn browser_debugging_port() -> Option<u16> {
+    match BROWSER_DEBUGGING_PORT.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        port => Some(port),
+    }
+}
+
+/// The command that runs the Playwright MCP server against Solo's browser.
+/// `npx` is a batch file on Windows, which agents can only start through cmd.
+fn browser_mcp_command(port: u16, is_windows: bool) -> (String, Vec<String>) {
+    let mut args = vec![
+        "-y".to_string(),
+        PLAYWRIGHT_MCP_PACKAGE.to_string(),
+        "--cdp-endpoint".to_string(),
+        format!("http://127.0.0.1:{port}"),
+    ];
+    if is_windows {
+        args.splice(0..0, ["/c".to_string(), "npx".to_string()]);
+        ("cmd".to_string(), args)
+    } else {
+        ("npx".to_string(), args)
+    }
+}
+
+/// Claude Code's `--mcp-config` file for Solo's browser.
+fn browser_mcp_config(port: u16, is_windows: bool) -> serde_json::Value {
+    let (command, args) = browser_mcp_command(port, is_windows);
+    serde_json::json!({
+        "mcpServers": {
+            BROWSER_MCP_SERVER_NAME: {
+                "type": "stdio",
+                "command": command,
+                "args": args,
+            }
+        }
+    })
+}
+
+/// Codex's `-c` override that adds the same server for one session.
+fn codex_browser_mcp_override(port: u16, is_windows: bool) -> String {
+    let (command, args) = browser_mcp_command(port, is_windows);
+    let quote = |text: &str| format!("'{}'", text.replace('\'', ""));
+    format!(
+        "mcp_servers.{BROWSER_MCP_SERVER_NAME}={{command={},args=[{}]}}",
+        quote(&command),
+        args.iter()
+            .map(|arg| quote(arg))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+/// SOLO: Lets agents started from the integrated shell control Solo's browser,
+/// when that's allowed. Every terminal gets `SOLO_BROWSER_CDP` (the debugging
+/// endpoint). Claude Code gets a `solo-browser` MCP server through the
+/// `claude` wrapper's `--mcp-config` (which adds to the user's own servers),
+/// and Codex through a `-c mcp_servers...` override in `SOLO_CODEX_ARGS`; so
+/// call this after [`integrate_claude_code`] and [`integrate_codex`].
+pub fn integrate_browser(is_windows: bool, env: &mut HashMap<String, String>) {
+    let Some(port) = browser_debugging_port() else {
+        return;
+    };
+    env.insert(
+        "SOLO_BROWSER_CDP".to_string(),
+        format!("http://127.0.0.1:{port}"),
+    );
+    if env.contains_key("SOLO_CLAUDE_SETTINGS") {
+        let config = browser_mcp_config(port, is_windows);
+        match serde_json::to_string_pretty(&config)
+            .map_err(std::io::Error::other)
+            .and_then(|config| write_script(&format!("browser-mcp-{port}.json"), &config))
+        {
+            Ok(path) => {
+                env.insert("SOLO_CLAUDE_MCP_CONFIG".to_string(), path);
+            }
+            Err(error) => log::warn!("failed to write the browser's MCP config: {error}"),
+        }
+    }
+    if let Some(args) = env.get_mut("SOLO_CODEX_ARGS") {
+        args.push_str("\n-c\n");
+        args.push_str(&codex_browser_mcp_override(port, is_windows));
+    }
+}
+
 /// SOLO: Lets Codex started from the integrated shell report what it's doing
 /// through hooks, so its turns are tracked like Claude Code's.
 ///
@@ -1432,6 +1533,136 @@ fn path_from_file_uri(uri: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // One test, as the port is process-wide.
+    #[test]
+    fn agents_get_the_browser_only_when_allowed() {
+        let integrated = |env: &mut HashMap<String, String>| {
+            integrate_claude_code(cfg!(windows), env);
+            env.insert("SOLO_CODEX_ARGS".to_string(), "-c\nhooks=x".to_string());
+            integrate_browser(cfg!(windows), env);
+        };
+
+        set_browser_debugging_port(None);
+        let mut env = HashMap::default();
+        integrated(&mut env);
+        assert!(!env.contains_key("SOLO_BROWSER_CDP"));
+        assert!(!env.contains_key("SOLO_CLAUDE_MCP_CONFIG"));
+        assert_eq!(env["SOLO_CODEX_ARGS"], "-c\nhooks=x");
+
+        set_browser_debugging_port(Some(51234));
+        let mut env = HashMap::default();
+        integrated(&mut env);
+        set_browser_debugging_port(None);
+        assert_eq!(env["SOLO_BROWSER_CDP"], "http://127.0.0.1:51234");
+        let config = std::fs::read_to_string(&env["SOLO_CLAUDE_MCP_CONFIG"]).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+        let server = &config["mcpServers"]["solo-browser"];
+        let args: Vec<&str> = server["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect();
+        assert!(args.contains(&PLAYWRIGHT_MCP_PACKAGE));
+        assert!(args.ends_with(&["--cdp-endpoint", "http://127.0.0.1:51234"]));
+        if cfg!(windows) {
+            assert_eq!(server["command"], "cmd");
+            assert_eq!(&args[..2], &["/c", "npx"]);
+        }
+        let codex: Vec<&str> = env["SOLO_CODEX_ARGS"].split('\n').collect();
+        assert_eq!(&codex[..2], &["-c", "hooks=x"]);
+        assert_eq!(codex[2], "-c");
+        assert!(codex[3].starts_with("mcp_servers.solo-browser={command="));
+        assert!(codex[3].contains("'http://127.0.0.1:51234'"));
+
+        // Without the Claude Code hooks there is no wrapper to pass the file.
+        set_browser_debugging_port(Some(51234));
+        let mut env = HashMap::default();
+        integrate_browser(cfg!(windows), &mut env);
+        set_browser_debugging_port(None);
+        assert!(env.contains_key("SOLO_BROWSER_CDP"));
+        assert!(!env.contains_key("SOLO_CLAUDE_MCP_CONFIG"));
+    }
+
+    /// The bash wrapper passes the browser's MCP config to `claude` only when
+    /// there is one. Runs a fake `claude`: PATH holds nothing else.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test waiting for a short shell script"
+    )]
+    fn bash_wrapper_adds_the_browser_mcp_config() {
+        // Not WSL's bash in System32: it has its own file system.
+        let Some(bash) = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .filter(|dir| !dir.to_string_lossy().to_lowercase().contains("system32"))
+                .map(|dir| dir.join(if cfg!(windows) { "bash.exe" } else { "bash" }))
+                .find(|bash| bash.is_file())
+        }) else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let fake = bin.join("claude");
+        std::fs::write(&fake, "#!/bin/sh\necho \"ARGS: $*\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let script = dir.path().join("integration.sh");
+        std::fs::write(&script, BASH_SCRIPT).unwrap();
+        let settings = dir.path().join("settings.json");
+        let mcp = dir.path().join("mcp.json");
+        std::fs::write(&settings, "{}").unwrap();
+        std::fs::write(&mcp, "{}").unwrap();
+        let posix = |path: &Path| {
+            let path = path.to_string_lossy().replace('\\', "/");
+            match path.split_once(":/") {
+                Some((drive, rest)) if cfg!(windows) && drive.len() == 1 => {
+                    format!("/{}/{rest}", drive.to_ascii_lowercase())
+                }
+                _ => path,
+            }
+        };
+        let run = |with_mcp: bool| {
+            let mut command = std::process::Command::new(&bash);
+            command
+                .env_clear()
+                .env("PATH", posix(&bin))
+                .env("SOLO_CLAUDE_SETTINGS", posix(&settings))
+                .args(["--norc", "--noprofile", "-c"])
+                .arg(format!(
+                    "source '{}'; [ \"$(command -v claude)\" = claude ] && claude hi",
+                    posix(&script)
+                ));
+            if with_mcp {
+                command.env("SOLO_CLAUDE_MCP_CONFIG", posix(&mcp));
+            }
+            let output = command.output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            stdout
+                .lines()
+                .find_map(|line| line.split_once("ARGS: ").map(|(_, args)| args.to_string()))
+                .unwrap_or_default()
+        };
+        let with = run(true);
+        if with.is_empty() {
+            // This bash can't run the fake (e.g. WSL's bash.exe): nothing to check.
+            return;
+        }
+        assert_eq!(
+            with,
+            format!(
+                "--mcp-config {} --settings {} hi",
+                posix(&mcp),
+                posix(&settings)
+            )
+        );
+        assert_eq!(run(false), format!("--settings {} hi", posix(&settings)));
+    }
 
     #[test]
     fn prepends_to_path_keeping_its_spelling() {
