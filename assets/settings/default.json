@@ -2324,6 +2324,20 @@
     // OpenCode 1), so its turns can be reviewed like Claude Code's. Nothing is
     // written to OpenCode's own config. Takes effect in new terminals.
     "opencode_hooks": true,
+    // Let Pi, oh-my-pi, Kilo Code CLI, Gemini CLI and Qwen Code started in a
+    // terminal with shell integration report what they're doing, for that
+    // session only (an extension loaded with `pi -e` / `omp -e`, a plugin
+    // folder in KILO_CONFIG_DIR, hooks in a system defaults file of Solo's for
+    // Gemini CLI and Qwen Code, added to your own hooks). Nothing is written
+    // to the agents' config. Takes effect in new terminals.
+    "more_agent_hooks": true,
+    // Agents that read status hooks only from your own config file, whose
+    // config Solo may add its hooks to: "kimi" (Kimi Code CLI,
+    // ~/.kimi-code/config.toml) and "mastracode" (~/.mastracode/hooks.json).
+    // Solo backs the file up first (<file>.solo-backup) and marks its entries;
+    // taking an agent off the list removes them and nothing else. Take the
+    // agents off the list before uninstalling Solo.
+    "global_agent_hooks": [],
     // On Windows, terminals run their shell in a small background process
     // (solo-terminal-host). When Solo quits, or restarts for an update,
     // terminals that are running a command or an agent keep running there,

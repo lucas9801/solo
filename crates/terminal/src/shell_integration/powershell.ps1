@@ -75,8 +75,9 @@ function Global:prompt {
     "$marks$userPrompt$esc]133;B$bel"
 }
 
-# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's) write to this console.
-if ($env:SOLO_CLAUDE_SETTINGS -or $env:SOLO_CODEX_ARGS -or $env:SOLO_COPILOT_PLUGIN -or $env:SOLO_OPENCODE_CONFIG_DIR) {
+# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's, and the others
+# Solo's hook program reports for) write to this console.
+if ($env:SOLO_CLAUDE_SETTINGS -or $env:SOLO_CODEX_ARGS -or $env:SOLO_COPILOT_PLUGIN -or $env:SOLO_OPENCODE_CONFIG_DIR -or $env:SOLO_AGENT_HOOK) {
     $env:SOLO_AGENT_CONSOLE_PID = "$PID"
 }
 
@@ -191,6 +192,37 @@ if ($env:SOLO_OPENCODE_CONFIG_DIR -and -not (Get-Command -Name opencode -Command
             if ($setCliConfig) { Remove-Item Env:OPENCODE_CLI_CONFIG_CONTENT -ErrorAction SilentlyContinue }
             if ($setConfigDir) { Remove-Item Env:OPENCODE_CONFIG_DIR -ErrorAction SilentlyContinue }
         }
+    }
+}
+
+# SOLO: Pi and oh-my-pi report what they're doing through an extension Solo
+# loads for the session with -e (see SOLO_PI_EXTENSION).
+# Functions or aliases of the user's own stay.
+if ($env:SOLO_PI_EXTENSION) {
+    function Global:__SoloPiLike {
+        param([string]$Name, [object[]]$Arguments, $Pipeline, [bool]$HasInput)
+        $program = Get-Command -Name $Name -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $program) {
+            Write-Error "${Name}: command not found"
+            return
+        }
+        $extension = @()
+        if (-not ($Arguments.Count -gt 0 -and "$($Arguments[0])" -in @('install', 'remove', 'uninstall', 'update', 'list', 'config', 'plugin', 'plugins', 'help')) -and (Test-Path -LiteralPath $env:SOLO_PI_EXTENSION)) {
+            $extension = @('-e', $env:SOLO_PI_EXTENSION)
+        }
+        $Global:LASTEXITCODE = 0
+        if ($HasInput) {
+            $Pipeline | & $program @extension @Arguments
+        } else {
+            & $program @extension @Arguments
+        }
+        $Global:__SoloWrappedExitCode = $Global:LASTEXITCODE
+    }
+    if (-not (Get-Command -Name pi -CommandType Function, Alias -ErrorAction SilentlyContinue)) {
+        function Global:pi { __SoloPiLike -Name pi -Arguments $args -Pipeline $input -HasInput $MyInvocation.ExpectingInput }
+    }
+    if (-not (Get-Command -Name omp -CommandType Function, Alias -ErrorAction SilentlyContinue)) {
+        function Global:omp { __SoloPiLike -Name omp -Arguments $args -Pipeline $input -HasInput $MyInvocation.ExpectingInput }
     }
 }
 

@@ -8,6 +8,8 @@ pub use host::{HostLink, RunningHost, end_running_host, running_hosts};
 mod mermaid;
 pub use mermaid::is_complete as mermaid_diagram_is_complete;
 mod pty_info;
+pub mod agent_integrations;
+pub mod global_agent_hooks;
 pub mod shell_integration;
 pub mod stable_programs;
 pub mod terminal_settings;

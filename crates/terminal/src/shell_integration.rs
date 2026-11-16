@@ -228,7 +228,7 @@ fn integrate_zsh(env: &mut HashMap<String, String>) -> std::io::Result<()> {
 }
 
 /// Where the scripts go: a directory in the temp dir of this user's own.
-fn scripts_dir() -> std::io::Result<PathBuf> {
+pub(crate) fn scripts_dir() -> std::io::Result<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
@@ -264,7 +264,7 @@ fn scripts_dir() -> std::io::Result<PathBuf> {
 }
 
 /// Shells only load extra scripts from disk, so they go to the temp dir.
-fn write_script(name: &str, script: &str) -> std::io::Result<String> {
+pub(crate) fn write_script(name: &str, script: &str) -> std::io::Result<String> {
     let path = scripts_dir()?.join(name);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -609,7 +609,7 @@ fn write_opencode_plugins() -> std::io::Result<(String, String)> {
 }
 
 /// `path` with the platform's separators (the scripts' paths use `/`).
-fn native_path(path: &Path) -> PathBuf {
+pub(crate) fn native_path(path: &Path) -> PathBuf {
     if cfg!(windows) {
         PathBuf::from(path.to_string_lossy().replace('/', "\\"))
     } else {
@@ -773,7 +773,7 @@ fn claude_code_settings_file_name(settings: &str) -> String {
 /// hook commands they're given for as long as they run, and their settings
 /// file and Codex's trust are keyed by the path, which mustn't change with
 /// each update (see [`crate::stable_programs`]).
-fn agent_hook_executable() -> Option<PathBuf> {
+pub(crate) fn agent_hook_executable() -> Option<PathBuf> {
     crate::stable_programs::program_path("solo-agent-hook")
 }
 
