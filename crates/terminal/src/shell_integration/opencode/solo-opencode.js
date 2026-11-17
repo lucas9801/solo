@@ -149,6 +149,64 @@ export function createReporter({ rootOf, accept = () => true, directory } = {}) 
   }
 }
 
+/** OpenCode's tools that write files. */
+const EDIT_TOOLS = new Set(["edit", "write", "multiedit", "patch", "apply_patch"])
+
+/** The files a patch in the `apply_patch` format names. */
+export function patchFiles(text) {
+  if (typeof text !== "string" || !text.includes("*** Begin Patch")) return []
+  const files = []
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/.exec(line)
+    if (match) files.push(match[1].trim())
+  }
+  return files
+}
+
+/**
+ * SOLO: Reports the files OpenCode's tools edited (R3 M5), from its message
+ * events: a tool part (`message.part.updated`) of an edit or write tool that
+ * completed, by its `filePath` (or each file its patch names, relative to
+ * `directory`). Solo then counts only those files as the turn's.
+ *
+ * Unverified against a real OpenCode: the parts' shape is from its message
+ * schema (`type: "tool"`, `tool`, `callID`, `state.status`, `state.input`).
+ *
+ * - `rootOf(id)`, `accept(session)`: as for `createReporter`; a subagent's
+ *   edits count for its main session.
+ */
+export function createEditReporter({ rootOf = (id) => id, accept = () => true, directory } = {}) {
+  const seen = new Set()
+  const absolute = (file) =>
+    typeof file === "string" && (file.startsWith("/") || /^[A-Za-z]:[\\/]/.test(file))
+  return {
+    /** The edit reports for an event: none, or one per file. */
+    handle(event) {
+      if (event?.type !== "message.part.updated") return []
+      const data = event.data ?? event.properties ?? {}
+      const part = data.part ?? data
+      if (part?.type !== "tool" || !EDIT_TOOLS.has(String(part.tool).toLowerCase())) return []
+      if (part.state?.status !== "completed") return []
+      const key = part.callID ?? part.id
+      if (key !== undefined) {
+        if (seen.has(key)) return []
+        seen.add(key)
+        if (seen.size > 1000) seen.clear()
+      }
+      const id = typeof part.sessionID === "string" ? part.sessionID : undefined
+      const session = id && (rootOf(id) ?? id)
+      if (session !== undefined && !accept(session)) return []
+      const input = part.state.input ?? {}
+      const where = event.location?.directory ?? directory
+      const files = typeof input.filePath === "string" ? [input.filePath] : patchFiles(input.patchText ?? input.patch)
+      return files
+        .map((file) => (absolute(file) || typeof where !== "string" ? file : `${where.replace(/[\\/]+$/, "")}/${file}`))
+        .filter(absolute)
+        .map((file) => ({ state: "edit", session, file }))
+    },
+  }
+}
+
 /** Message parts that are the model's output: its first one is its first token. */
 const OUTPUT_PARTS = new Set(["text", "reasoning", "tool"])
 /** How many messages are timed at once, at most. */
@@ -252,6 +310,7 @@ export function reportArguments(report, seq) {
   if (typeof report.directory === "string" && report.directory.trim() !== "") {
     args.push("--directory", report.directory)
   }
+  if (report.state === "edit" && typeof report.file === "string") args.push("--file", report.file)
   if (report.state === "response") {
     const count = (value) => Number.isInteger(value) && value >= 0
     if (count(report.firstTokenMs)) args.push("--first-token-ms", String(report.firstTokenMs))
