@@ -380,9 +380,11 @@ finds the port can do the same**, so turn it on only while you need it.
   agents (Copilot CLI, OpenCode), add an MCP server that runs
   `npx -y @playwright/mcp@0.0.85 --cdp-endpoint $SOLO_BROWSER_CDP` in their
   own MCP configuration.
-- Pages an agent opens appear as tabs in the editor area without taking the
-  focus. At least one browser tab must be open for the agent to find the
-  browser.
+- Pages that open from a page (links that open a new window) appear as tabs
+  in the editor area without taking the focus. A new tab the agent creates
+  itself (Playwright's "new tab") opens in a separate window outside Solo, so
+  ask the agent to use the tab that is already open. At least one browser tab
+  must be open for the agent to find the browser.
 
 ### Agents keep running when Solo closes
 Each terminal's shell runs in a small background process,

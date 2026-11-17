@@ -155,7 +155,7 @@ Solo 不会在 agent 工作时自动打开它改的文件。
 - Claude Code 会多一个名叫 `solo-browser` 的 MCP 服务器（Playwright MCP，用 `npx` 运行，需要 Node.js）：`claude` 包装函数在 `--settings` 前加上 `--mcp-config`，叠加在你自己的 MCP 服务器上，不改动它们。和包装函数一样，需要 `"claude_code_hooks"` 开着。
 - Codex 通过每次会话的 `-c mcp_servers.solo-browser=...` 得到同一个服务器（需要 `"codex_hooks"`）。
 - 每个终端都有 `SOLO_BROWSER_CDP=http://127.0.0.1:<端口>`。其他 agent（Copilot CLI、OpenCode）可以在自己的 MCP 配置里加一个运行 `npx -y @playwright/mcp@0.0.85 --cdp-endpoint $SOLO_BROWSER_CDP` 的服务器。
-- agent 打开的网页显示为编辑区里的标签页，不抢焦点。至少要开着一个浏览器标签页，agent 才能找到浏览器。
+- 网页里打开的新窗口显示为编辑区里的标签页，不抢焦点。agent 自己新建的标签页（Playwright 的“新标签页”）会在 Solo 外面单独开一个窗口，所以让 agent 用已经打开的标签页。至少要开着一个浏览器标签页，agent 才能找到浏览器。
 
 ### 关掉 Solo，agent 照样在跑
 每个终端的 shell 跑在一个小的后台进程 `solo-terminal-host.exe` 里。Solo 退出、更新重启，甚至崩溃时，正在运行东西（agent，或者编译之类的命令）的终端会在那里继续跑；Solo 再打开那个工作区时会自动连回去，期间的输出也都在。空闲的 shell 还是随 Solo 一起结束；关掉终端标签会结束里面运行的东西。

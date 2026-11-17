@@ -5350,25 +5350,6 @@ impl Workspace {
         })
     }
 
-    /// Opens a URL or file path, intelligently routing to the appropriate handler:
-    ///
-    /// - `http://` and `https://` URLs are opened in the system's default browser
-    /// - `file://` URIs are opened as files in the editor
-    /// - Paths without a URL scheme are treated as file paths:
-    ///   - Absolute paths are opened directly
-    ///   - Relative paths are first resolved against `base_path` (if provided),
-    ///     then against visible project worktrees
-    /// - Other URI schemes (e.g., `mailto:`, `vscode:`) are passed to the system handler
-    ///
-    /// # Arguments
-    /// * `url_or_path` - The URL or file path to open
-    /// * `base_path` - Optional base directory for resolving relative paths (e.g., the
-    ///   directory containing a markdown file). If not provided, relative paths are
-    ///   resolved against project worktrees.
-    ///
-    /// This method provides a unified way to handle links that may be either URLs
-    /// or file paths, such as those found in markdown documents, terminal output,
-    /// or LSP responses.
     /// SOLO: opens a web link where the "open links" setting says: Solo's
     /// browser or the system browser. Ctrl+Shift opens it the other way.
     pub fn open_web_link(url: &str, window: &mut Window, cx: &mut App) {
@@ -5385,6 +5366,26 @@ impl Workspace {
         }
     }
 
+    /// Opens a URL or file path, intelligently routing to the appropriate handler:
+    ///
+    /// - `http://` and `https://` URLs go to [`Self::open_web_link`] (Solo's browser
+    ///   or the system's, per the "open links" setting)
+    /// - `file://` URIs are opened as files in the editor
+    /// - Paths without a URL scheme are treated as file paths:
+    ///   - Absolute paths are opened directly
+    ///   - Relative paths are first resolved against `base_path` (if provided),
+    ///     then against visible project worktrees
+    /// - Other URI schemes (e.g., `mailto:`, `vscode:`) are passed to the system handler
+    ///
+    /// # Arguments
+    /// * `url_or_path` - The URL or file path to open
+    /// * `base_path` - Optional base directory for resolving relative paths (e.g., the
+    ///   directory containing a markdown file). If not provided, relative paths are
+    ///   resolved against project worktrees.
+    ///
+    /// This method provides a unified way to handle links that may be either URLs
+    /// or file paths, such as those found in markdown documents, terminal output,
+    /// or LSP responses.
     pub fn open_url_or_file(
         &mut self,
         url_or_path: &str,
