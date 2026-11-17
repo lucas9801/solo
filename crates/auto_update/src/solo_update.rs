@@ -16,6 +16,12 @@
 //!   and the installer starts it again; "install when Solo quits" waits for
 //!   the user to quit, so agents running in terminals carry on meanwhile.
 //!
+//! Releases no longer carry the installer (`Solo-Setup-<version>.exe`):
+//! Solo is installed from the Microsoft Store, which updates it. For a
+//! release without one, the button still says a newer version is out, but
+//! its menu only offers the release notes (where the portable zip is) and
+//! skipping the version: nothing is downloaded and nothing fails.
+//!
 //! Only stable builds check. Automatic checks follow the `auto_update`
 //! setting; the "check for updates" command always checks.
 
@@ -1182,6 +1188,16 @@ impl SoloUpdater {
             return;
         }
         let Some(installer) = release.installer.clone() else {
+            // A newer release without an installer while an older one waits
+            // for Solo to quit: that one still goes in, and the next run
+            // offers this release's page.
+            if quiet {
+                log::info!(
+                    "solo update: {} has no installer; keeping the update waiting for Solo to quit",
+                    release.version
+                );
+                return;
+            }
             cx.open_url(&release.html_url);
             return;
         };
@@ -1518,6 +1534,13 @@ mod tests {
             prerelease: false,
             installer: None,
         }
+    }
+
+    #[test]
+    fn release_without_installer_offers_only_its_page() {
+        let offer = offer_for(&release("1.29.0"));
+        assert!(!offer.can_install);
+        assert_eq!(offer.notes_url.as_deref(), Some("https://example.com"));
     }
 
     #[test]

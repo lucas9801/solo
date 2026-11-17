@@ -69,8 +69,9 @@ fn log(path: &Path, message: &str) {
 
 /// The installer's command line after its path. Inno Setup takes
 /// `/DIR="..."` and `/LOG="..."` with the quotes inside the argument, and
-/// Windows paths can't contain `"`. `/NOLAUNCH` is Solo's own (solo.iss):
-/// don't start Solo after installing.
+/// Windows paths can't contain `"`. `/NOLAUNCH` is Solo's own (the
+/// installer's script, `script/solo.iss`, until releases stopped carrying an
+/// installer): don't start Solo after installing.
 fn installer_args(install_dir: &Path, log_file: &Path, relaunch: bool) -> Vec<String> {
     let install_dir = install_dir.to_string_lossy();
     // A trailing backslash would read as escaping the closing quote.
