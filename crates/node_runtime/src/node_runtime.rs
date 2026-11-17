@@ -159,6 +159,14 @@ impl NodeRuntime {
                 ),
             };
             match ManagedNodeRuntime::install_if_needed(&state.http).await {
+                // SOLO: Node.js wasn't allowed to download (offline, or the
+                // user said no). Not cached, so allowing it later works
+                // without restarting.
+                Err(err) if err.downcast_ref::<net_guard::DownloadBlocked>().is_some() => {
+                    return Box::new(UnavailableNodeRuntime {
+                        error_message: err.to_string().into(),
+                    });
+                }
                 Ok(instance) => {
                     log::log!(
                         log_level,
@@ -223,6 +231,8 @@ impl NodeRuntime {
         subcommand: &str,
         args: &[&str],
     ) -> Result<Output> {
+        // SOLO: npm reaches the registry; not in offline mode.
+        ensure_npm_allowed(subcommand)?;
         let http = self.0.lock().await.http.clone();
         self.instance()
             .await
@@ -247,6 +257,8 @@ impl NodeRuntime {
         subcommand: &str,
         args: &[&str],
     ) -> Result<NpmCommand> {
+        // SOLO: npm reaches the registry; not in offline mode.
+        ensure_npm_allowed(subcommand)?;
         let http = self.0.lock().await.http.clone();
         self.instance()
             .await
@@ -264,6 +276,8 @@ impl NodeRuntime {
         name: &str,
         version_requirement: Option<&VersionReq>,
     ) -> Result<Version> {
+        // SOLO: npm reaches the registry; not in offline mode.
+        ensure_npm_allowed("info")?;
         let http = self.0.lock().await.http.clone();
         let instance = self.instance().await;
         let output = instance
@@ -304,10 +318,33 @@ impl NodeRuntime {
         Ok(selected_version)
     }
 
+    /// SOLO: installs without running the packages' install scripts: the
+    /// language servers, Prettier, Copilot and debug adapter packages Solo
+    /// installs don't need them. Use [`Self::npm_install_packages_with_scripts`]
+    /// for packages that may.
     pub async fn npm_install_packages(
         &self,
         directory: &Path,
         packages: &[(&str, &str)],
+    ) -> Result<()> {
+        self.npm_install(directory, packages, false).await
+    }
+
+    /// SOLO: [`Self::npm_install_packages`], running the packages' install
+    /// scripts (for extensions' packages, which may need them).
+    pub async fn npm_install_packages_with_scripts(
+        &self,
+        directory: &Path,
+        packages: &[(&str, &str)],
+    ) -> Result<()> {
+        self.npm_install(directory, packages, true).await
+    }
+
+    async fn npm_install(
+        &self,
+        directory: &Path,
+        packages: &[(&str, &str)],
+        run_scripts: bool,
     ) -> Result<()> {
         if packages.is_empty() {
             return Ok(());
@@ -326,6 +363,8 @@ impl NodeRuntime {
         let arguments: Vec<_> = packages
             .iter()
             .map(|p| p.as_str())
+            // SOLO: see `npm_install_packages`.
+            .chain((!run_scripts).then_some("--ignore-scripts"))
             .chain([
                 "--no-package-lock",
                 "--save-exact",
@@ -403,6 +442,14 @@ impl NodeRuntime {
         );
         should_install
     }
+}
+
+/// SOLO: npm subcommands that reach the registry fail in offline mode.
+fn ensure_npm_allowed(subcommand: &str) -> Result<()> {
+    if net_guard::npm_subcommand_uses_network(subcommand) {
+        net_guard::ensure_online("npm")?;
+    }
+    Ok(())
 }
 
 fn should_install_npm_package_version(
@@ -680,6 +727,8 @@ impl ManagedNodeRuntime {
         };
 
         if !valid {
+            // SOLO: ask before downloading Node.js; not in offline mode.
+            net_guard::request(net_guard::Component::node(), false).await?;
             _ = fs::remove_dir_all(&node_containing_dir).await;
             fs::create_dir(&node_containing_dir)
                 .await

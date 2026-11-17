@@ -205,6 +205,10 @@ impl Asset for CommitAvatarAsset {
         let client = cx.http_client();
 
         async move {
+            // SOLO: no avatars in offline mode.
+            if net_guard::is_offline() {
+                return None;
+            }
             source
                 .remote
                 .avatar_url(source.sha, source.author_email, client)

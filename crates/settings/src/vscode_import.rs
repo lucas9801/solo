@@ -210,6 +210,9 @@ impl VsCodeSettings {
             helix_mode: None,
             hide_mouse: None,
             ui_language: None,
+            // SOLO: offline mode and asking before downloads aren't imported.
+            network: None,
+            downloads: None,
             image_viewer: None,
             browser: None,
             markdown_preview: None,

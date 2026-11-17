@@ -133,6 +133,8 @@ gpui_tokio.workspace = true
 hang_telemetry.workspace = true
 image = { workspace = true, optional = true }
 itertools.workspace = true
+net_guard.workspace = true
+net_guard_ui.workspace = true
 rayon.workspace = true
 semver.workspace = true
 system_specs.workspace = true

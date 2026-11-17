@@ -71,6 +71,8 @@ impl JsDebugAdapter {
             return Ok(());
         }
 
+        // SOLO: part of js-debug, as Solo's download rules say.
+        net_guard::request(net_guard::Component::debug_adapter("JavaScript"), true).await?;
         delegate.output_to_console(format!(
             "Installing {} for WebAssembly debugging...",
             Self::DWARF_DEBUGGING_PACKAGE_NAME
@@ -543,7 +545,14 @@ impl DebugAdapter for JsDebugAdapter {
     ) -> Result<DebugAdapterBinary> {
         if self.checked.set(()).is_ok() {
             delegate.output_to_console(format!("Checking latest version of {}...", self.name()));
-            if let Some(version) = self.fetch_latest_adapter_version(delegate).await.log_err() {
+            // SOLO: as Solo's download rules say.
+            if let Some(version) = adapters::check_for_update(
+                &self.name(),
+                self.fetch_latest_adapter_version(delegate),
+            )
+            .await?
+            .log_err()
+            {
                 adapters::download_adapter_from_github(
                     self.name(),
                     version,

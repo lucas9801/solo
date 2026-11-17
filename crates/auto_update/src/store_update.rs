@@ -290,7 +290,8 @@ impl StoreUpdater {
     }
 
     fn check(&mut self, check_type: UpdateCheckType, cx: &mut Context<Self>) {
-        if self.activity != Activity::Idle {
+        // SOLO: no automatic checks in offline mode.
+        if self.activity != Activity::Idle || (net_guard::is_offline() && !check_type.is_manual()) {
             return;
         }
         self.activity = Activity::Checking;
