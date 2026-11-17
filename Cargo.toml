@@ -263,16 +263,13 @@ members = [
     # Extensions
     #
 
-    "extensions/glsl",
-    "extensions/html",
-    "extensions/proto",
+    # SOLO: only the test extension; Zed's own extensions are left to Zed.
     "extensions/test-extension",
 
     #
     # Tooling
     #
 
-    "tooling/compliance",
     "tooling/perf",
     "tooling/xtask",
 ]
@@ -327,7 +324,6 @@ collab_ui = { path = "crates/collab_ui" }
 collections = { path = "crates/collections", version = "0.1.0" }
 command_palette = { path = "crates/command_palette" }
 command_palette_hooks = { path = "crates/command_palette_hooks" }
-compliance = { path = "tooling/compliance" }
 component = { path = "crates/component" }
 component_preview = { path = "crates/component_preview" }
 context_server = { path = "crates/context_server" }
@@ -584,8 +580,6 @@ aws-sdk-bedrockruntime = { version = "1.112.0", default-features = false, featur
     "behavior-version-latest",
     "rt-tokio",
 ] }
-aws-sdk-kinesis = { version = "1.51", default-features = false }
-aws-sdk-s3 = { version = "1.15", default-features = false }
 aws-sigv4 = { version = "1.4.0", features = ["http1"] }
 aws-smithy-runtime-api = { version = "1.9.2", features = ["http-1x", "client"] }
 aws-smithy-types = { version = "1.3.4", features = ["http-body-1-x"] }
@@ -646,7 +640,6 @@ fork = "0.4.0"
 futures = "0.3.34"
 futures-concurrency = "7.7.1"
 futures-lite = "2"
-gh-workflow = { git = "https://github.com/zed-industries/gh-workflow", rev = "37f3c0575d379c218a9c455ee67585184e40d43f" }
 globset = "0.4"
 handlebars = "4.3"
 hdrhistogram = { version = "7", default-features = false }
@@ -832,7 +825,6 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
     "UNNotificationTrigger",
     "UNUserNotificationCenter",
 ] }
-octocrab = { version = "0.49", default-features = false }
 oo7 = { git = "https://github.com/zed-industries/oo7", rev = "731c1215edb6905876c6137ab300428c7b8d7c13", version = "0.6", default-features = false }
 open = "5.0.0"
 ordered-float = "5"
@@ -898,7 +890,6 @@ rustls-platform-verifier = "0.7"
 # WARNING: If you change this, you must also publish a new version of zed-scap to crates.io
 scap = { git = "https://github.com/zed-industries/scap", rev = "b5c86ec58dd4b6b7732bf6ac8be03d6b1f190a82", default-features = false, package = "zed-scap", version = "0.0.8-zed" }
 schemars = { version = "1.0", default-features = false, features = ["std", "indexmap2"] }
-sea-orm = { version = "=1.1.10", default-features = false }
 seccompiler = "0.5"
 semver = { version = "1.0", features = ["serde"] }
 serde = { version = "1.0", features = ["rc"] }
@@ -921,7 +912,6 @@ smallvec = { version = "1.6", features = ["union", "const_new"] }
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "lock_api"] }
 smol = "2.0"
 sqlformat = "0.2"
-sqlx = { version = "0.8", default-features = false }
 stacksafe = "1.0"
 streaming-iterator = "0.1"
 strsim = "0.11"
@@ -947,7 +937,6 @@ tokio = "1"
 tokio-rustls = { version = "0.26", default-features = false }
 toml = { version = "0.9", default-features = false, features = ["std", "serde", "parse"] }
 toml_edit = { version = "0.22", default-features = false, features = ["parse"] }
-tower-http = "0.4.4"
 tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "803c6ebaac27d69e1808b45058482e868d073ceb" }
 tracing = "0.1.40"
 tracing-subscriber = "0.3"
