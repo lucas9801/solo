@@ -2,7 +2,7 @@
 # package signed with a self-signed certificate for sideloading. It doesn't
 # build Solo: it takes the release build staged by
 # script\package-solo.ps1 -Step Stage (dist\Solo), or any folder with the same
-# exes, and doesn't touch the Inno Setup installer or the zip.
+# exes, and doesn't touch the zip.
 #
 # For the Store:
 #

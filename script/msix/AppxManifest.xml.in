@@ -67,7 +67,7 @@
             <uap5:ExecutionAlias Alias="solo@ALIAS_SUFFIX@.exe" />
           </uap5:AppExecutionAlias>
         </uap5:Extension>
-        <!-- solo:// links (settings, shared skills), as script\solo.iss registers them. -->
+        <!-- solo:// links (settings, shared skills). -->
         <uap3:Extension Category="windows.protocol">
           <uap3:Protocol Name="@PROTOCOL@" Parameters="@PROTOCOL_PARAMETERS@">
             <uap:DisplayName>@DISPLAY_NAME@</uap:DisplayName>
