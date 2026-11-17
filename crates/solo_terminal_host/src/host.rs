@@ -596,13 +596,21 @@ fn serve(spec: Spec, console: Arc<Console>, pipes: Pipes, log: Arc<Log>) {
     // Output, kept and passed on. Reading it never stops, or the program
     // would block on a full console.
     {
-        let (console, shared, control_reader) =
-            (console.clone(), shared.clone(), control_reader.clone());
+        let (console, shared, control_reader, log) = (
+            console.clone(),
+            shared.clone(),
+            control_reader.clone(),
+            log.clone(),
+        );
         thread::spawn(move || {
             let mut buffer = vec![0u8; 64 * 1024];
             loop {
                 let read = match (&console.output).read(&mut buffer) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
+                    Err(error) => {
+                        log.write(&format!("reading the console's output failed: {error}"));
+                        break;
+                    }
                     Ok(read) => read,
                 };
                 let bytes = &buffer[..read];
@@ -796,6 +804,7 @@ fn serve(spec: Spec, console: Arc<Console>, pipes: Pipes, log: Arc<Log>) {
         cancel_until_finished(&writer);
         cancel_until_finished(&forward_input);
         pipes.disconnect();
+        log.write("waiting for the next client");
     }
 }
 

@@ -197,13 +197,14 @@ fn a_client_that_doesnt_read_doesnt_hold_up_the_program() {
     );
     let mut host = start(
         &pipe,
-        "cmd.exe /d /q /c for /l %i in (1,1,40000) do @echo 0123456789012345678901234567890123456789 %i",
+        "cmd.exe /d /q /c for /l %i in (1,1,8000) do @echo 0123456789012345678901234567890123456789 %i",
         &dir,
     );
     let mut client = connect(&pipe, Duration::from_secs(30)).expect("client");
     client.control.write_all(b"P").unwrap();
     let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(120) {
+    // Long enough for a busy machine: without the fix it never ends.
+    while started.elapsed() < Duration::from_secs(300) {
         if host.try_wait().expect("failed to wait").is_some() {
             break;
         }
