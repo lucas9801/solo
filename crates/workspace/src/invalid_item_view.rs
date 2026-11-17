@@ -8,7 +8,7 @@ use theme::ActiveTheme as _;
 use ui::{
     App, Button, ButtonCommon, ButtonStyle, Clickable, Context, FluentBuilder, InteractiveElement,
     KeyBinding, Label, LabelCommon, LabelSize, ParentElement, Render, SharedString, Styled as _,
-    StyledTypography as _, Window, div, h_flex, v_flex,
+    StyledTypography as _, TintColor, Window, div, h_flex, v_flex,
 };
 use zed_actions::workspace::OpenWithSystem;
 
@@ -319,7 +319,7 @@ impl Render for InvalidItemView {
                                                     "reveal-in-file-manager",
                                                     ui::utils::reveal_in_file_manager_label(false),
                                                 )
-                                                .style(ButtonStyle::Filled)
+                                                .style(ButtonStyle::Tinted(TintColor::Accent))
                                                 .on_click(move |_, _, cx| {
                                                     cx.reveal_path(&reveal_path);
                                                 }),
