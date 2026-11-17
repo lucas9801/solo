@@ -1,0 +1,10 @@
+---
+● Ask user Which database should I use?
+
+ Which database should I use?
+
+ ❯ PostgreSQL
+   SQLite
+   Other (type your answer)
+
+ ↑↓ to navigate · Enter to submit · Esc to cancel

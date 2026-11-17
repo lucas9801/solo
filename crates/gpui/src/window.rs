@@ -1257,6 +1257,7 @@ pub struct Window {
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SingleSubscriberSet<AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SingleSubscriberSet<AnyObserver>,
+    frame_drawn_listeners: SingleSubscriberSet<AnyObserver>,
     focus_lost_path: SmallVec<[FocusId; 8]>,
     default_prevented: bool,
     mouse_position: Point<Pixels>,
@@ -2236,6 +2237,7 @@ impl Window {
             dirty_views: FxHashSet::default(),
             focus_listeners: SingleSubscriberSet::new(),
             focus_lost_listeners: SingleSubscriberSet::new(),
+            frame_drawn_listeners: SingleSubscriberSet::new(),
             focus_lost_path: SmallVec::new(),
             default_prevented: true,
             mouse_position,
@@ -3619,6 +3621,9 @@ impl Window {
         self.reset_cursor_style(cx);
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
+        self.frame_drawn_listeners
+            .clone()
+            .retain(|listener| listener(self, cx));
         // Focus listeners may move focus (e.g. a dock forwarding focus to its active
         // panel). `Window::focus` suppresses `refresh` while a draw is in progress, so
         // schedule another frame here to render the new focus state and dispatch the
@@ -5571,6 +5576,47 @@ impl Window {
                 listener(event, window, cx)
             },
         ));
+    }
+
+    /// Register a listener to be called after every frame this window draws, once the new
+    /// frame has become the rendered frame. Native child windows placed over the GPUI
+    /// surface use it to follow their element: see [`Window::hitbox_occlusion`].
+    /// Returns a subscription and persists until the subscription is dropped.
+    pub fn on_frame_drawn(
+        &mut self,
+        cx: &mut App,
+        mut listener: impl FnMut(&mut Window, &mut App) + 'static,
+    ) -> Subscription {
+        let (subscription, activate) =
+            self.frame_drawn_listeners
+                .insert_pending(Box::new(move |window, cx| {
+                    listener(window, cx);
+                    true
+                }));
+        cx.defer(move |_| activate());
+        subscription
+    }
+
+    /// Looks up a hitbox in the last rendered frame. Returns `None` when the frame did not
+    /// contain it (its element was not drawn). Otherwise returns the hitbox's visible bounds
+    /// and the visible bounds of every mouse-blocking hitbox inserted after it that overlaps
+    /// them, i.e. what is drawn on top of it such as popovers, menus, modals and
+    /// notifications. Hitboxes that let the mouse through (like drop targets laid over a
+    /// whole pane) don't count.
+    pub fn hitbox_occlusion(&self, id: HitboxId) -> Option<(Bounds<Pixels>, Vec<Bounds<Pixels>>)> {
+        let hitboxes = &self.rendered_frame.hitboxes;
+        let index = hitboxes.iter().position(|hitbox| hitbox.id == id)?;
+        let own = hitboxes[index]
+            .bounds
+            .intersect(&hitboxes[index].content_mask.bounds);
+        let above = hitboxes[index + 1..]
+            .iter()
+            .filter(|hitbox| hitbox.behavior != HitboxBehavior::Normal)
+            .map(|hitbox| hitbox.bounds.intersect(&hitbox.content_mask.bounds))
+            .filter(|bounds| bounds.size.width > px(0.) && bounds.size.height > px(0.))
+            .filter(|bounds| bounds.intersects(&own))
+            .collect();
+        Some((own, above))
     }
 
     /// Register a listener to be called when the given focus handle or one of its descendants receives focus.

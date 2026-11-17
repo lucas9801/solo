@@ -1,0 +1,13 @@
+---
+  ┃  fix the failing tests
+  ┃
+  ┃  Build  claude-sonnet-4-5
+
+  ~ Running cargo test -p parser
+
+  ⬝⬝■■■■⬝⬝  esc interrupt
+
+  ┃
+  ┃  Build  claude-sonnet-4-5 Anthropic
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                                   tab agents  ctrl+p commands

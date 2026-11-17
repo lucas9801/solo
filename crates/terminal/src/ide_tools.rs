@@ -261,6 +261,42 @@ mod tests {
         assert_eq!(config["mcpServers"].as_object().unwrap().len(), 1);
     }
 
+    /// After Solo's browser added its server (`integrate_browser`, which
+    /// runs first), both reach Claude Code in one file and Codex in two
+    /// overrides.
+    #[test]
+    fn comes_with_the_browsers_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let browser = dir.path().join("browser-mcp.json");
+        std::fs::write(
+            &browser,
+            r#"{"mcpServers":{"solo-browser":{"type":"stdio","command":"npx","args":["-y"]}}}"#,
+        )
+        .unwrap();
+        let mut env = HashMap::default();
+        env.insert("SOLO_CLAUDE_SETTINGS".to_string(), "s.json".to_string());
+        env.insert(
+            CLAUDE_MCP_CONFIG_ENV.to_string(),
+            browser.to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "SOLO_CODEX_ARGS".to_string(),
+            "-c\nhooks=x\n-c\nmcp_servers.solo-browser={command='npx'}".to_string(),
+        );
+        add_endpoint(&endpoint(), &mut env);
+
+        let config = std::fs::read_to_string(&env[CLAUDE_MCP_CONFIG_ENV]).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+        let servers = config["mcpServers"].as_object().unwrap();
+        assert_eq!(servers["solo-browser"]["command"], "npx");
+        assert_eq!(servers[SERVER_NAME]["type"], "http");
+        let codex: Vec<&str> = env["SOLO_CODEX_ARGS"].split('\n').collect();
+        assert_eq!(codex.len(), 6);
+        assert!(codex[3].starts_with("mcp_servers.solo-browser="));
+        assert_eq!(codex[4], "-c");
+        assert!(codex[5].starts_with("mcp_servers.solo-ide="));
+    }
+
     #[test]
     fn each_workspace_has_its_own_config_file() {
         let mut first = HashMap::default();

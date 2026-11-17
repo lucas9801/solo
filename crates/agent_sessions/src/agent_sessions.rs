@@ -224,22 +224,25 @@ pub struct TokenUsage {
 impl TokenUsage {
     /// Every input token the model processed, cached or not.
     pub fn total_input(&self) -> u64 {
-        self.input + self.cache_read + self.cache_creation
+        self.input
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_creation)
     }
 
     pub fn total(&self) -> u64 {
-        self.total_input() + self.output
+        self.total_input().saturating_add(self.output)
     }
 
     pub fn is_empty(&self) -> bool {
         self.total() == 0
     }
 
+    /// SOLO: saturating, since the counts come from transcripts (R3 L-A2).
     fn add(&mut self, other: &TokenUsage) {
-        self.input += other.input;
-        self.output += other.output;
-        self.cache_read += other.cache_read;
-        self.cache_creation += other.cache_creation;
+        self.input = self.input.saturating_add(other.input);
+        self.output = self.output.saturating_add(other.output);
+        self.cache_read = self.cache_read.saturating_add(other.cache_read);
+        self.cache_creation = self.cache_creation.saturating_add(other.cache_creation);
     }
 
     fn subtract(&mut self, other: &TokenUsage) {
@@ -657,8 +660,9 @@ impl SessionState {
 /// Lines read from a transcript.
 #[derive(Debug, Default)]
 pub struct NewLines {
-    /// The file got shorter, so it was read again from the start: what was
-    /// read before no longer applies.
+    /// The file got shorter, or was replaced (SOLO: what was read last isn't
+    /// where it was), so it was read again from the start: what was read
+    /// before no longer applies.
     pub restarted: bool,
     pub lines: Vec<String>,
 }
@@ -670,7 +674,13 @@ pub struct TranscriptReader {
     path: PathBuf,
     offset: u64,
     partial_line: Vec<u8>,
+    /// SOLO: the last bytes read, up to [`TAIL_BYTES`], ending at `offset`: if
+    /// the file no longer has them there, it was replaced with another, maybe
+    /// longer one (R3 L-A4).
+    tail: Vec<u8>,
 }
+
+const TAIL_BYTES: usize = 64;
 
 impl TranscriptReader {
     pub fn new(path: PathBuf) -> Self {
@@ -678,6 +688,7 @@ impl TranscriptReader {
             path,
             offset: 0,
             partial_line: Vec::new(),
+            tail: Vec::new(),
         }
     }
 
@@ -689,6 +700,7 @@ impl TranscriptReader {
             path,
             offset,
             partial_line: Vec::new(),
+            tail: Vec::new(),
         }
     }
 
@@ -700,9 +712,10 @@ impl TranscriptReader {
         let mut file = std::fs::File::open(&self.path)?;
         let len = file.metadata()?.len();
         let mut new_lines = NewLines::default();
-        if len < self.offset {
+        if len < self.offset || !self.tail_is_in_place(&mut file)? {
             self.offset = 0;
             self.partial_line.clear();
+            self.tail.clear();
             new_lines.restarted = true;
         }
         if len == self.offset {
@@ -710,8 +723,12 @@ impl TranscriptReader {
         }
         file.seek(SeekFrom::Start(self.offset))?;
         let mut bytes = std::mem::take(&mut self.partial_line);
+        let partial_len = bytes.len();
         let read = file.take(len - self.offset).read_to_end(&mut bytes)?;
         self.offset += read as u64;
+        self.tail.extend_from_slice(&bytes[partial_len..]);
+        let extra = self.tail.len().saturating_sub(TAIL_BYTES);
+        self.tail.drain(..extra);
         let complete = bytes
             .iter()
             .rposition(|byte| *byte == b'\n')
@@ -725,12 +742,41 @@ impl TranscriptReader {
             .collect();
         Ok(new_lines)
     }
+
+    /// Whether the file still has the bytes last read where they were.
+    fn tail_is_in_place(&self, file: &mut std::fs::File) -> std::io::Result<bool> {
+        if self.tail.is_empty() {
+            return Ok(true);
+        }
+        let start = self.offset - self.tail.len() as u64;
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = vec![0; self.tail.len()];
+        file.read_exact(&mut bytes)?;
+        Ok(bytes == self.tail)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    /// Counts come from transcripts, so they can be anything; adding them
+    /// doesn't overflow (R3 L-A2).
+    #[test]
+    fn test_token_counts_saturate() {
+        let huge = TokenUsage {
+            input: u64::MAX,
+            output: u64::MAX,
+            cache_read: u64::MAX,
+            cache_creation: u64::MAX,
+        };
+        let mut sum = huge;
+        sum.add(&huge);
+        assert_eq!(sum, huge);
+        assert_eq!(sum.total_input(), u64::MAX);
+        assert_eq!(sum.total(), u64::MAX);
+    }
 
     #[test]
     fn test_reader_waits_for_whole_lines() {
@@ -756,6 +802,31 @@ mod tests {
         let new_lines = reader.read_new_lines().unwrap();
         assert!(new_lines.restarted);
         assert_eq!(new_lines.lines, ["{\"d\":4}"]);
+
+        // Replaced with a longer file: read again from the start (R3 L-A4).
+        std::fs::write(
+            &path,
+            "{\"e\":5}
+{\"f\":6}
+",
+        )
+        .unwrap();
+        let new_lines = reader.read_new_lines().unwrap();
+        assert!(new_lines.restarted);
+        assert_eq!(new_lines.lines, ["{\"e\":5}", "{\"f\":6}"]);
+        // Appended to: not.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(
+            b"{\"g\":7}
+",
+        )
+        .unwrap();
+        let new_lines = reader.read_new_lines().unwrap();
+        assert!(!new_lines.restarted);
+        assert_eq!(new_lines.lines, ["{\"g\":7}"]);
     }
 
     #[test]

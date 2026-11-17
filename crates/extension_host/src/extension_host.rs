@@ -780,9 +780,20 @@ impl ExtensionStore {
     }
 
     pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        // SOLO: extension updates follow Solo's download rules: none offline
+        // or with update checks off, and asked for once.
+        if !net_guard::updates_allowed() {
+            return;
+        }
         let task = self.fetch_extensions_with_update_available(cx);
-        cx.spawn(async move |this, cx| Self::upgrade_extensions(this, task.await?, cx).await)
-            .detach();
+        cx.spawn(async move |this, cx| {
+            let extensions = task.await?;
+            if !extensions.is_empty() {
+                net_guard::request(net_guard::Component::extension_updates(), false).await?;
+            }
+            Self::upgrade_extensions(this, extensions, cx).await
+        })
+        .detach();
     }
 
     async fn upgrade_extensions(

@@ -878,15 +878,27 @@ where
                 .context(
                     "did not find existing language server binary, falling back to downloading",
                 );
+            // SOLO: Solo's download rules: ask first, nothing offline, and
+            // updates only as `downloads.check_updates` says. When they say
+            // no, the downloaded binary (if any) is used, as when a download
+            // fails.
+            let download_allowed = net_guard::request(
+                net_guard::Component::language_server(&self.name().0),
+                last_downloaded_binary.is_ok(),
+            );
             let download_binary = async move {
-                let mut binary = self
-                    .try_fetch_server_binary(
-                        &delegate,
-                        container_dir.to_path_buf(),
-                        binary_options.pre_release,
-                        &mut cx,
-                    )
-                    .await;
+                let mut binary = match download_allowed.await {
+                    Ok(()) => {
+                        self.try_fetch_server_binary(
+                            &delegate,
+                            container_dir.to_path_buf(),
+                            binary_options.pre_release,
+                            &mut cx,
+                        )
+                        .await
+                    }
+                    Err(blocked) => Err(blocked.into()),
+                };
 
                 if let Err(error) = binary.as_ref() {
                     if let Some(prev_downloaded_binary) = self

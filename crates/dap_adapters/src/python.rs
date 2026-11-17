@@ -228,6 +228,20 @@ impl PythonDebugAdapter {
         toolchain: Option<Toolchain>,
         delegate: &Arc<dyn DapDelegate>,
     ) -> Result<()> {
+        // SOLO: ask before downloading debugpy with pip; not in offline mode.
+        let installed = delegate
+            .fs()
+            .is_dir(
+                &debug_adapters_dir()
+                    .join(Self::ADAPTER_NAME)
+                    .join("debugpy"),
+            )
+            .await;
+        net_guard::request(
+            net_guard::Component::debug_adapter(Self::ADAPTER_NAME),
+            installed,
+        )
+        .await?;
         let latest_release = delegate
             .http_client()
             .get(

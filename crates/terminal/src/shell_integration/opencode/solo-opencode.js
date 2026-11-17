@@ -246,8 +246,8 @@ export function isBusy(status) {
 }
 
 /** The arguments of `solo-agent-hook` for a report. */
-export function reportArguments(report, seq) {
-  const args = ["report", "--state", report.state, "--agent", "opencode", "--seq", String(seq)]
+export function reportArguments(report, seq, agent = "opencode") {
+  const args = ["report", "--state", report.state, "--agent", agent, "--seq", String(seq)]
   if (isSessionId(report.session)) args.push("--session", report.session)
   if (typeof report.directory === "string" && report.directory.trim() !== "") {
     args.push("--directory", report.directory)
@@ -269,14 +269,14 @@ export function reportArguments(report, seq) {
  * background. Each gets a `--seq` above the last one's, as the hooks may
  * finish out of order.
  */
-export function hookSender(hook, spawnProcess = spawn, now = Date.now) {
+export function hookSender(hook, spawnProcess = spawn, now = Date.now, agent = "opencode") {
   let last = 0
   return (report) => {
     if (!hook || !report) return
     const seq = Math.max(now(), last + 1)
     last = seq
     try {
-      const child = spawnProcess(hook, reportArguments(report, seq), {
+      const child = spawnProcess(hook, reportArguments(report, seq, agent), {
         stdio: "ignore",
         windowsHide: true,
       })

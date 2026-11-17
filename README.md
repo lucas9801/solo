@@ -64,6 +64,10 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 
 ![agent 看板：左侧列出几个 agent 的状态、分支和最后一句话](docs/media/board.png)
 
+### 内置浏览器
+
+本机地址（localhost 等）的链接在 Solo 里打开，开发时不用切窗口。在网页上点选元素、写批注，一次发给 agent，带上选择器、HTML、样式和截图。打开设置后，Solo 终端里启动的 agent 还能在这个浏览器里打开网页、点击、填表、截图，你看着它操作。
+
 ### 好用的终端
 
 命令块、底部的输入编辑器、边输边弹的补全、失败的命令一键把错误发给 agent，还能用一句话让你自己的 Claude Code 或 Codex 给出命令。[详细 →](docs/site/zh/features/terminal.md)
@@ -91,6 +95,7 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 - **agent 看板**：左侧栏列出所有 agent 终端和 agent 任务，带状态、分支、上一轮的改动、运行时长和最后一句话，点一下跳到终端。
 - **时间线**（Claude Code、Codex）：每一轮的提示词、读过和改过的文件、跑过的命令和回答。
 - **把东西发给 agent**：编辑器里 `Ctrl+Alt+K` 发送选中内容或光标位置，`Ctrl+Alt+Shift+M` 发送当前文件的诊断信息。
+- **为什么是这个状态**：终端标签右键"为什么是这个 agent 状态？"，说明状态是 hook 上报的还是读屏幕判断的、最后一次上报在什么时候；agent 也能用 `solo-cli agent why` 查。
 - 关闭正在跑 agent 的终端或窗口前先确认。
 
 **工作区**
@@ -120,6 +125,14 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 - 终端输出里的路径点一下打开：代码、Markdown 预览、图片查看器；只有行号的链接也能找到对的文件。
 - agent 输出里的 Mermaid 代码块直接看图，Markdown 预览里的 Mermaid 图和图片也会显示。
 - 在 Markdown 预览里批注，一次发给 agent；文档之后又被改了，提示改了多少，"显示改动"标出改过的段落。
+- Solo 打不开的文件（比如 .apk）显示完整路径，可以"在文件资源管理器中显示"或用默认应用打开。
+
+**内置浏览器**
+
+- 终端、Markdown 预览、时间线里的网页链接：本机地址默认在 Solo 里打开，其他用系统浏览器（`browser.open_links` 可改）；`Ctrl+Shift`+点击换另一种方式。
+- 工具栏：前进后退、地址栏、桌面/平板/手机视口、开发者工具、页内查找。
+- **选取**：点网页元素写批注，编号显示在页面上，"发送给 agent"粘贴到 agent 的输入里（不自动发送）。
+- **让 agent 操作浏览器**（`browser.allow_agent_control`，默认关）：Claude Code 和 Codex 自动接上 Playwright MCP（需要 Node.js），在 Solo 的浏览器里打开、读取、点击、截图。
 
 **并行任务和 agent 命令行**
 
@@ -155,8 +168,12 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 |---|---|---|---|
 | Claude Code、Codex、Copilot CLI | Solo 加的 hooks，准确上报 | 支持 | 接最近一次会话 |
 | OpenCode | Solo 加的插件，准确上报 | 支持 | 接回原来的会话 |
-| Gemini CLI、Cursor CLI | 读屏幕 | 支持 | 接最近一次会话 |
-| Amp、Qwen Code、Kimi、Cline 等 16 种 | 读屏幕 | 支持 | 不支持 |
+| Gemini CLI、Qwen Code | Solo 为这次会话加的 hooks（系统默认设置文件），准确上报 | 支持 | 接回原来的会话 |
+| Pi、oh-my-pi | Solo 用 `-e` 加载的扩展，准确上报 | 支持 | 接回原来的会话 |
+| Kilo Code CLI | Solo 的插件目录（`KILO_CONFIG_DIR`），准确上报 | 支持 | 接回原来的会话 |
+| Kimi Code CLI、MastraCode | 在设置 `global_agent_hooks` 里逐个开启后写入它们的配置（先备份，可干净移除）；未开启时读屏幕（Kimi）或终端输出 | 支持 | 开启后接回原来的会话 |
+| Cursor CLI | 读屏幕 | 支持 | 接最近一次会话 |
+| Amp、Cline、Droid 等其余有规则的 agent | 读屏幕 | 支持 | 不支持 |
 | Aider 和用 `agent_commands` 加的程序 | 终端输出 | 不支持 | Aider 恢复聊天记录，其他不支持 |
 | 其他程序 | [状态协议](docs/agent-status-protocol.md) | 支持 | 不支持 |
 

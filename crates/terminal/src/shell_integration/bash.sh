@@ -61,6 +61,19 @@ __solo_prompt_command() {
     fi
     path=${path//%/%25}
     path=${path// /%20}
+    # SOLO: a control character, which a folder's name can have, would end
+    # the sequence early.
+    if [[ $path == *[[:cntrl:]]* ]]; then
+        local encoded= c i
+        for (( i = 0; i < ${#path}; i++ )); do
+            c=${path:i:1}
+            if [[ $c == [[:cntrl:]] ]]; then
+                printf -v c '%%%02X' "'$c"
+            fi
+            encoded+=$c
+        done
+        path=$encoded
+    fi
     printf '\e]7;file://%s%s\a' "${HOSTNAME-}" "$path"
 
     if [[ -n "$__solo_original_prompt_command" ]]; then
@@ -89,8 +102,9 @@ __solo_shell_path=${__solo_shell_path//\\/\\\\}
 printf '\e]633;P;Shell=%s;%s\a' "${__solo_shell_path//;/\\x3b}" "$__solo_nonce"
 unset __solo_shell_path
 
-# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's) write to this terminal.
-if [[ -n "${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-}${SOLO_OPENCODE_CONFIG_DIR-}" ]]; then
+# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's, and the others
+# Solo's hook program reports for) write to this terminal.
+if [[ -n "${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-}${SOLO_OPENCODE_CONFIG_DIR-}${SOLO_AGENT_HOOK-}" ]]; then
     if [[ -r /proc/$$/winpid ]]; then
         # Git Bash: the hooks attach to this shell's Windows console.
         export SOLO_AGENT_CONSOLE_PID=$(</proc/$$/winpid)
@@ -122,7 +136,7 @@ if [[ -n "${SOLO_CLAUDE_SETTINGS-}" ]] && ! declare -F claude >/dev/null; then
             esac
         done
         if [[ -r "$SOLO_CLAUDE_SETTINGS" ]]; then
-            # Solo's browser, when agents may control it. --mcp-config adds to
+            # Solo's MCP servers (its browser, its IDE tools). --mcp-config adds to
             # the user's own MCP servers; it takes several files, so it goes
             # before --settings, which ends the list.
             if [[ -n "${SOLO_CLAUDE_MCP_CONFIG-}" && -r "$SOLO_CLAUDE_MCP_CONFIG" ]]; then
@@ -190,6 +204,29 @@ if [[ -n "${SOLO_OPENCODE_CONFIG_DIR-}" ]] && ! declare -F opencode >/dev/null; 
             command opencode "$@"
         )
     }
+fi
+
+# SOLO: Pi and oh-my-pi report what they're doing through an extension Solo
+# loads for the session with -e (see SOLO_PI_EXTENSION).
+# Functions of the user's own stay.
+__solo_pi_like() {
+    local program=$1
+    shift
+    case "${1-}" in
+        install|remove|uninstall|update|list|config|plugin|plugins|help)
+            command "$program" "$@"
+            return
+            ;;
+    esac
+    if [[ -r "${SOLO_PI_EXTENSION-}" ]]; then
+        command "$program" -e "$SOLO_PI_EXTENSION" "$@"
+    else
+        command "$program" "$@"
+    fi
+}
+if [[ -n "${SOLO_PI_EXTENSION-}" ]]; then
+    declare -F pi >/dev/null || pi() { __solo_pi_like pi "$@"; }
+    declare -F omp >/dev/null || omp() { __solo_pi_like omp "$@"; }
 fi
 
 unset PROMPT_COMMAND

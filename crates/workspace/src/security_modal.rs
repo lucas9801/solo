@@ -7,6 +7,7 @@ use std::{
 };
 
 use collections::{HashMap, HashSet};
+use futures::StreamExt as _;
 use gpui::{
     DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, ScrollHandle, Task, WeakEntity,
 };
@@ -41,6 +42,10 @@ pub struct SecurityModal {
     /// Editable trust scope shown inline with the checkbox when a single
     /// project is being prompted for; read-only until the checkbox is ticked.
     trust_path_input: Entity<InputField>,
+    /// SOLO: whether trusting also allows the downloads listed (see
+    /// `net_guard::before_trust`).
+    allow_downloads: bool,
+    _download_changes: Task<()>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -209,6 +214,46 @@ impl Render for SecurityModal {
                             .child(ListBulletItem::new("Language servers from running"))
                             .child(ListBulletItem::new("MCP Server integrations from installing")),
                     )
+                    // SOLO: what Solo will ask to download once trusted, allowed
+                    // with the same click.
+                    .map(|this| {
+                        let downloads = net_guard::before_trust();
+                        if downloads.is_empty() {
+                            return this;
+                        }
+                        this.child(
+                            v_flex()
+                                .child(
+                                    Label::new(util::i18n::tr(
+                                        "After trusting, Solo may download:",
+                                        "信任后，Solo 可能会下载：",
+                                    ))
+                                    .color(Color::Muted),
+                                )
+                                .children(
+                                    downloads
+                                        .iter()
+                                        .map(|component| ListBulletItem::new(component.label())),
+                                ),
+                        )
+                        .child(
+                            Checkbox::new(
+                                "allow-downloads",
+                                ToggleState::from(self.allow_downloads),
+                            )
+                            .label(util::i18n::tr(
+                                "Allow these downloads",
+                                "允许这些下载",
+                            ))
+                            .on_click(cx.listener(
+                                |security_modal, state: &ToggleState, _, cx| {
+                                    security_modal.allow_downloads = state.selected();
+                                    cx.notify();
+                                    cx.stop_propagation();
+                                },
+                            )),
+                        )
+                    })
                     .map(|this| {
                         let Some(trust_label) = trust_label else {
                             return this;
@@ -326,7 +371,19 @@ impl SecurityModal {
             })
             .log_err();
         });
+        // SOLO: the list of downloads fills in as language servers wait for
+        // trust.
+        let mut download_changes = net_guard::global().subscribe();
+        let download_changes = cx.spawn(async move |this, cx| {
+            while download_changes.next().await.is_some() {
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        });
         let mut this = Self {
+            allow_downloads: true,
+            _download_changes: download_changes,
             worktree_store,
             remote_host: remote_host.map(|host| host.into()),
             restricted_paths: HashMap::default(),
@@ -430,6 +487,15 @@ impl SecurityModal {
                 return;
             }
         };
+
+        // SOLO: allow the listed downloads too, unless unticked.
+        if self.allow_downloads {
+            let ids = net_guard::before_trust()
+                .into_iter()
+                .map(|component| component.id)
+                .collect::<Vec<_>>();
+            net_guard::answer(&ids, net_guard::Answer::Allow);
+        }
 
         if let Some((trusted_worktrees, worktree_store)) =
             TrustedWorktrees::try_get_global(cx).zip(self.worktree_store.upgrade())

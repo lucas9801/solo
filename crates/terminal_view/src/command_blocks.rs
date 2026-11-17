@@ -78,6 +78,12 @@ const AGENT_COMMANDS: &[&str] = &[
     "amp",
     "cursor-agent",
     "copilot",
+    // SOLO: agents whose status Solo gets through hooks or plugins too.
+    "pi",
+    "omp",
+    "kilo",
+    "kimi",
+    "mastracode",
 ];
 
 /// Whether `command` runs an AI agent (by its program name), one of the

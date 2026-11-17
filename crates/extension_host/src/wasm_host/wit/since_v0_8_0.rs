@@ -798,9 +798,10 @@ impl nodejs::Host for WasmState {
             .grant_npm_install_package(&package_name)
             .into_wasmtime_result()?;
 
+        // SOLO: extensions' packages may need their install scripts.
         self.host
             .node_runtime
-            .npm_install_packages(&self.work_dir(), &[(&package_name, &version)])
+            .npm_install_packages_with_scripts(&self.work_dir(), &[(&package_name, &version)])
             .await
             .to_wasmtime_result()
     }

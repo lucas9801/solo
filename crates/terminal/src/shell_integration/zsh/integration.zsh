@@ -32,6 +32,18 @@ __solo_precmd_status() {
     fi
     local uri_path=${PWD//\%/%25}
     uri_path=${uri_path// /%20}
+    # SOLO: a control character, which a folder's name can have, would end
+    # the sequence early.
+    if [[ $uri_path == *[[:cntrl:]]* ]]; then
+        local encoded= c
+        for c in "${(@s::)uri_path}"; do
+            if [[ $c == [[:cntrl:]] ]]; then
+                printf -v c '%%%02X' "'$c"
+            fi
+            encoded+=$c
+        done
+        uri_path=$encoded
+    fi
     printf '\e]7;file://%s%s\a' "${HOST-}" "$uri_path"
     return $exit_code
 }
@@ -47,8 +59,9 @@ __solo_precmd_prompt() {
     fi
 }
 
-# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's) write to this terminal.
-if [[ -n ${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-}${SOLO_OPENCODE_CONFIG_DIR-} && -n ${TTY-} ]]; then
+# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's, and the others
+# Solo's hook program reports for) write to this terminal.
+if [[ -n ${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-}${SOLO_OPENCODE_CONFIG_DIR-}${SOLO_AGENT_HOOK-} && -n ${TTY-} ]]; then
     export SOLO_AGENT_TTY=$TTY
 fi
 
@@ -74,7 +87,7 @@ if [[ -n ${SOLO_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} )); then
             esac
         done
         if [[ -r $SOLO_CLAUDE_SETTINGS && -n ${SOLO_CLAUDE_MCP_CONFIG-} && -r $SOLO_CLAUDE_MCP_CONFIG ]]; then
-            # Solo's browser, when agents may control it (before --settings,
+            # Solo's MCP servers: its browser, its IDE tools (before --settings,
             # which ends --mcp-config's list of files).
             command claude --mcp-config "$SOLO_CLAUDE_MCP_CONFIG" --settings "$SOLO_CLAUDE_SETTINGS" "$@"
         elif [[ -r $SOLO_CLAUDE_SETTINGS ]]; then
@@ -137,6 +150,29 @@ if [[ -n "${SOLO_OPENCODE_CONFIG_DIR-}" ]] && (( ! ${+functions[opencode]} )); t
             command opencode "$@"
         )
     }
+fi
+
+# SOLO: Pi and oh-my-pi report what they're doing through an extension Solo
+# loads for the session with -e (see SOLO_PI_EXTENSION).
+# Functions of the user's own stay.
+__solo_pi_like() {
+    local program=$1
+    shift
+    case "${1-}" in
+        install|remove|uninstall|update|list|config|plugin|plugins|help)
+            command "$program" "$@"
+            return
+            ;;
+    esac
+    if [[ -r "${SOLO_PI_EXTENSION-}" ]]; then
+        command "$program" -e "$SOLO_PI_EXTENSION" "$@"
+    else
+        command "$program" "$@"
+    fi
+}
+if [[ -n "${SOLO_PI_EXTENSION-}" ]]; then
+    (( ${+functions[pi]} )) || pi() { __solo_pi_like pi "$@"; }
+    (( ${+functions[omp]} )) || omp() { __solo_pi_like omp "$@"; }
 fi
 
 printf '\e]633;P;Shell=%s;%s\a' "${commands[zsh]:-zsh}" "$__solo_nonce"

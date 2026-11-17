@@ -6,6 +6,8 @@ mod fallible_options;
 mod language;
 mod language_model;
 pub mod merge_from;
+// SOLO: offline mode and asking before downloads.
+mod network;
 mod project;
 mod serde_helper;
 mod terminal;
@@ -22,6 +24,7 @@ pub use fallible_options::*;
 pub use language::*;
 pub use language_model::*;
 pub use merge_from::MergeFrom as MergeFromTrait;
+pub use network::*;
 pub use project::*;
 use serde::de::DeserializeOwned;
 pub use serde_helper::{
@@ -274,6 +277,9 @@ pub struct SettingsContent {
     /// The settings for the image viewer.
     pub image_viewer: Option<ImageViewerSettingsContent>,
 
+    /// SOLO: the settings for Solo's built-in browser.
+    pub browser: Option<BrowserSettingsContent>,
+
     /// The settings for the markdown preview.
     pub markdown_preview: Option<MarkdownPreviewSettingsContent>,
 
@@ -295,6 +301,12 @@ pub struct SettingsContent {
     ///
     /// Default: system
     pub ui_language: Option<UiLanguage>,
+
+    /// SOLO: offline mode.
+    pub network: Option<NetworkSettingsContent>,
+
+    /// SOLO: what Solo does when it needs to download a component.
+    pub downloads: Option<DownloadsSettingsContent>,
 
     pub journal: Option<JournalSettingsContent>,
 
@@ -445,7 +457,8 @@ fallible_options::flattened_deserialize!(SettingsContent {
         call_hierarchy, command_palette, file_finder, git_panel, tabs, tab_bar, tab_switcher, status_bar, preview_tabs, agent,
         agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
         git,
-        global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
+        network, downloads,
+        global_lsp_settings, image_viewer, browser, markdown_preview, repl, helix_mode, hide_mouse,
         ui_language, journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
@@ -1404,6 +1417,50 @@ pub struct MarkdownPreviewSettingsContent {
     ///
     /// Default: 800
     pub max_width: Option<PixelSetting>,
+}
+
+/// SOLO: the settings for Solo's built-in browser.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct BrowserSettingsContent {
+    /// Where web links in the terminal, the Markdown preview and the timeline open.
+    ///
+    /// Default: "local_in_solo"
+    pub open_links: Option<BrowserOpenLinks>,
+    /// Whether agents started in Solo's terminal can control Solo's browser
+    /// through a debugging port on 127.0.0.1. They can see signed-in pages.
+    /// Takes effect after Solo restarts.
+    ///
+    /// Default: false
+    pub allow_agent_control: Option<bool>,
+}
+
+#[with_fallible_options]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    Default,
+    PartialEq,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserOpenLinks {
+    /// localhost, 127.0.0.1, [::1] and *.localhost in Solo's browser, the rest in the system browser.
+    #[default]
+    #[strum(serialize = "Local addresses in Solo's browser")]
+    LocalInSolo,
+    /// Every web link in Solo's browser.
+    #[strum(serialize = "All in Solo's browser")]
+    AllInSolo,
+    /// Every web link in the system browser.
+    #[strum(serialize = "All in the system browser")]
+    AllInSystem,
 }
 
 /// The settings for the image viewer.

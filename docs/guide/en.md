@@ -109,6 +109,7 @@ nothing to clean up there.
 | --- | --- |
 | `%APPDATA%\Solo` | Settings: `settings.json`, `keymap.json`, `tasks.json`, `debug.json`, `AGENTS.md`, `workflows.json` (saved commands) |
 | `%LOCALAPPDATA%\Solo` | Data: `logs\`, `db\` (workspace and session state), `extensions\`, `languages\` (downloaded language servers), `node\`, `external_agents\`, `terminal_sessions\` (restored terminal contents, removed after 30 days), `agent_turns\` (agent turn snapshots), `terminal-host\` (the terminal host's copy), `hang_traces\` |
+| `%LOCALAPPDATA%\Solo\browser` | The built-in browser's cookies, site data and element screenshots (`picks\`, kept for a week) |
 | `%TEMP%\solo-shell-integration` | Shell integration scripts and Claude Code hook settings |
 | `%TEMP%\solo-update` | Update installers downloaded by earlier versions, and their logs |
 | `.solo\` in a project | Project settings, tasks and debug scenarios (Zed's `.zed\` is read too) |
@@ -322,6 +323,68 @@ an agent waiting in the background; its menu lists the terminals.
 - **Enable Remote Control** in a Claude Code terminal's menu types
   `/remote-control` into Claude Code, so you can carry on from the Claude app
   on your phone.
+
+### The browser
+Web pages open in a tab of the editor area, next to the terminal, shown by the
+Microsoft Edge WebView2 runtime that comes with Windows 11 (on a computer
+without it, the tab says so and offers the download).
+
+- **Opening pages**: `ctrl`-click a link in a terminal, the Markdown preview
+  or the timeline. Where it opens follows Settings > Browser > **Open Links
+  In**: local addresses (localhost, 127.0.0.1, [::1], *.localhost) in Solo and
+  the rest in the system browser by default, or all in Solo, or all in the
+  system browser. `ctrl-shift`-click opens a link the other way. A page that
+  is already open is switched to rather than opened again. The command
+  palette's **browser: open browser** opens an empty tab.
+- **Toolbar**: back, forward, reload (right-click: reload without the cache),
+  the address (`5173` and `localhost:5173` both mean
+  `http://localhost:5173/`; only http, https and local HTML files open), the
+  viewport (desktop, tablet 768 x 1024, phone 390 x 844), **Pick**, and the
+  `...` menu: developer tools (`f12`), find in page (`ctrl-f`), open in the
+  system browser, copy address.
+- Links that open a new window open a new tab. Open tabs come back after a
+  restart (only their addresses are kept).
+- While a page has focus, Solo's shortcuts with `ctrl` or `alt` (and function
+  keys) still work, except those pages need for text: `ctrl-a/c/v/x/z/y`,
+  word moves and deletes, `ctrl-b/i/u/k`, `ctrl-enter`. `esc` and `tab` stay
+  with the page.
+- Cookies and site data are kept in `%LOCALAPPDATA%\Solo\browser`.
+
+**Comments on page elements.** **Pick** outlines the element under the mouse
+with its selector and size; clicking one (the page's own click handlers don't
+run) opens a box for your comment. Added elements get a number on the page;
+click it to change or delete the comment. `esc` stops picking. **Send to
+Agent · n** pastes the comments into the prompt of the agent used last
+(without sending it); the arrow next to it lets you choose the agent. Each
+comment comes with the element's selector, text, HTML (cut at about 1 KB), a
+few computed styles, and the path of a screenshot of the element, kept in
+`%LOCALAPPDATA%\Solo\browser\picks` for a week. With no agent running, the
+comments are copied to the clipboard. After a reload or a hot update the
+elements are found again by their selectors.
+
+**Letting agents use the browser.** With Settings > Browser > **Allow Agents
+to Control the Browser** on (off by default; takes effect after Solo
+restarts), Solo's browser opens a debugging port on 127.0.0.1 (a random one),
+and agents started afterwards in Solo's terminals can open pages, read them,
+click, fill in forms and take screenshots in it, while you watch. **This
+includes pages you are signed in to, and any program on this computer that
+finds the port can do the same**, so turn it on only while you need it.
+
+- Claude Code gets a `solo-browser` MCP server (Playwright MCP, run with
+  `npx`; Node.js is needed): the `claude` wrapper adds `--mcp-config` before
+  `--settings`, which adds it to your own MCP servers without changing them.
+  It needs `"claude_code_hooks"` on, like the wrapper itself.
+- Codex gets the same server through a `-c mcp_servers.solo-browser=...`
+  override for each session (needs `"codex_hooks"`).
+- Every terminal gets `SOLO_BROWSER_CDP=http://127.0.0.1:<port>`. For other
+  agents (Copilot CLI, OpenCode), add an MCP server that runs
+  `npx -y @playwright/mcp@0.0.85 --cdp-endpoint $SOLO_BROWSER_CDP` in their
+  own MCP configuration.
+- Pages that open from a page (links that open a new window) appear as tabs
+  in the editor area without taking the focus. A new tab the agent creates
+  itself (Playwright's "new tab") opens in a separate window outside Solo, so
+  ask the agent to use the tab that is already open. At least one browser tab
+  must be open for the agent to find the browser.
 
 ### Agents keep running when Solo closes
 Each terminal's shell runs in a small background process,
@@ -541,6 +604,34 @@ To treat another program as an agent:
   `opencode --session <id>`. OpenCode 1 installs its plugin package into
   `opencode-config` the first time. To turn it off:
   `"terminal": {"opencode_hooks": false}` (takes effect in new terminals).
+- **Pi, oh-my-pi, Kilo Code CLI, Gemini CLI and Qwen Code report for one
+  session only, too** (`more_agent_hooks`). Pi and oh-my-pi: the `pi` and
+  `omp` wrappers add `-e <Solo's extension>` (commands like `pi install` run
+  as typed). Kilo: Solo's terminals set `KILO_CONFIG_DIR` to a folder of
+  Solo's with its plugin, which Kilo adds to your own plugins (if you set
+  `KILO_CONFIG_DIR` yourself, Solo leaves it alone). Gemini CLI and Qwen Code:
+  Solo's terminals set `GEMINI_CLI_SYSTEM_DEFAULTS_PATH` /
+  `QWEN_CODE_SYSTEM_DEFAULTS_PATH` to a settings file of Solo's with status
+  hooks, which they add to your own hooks; an administrator's system defaults
+  file (or the one you pointed the variable at) is copied into it, so it still
+  applies. Nothing is written to the agents' folders. Gemini CLI's and Qwen
+  Code's hooks run Solo's hook program through their shell; this hasn't been
+  checked with the real agents yet.
+- **Kimi Code CLI and MastraCode only read hooks from your own config**, so
+  Solo adds them only to the agents you list:
+  `"terminal": {"global_agent_hooks": ["kimi", "mastracode"]}`. Solo copies the
+  file to `<file>.solo-backup` before its first change
+  (`~/.kimi-code/config.toml`, or `$KIMI_CODE_HOME`; `~/.mastracode/hooks.json`)
+  and marks its entries; taking an agent off the list removes Solo's entries
+  and nothing else. The hooks do nothing outside Solo's terminals. Take the
+  agents off the list before uninstalling Solo, or the hooks keep pointing at
+  its hook program.
+- **Why this status?** Right-click a terminal running an agent and choose
+  "Why This Agent Status?", or run `solo-cli agent why <id>` (`self` for the
+  terminal you're in): it says whether the status came from the agent's hook,
+  the screen rules (and which rule matched, from Solo's bundled rules or your
+  own file in the `agent-detection` folder of Solo's config) or its output,
+  and when the last hook report came.
 - **Shell integration**: PowerShell, bash, zsh and fish started without custom
   arguments load Solo's integration script from `%TEMP%\solo-shell-integration`,
   after your own profile. PowerShell runs it with `-NoExit -Command`, which
@@ -593,9 +684,11 @@ collaboration and Zed's own auto-update are off or hidden.
 **Contacted only when you use a feature:**
 
 - downloading an update: the Microsoft Store (Solo Code);
-- language servers downloaded when you open a file in that language: GitHub
-  releases, the npm registry, and `nodejs.org` if no suitable Node.js is
-  installed;
+- components Solo downloads by itself, after asking (see "Asking before
+  downloading" below): language servers for a trusted project (GitHub
+  releases, the npm registry, `proxy.golang.org`, PyPI), `nodejs.org` if no
+  suitable Node.js is installed, Prettier on a file's first format, debug
+  adapters on the first debug session, GitHub Copilot's server;
 - AI providers you set up yourself (Anthropic, OpenAI, Ollama, ...);
 - avatars in git blame and commit details: `avatars.githubusercontent.com` and
   the GitHub API;
@@ -612,6 +705,47 @@ collaboration and Zed's own auto-update are off or hidden.
   `cdn.agentclientprotocol.com` and the icon URLs the registry lists;
 - the agents you run in the terminal (Claude Code, Codex, ...) make their own
   connections, not through Solo.
+
+**Asking before downloading.** Before Solo downloads a component by itself
+(a language server, Node.js, Prettier, a debug adapter, GitHub Copilot,
+extension updates), it asks once per component, naming where it comes from:
+
+- **Allow (remember)** downloads it, and it updates later without asking;
+- **Not now** skips it until Solo restarts;
+- **Use a local path…** opens the settings file, to point Solo at a copy you
+  installed (`"node": { "path": ... }`, `"lsp": { "<server>": { "binary":
+  { "path": ... } } }`).
+
+Requests that come together are asked together, with **Allow all and
+remember** and **Choose…**. The trust dialog of a new project lists the
+language servers Solo will ask for, with "Allow these downloads" ticked, so
+trusting takes one click. Answers are kept in `downloads.allowed` in your
+settings file, where you can change them. Components already downloaded count
+as allowed. Prettier is installed on a file's first format, not when it
+opens, and for a project you haven't trusted Solo asks even in `"auto"` mode.
+npm installs Solo's packages with `--ignore-scripts` (ESLint's server and
+extensions' packages need their scripts and keep them).
+
+```json
+"downloads": {
+  "mode": "ask",         // "ask", "auto" (download without asking) or "never"
+  "allowed": { "rust-analyzer": true, "prettier": false },
+  "check_updates": true  // whether allowed components update
+}
+```
+
+**Offline mode.** Click the globe at the right of the status bar (or run
+`network: toggle offline mode`, or set `"network": { "offline": true }`).
+Solo then only connects to this computer and the local network (`localhost`,
+private and link-local addresses, names without a dot, `.local`, `.lan`), so
+local models (Ollama, LM Studio), servers on your LAN and SSH keep working.
+It downloads nothing and checks no versions: language servers, Node.js,
+Prettier and debug adapters already downloaded are used; one that's missing
+says "Offline: X not downloaded". Copilot, cloud AI providers, the ACP agent
+registry, the extension store and extension updates, Solo's automatic update
+checks and avatars are off. Remote development works with a remote server
+already downloaded, but none is downloaded. The agents you run in the
+terminal aren't affected.
 
 **Remote development is off for now:** SSH, WSL and Docker (dev container)
 remote development run a server on the remote side. Solo's releases now carry
@@ -700,6 +834,8 @@ Solo's own settings, under `"terminal"`:
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
 | `opencode_hooks` | `true` | load a status plugin into OpenCode for each session |
 | `ide_tools` | `true` | give Claude Code and Codex Solo's read-only IDE tools (symbols, definitions, references, diagnostics) as an MCP server |
+| `more_agent_hooks` | `true` | status reporting for Pi, oh-my-pi, Kilo Code CLI, Gemini CLI and Qwen Code, for each session |
+| `global_agent_hooks` | `[]` | agents (`"kimi"`, `"mastracode"`) whose own config Solo may add status hooks to |
 | `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
 | `agent_usage_display` | `"always"` | a running agent's context, model and effort, first token and speed, turn time and tokens in a bar at the bottom of its terminal (when narrow, whole parts go: the session's tokens first, then the turn's, then the first token and speed, then the model, leaving the context's bar and percentage) and its context on the tab; `"tooltip"` shows them only in the tab's tooltip |
 | `agent_commands` | `[]` | more programs to treat as agents |
@@ -722,8 +858,10 @@ These notifications only show while Solo is in the background. All four are
 also in Settings > Terminal > Notifications.
 
 Outside `"terminal"`: `"ui_language"` (`"system"`, `"en"` or `"zh"`; the
-environment variable `SOLO_LANGUAGE` overrides it), `"auto_update"` and
-`"disable_ai"`. `"disable_ai"` (and `"agent": { "enabled": false }`) turn off
+environment variable `SOLO_LANGUAGE` overrides it), `"auto_update"`,
+`"disable_ai"`, `"network": { "offline": false }` (offline mode) and
+`"downloads"` (`"mode": "ask"` / `"auto"` / `"never"`, `"allowed": {}`,
+`"check_updates": true`; see section 9). `"disable_ai"` (and `"agent": { "enabled": false }`) turn off
 only Zed's own AI features (inline assistant, edit predictions, commit message
 generation); workspace tabs, terminals and the agents running in them, and
 turn review are unaffected.

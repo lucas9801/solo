@@ -1,0 +1,6 @@
+title: Action Required
+---
+• Ran git status
+
+› 1. Yes, proceed (y)
+  2. No, and tell Codex what to do differently (esc)

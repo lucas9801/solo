@@ -5350,9 +5350,26 @@ impl Workspace {
         })
     }
 
+    /// SOLO: opens a web link where the "open links" setting says: Solo's
+    /// browser or the system browser. Ctrl+Shift opens it the other way.
+    pub fn open_web_link(url: &str, window: &mut Window, cx: &mut App) {
+        let modifiers = window.modifiers();
+        let action = zed_actions::browser::OpenUrl {
+            url: url.to_string(),
+            alternate: modifiers.control && modifiers.shift,
+            in_background: false,
+        };
+        if window.is_action_available(&action, cx) {
+            window.dispatch_action(action.boxed_clone(), cx);
+        } else {
+            cx.open_url(url);
+        }
+    }
+
     /// Opens a URL or file path, intelligently routing to the appropriate handler:
     ///
-    /// - `http://` and `https://` URLs are opened in the system's default browser
+    /// - `http://` and `https://` URLs go to [`Self::open_web_link`] (Solo's browser
+    ///   or the system's, per the "open links" setting)
     /// - `file://` URIs are opened as files in the editor
     /// - Paths without a URL scheme are treated as file paths:
     ///   - Absolute paths are opened directly
@@ -5398,7 +5415,7 @@ impl Workspace {
 
         if let Ok(url) = Url::parse(url_or_path) {
             match url.scheme() {
-                "http" | "https" => cx.open_url(url_or_path),
+                "http" | "https" => Self::open_web_link(url_or_path, window, cx),
                 "file" => open_abs_path(self, PathBuf::from(url.path()), cx),
                 _ => cx.open_url(url_or_path),
             }
@@ -9733,12 +9750,79 @@ impl Workspace {
                         resolved_path
                     })
                 };
+                // SOLO: the trust dialog lists the language servers the
+                // project's files need that Solo would download.
+                if self.project().read(cx).is_local() {
+                    note_language_servers_before_trust(self.project().clone(), cx);
+                }
                 self.toggle_modal(window, cx, |window, cx| {
                     SecurityModal::new(worktree_store, remote_host, home_dir_task, window, cx)
                 });
             }
         }
     }
+}
+
+/// SOLO: notes (`net_guard::note_before_trust`) the language servers that the
+/// files of `project`'s untrusted worktrees would start and that aren't
+/// downloaded yet, once the worktrees are scanned.
+fn note_language_servers_before_trust(project: Entity<Project>, cx: &mut App) {
+    let worktrees = project
+        .read(cx)
+        .worktrees(cx)
+        .filter_map(|worktree| {
+            let scanned = worktree.read(cx).as_local()?.scan_complete();
+            Some((worktree.downgrade(), scanned))
+        })
+        .collect::<Vec<_>>();
+    let languages = project.read(cx).languages().clone();
+    cx.spawn(async move |cx| {
+        for (worktree, scanned) in worktrees {
+            scanned.await;
+            cx.update(|cx| {
+                let Some(worktree) = worktree.upgrade() else {
+                    return;
+                };
+                let extensions = worktree
+                    .read(cx)
+                    .files(false, 0)
+                    .take(20_000)
+                    .filter_map(|entry| entry.path.extension().map(str::to_string))
+                    .collect::<HashSet<_>>();
+                let language_names = extensions
+                    .iter()
+                    .filter_map(|extension| languages.language_name_for_extension(extension))
+                    .collect::<HashSet<_>>();
+                for name in language_names {
+                    let available = languages
+                        .lsp_adapters(&name)
+                        .into_iter()
+                        .filter(|adapter| !adapter.adapter.is_extension())
+                        .map(|adapter| adapter.name())
+                        .collect::<Vec<_>>();
+                    let settings = language::language_settings::LanguageSettings::resolve(
+                        None,
+                        Some(&name),
+                        cx,
+                    );
+                    for server in settings.customized_language_servers(&available) {
+                        let downloaded = languages
+                            .language_server_download_dir(&server)
+                            .is_some_and(|dir| {
+                                std::fs::read_dir(dir)
+                                    .is_ok_and(|mut entries| entries.next().is_some())
+                            });
+                        if !downloaded {
+                            net_guard::note_before_trust(net_guard::Component::language_server(
+                                &server.0,
+                            ));
+                        }
+                    }
+                }
+            });
+        }
+    })
+    .detach();
 }
 
 fn project_window_title(project: &Project, cx: &App) -> String {

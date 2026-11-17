@@ -75,6 +75,10 @@ pub struct TerminalSettings {
     pub opencode_hooks: bool,
     /// SOLO: Solo's IDE tools for agents (`ide_tools`).
     pub ide_tools: bool,
+    /// SOLO: status hooks for Pi, oh-my-pi, Kilo Code, Gemini CLI and Qwen Code.
+    pub more_agent_hooks: bool,
+    /// SOLO: agents whose status hooks go into the user's own config.
+    pub global_agent_hooks: Vec<String>,
     pub keep_running_on_quit: bool,
     pub follow_working_directory: bool,
     pub confirm_close: TerminalConfirmClose,
@@ -177,6 +181,10 @@ impl settings::Settings for TerminalSettings {
             copilot_hooks: user_content.copilot_hooks.unwrap(),
             opencode_hooks: user_content.opencode_hooks.unwrap(),
             ide_tools: user_content.ide_tools.unwrap_or(true),
+            // SOLO: defaults here too, for dev builds that read another
+            // checkout's default.json.
+            more_agent_hooks: user_content.more_agent_hooks.unwrap_or(true),
+            global_agent_hooks: user_content.global_agent_hooks.unwrap_or_default(),
             keep_running_on_quit: user_content.keep_running_on_quit.unwrap(),
             follow_working_directory: user_content.follow_working_directory.unwrap(),
             confirm_close: user_content.confirm_close.unwrap(),

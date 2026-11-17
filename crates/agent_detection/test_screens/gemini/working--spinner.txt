@@ -1,0 +1,11 @@
+---
+> fix the failing tests
+
+✦ I'll run the tests first.
+
+⠏ Analyzing the failing test output (esc to cancel, 7s)
+
+╭────────────────────────────────────────────────────────────╮
+│ >   Type your message or @path/to/file                     │
+╰────────────────────────────────────────────────────────────╯
+~/repo (main*)        no sandbox        gemini-2.5-pro (98% context left)

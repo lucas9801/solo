@@ -1375,6 +1375,7 @@ dependencies = [
  "gpui",
  "http_client",
  "log",
+ "net_guard",
  "parking_lot",
  "paths",
  "raw-window-handle",
@@ -2215,6 +2216,37 @@ dependencies = [
  "gpui",
  "ui",
  "workspace",
+]
+
+[[package]]
+name = "browser"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "db",
+ "editor",
+ "futures 0.3.34",
+ "gpui",
+ "log",
+ "menu",
+ "paths",
+ "project",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "settings",
+ "tempfile",
+ "terminal",
+ "ui",
+ "url",
+ "util",
+ "webview2-com",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-registry 0.6.1",
+ "workspace",
+ "zed_actions",
 ]
 
 [[package]]
@@ -3345,6 +3377,7 @@ dependencies = [
  "language",
  "log",
  "lsp",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "paths",
@@ -4041,6 +4074,7 @@ dependencies = [
  "http_client",
  "language",
  "log",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "paths",
@@ -4082,6 +4116,7 @@ dependencies = [
  "http_client",
  "language",
  "log",
+ "net_guard",
  "node_runtime",
  "paths",
  "serde_json",
@@ -5554,6 +5589,7 @@ dependencies = [
  "log",
  "lsp",
  "moka",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "paths",
@@ -6507,6 +6543,7 @@ dependencies = [
  "markdown",
  "menu",
  "multi_buffer",
+ "net_guard",
  "notifications",
  "picker",
  "pretty_assertions",
@@ -8692,6 +8729,7 @@ dependencies = [
  "language_core",
  "log",
  "lsp",
+ "net_guard",
  "parking_lot",
  "postage",
  "pretty_assertions",
@@ -9006,6 +9044,7 @@ dependencies = [
  "language",
  "log",
  "lsp",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "pet",
@@ -10440,6 +10479,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "net_guard"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures 0.3.34",
+ "http_client",
+ "log",
+ "parking_lot",
+ "util",
+]
+
+[[package]]
+name = "net_guard_ui"
+version = "0.1.0"
+dependencies = [
+ "collections",
+ "fs",
+ "futures 0.3.34",
+ "gpui",
+ "net_guard",
+ "settings",
+ "ui",
+ "util",
+ "workspace",
+ "zed_actions",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10480,6 +10547,7 @@ dependencies = [
  "futures 0.3.34",
  "http_client",
  "log",
+ "net_guard",
  "paths",
  "semver",
  "serde",
@@ -12932,6 +13000,7 @@ dependencies = [
  "log",
  "lsp",
  "markdown",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "path",
@@ -18965,6 +19034,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "webview2-com"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6"
+dependencies = [
+ "webview2-com-macros",
+ "webview2-com-sys",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "webview2-com-macros"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "webview2-com-sys"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3a07132775117d6065853d9d1178157b8c90e228de47129d6bce2c7edebedfb"
+dependencies = [
+ "thiserror 2.0.17",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
 name = "weezl"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20198,6 +20301,7 @@ dependencies = [
  "log",
  "markdown",
  "menu",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "postage",
@@ -20671,7 +20775,7 @@ dependencies = [
 
 [[package]]
 name = "zed"
-version = "2.4.1"
+version = "2.5.0"
 dependencies = [
  "acp_thread",
  "acp_tools",
@@ -20691,6 +20795,7 @@ dependencies = [
  "auto_update",
  "auto_update_ui",
  "breadcrumbs",
+ "browser",
  "call",
  "call_hierarchy",
  "channel",
@@ -20766,6 +20871,8 @@ dependencies = [
  "migrator",
  "mimalloc",
  "miniprofiler_ui",
+ "net_guard",
+ "net_guard_ui",
  "nix",
  "node_runtime",
  "notifications",

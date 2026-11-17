@@ -1,5 +1,5 @@
-//! SOLO: A Claude Code, Codex and Copilot CLI hook (and the command
-//! OpenCode's plugin runs) that tells the Solo terminal the agent runs in
+//! SOLO: A Claude Code, Codex, Copilot CLI, Gemini CLI, Qwen Code, Kimi Code
+//! and MastraCode hook (and the command the OpenCode, Kilo and Pi plugins run) that tells the Solo terminal the agent runs in
 //! what it's doing, with
 //! `OSC 6973 ; agent ; nonce=<nonce> ; <kind> ; <ms since the epoch> ; <session id>
 //! [; <agent> [; <working directory>]]` (parsed by
@@ -27,7 +27,12 @@ fn main() {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis().to_string())
         .unwrap_or_default();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // SOLO: not `args()`, which panics on an argument that isn't Unicode
+    // (R3 L-H7); such an argument fails the checks below instead.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     let nonce = terminal_nonce();
     if args.first().map(String::as_str) == Some("report") {
         match report_sequence(&args[1..], &sent_at_ms, &nonce) {
@@ -44,10 +49,13 @@ fn main() {
         }
         return;
     }
-    let mut input = String::new();
-    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("solo-agent-hook: failed to read the hook input: {error}");
+    // SOLO: hooks in an agent's own config (Kimi Code, MastraCode) run
+    // outside Solo's terminals too, where there's nothing to tell: no key.
+    if nonce.is_empty() {
+        read_hook_input(std::io::stdin().lock());
+        return;
     }
+    let input = read_hook_input(std::io::stdin().lock());
     let (argument, agent) = hook_arguments(&args);
     let Some(kind) = kind_of(&input, argument) else {
         return;
@@ -229,6 +237,28 @@ fn hook_arguments(args: &[String]) -> (Option<&str>, Option<&str>) {
     (kind, agent)
 }
 
+/// SOLO: the most of the hook's JSON input read (R3 L-H8). More, as for a
+/// Write of a huge file, is dropped whole: the report then goes by the hook's
+/// argument alone.
+const MAX_HOOK_INPUT: u64 = 32 * 1024 * 1024;
+
+/// The hook's JSON input from `reader`, or nothing if it's longer than
+/// [`MAX_HOOK_INPUT`] or can't be read.
+fn read_hook_input(reader: impl std::io::Read) -> String {
+    let mut input = String::new();
+    match reader.take(MAX_HOOK_INPUT + 1).read_to_string(&mut input) {
+        Ok(read) if read as u64 <= MAX_HOOK_INPUT => input,
+        Ok(_) => {
+            eprintln!("solo-agent-hook: the hook input is too long, ignored");
+            String::new()
+        }
+        Err(error) => {
+            eprintln!("solo-agent-hook: failed to read the hook input: {error}");
+            String::new()
+        }
+    }
+}
+
 /// Whether `agent` can go into the escape sequence as an agent's name: up to
 /// 40 letters, digits, spaces, '-', '_' or '.'.
 fn is_agent_name(agent: &str) -> bool {
@@ -272,7 +302,10 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
         "PreToolUse" => matches!(field("tool_name"), Some("AskUserQuestion" | "ExitPlanMode"))
             .then_some("input"),
         "Notification" => match field("notification_type")? {
-            "permission_prompt" | "elicitation_dialog" | "agent_needs_input" => Some("input"),
+            // SOLO: Gemini CLI's tool approval.
+            "permission_prompt" | "elicitation_dialog" | "agent_needs_input" | "ToolPermission" => {
+                Some("input")
+            }
             "idle_prompt" => Some("idle"),
             _ => None,
         },
@@ -487,6 +520,18 @@ fn write_to_terminal(bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hook input is read up to a limit (R3 L-H8).
+    #[test]
+    fn hook_input_has_a_limit() {
+        use std::io::Read as _;
+        let input = r#"{"hook_event_name":"Stop"}"#;
+        assert_eq!(read_hook_input(input.as_bytes()), input);
+        let long = std::io::repeat(b' ').take(MAX_HOOK_INPUT + 1);
+        assert_eq!(read_hook_input(long), "");
+        let longest = std::io::repeat(b' ').take(MAX_HOOK_INPUT);
+        assert_eq!(read_hook_input(longest).len() as u64, MAX_HOOK_INPUT);
+    }
 
     /// SOLO: Claude Code's edits are reported with the file (R3 M5).
     #[test]
@@ -741,6 +786,60 @@ mod tests {
         assert_eq!(
             kind_of(r#"{"hook_event_name":"Interrupt","turn_id":"t"}"#, None),
             Some("stop")
+        );
+    }
+
+    /// SOLO: the events of the agents added after Claude Code, Codex and
+    /// Copilot CLI, as their hooks give them (fake inputs, after each
+    /// agent's docs), with the argument Solo sets each hook up with.
+    #[test]
+    fn reads_more_agents_events() {
+        // Gemini CLI (docs/hooks/reference.md).
+        let gemini = |event: &str, argument| {
+            kind_of(
+                &format!(
+                    r#"{{"session_id":"0b6f","hook_event_name":"{event}","cwd":"/r","timestamp":"t"}}"#
+                ),
+                Some(argument),
+            )
+        };
+        assert_eq!(gemini("SessionStart", "start"), Some("start"));
+        assert_eq!(gemini("BeforeAgent", "prompt"), Some("prompt"));
+        assert_eq!(gemini("AfterAgent", "stop"), Some("stop"));
+        assert_eq!(
+            kind_of(
+                r#"{"hook_event_name":"Notification","notification_type":"ToolPermission","message":"Allow?"}"#,
+                Some("input")
+            ),
+            Some("input")
+        );
+        // Kimi Code CLI and MastraCode: Claude Code's events plus their own.
+        for (event, argument, expected) in [
+            ("PermissionResult", "prompt", "prompt"),
+            ("Interrupt", "stop", "stop"),
+            ("AgentStart", "prompt", "prompt"),
+            ("AgentEnd", "stop", "stop"),
+            ("StopFailure", "stop", "stop"),
+        ] {
+            assert_eq!(
+                kind_of(
+                    &format!(r#"{{"hook_event_name":"{event}","session_id":"s-1","cwd":"/r"}}"#),
+                    Some(argument)
+                ),
+                Some(expected),
+                "{event}"
+            );
+        }
+        assert_eq!(
+            kind_of(
+                r#"{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","session_id":"k"}"#,
+                Some("input")
+            ),
+            Some("input")
+        );
+        assert_eq!(
+            session_id_of(r#"{"hook_event_name":"SessionStart","session_id":"a1b2-c3"}"#),
+            Some("a1b2-c3".to_string())
         );
     }
 

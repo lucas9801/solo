@@ -89,6 +89,10 @@ enum Command {
     Review {
         id: String,
     },
+    /// SOLO: why the agent shows the status it does.
+    Why {
+        id: String,
+    },
     NewTask {
         prompt: String,
         agent: Option<String>,
@@ -125,6 +129,7 @@ usage: solo-cli agent <command> [--json]
   output <id> [--lines <n>]          the agent's last answer
   open <path[:line[:column]]>        open a file in Solo
   review <id>                        open the review of the agent's last turn
+  why <id>                           why the agent shows its status (hook, screen rule, output)
   new-task --prompt <text> [--agent <command>] [--base <branch>] [--name <name>]
                                      start an agent in a new git worktree and branch
 
@@ -263,6 +268,12 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             let id = id(&words)?;
             no_more(&words, 2)?;
             Command::Review { id }
+        }
+        Some("why" | "explain") => {
+            allow(&[])?;
+            let id = id(&words)?;
+            no_more(&words, 2)?;
+            Command::Why { id }
         }
         Some("new-task") => {
             allow(&["--prompt", "--agent", "--base", "--name"])?;
@@ -423,10 +434,13 @@ fn json<T: Serialize>(value: &T) -> String {
 }
 
 /// Runs `solo-cli agent <args>`, from the terminal `caller` if it runs in one.
+/// `connected` says whether the CLI is still there to answer: `wait` stops
+/// once it isn't.
 pub async fn run(
     args: Vec<String>,
     caller: Option<String>,
     cwd: Option<PathBuf>,
+    connected: &dyn Fn() -> bool,
     cx: &mut AsyncApp,
 ) -> AgentCliOutput {
     // SOLO: nothing of the request is looked at while the CLI is off.
@@ -475,13 +489,14 @@ pub async fn run(
         }),
         Command::Send { id, text } => cx.update(|cx| send(&id, &text, caller, cx)),
         Command::Wait { id, until, timeout } => {
-            wait(&id, until, timeout, caller, json_output, cx).await
+            wait(&id, until, timeout, caller, json_output, connected, cx).await
         }
         Command::Output { id, lines } => {
             cx.update(|cx| output(&id, lines, caller, json_output, cx))
         }
         Command::Open { path } => open(&path, caller, cwd, cx).await,
         Command::Review { id } => cx.update(|cx| review(&id, caller, cx)),
+        Command::Why { id } => cx.update(|cx| why(&id, caller, json_output, cx)),
         Command::NewTask {
             prompt,
             agent,
@@ -489,6 +504,51 @@ pub async fn run(
             name,
         } => new_task(prompt, agent, base, name, caller, cwd, json_output, cx).await,
     }
+}
+
+/// SOLO: `why <id>`: what decided the agent's status.
+fn why(id: &str, caller: Option<&str>, json_output: bool, cx: &mut App) -> AgentCliOutput {
+    let found = match find(id, caller, cx) {
+        Ok(found) => found,
+        Err(error) => return AgentCliOutput::error(error),
+    };
+    let Some(explanation) = found.view.read(cx).agent_status_explanation() else {
+        return AgentCliOutput::error(format!("no agent runs in terminal {id:?}"));
+    };
+    if json_output {
+        #[derive(Serialize)]
+        struct Why {
+            agent: String,
+            status: &'static str,
+            source: Option<&'static str>,
+            last_hook: Option<&'static str>,
+            last_hook_seconds_ago: Option<u64>,
+            rules: Option<String>,
+            rules_file: Option<PathBuf>,
+            rule: Option<String>,
+            explanation: String,
+        }
+        use crate::agent_status::StatusSource;
+        let rules = explanation.rules.clone();
+        return AgentCliOutput::ok(json(&Why {
+            agent: explanation.agent.clone(),
+            status: status_name(explanation.status),
+            source: explanation.source.map(|source| match source {
+                StatusSource::Hook => "hook",
+                StatusSource::ScreenOverHook => "screen-over-hook",
+                StatusSource::Screen => "screen",
+                StatusSource::Output => "output",
+                StatusSource::Exit => "exit",
+            }),
+            last_hook: explanation.hook.map(|(kind, _)| kind.as_str()),
+            last_hook_seconds_ago: explanation.hook.map(|(_, ago)| ago.as_secs()),
+            rules: rules.as_ref().map(|rules| rules.agent.clone()),
+            rules_file: rules.as_ref().and_then(|rules| rules.file.clone()),
+            rule: rules.and_then(|rules| rules.skipped_by.or(rules.rule)),
+            explanation: explanation.text(false),
+        }));
+    }
+    AgentCliOutput::ok(explanation.text(is_chinese()) + "\n")
 }
 
 fn send(id: &str, text: &str, caller: Option<&str>, cx: &mut App) -> AgentCliOutput {
@@ -547,6 +607,7 @@ async fn wait(
     timeout: Option<Duration>,
     caller: Option<&str>,
     json_output: bool,
+    connected: &dyn Fn() -> bool,
     cx: &mut AsyncApp,
 ) -> AgentCliOutput {
     let found = match cx.update(|cx| find(id, caller, cx)) {
@@ -595,6 +656,11 @@ async fn wait(
             };
         }
         cx.background_executor().timer(WAIT_POLL).await;
+        // SOLO: no one to answer, say the CLI was stopped: stop looking too
+        // (R3 L-H6).
+        if !connected() {
+            return AgentCliOutput::error("`solo-cli agent wait` is gone");
+        }
     }
 }
 
@@ -915,6 +981,15 @@ mod tests {
 
     #[test]
     fn parses_commands() {
+        assert_eq!(
+            command(&["why", "self"]),
+            Ok(Command::Why { id: "self".into() })
+        );
+        assert_eq!(
+            command(&["explain", "a1b2"]),
+            Ok(Command::Why { id: "a1b2".into() })
+        );
+        assert!(command(&["why"]).is_err());
         assert_eq!(
             parse(&args(&["ls", "--json"])),
             Ok(Invocation {
