@@ -36,7 +36,6 @@ Solo Code 的 Microsoft Store 安装包里的每个文件，由 `script/package-
 | Vendored `alacritty_terminal`, `vte` | `vendor/` (patched, see `vendor/README.md`) | Apache-2.0 / MIT |
 | Warp command signatures | `vendor/warp_command_signatures` | MIT |
 | Herdr agent detection rules | `vendor/herdr_agent_detection` | Apache-2.0 |
-| libwebrtc (prebuilt static library, linked through `webrtc-sys`) | `zed-industries/livekit-rust-sdks` release `webrtc-0001d84-4`, SHA-256 checked by `script/solo-ci-webrtc.ps1` | BSD-3-Clause (WebRTC) |
 | Fonts: IBM Plex Sans, Lilex | `assets/fonts` | SIL OFL 1.1 |
 | Icons | `assets/icons` (Zed's, and Lucide) | GPL-3.0-or-later (Zed's) / ISC (Lucide, `assets/icons/LICENSES`) |
 | Themes: Ayu, Gruvbox, One, Solo Dark | `assets/themes` | MIT (`assets/themes/LICENSES`) |
@@ -53,20 +52,15 @@ knowing about:
    root certificate list as data). An open data license, not on the OSI list.
    It's data, not code.
    ——开放数据许可，不在 OSI 列表上；是数据不是代码。
-2. **Prebuilt libwebrtc**: open source (BSD-3-Clause) but downloaded as a
-   binary rather than built from source (a static library of an upstream
-   project). Removing the call/collaboration crates from Solo would drop it
-   entirely.
-   ——开源但用的是预编译二进制；从 Solo 去掉通话相关 crate 可以彻底去掉它。
-3. **ConPTY download**: `crates/zed/build.rs` downloads the NuGet package
+2. **ConPTY download**: `crates/zed/build.rs` downloads the NuGet package
    over HTTPS and checks its SHA-256 against a fixed value (the digest
    GitHub shows for the release asset); another hash stops the build. The
    files are Microsoft-signed as well. (Done; Zed doesn't check it.)
    ——构建时下载的 ConPTY 包按固定的 SHA-256 校验（与 GitHub 上该发布文件的摘要一致），不一致就构建失败；文件本身也有微软签名。（已完成）
-4. **Sounds** (`assets/sounds/*.wav`) come from Zed's repository with no
+3. **Sounds** (`assets/sounds/*.wav`) come from Zed's repository with no
    license of their own, so they fall under the repository's license.
    ——音效文件来自 Zed 仓库，没有单独许可证，按仓库许可证。
-5. **Version resources**: all five of Solo's exes carry the same version
+4. **Version resources**: all five of Solo's exes carry the same version
    information (`crates/windows_resources`): product name "Solo", and Solo's
    version (`crates/zed/Cargo.toml`) as product and file version, whatever
    the version of the crate they're built from; `solo-package.yml` checks

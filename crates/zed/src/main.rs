@@ -19,15 +19,14 @@ use agent_ui::AgentPanel;
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use cli::FORCE_CLI_MODE_ENV_VAR_NAME;
-use client::{Client, ProxySettings, RefreshLlmTokenListener, UserStore, parse_zed_link};
-use collab_ui::channel_view::ChannelView;
+use client::{Client, ProxySettings, RefreshLlmTokenListener, UserStore};
 use collections::HashMap;
 use crashes::InitCrashHandler;
 use db::kvp::{GlobalKeyValueStore, KeyValueStore};
 use editor::Editor;
 use extension::ExtensionHostProxy;
 use fs::{Fs, RealFs};
-use futures::{FutureExt, StreamExt, channel::oneshot, future};
+use futures::{FutureExt, StreamExt, channel::oneshot};
 use git::GitHostingProviderRegistry;
 use git_ui::clone::clone_and_open;
 use gpui::{
@@ -64,13 +63,11 @@ use std::{
 };
 use theme::{ActiveTheme, GlobalTheme, ThemeRegistry};
 use theme_settings::load_user_theme;
-use util::{ResultExt, maybe};
+use util::ResultExt;
 use uuid::Uuid;
 use workspace::{
     AppState, MultiWorkspace, SerializedWorkspaceLocation, SessionWorkspace, Toast,
-    WorkspaceSettings, WorkspaceStore,
-    notifications::{NotificationId, NotifyResultExt},
-    restore_multiworkspace,
+    WorkspaceSettings, WorkspaceStore, notifications::NotificationId, restore_multiworkspace,
 };
 use zed::{
     OpenListener, OpenRequest, RawOpenRequest, app_menus, build_window_options,
@@ -721,11 +718,9 @@ fn main() {
         );
         language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
         acp_tools::init(cx);
-        zed::telemetry_log::init(cx);
         zed::remote_debug::init(cx);
         edit_prediction_ui::init(cx);
         web_search::init(cx);
-        web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);
         snippet_provider::init(cx);
         edit_prediction_registry::init(app_state.client.clone(), app_state.user_store.clone(), cx);
         let prompt_builder = PromptBuilder::load(app_state.fs.clone(), stdout_is_a_pty(), cx);
@@ -771,7 +766,6 @@ fn main() {
         outline_panel::init(cx);
         tasks_ui::init(cx);
         snippets_ui::init(cx);
-        channel::init(&app_state.client.clone(), app_state.user_store.clone(), cx);
         search::init(cx);
         lsp_locations::init(cx);
         cx.set_global(workspace::PaneSearchBarCallbacks {
@@ -794,9 +788,7 @@ fn main() {
         theme_selector::init(cx);
         settings_profile_selector::init(cx);
         language_tools::init(cx);
-        call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-        notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-        collab_ui::init(&app_state, cx);
+        title_bar::init(cx);
         git_ui::init(cx);
         feedback::init(cx);
         markdown_preview::init(cx);
@@ -867,7 +859,6 @@ fn main() {
             setting = "keymap",
             value = BaseKeymap::get_global(cx).to_string()
         );
-        telemetry.flush_events().detach();
 
         let fs = app_state.fs.clone();
         load_user_themes_in_background(fs.clone(), cx);
@@ -914,7 +905,7 @@ fn main() {
         let urls: Vec<_> = args
             .paths_or_urls
             .iter()
-            .map(|arg| parse_url_arg(arg, cx))
+            .map(|arg| parse_url_arg(arg))
             .collect();
 
         // Check if any diff paths are directories to determine diff_all mode
@@ -1384,60 +1375,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
         }));
     }
 
-    if !request.open_channel_notes.is_empty() || request.join_channel.is_some() {
-        cx.spawn(async move |cx| {
-            let result = maybe!(async {
-                if let Some(task) = task {
-                    task.await?;
-                }
-                let client = app_state.client.clone();
-                // we continue even if connection fails as join_channel/ open channel notes will
-                // show a visible error message.
-                client.connect(true, cx).await.into_response().log_err();
-
-                if let Some(channel_id) = request.join_channel {
-                    cx.update(|cx| {
-                        workspace::join_channel(
-                            client::ChannelId(channel_id),
-                            app_state.clone(),
-                            None,
-                            None,
-                            cx,
-                        )
-                    })
-                    .await?;
-                }
-
-                let workspace_window =
-                    workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
-
-                let workspace = workspace_window.read_with(cx, |mw, _| mw.workspace().clone())?;
-                let weak_workspace = workspace.downgrade();
-
-                let mut promises = Vec::new();
-                for (channel_id, heading) in request.open_channel_notes {
-                    promises.push(cx.update_window(workspace_window.into(), |_, window, cx| {
-                        ChannelView::open(
-                            client::ChannelId(channel_id),
-                            heading,
-                            workspace.clone(),
-                            window,
-                            cx,
-                        )
-                    })?)
-                }
-                for result in future::join_all(promises).await {
-                    result.notify_workspace_async_err(weak_workspace.clone(), cx);
-                }
-                anyhow::Ok(())
-            })
-            .await;
-            if let Err(err) = result {
-                fail_to_open_window_async(err, cx);
-            }
-        })
-        .detach()
-    } else if let Some(task) = task {
+    if let Some(task) = task {
         cx.spawn(async move |cx| {
             if let Err(err) = task.await {
                 fail_to_open_window_async(err, cx);
@@ -1884,7 +1822,7 @@ impl ToString for IdType {
     }
 }
 
-fn parse_url_arg(arg: &str, cx: &App) -> String {
+fn parse_url_arg(arg: &str) -> String {
     match std::fs::canonicalize(Path::new(&arg)) {
         Ok(path) => format!("file://{}", path.display()),
         Err(_) => {
@@ -1893,7 +1831,6 @@ fn parse_url_arg(arg: &str, cx: &App) -> String {
                 || arg.starts_with("solo://")
                 || arg.starts_with("zed-cli://")
                 || arg.starts_with("ssh://")
-                || parse_zed_link(arg, cx).is_some()
             {
                 arg.into()
             } else {

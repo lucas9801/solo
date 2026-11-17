@@ -28,19 +28,6 @@ are no longer made, and Solo is installed from the Microsoft Store.
   Windows page above for the component IDs. If `cmake` isn't on `PATH`, put
   Visual Studio's on it or set `CMAKE` to its path (for example
   `...\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`).
-- **WebRTC.** livekit's `webrtc-sys` links a prebuilt libwebrtc. Without
-  `LK_CUSTOM_WEBRTC` its build script downloads it (about 93 MB, from
-  zed-industries/livekit-rust-sdks' GitHub releases) into its build folder on
-  each fresh build of a profile, so nothing needs doing by hand, only access
-  to GitHub. To download it once and reuse it (as the CI does):
-
-  ```powershell
-  script\solo-ci-webrtc.ps1 -Tag webrtc-0001d84-4 -Sha256 b16f68e1fef8bd8089b9c7fc46c3c9b43ad5257c84460794a3668ec5accc1f13 -Dir C:\deps\webrtc
-  $env:LK_CUSTOM_WEBRTC = "C:\deps\webrtc\win-x64-release"
-  ```
-
-  The tag and hash are `WEBRTC_TAG` and `WEBRTC_SHA256` in
-  `.github/workflows/solo-ci.yml`.
 - **Helper programs.** `cargo run -p zed` builds only `solo.exe`. Solo's other
   programs are found next to it: `solo-agent-hook.exe` (Claude Code's hooks
   fall back to slower PowerShell scripts without it), `solo-terminal-host.exe`

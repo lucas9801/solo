@@ -114,9 +114,9 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
     match provider {
         EditPredictionProvider::None => None,
         EditPredictionProvider::Copilot => Some(EditPredictionProviderConfig::Copilot),
-        EditPredictionProvider::Zed => {
-            Some(EditPredictionProviderConfig::Zed(EditPredictionModel::Zeta))
-        }
+        // SOLO: Zed's hosted edit predictions need a Zed account, which Solo
+        // doesn't have; a setting that still names them turns them off.
+        EditPredictionProvider::Zed => None,
         EditPredictionProvider::Codestral => Some(EditPredictionProviderConfig::Codestral),
         EditPredictionProvider::Ollama | EditPredictionProvider::OpenAiCompatibleApi => {
             let custom_settings = if provider == EditPredictionProvider::Ollama {

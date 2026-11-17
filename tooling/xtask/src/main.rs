@@ -1,5 +1,4 @@
 mod tasks;
-mod workspace;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -15,8 +14,6 @@ struct Args {
 enum CliCommand {
     /// Runs the Windows WSL Bubblewrap sandbox behavior tests.
     WslSandboxTests(tasks::wsl_sandbox_tests::WslSandboxTestsArgs),
-    /// Downloads the pinned `webrtc-sys` release and configures `LK_CUSTOM_WEBRTC`.
-    SetupWebrtc(tasks::setup_webrtc::SetupWebrtcArgs),
 }
 
 fn main() -> Result<()> {
@@ -24,6 +21,5 @@ fn main() -> Result<()> {
 
     match args.command {
         CliCommand::WslSandboxTests(args) => tasks::wsl_sandbox_tests::run_wsl_sandbox_tests(args),
-        CliCommand::SetupWebrtc(args) => tasks::setup_webrtc::run_setup_webrtc(args),
     }
 }

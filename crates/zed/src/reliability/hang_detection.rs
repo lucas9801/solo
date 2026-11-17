@@ -1,13 +1,8 @@
-use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use client::Client;
 use gpui::{AppContext, TasksIncluded, profiler};
-use hang_telemetry::HangTelemetry;
 use ui::App;
-
-use crate::STARTUP_TIME;
 
 mod logging;
 mod task_traces;
@@ -24,14 +19,32 @@ gpui::actions!(
     ]
 );
 
-pub(crate) fn start(client: Arc<Client>, cx: &mut App) {
-    let hang_time = hang_telemetry::hang_threshold();
+/// How long the app must be unresponsive before a hang is logged.
+///
+/// SOLO: Zed's `hang_telemetry` crate defined this and also sent hang reports
+/// to zed.dev; Solo only logs them.
+fn hang_threshold() -> Duration {
+    if cfg!(debug_assertions) {
+        if cfg!(windows) {
+            // Windows debug builds are especially slow.
+            Duration::from_secs(30)
+        } else {
+            Duration::from_secs(5)
+        }
+    } else {
+        // Will be lowered over time or turned into a setting.
+        Duration::from_millis(100)
+    }
+}
+
+pub(crate) fn start(cx: &mut App) {
+    let hang_time = hang_threshold();
 
     if cfg!(debug_assertions) {
         log::warn!("debug build, only reporting hangs longer then {hang_time:?}");
     }
 
-    start_hang_detection(hang_time, client, cx);
+    start_hang_detection(hang_time);
 
     cx.on_action(move |_: &HangAction, _| {
         log::warn!(
@@ -66,20 +79,9 @@ pub(crate) fn start(client: Arc<Client>, cx: &mut App) {
     });
 }
 
-fn start_hang_detection(report_longer_then: Duration, client: Arc<Client>, cx: &mut App) {
+fn start_hang_detection(report_longer_then: Duration) {
     let foreground_thread = thread::current().id();
     let monitor_interval = Duration::from_secs(1);
-    let started = Instant::now();
-    let startup = *STARTUP_TIME.get().unwrap_or(&started);
-    // GPUI's final `Flush` poll runs during shutdown, concurrently with this
-    // handler and within `SHUTDOWN_TIMEOUT`, so the last batch may miss this
-    // flush.
-    match HangTelemetry::new(startup, telemetry::send_event).start(cx) {
-        Ok(()) => cx
-            .on_app_quit(move |_| client.telemetry().flush_events())
-            .detach(),
-        Err(error) => log::error!("failed to start hang reporting: {error}"),
-    }
 
     let mut log = logging::Reporter::new(monitor_interval, report_longer_then, foreground_thread);
     // An OS thread keeps the legacy hang logs and task traces working while

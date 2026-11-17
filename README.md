@@ -201,7 +201,6 @@ script\package-solo.ps1   # 优化构建，把要打包的文件放到 dist\Solo
 **注意**：
 
 - 第一次构建要下载依赖、编译一千多个 crate，时间较长（几十分钟到几个小时，看机器）。编译时会同时跑很多个 rustc，每个可能占到 1 GB 以上；内存紧张时用 `cargo run -j 4 -p zed` 或环境变量 `CARGO_BUILD_JOBS` 限制并发。
-- 构建时会自动从 GitHub 下载预编译的 WebRTC（约 93 MB），需要能访问 GitHub；不想每次全新构建都下载，可以先下好再设 `LK_CUSTOM_WEBRTC`，见[从源码构建](docs/development.md#notes-for-local-builds)。
 - 正式版本由 GitHub Actions 构建和打包（[Solo package](.github/workflows/solo-package.yml)），本地构建只用来开发和测试。
 
 ## 现在的状态

@@ -10,13 +10,4 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-cargo_metadata.workspace = true
-cargo_toml.workspace = true
 clap.workspace = true
-regex = { workspace = true, features = ["unicode-perl"] }
-toml.workspace = true
-toml_edit.workspace = true
-url.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

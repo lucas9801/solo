@@ -350,9 +350,6 @@ pub struct SettingsContent {
     /// Default: false
     pub vim_mode: Option<bool>,
 
-    // Settings related to calls in Zed
-    pub calls: Option<CallSettingsContent>,
-
     /// Settings for the which-key popup.
     pub which_key: Option<WhichKeySettingsContent>,
 
@@ -448,7 +445,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
         ui_language, journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
-        title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
+        title_bar, vim_mode, which_key, vim, modeline_lines, feature_flags,
         instrumentation,
     },
     defaults: {},
@@ -754,21 +751,6 @@ pub enum DockPosition {
     Right,
 }
 
-/// Configuration of voice calls in Solo.
-#[with_fallible_options]
-#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
-pub struct CallSettingsContent {
-    /// Whether the microphone should be muted when joining a channel or a call.
-    ///
-    /// Default: false
-    pub mute_on_join: Option<bool>,
-
-    /// Whether your current project should be shared when joining an empty channel.
-    ///
-    /// Default: false
-    pub share_on_join: Option<bool>,
-}
-
 #[with_fallible_options]
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
 pub struct GitPanelSettingsContent {
@@ -1032,10 +1014,6 @@ pub struct FileFinderSettingsContent {
     ///
     /// Default: Smart
     pub include_ignored: Option<IncludeIgnoredContent>,
-    /// Whether to include text channels in file finder results.
-    ///
-    /// Default: false
-    pub include_channels: Option<bool>,
     /// Whether to pre-fill the file finder's query with the text selected in the
     /// focused item (e.g. an editor or a terminal) when it is opened.
     ///

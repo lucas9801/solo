@@ -17,7 +17,6 @@ pub use crate::extension::init_proxy as init_extension_proxy;
 use crate::provider::anthropic::AnthropicLanguageModelProvider;
 use crate::provider::anthropic_compatible::AnthropicCompatibleLanguageModelProvider;
 use crate::provider::bedrock::BedrockLanguageModelProvider;
-use crate::provider::cloud::CloudLanguageModelProvider;
 use crate::provider::copilot_chat::CopilotChatLanguageModelProvider;
 use crate::provider::google::GoogleLanguageModelProvider;
 use crate::provider::llama_cpp::LlamaCppLanguageModelProvider;
@@ -34,14 +33,15 @@ use crate::provider::x_ai::XAiLanguageModelProvider;
 use crate::provider::x_ai_subscribed::XAiSubscribedProvider;
 pub use crate::settings::*;
 
-pub fn init(user_store: Entity<UserStore>, client: Arc<Client>, cx: &mut App) {
+// SOLO: `_user_store` was for Zed's hosted models, which Solo doesn't have;
+// kept so that callers don't change.
+pub fn init(_user_store: Entity<UserStore>, client: Arc<Client>, cx: &mut App) {
     language_model::set_credentials_read_gate::<SettingsStore>(ai_disabled, cx);
     let credentials_provider = client.credentials_provider();
     let registry = LanguageModelRegistry::global(cx);
     registry.update(cx, |registry, cx| {
         register_language_model_providers(
             registry,
-            user_store,
             client.clone(),
             credentials_provider.clone(),
             cx,
@@ -227,24 +227,12 @@ fn register_compatible_providers(
 
 fn register_language_model_providers(
     registry: &mut LanguageModelRegistry,
-    user_store: Entity<UserStore>,
     client: Arc<Client>,
     credentials_provider: Arc<dyn CredentialsProvider>,
     cx: &mut Context<LanguageModelRegistry>,
 ) {
-    // SOLO: Zed's hosted models are Zed's paid service and need a Zed account;
-    // Solo's AI comes from the user's own API keys and external agents.
-    const REGISTER_ZED_CLOUD_PROVIDER: bool = false;
-    if REGISTER_ZED_CLOUD_PROVIDER {
-        registry.register_provider(
-            Arc::new(CloudLanguageModelProvider::new(
-                user_store,
-                client.clone(),
-                cx,
-            )),
-            cx,
-        );
-    }
+    // SOLO: no Zed hosted models: they're Zed's paid service and need a Zed
+    // account. Solo's AI comes from the user's own API keys and external agents.
     registry.register_provider(
         Arc::new(AnthropicLanguageModelProvider::new(
             client.http_client(),

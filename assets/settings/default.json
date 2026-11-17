@@ -587,13 +587,6 @@
     "space": "•",
     "tab": "→",
   },
-  // Settings related to calls in Solo
-  "calls": {
-    // Join calls with the microphone live by default
-    "mute_on_join": false,
-    // Share your project when you are the first to join a channel
-    "share_on_join": false,
-  },
   // Toolbar related settings
   "toolbar": {
     // Whether to show breadcrumbs.
@@ -629,12 +622,8 @@
     "show_project_items": true,
     // Whether to show onboarding banners in the titlebar.
     "show_onboarding_banner": false,
-    // Whether to show user picture in the titlebar.
-    "show_user_picture": false,
     // Whether to show the user menu in the titlebar.
     "show_user_menu": true,
-    // Whether to show the sign in button in the titlebar.
-    "show_sign_in": false,
     // Whether to show the menus in the titlebar.
     "show_menus": false,
     // Whether to open the menus in the titlebar on hover.
@@ -1611,8 +1600,6 @@
     //   * "indexed": Use only the files Solo had indexed
     //   * "smart": Be smart and search for ignored when called from a gitignored worktree
     "include_ignored": "smart",
-    // Whether to include text channels in file finder results.
-    "include_channels": false,
     // Whether to pre-fill the file finder's query with the text selected in the
     // focused item (e.g. an editor or a terminal) when it is opened.
     //
@@ -2840,7 +2827,6 @@
     "x_ai": {
       "api_url": "https://api.x.ai/v1",
     },
-    "zed.dev": {},
   },
   "session": {
     // Whether or not to restore unsaved buffers on restart.

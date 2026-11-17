@@ -30,7 +30,7 @@ mod hang_detection;
 type ProjectRegistry = Rc<RefCell<Vec<WeakEntity<Project>>>>;
 
 pub fn init(client: Arc<Client>, workspace_store: Entity<WorkspaceStore>, cx: &mut App) {
-    hang_detection::start(client.clone(), cx);
+    hang_detection::start(cx);
     let projects = ProjectRegistry::default();
     start_memory_usage_logging(workspace_store, projects.clone(), cx);
 
