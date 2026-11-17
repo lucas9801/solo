@@ -20,13 +20,12 @@ Commands are typed in a real editor at the bottom of the window: multiple cursor
 
 - **Completions** from Warp's command signatures (about 500 commands): subcommands, options with descriptions, and argument values generated on the spot (git branches, npm scripts, docker containers, ...); PowerShell's own completions for the rest. Commands run in the current directory before come first.
 - **History:** ghost-text suggestions, up/down filtered by what you typed, fuzzy search on `ctrl-r`.
-- **`# what to do`:** describe it, and Solo asks Claude Code for a command for you to check and run.
+- **`# what to do`:** describe it, and Solo asks your own Claude Code or Codex (with their tools off) for a command for you to check and run.
 - **Workflows:** saved commands with `{{arguments}}`, on `ctrl-shift-r`.
 
 ## The editor next to it
 
 - Click a path in the terminal to open it: code in the editor, Markdown in a preview, images in the image viewer. A bare `:403` goes to the file mentioned last above it.
-- Files an agent changes open in the editor as it works, so you watch it happen.
 - In the editor, `ctrl-alt-k` sends the selection or the cursor position to an agent, `ctrl-alt-shift-m` the file's diagnostics.
 
 ## After a restart
