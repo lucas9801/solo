@@ -777,29 +777,6 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    /// A long transcript is read a piece at a time, each piece whole lines,
-    /// with `more` saying there's more (R3 L-A1).
-    #[test]
-    fn test_reader_reads_long_transcripts_in_pieces() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("session.jsonl");
-        std::fs::write(&path, "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n").unwrap();
-        let mut reader = TranscriptReader::new(path);
-        reader.max_read_bytes = 10;
-        let mut lines = Vec::new();
-        let mut reads = 0;
-        loop {
-            let new_lines = reader.read_new_lines().unwrap();
-            reads += 1;
-            lines.extend(new_lines.lines);
-            if !new_lines.more {
-                break;
-            }
-        }
-        assert_eq!(lines, ["{\"a\":1}", "{\"b\":2}", "{\"c\":3}"]);
-        assert!(reads >= 3, "{reads}");
-    }
-
     #[test]
     fn test_reader_waits_for_whole_lines() {
         let dir = tempfile::tempdir().unwrap();
@@ -839,6 +816,29 @@ mod tests {
         let new_lines = reader.read_new_lines().unwrap();
         assert!(!new_lines.restarted);
         assert_eq!(new_lines.lines, ["{\"g\":7}"]);
+    }
+
+    /// A long transcript is read a piece at a time, each piece whole lines,
+    /// with `more` saying there's more (R3 L-A1).
+    #[test]
+    fn test_reader_reads_long_transcripts_in_pieces() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n").unwrap();
+        let mut reader = TranscriptReader::new(path);
+        reader.max_read_bytes = 10;
+        let mut lines = Vec::new();
+        let mut reads = 0;
+        loop {
+            let new_lines = reader.read_new_lines().unwrap();
+            reads += 1;
+            lines.extend(new_lines.lines);
+            if !new_lines.more {
+                break;
+            }
+        }
+        assert_eq!(lines, ["{\"a\":1}", "{\"b\":2}", "{\"c\":3}"]);
+        assert!(reads >= 3, "{reads}");
     }
 
     #[test]
