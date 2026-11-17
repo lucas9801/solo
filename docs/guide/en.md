@@ -12,42 +12,49 @@ several agents in parallel in their own git worktrees.
 
 ## 2. Installing
 
-Both ways install Solo for the current user only (no administrator rights) into
-`%LOCALAPPDATA%\Programs\Solo`.
+Install **Solo Code** from the
+[Microsoft Store](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct):
+the link downloads a small installer that installs it for the current user
+without opening the Store app. It has a Start menu entry, the `solo` command
+in Windows' command line, and "Open with Solo Code" in Explorer's context menu
+(in Windows 11's own menu, not only under "Show more options").
 
-- **Installer** `Solo-Setup-<version>.exe`: English or Chinese setup, a Start
-  menu entry, an optional desktop icon (unchecked by default), "Open with Solo"
-  in Explorer's context menu (checked by default), and an uninstall entry in
-  Settings → Apps.
-- **Portable zip** `Solo-<version>-windows-x64.zip`: run `solo.exe` straight
-  from the unpacked folder, or run
+Each release on GitHub also has a **portable zip**
+`Solo-<version>-windows-x64.zip`: run `solo.exe` straight from the unpacked
+folder, or run
 
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File install.ps1
-  ```
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
 
-  to copy it to `%LOCALAPPDATA%\Programs\Solo` with Start menu and desktop
-  shortcuts and "Open with Solo" in the context menu (`-NoContextMenu` leaves
-  that out).
+to copy it to `%LOCALAPPDATA%\Programs\Solo` (for the current user, no
+administrator rights) with Start menu and desktop shortcuts and "Open with
+Solo" in the context menu (on Windows 11 under "Show more options";
+`-NoContextMenu` leaves it out).
 
-**"Open with Solo"** is on files, folders, a folder's background and drives (on
-Windows 11 under "Show more options"). A folder opens in Solo, started if it
-isn't running; a running Solo adds a workspace tab for it to its window and
-switches to it, or switches to the folder's tab if it has one already. A file
-opens in the tab whose folder holds it, or else in the current tab, never in a
-new window. Uninstalling (`install.ps1 -Uninstall` too) removes the menu; to
-go without it, uncheck it in setup.
+Releases no longer have an installer (`Solo-Setup-<version>.exe`). A Solo
+installed with one keeps working but isn't updated any more; to get new
+versions, install Solo Code from the Store (and uninstall the old Solo from
+Settings → Apps).
 
-The install folder holds `solo.exe`, `solo-agent-hook.exe` (which Claude Code
-runs to report its status), `solo-update-helper.exe` (which installs updates),
-`solo-terminal-host.exe` (which runs a terminal's shell, so it can outlive
-Solo), `OpenConsole.exe` and `conpty.dll` (the terminal runtime), and license
-files.
+**"Open with Solo"** is on files, folders, a folder's background and drives. A
+folder opens in Solo, started if it isn't running; a running Solo adds a
+workspace tab for it to its window and switches to it, or switches to the
+folder's tab if it has one already. A file opens in the tab whose folder holds
+it, or else in the current tab, never in a new window. Uninstalling
+(`install.ps1 -Uninstall` too) removes the menu.
+
+The zip's folder holds `solo.exe`, `solo-cli.exe` (the command line agents
+use), `solo-agent-hook.exe` (which Claude Code runs to report its status),
+`solo-update-helper.exe`, `solo-terminal-host.exe` (which runs a terminal's
+shell, so it can outlive Solo), `OpenConsole.exe` and `conpty.dll` (the
+terminal runtime), and license files. Solo Code has the same programs.
 
 ## 3. Updating
 
-- Solo checks [its GitHub releases](https://github.com/lucas9801/solo/releases)
-  30 seconds after it starts and every 6 hours after that (stable builds only).
+- Solo checks for a newer version 30 seconds after it starts and every 6
+  hours after that (stable builds only): Solo Code asks the Microsoft Store,
+  the portable zip [its GitHub releases](https://github.com/lucas9801/solo/releases).
 - A newer version shows an "↑ Update to <version>" button at the right end of
   the title bar, left of the window buttons; there's no notification. Its menu
   has a one-line summary and Update and Restart, Install When Solo Quits, View
@@ -67,25 +74,27 @@ files.
   copy), whether Solo is up to date with a **Check for Updates** button, and
   links to this guide, the release notes, the repository and the license.
   **Copy** copies the version, commit and system details for a bug report.
-- When you update, the installer is downloaded to `%TEMP%\solo-update\`. Solo
-  closes its windows the way Quit does, so it still asks about unsaved files.
-  `solo-update-helper.exe` then waits for Solo to exit, runs the installer
-  silently into the same folder, and Solo starts again. Logs:
-  `%TEMP%\solo-update\install.log` and `update-helper.log`.
+- The portable zip doesn't update itself: its button's menu has View Release
+  Notes, where the new zip is, and Skip This Version.
 - `"auto_update": false` turns off the automatic checks. **Check for Updates**
   in the command palette always checks.
 
 ## 4. Uninstalling and removing everything
 
-- Installer: uninstall Solo from Settings → Apps.
+- Solo Code: uninstall it from Settings → Apps.
 - Zip:
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Solo\install.ps1" -Uninstall
   ```
 
-**Neither one removes your settings and data.** To remove everything, quit Solo
-and run (the first line ends terminals still running in the background):
+- A Solo installed with the installer of an earlier release: uninstall Solo
+  from Settings → Apps.
+
+**Uninstalling doesn't remove your settings and data**, except the files
+Windows kept in Solo Code's package folder (see section 5). To remove
+everything, quit Solo and run (the first line ends terminals still running in
+the background):
 
 ```powershell
 Get-Process solo-terminal-host -ErrorAction SilentlyContinue | Stop-Process
@@ -110,10 +119,15 @@ nothing to clean up there.
 | `%APPDATA%\Solo` | Settings: `settings.json`, `keymap.json`, `tasks.json`, `debug.json`, `AGENTS.md`, `workflows.json` (saved commands) |
 | `%LOCALAPPDATA%\Solo` | Data: `logs\`, `db\` (workspace and session state), `extensions\`, `languages\` (downloaded language servers), `node\`, `external_agents\`, `terminal_sessions\` (restored terminal contents, removed after 30 days), `agent_turns\` (agent turn snapshots), `terminal-host\` (the terminal host's copy), `hang_traces\` |
 | `%TEMP%\solo-shell-integration` | Shell integration scripts and Claude Code hook settings |
-| `%TEMP%\solo-update` | Downloaded update installers and their logs |
+| `%TEMP%\solo-update` | Update installers downloaded by earlier versions, and their logs |
 | `.solo\` in a project | Project settings, tasks and debug scenarios (Zed's `.zed\` is read too) |
 
 These are separate from Zed's folders, so Solo and Zed can be installed side by side.
+
+Solo Code from the Store: Windows may keep the new files of `%APPDATA%\Solo` and
+`%LOCALAPPDATA%\Solo` in the package's own folder
+(`%LOCALAPPDATA%\Packages\lucas9801.SoloCode_*\LocalCache`) instead, and
+deletes that folder when Solo Code is uninstalled.
 
 ## 6. First use: running an agent in a Solo terminal
 
@@ -519,10 +533,10 @@ To treat another program as an agent:
   the task in its git config (`branch.<branch>.solotask` / `solobase`, and
   `sologroup` for a task spanning repositories). This
   only happens when you create a task.
-- **Updates** are installed only when you choose to, by
-  `solo-update-helper.exe` after Solo exits.
-- **`solo://` links:** the installer registers Solo for `solo://` links,
-  for your user only (`HKCU\Software\Classes\solo`), so links such as
+- **Updates** are installed only when you choose to, by the Microsoft Store
+  (Solo Code); the portable zip doesn't install updates.
+- **`solo://` links:** Solo Code's package registers it for `solo://` links,
+  for your user only, so links such as
   `solo://settings/terminal.font_size` (jumps to that setting) or a shared
   skill link open in Solo. Uninstalling removes it. Solo doesn't
   register `zed://`, which stays Zed's, but still opens such links passed to
@@ -552,11 +566,11 @@ collaboration and Zed's own auto-update are off or hidden.
 
 | Address | Why | How to turn it off |
 | --- | --- | --- |
-| `api.github.com` | Solo update checks (30 s after start, then every 6 h) | `"auto_update": false` |
+| The Microsoft Store (Solo Code) or `api.github.com` (the portable zip) | Solo update checks (30 s after start, then every 6 h) | `"auto_update": false` |
 
 **Contacted only when you use a feature:**
 
-- downloading an update: `github.com` and GitHub's download CDN;
+- downloading an update: the Microsoft Store (Solo Code);
 - language servers downloaded when you open a file in that language: GitHub
   releases, the npm registry, and `nodejs.org` if no suitable Node.js is
   installed;
@@ -593,24 +607,26 @@ Remote macOS and Windows hosts aren't supported.
 
 ### Blocked by security software
 **Symptoms**: a terminal doesn't open, closes right away, or never shows a
-prompt; Claude Code's status never changes; updates fail to install.
+prompt; Claude Code's status never changes.
 
 **Why**: Solo has PowerShell run scripts from `%TEMP%`, Claude Code runs
-`solo-agent-hook.exe` for each event, and updates run an installer silently.
-Some security software treats these as suspicious.
+`solo-agent-hook.exe` for each event. Some security software treats these as
+suspicious.
 
 **What to do**:
 
 1. Add these to your security software's trusted list:
-   `%LOCALAPPDATA%\Programs\Solo` (solo.exe, solo-agent-hook.exe,
-   solo-update-helper.exe, OpenConsole.exe, conpty.dll),
-   `%TEMP%\solo-shell-integration` and `%TEMP%\solo-update`.
+   the install folder (the zip's `%LOCALAPPDATA%\Programs\Solo`; Solo
+   Code's is under `C:\Program Files\WindowsApps`), with solo.exe,
+   solo-agent-hook.exe, solo-terminal-host.exe, OpenConsole.exe and
+   conpty.dll; `%LOCALAPPDATA%\Solo\terminal-host` (the terminal host's
+   copy); and `%TEMP%\solo-shell-integration`.
 2. To check whether that's the cause, set
    `"terminal": {"shell_integration": false}` and open a new terminal. If it
    works now, the integration script was being blocked.
 3. Report the false positive to the vendor, for example through 360's open
    platform at open.soft.360.cn (unverified). Other vendors have similar
-   false-positive forms. Include the installer and the version.
+   false-positive forms. Include the version (and the zip, if you use it).
 
 ### A terminal won't open
 - Check the log (below) for `shell integration` or `failed to`.
@@ -647,7 +663,6 @@ Some security software treats these as suspicious.
   when reporting it. Solo writes no minidumps by default. To get one, start
   Solo with the environment variable `ZED_GENERATE_MINIDUMPS=1`; it's written
   to the logs folder (exact file name unverified).
-- Failed updates: `%TEMP%\solo-update\install.log` and `update-helper.log`.
 - Report problems at [github.com/lucas9801/solo/issues](https://github.com/lucas9801/solo/issues),
   with the log attached.
 

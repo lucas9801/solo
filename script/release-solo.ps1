@@ -4,8 +4,8 @@
 # "Solo package" workflow (.github/workflows/solo-package.yml), which builds
 # Solo on GitHub's runners, checks solo.exe was built from the tagged commit,
 # has it signed (once SignPath signing is turned on, see
-# docs\code-signing-policy.md), packages the installer and the zip, and creates
-# a draft GitHub release with them and the notes. Check the draft, then publish
+# docs\code-signing-policy.md), packages the zip, and creates a draft GitHub
+# release with it and the notes. Check the draft, then publish
 # it (on GitHub, or `gh release edit v<version> --draft=false`); running
 # copies of Solo update only from published releases. Publishing it also
 # submits the Microsoft Store package (Solo Code) to Partner Center

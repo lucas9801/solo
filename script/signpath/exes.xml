@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  SignPath artifact configuration "exes": round 1 of signing in
+  SignPath artifact configuration "exes", the signing step of
   .github/workflows/solo-package.yml. The artifact is the folder dist/to-sign:
-  Solo's own exes, built from this repository, and Inno Setup's uninstaller
-  (uninstaller.exe, renamed from uninst-*.e32), which the installer then
+  Solo's own exes, built from this repository, which the portable zip then
   carries signed. conpty.dll and OpenConsole.exe aren't here: Microsoft
   signs them.
 
@@ -13,9 +12,7 @@
   with product name "Solo" and Solo's version as product and file version,
   so each is matched by product name and version, as SignPath Foundation
   asks (the same product name and product version on every signed file);
-  solo-package.yml checks the same before uploading. The uninstaller is Inno
-  Setup's and carries Inno Setup's version information, so it's matched by
-  path only.
+  solo-package.yml checks the same before uploading.
 -->
 <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
   <parameters>
@@ -35,9 +32,6 @@
       <authenticode-sign />
     </pe-file>
     <pe-file path="solo-terminal-host.exe" product-name="Solo" product-version="${version}" file-version="${version}">
-      <authenticode-sign />
-    </pe-file>
-    <pe-file path="uninstaller.exe">
       <authenticode-sign />
     </pe-file>
   </zip-file>

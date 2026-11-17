@@ -7,9 +7,9 @@
 #            commit, and uploads the staged files and the debug symbols
 #            (solo.pdb, not in the packages: crashes' addresses in a released
 #            solo.exe map to lines with them).
-#   package: has Solo's own exes and Inno Setup's uninstaller signed, makes
-#            the zip and the installer from the signed files, has the
-#            installer signed, and uploads both.
+#   package: has Solo's own exes signed, makes the portable zip from the
+#            signed files, and uploads it. (Releases no longer carry an
+#            installer: Solo is installed from the Microsoft Store.)
 #   msix:    packages the built files as Solo Code's Microsoft Store package
 #            (script/package-solo-msix.ps1 -Store), unsigned (the Store
 #            signs it), and uploads the .msixupload and the .msix as an
@@ -23,8 +23,8 @@
 #            static musl binaries and uploads them gzipped
 #            (solo-remote-server-linux-<arch>.gz, the names
 #            crates/auto_update/src/solo_remote_server.rs downloads).
-#   release: on a tag, creates the draft release with the zip, the installer,
-#            the remote servers and the notes from
+#   release: on a tag, creates the draft release with the zip, the remote
+#            servers and the notes from
 #            docs/release-notes/<version>.md (followed by a link to the code
 #            signing policy). It's published by hand.
 #
@@ -131,7 +131,7 @@ jobs:
         run: ./script/package-solo.ps1 -OutDir dist -Step Stage
 
       # Explorer's "Open with Solo Code" in the Store package (the msix job);
-      # not in the zip or the installer, which add their menu to the registry.
+      # not in the zip, whose install.ps1 adds its menu to the registry.
       - name: Build the Store package's context menu
         run: |
           $env:CARGO_INCREMENTAL = "0"
@@ -193,7 +193,7 @@ jobs:
     name: Sign and package Solo (Windows x64)
     needs: build
     runs-on: windows-latest
-    # Includes waiting up to an hour for each signing request to be approved.
+    # Includes waiting up to an hour for the signing request to be approved.
     timeout-minutes: 180
     permissions:
       contents: read
@@ -220,31 +220,14 @@ jobs:
           name: solo-windows-x64-files
           path: dist/Solo
 
-      - name: Install Inno Setup
-        run: |
-          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $iscc) {
-            choco install innosetup --no-progress -y
-            if ($LASTEXITCODE -ne 0) { throw "Installing Inno Setup failed" }
-            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          }
-          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
-          "ISCC_PATH=$iscc" >> $env:GITHUB_ENV
-
-      # Round 1: Solo's own exes, and Inno Setup's uninstaller, which goes into
-      # the installer signed (signed uninstaller mode, script/solo.iss). It's
-      # renamed to .exe for SignPath and back afterwards.
+      # Solo's own exes, signed before they're zipped.
       - name: Collect the files to sign
         if: env.SIGN == 'true'
         run: |
-          ./script/package-solo.ps1 -OutDir dist -Iscc $env:ISCC_PATH -Step Uninstaller -SignedUninstallerDir dist/uninstaller
-          $uninstaller = Get-ChildItem dist/uninstaller -Filter "uninst-*.e32" | Select-Object -First 1
-          "UNINSTALLER_NAME=$($uninstaller.Name)" >> $env:GITHUB_ENV
           New-Item -ItemType Directory -Force dist/to-sign | Out-Null
           foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-terminal-host.exe", "solo-cli.exe") {
             Copy-Item "dist/Solo/$exe" dist/to-sign/
           }
-          Copy-Item $uninstaller.FullName dist/to-sign/uninstaller.exe
 
       - name: Upload the files to sign
         if: env.SIGN == 'true'
@@ -276,7 +259,7 @@ jobs:
       - name: Use the signed exes
         if: env.SIGN == 'true'
         run: |
-          foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-terminal-host.exe", "solo-cli.exe", "uninstaller.exe") {
+          foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-terminal-host.exe", "solo-cli.exe") {
             $signature = Get-AuthenticodeSignature "dist/signed/$exe"
             if ($signature.Status -ne "Valid") { throw "dist/signed/$exe isn't signed: $($signature.Status)" }
             Write-Host "$exe signed by $($signature.SignerCertificate.Subject)"
@@ -284,61 +267,15 @@ jobs:
           foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-terminal-host.exe", "solo-cli.exe") {
             Copy-Item -Force "dist/signed/$exe" dist/Solo/
           }
-          Copy-Item -Force dist/signed/uninstaller.exe "dist/uninstaller/$env:UNINSTALLER_NAME"
 
-      - name: Package the zip and the installer
-        run: |
-          $packageArgs = @{ OutDir = "dist"; Iscc = $env:ISCC_PATH; Step = "Package" }
-          if ($env:SIGN -eq "true") { $packageArgs.SignedUninstallerDir = "dist/uninstaller" }
-          ./script/package-solo.ps1 @packageArgs
-
-      # Round 2: the installer, made from the signed files.
-      - name: Upload the installer to sign
-        if: env.SIGN == 'true'
-        id: upload-setup-to-sign
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: solo-windows-x64-setup-to-sign
-          path: dist/Solo-Setup-${{ env.SOLO_VERSION }}.exe
-          if-no-files-found: error
-
-      - name: Sign the installer with SignPath
-        if: env.SIGN == 'true'
-        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'solo' }}
-          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
-          artifact-configuration-slug: installer
-          github-artifact-id: ${{ steps.upload-setup-to-sign.outputs.artifact-id }}
-          wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 3600
-          output-artifact-directory: dist/signed-setup
-          parameters: |
-            version: ${{ toJSON(env.SOLO_VERSION) }}
-
-      - name: Use the signed installer
-        if: env.SIGN == 'true'
-        run: |
-          $setup = "Solo-Setup-$env:SOLO_VERSION.exe"
-          $signature = Get-AuthenticodeSignature "dist/signed-setup/$setup"
-          if ($signature.Status -ne "Valid") { throw "$setup isn't signed: $($signature.Status)" }
-          Write-Host "$setup signed by $($signature.SignerCertificate.Subject)"
-          Copy-Item -Force "dist/signed-setup/$setup" dist/
+      - name: Package the zip
+        run: ./script/package-solo.ps1 -OutDir dist -Step Package
 
       - name: Upload the zip
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: solo-windows-x64-zip
           path: dist/Solo-${{ env.SOLO_VERSION }}-windows-x64.zip
-          if-no-files-found: error
-
-      - name: Upload the installer
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: solo-windows-x64-setup
-          path: dist/Solo-Setup-${{ env.SOLO_VERSION }}.exe
           if-no-files-found: error
 
       # The notes from the version commit, then the link SignPath Foundation
@@ -534,12 +471,6 @@ jobs:
           name: solo-windows-x64-zip
           path: dist
 
-      - name: Download the installer
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: solo-windows-x64-setup
-          path: dist
-
       - name: Download the release notes
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -563,7 +494,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          files=("dist/Solo-Setup-$version.exe" "dist/Solo-$version-windows-x64.zip")
+          files=("dist/Solo-$version-windows-x64.zip")
           for file in "${files[@]}"; do
             [ -f "$file" ] || { echo "::error::$file is missing"; exit 1; }
           done

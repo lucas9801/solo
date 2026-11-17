@@ -12,8 +12,8 @@ param([switch]$Uninstall, [switch]$NoContextMenu)
 $ErrorActionPreference = "Stop"
 
 # The keys the context menu lives in, under HKCU\<classes>, the same ones
-# solo.iss writes. "%1" is the file; "%V" the folder, the folder whose
-# background was clicked, or the drive.
+# the installer of earlier releases (Inno Setup) wrote. "%1" is the file;
+# "%V" the folder, the folder whose background was clicked, or the drive.
 $contextMenuKeys = [ordered]@{
     "*\shell\Solo" = "%1"
     "Directory\shell\Solo" = "%V"

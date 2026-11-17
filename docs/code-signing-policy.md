@@ -18,16 +18,13 @@ by its GitHub Actions workflow
 runners, from a version tag (`v*`) on the `main` branch. Nothing built on a
 developer's computer is signed.
 
-Signed in two rounds, each a separate SignPath signing request that has to be
-approved by hand:
-
-1. Solo's own programs: `solo.exe`, `solo-cli.exe`, `solo-agent-hook.exe`,
-   `solo-update-helper.exe`, `solo-terminal-host.exe`, and the Inno Setup
-   uninstaller that the installer puts next to them (`unins000.exe`). The
-   portable zip `Solo-<version>-windows-x64.zip` is made from these signed
-   files.
-2. The installer `Solo-Setup-<version>.exe`, built with Inno Setup from the
-   files signed in round 1.
+Signed in one SignPath signing request per release, approved by hand:
+Solo's own programs, `solo.exe`, `solo-cli.exe`, `solo-agent-hook.exe`,
+`solo-update-helper.exe` and `solo-terminal-host.exe`. The portable zip
+`Solo-<version>-windows-x64.zip` is made from these signed files. Releases no
+longer have an installer: Solo is installed from the Microsoft Store (as Solo
+Code), whose package Microsoft signs when it's published there; it isn't
+signed through SignPath.
 
 `conpty.dll` and `OpenConsole.exe` (Microsoft's console host, from
 [microsoft/terminal](https://github.com/microsoft/terminal), MIT) are shipped
@@ -75,7 +72,7 @@ code at version 2.2.0):
 
 | What | Where | When | How to turn it off |
 |---|---|---|---|
-| Update check | `api.github.com` (this repository's releases); the installer is downloaded from GitHub only after the user chooses to update | 30 s after start, then every 6 hours | `"auto_update": false` |
+| Update check | The Microsoft Store edition asks the Store (Windows' `StoreContext`); the portable build asks `api.github.com` (this repository's releases) | 30 s after start, then every 6 hours | `"auto_update": false` |
 | Language servers and Node.js | GitHub releases, the npm registry, `nodejs.org` | When a file of a language is opened whose language server isn't installed yet (and checks for newer versions) | `"enable_language_server": false`, per language `"language_servers"`, or a language server's `binary.path` in `"lsp"` |
 | Extension updates | Zed's extension API (`api.zed.dev`) | Only when extensions are installed | Don't install extensions, or `"auto_update_extensions": { "<id>": false }` |
 | Git avatars | `avatars.githubusercontent.com` / GitHub API | When commit details of a GitHub repository are shown | `"git": { "blame": { "show_avatar": false } }` |
@@ -99,12 +96,9 @@ Free code signing provided by [SignPath.io](https://about.signpath.io), certific
 
 只签由本仓库（[github.com/lucas9801/solo](https://github.com/lucas9801/solo)）的 GitHub Actions 工作流 [`solo-package.yml`](../.github/workflows/solo-package.yml) 在 GitHub 托管的运行器上、从 `main` 分支上的版本标签（`v*`）构建出的文件。开发者本机构建的东西一律不签。
 
-分两轮签，每轮都是一次单独的 SignPath 签名请求，要人工批准：
+每个版本一次 SignPath 签名请求，要人工批准：签 Solo 自己的程序 `solo.exe`、`solo-cli.exe`、`solo-agent-hook.exe`、`solo-update-helper.exe`、`solo-terminal-host.exe`。便携版 zip（`Solo-<版本>-windows-x64.zip`）用这些签好的文件打包。发布里不再有安装程序：Solo 从 Microsoft Store 安装（名为 Solo Code），它的安装包在 Store 上架时由微软签名，不经过 SignPath。
 
-1. Solo 自己的程序：`solo.exe`、`solo-cli.exe`、`solo-agent-hook.exe`、`solo-update-helper.exe`、`solo-terminal-host.exe`，以及安装程序放在它们旁边的 Inno Setup 卸载程序（`unins000.exe`）。便携版 zip（`Solo-<版本>-windows-x64.zip`）用这些签好的文件打包。
-2. 安装程序 `Solo-Setup-<版本>.exe`，用第 1 轮签好的文件由 Inno Setup 生成。
-
-`conpty.dll` 和 `OpenConsole.exe`（微软的控制台宿主，来自 [microsoft/terminal](https://github.com/microsoft/terminal)，MIT 许可）保持微软自己的签名，不重新签。安装包里每个文件的来源和许可证见 [package-contents.md](package-contents.md)。
+`conpty.dll` 和 `OpenConsole.exe`（微软的控制台宿主，来自 [microsoft/terminal](https://github.com/microsoft/terminal)，MIT 许可）保持微软自己的签名，不重新签。发布的文件里每个文件的来源和许可证见 [package-contents.md](package-contents.md)。
 
 ### 版本信息
 
@@ -127,7 +121,7 @@ Solo 是代码编辑器，它的联网大多是用户要求的：用户自己配
 
 | 做什么 | 访问哪里 | 什么时候 | 怎么关 |
 |---|---|---|---|
-| 检查更新 | `api.github.com`（本仓库的 releases）；用户选择更新后才从 GitHub 下载安装程序 | 启动 30 秒后，之后每 6 小时 | `"auto_update": false` |
+| 检查更新 | Microsoft Store 版问 Store（Windows 的 `StoreContext`）；便携版问 `api.github.com`（本仓库的 releases） | 启动 30 秒后，之后每 6 小时 | `"auto_update": false` |
 | 语言服务器和 Node.js | GitHub releases、npm 仓库、`nodejs.org` | 打开某种语言的文件而它的语言服务器还没装时（也会检查新版本） | `"enable_language_server": false`、按语言设置 `"language_servers"`，或在 `"lsp"` 里给语言服务器指定 `binary.path` |
 | 扩展更新 | Zed 的扩展 API（`api.zed.dev`） | 只在装了扩展时 | 不装扩展，或设置 `"auto_update_extensions": { "<扩展 id>": false }` |
 | Git 头像 | `avatars.githubusercontent.com` / GitHub API | 显示 GitHub 仓库的提交详情时 | `"git": { "blame": { "show_avatar": false } }` |

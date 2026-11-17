@@ -1,11 +1,16 @@
 # What Solo's packages contain / 安装包内容
 
-Every file in `Solo-<version>-windows-x64.zip` (in its `Solo\` folder) and in
-`Solo-Setup-<version>.exe` (installed to `%LOCALAPPDATA%\Programs\Solo`), as
+Every file in `Solo-<version>-windows-x64.zip` (in its `Solo\` folder), as
 staged by [`script/package-solo.ps1`](../script/package-solo.ps1), with where
-it comes from and its license. Versions are those of Solo 2.2.0.
+it comes from and its license. Versions are those of Solo 2.2.0. The
+Microsoft Store package (Solo Code, made by
+[`script/package-solo-msix.ps1`](../script/package-solo-msix.ps1) from the
+same staged files) has the same files except `install.ps1`, plus its
+Explorer context menu `solo-explorer-command.dll` (built from
+`crates/explorer_command_injector`) and its icons; the Store signs it.
+Releases no longer have an installer (`Solo-Setup-<version>.exe`).
 
-zip（`Solo\` 目录下）和安装程序（装到 `%LOCALAPPDATA%\Programs\Solo`）里的每个文件，由 `script/package-solo.ps1` 准备，列出来源和许可证。版本以 Solo 2.2.0 为准。
+zip（`Solo\` 目录下）里的每个文件，由 `script/package-solo.ps1` 准备，列出来源和许可证。版本以 Solo 2.2.0 为准。Microsoft Store 版（Solo Code，由 `script/package-solo-msix.ps1` 用同一批文件打包）文件相同，只是没有 `install.ps1`，另有资源管理器右键菜单 `solo-explorer-command.dll`（由 `crates/explorer_command_injector` 构建）和图标；由 Store 签名。发布里不再有安装程序（`Solo-Setup-<版本>.exe`）。
 
 ## Files / 文件
 
@@ -23,8 +28,6 @@ zip（`Solo\` 目录下）和安装程序（装到 `%LOCALAPPDATA%\Programs\Solo
 | `THIRD-PARTY-VENDORED.md` | `vendor/README.md` | – | – | – |
 | `LICENSE-command-signatures.md` | `vendor/warp_command_signatures/LICENSE.md` | – | MIT text | – |
 | `install.ps1` (zip only / 仅 zip) | `script/install-solo.ps1` | – | GPL-3.0-or-later | – |
-| `unins000.exe`, `unins000.dat`, `unins000.msg` (installer only, created at install / 仅安装版，安装时生成) | [Inno Setup](https://jrsoftware.org/isinfo.php) uninstaller | Inno Setup 6 (whatever `choco install innosetup` installs on the runner; 6.7.3 locally) | Inno Setup License (permissive, see below) | SignPath (once enabled) |
-| `Solo-Setup-<version>.exe` itself | Inno Setup's setup program with the files above | as above | Inno Setup License; the Chinese messages (`crates/zed/resources/windows/messages/Default.zh-cn.isl`) are Inno Setup's user-contributed translation | SignPath (once enabled) |
 
 ## Inside `solo.exe` / `solo.exe` 内含
 
@@ -52,27 +55,21 @@ before or while applying for SignPath Foundation signing:
    root certificate list as data). An open data license, not on the OSI list.
    It's data, not code; mention it in the application.
    ——开放数据许可，不在 OSI 列表上；是数据不是代码，申请时说明即可。
-2. **Inno Setup License** (installer and uninstaller stubs). Permissive and
-   open source, but not OSI-listed. Inno Setup is the build tool, like a
-   compiler runtime; mention it, and ask SignPath whether signing the
-   Inno uninstaller is acceptable (if not, drop `uninstaller.exe` from
-   `script/signpath/exes.xml` and the uninstaller stays unsigned).
-   ——宽松开源许可但不在 OSI 列表；卸载程序是否可以签需要问 SignPath，不行就去掉。
-3. **Prebuilt libwebrtc**: open source (BSD-3-Clause) but downloaded as a
+2. **Prebuilt libwebrtc**: open source (BSD-3-Clause) but downloaded as a
    binary rather than built from source. SignPath asks for binaries built
    from source; it's a static library of an upstream project (allowed
    unsigned, like upstream DLLs), but say so in the application. Removing the
    call/collaboration crates from Solo would drop it entirely.
    ——开源但用的是预编译二进制；申请时说明；从 Solo 去掉通话相关 crate 可以彻底去掉它。
-4. **ConPTY download**: `crates/zed/build.rs` downloads the NuGet package
+3. **ConPTY download**: `crates/zed/build.rs` downloads the NuGet package
    over HTTPS and checks its SHA-256 against a fixed value (the digest
    GitHub shows for the release asset); another hash stops the build. The
    files are Microsoft-signed as well. (Done; Zed doesn't check it.)
    ——构建时下载的 ConPTY 包按固定的 SHA-256 校验（与 GitHub 上该发布文件的摘要一致），不一致就构建失败；文件本身也有微软签名。（已完成）
-5. **Sounds** (`assets/sounds/*.wav`) come from Zed's repository with no
+4. **Sounds** (`assets/sounds/*.wav`) come from Zed's repository with no
    license of their own, so they fall under the repository's license.
    ——音效文件来自 Zed 仓库，没有单独许可证，按仓库许可证。
-6. **Version resources**: SignPath Foundation wants the product name set to
+5. **Version resources**: SignPath Foundation wants the product name set to
    the project name and the same product version on every signed file. All
    five of Solo's exes carry the same version information
    (`crates/windows_resources`, see
