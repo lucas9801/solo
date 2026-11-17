@@ -5327,6 +5327,7 @@
   "image viewer: zoom to actual size": "图片查看器: 缩放到实际大小",
   "inline assistant: thumbs down result": "内联助手: 点踩结果",
   "inline assistant: thumbs up result": "内联助手: 点赞结果",
+  "invalid item: copy": "无法打开的文件: 复制",
   "ipykernel not installed": "未安装 ipykernel",
   "journal: new journal entry": "日志: 新建日志条目",
   "keymap editor: copy action": "键位映射编辑器: 复制操作",

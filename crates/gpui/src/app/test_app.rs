@@ -286,6 +286,11 @@ impl TestApp {
         self.platform.opened_with_system.borrow().clone()
     }
 
+    /// SOLO: paths that have been revealed via `cx.reveal_path()`, in order.
+    pub fn revealed_paths(&self) -> Vec<std::path::PathBuf> {
+        self.platform.revealed_paths.borrow().clone()
+    }
+
     /// Check if a file path prompt is pending.
     pub fn did_prompt_for_new_path(&self) -> bool {
         self.platform.did_prompt_for_new_path()

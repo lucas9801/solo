@@ -441,6 +441,11 @@ impl TestAppContext {
         self.test_platform.opened_with_system.borrow().clone()
     }
 
+    /// SOLO: all the paths that have been revealed with cx.reveal_path() during this test, in order.
+    pub fn revealed_paths(&self) -> Vec<std::path::PathBuf> {
+        self.test_platform.revealed_paths.borrow().clone()
+    }
+
     /// Returns the application identity configured during this test.
     pub fn app_identity(&self) -> Option<(SharedString, SharedString)> {
         self.test_platform.app_identity()

@@ -48,6 +48,8 @@ pub(crate) struct TestPlatform {
     pub opened_url: RefCell<Option<String>>,
     /// Paths passed to `open_with_system`, in order.
     pub opened_with_system: RefCell<Vec<PathBuf>>,
+    /// SOLO: paths passed to `reveal_path`, in order.
+    pub revealed_paths: RefCell<Vec<PathBuf>>,
     pub(crate) system_notifications: RefCell<TestSystemNotifications>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     pub expect_restart:
@@ -255,6 +257,7 @@ impl TestPlatform {
             weak: weak.clone(),
             opened_url: Default::default(),
             opened_with_system: Default::default(),
+            revealed_paths: Default::default(),
             system_notifications: Default::default(),
             text_system,
             headless_renderer_factory,
@@ -683,8 +686,9 @@ impl Platform for TestPlatform {
         true
     }
 
-    fn reveal_path(&self, _path: &std::path::Path) {
-        unimplemented!()
+    // SOLO: recorded, so tests can check what was revealed.
+    fn reveal_path(&self, path: &std::path::Path) {
+        self.revealed_paths.borrow_mut().push(path.to_path_buf());
     }
 
     fn on_quit(&self, _callback: Box<dyn FnMut() -> bool>) {}

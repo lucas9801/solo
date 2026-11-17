@@ -211,6 +211,14 @@
     },
   },
   {
+    // SOLO: copies the selected part of the path on the "Could not open file" page.
+    "context": "InvalidItem",
+    "use_key_equivalents": true,
+    "bindings": {
+      "cmd-c": "invalid_item::Copy",
+    },
+  },
+  {
     "context": "Editor && jupyter",
     "use_key_equivalents": true,
     "bindings": {
