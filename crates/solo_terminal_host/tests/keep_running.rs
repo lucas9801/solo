@@ -157,6 +157,67 @@ fn a_busy_host_waits_for_the_next_client() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A client that closes its control pipe but keeps its input open doesn't
+/// keep the next one out (R3 L-H3), which connects to the same pipe
+/// instances (R3 M9).
+#[test]
+fn a_client_that_keeps_its_input_open_doesnt_hold_up_the_next() {
+    let dir = log_dir("input-open");
+    let pipe = format!(
+        r"\\.\pipe\solo-terminal-test-input-open-{}",
+        std::process::id()
+    );
+    let mut host = start(&pipe, "cmd.exe /d /q /c ping -n 60 127.0.0.1", &dir);
+    let mut client = connect(&pipe, Duration::from_secs(30)).expect("first client");
+    client.control.write_all(b"P").unwrap();
+    let Client {
+        output,
+        _input,
+        control,
+        ..
+    } = client;
+    drop(control);
+    let mut next = connect(&pipe, Duration::from_secs(10)).expect("next client");
+    drop((output, _input));
+    let mut replayed = [0u8; 1];
+    next.output.read_exact(&mut replayed).unwrap();
+    next.control.write_all(b"K").unwrap();
+    assert!(ended(&mut host), "K didn't end the host");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A client that doesn't read doesn't hold up the program, which goes on to
+/// print all it has and end (R3 L-H3).
+#[test]
+fn a_client_that_doesnt_read_doesnt_hold_up_the_program() {
+    let dir = log_dir("no-reading");
+    let pipe = format!(
+        r"\\.\pipe\solo-terminal-test-no-reading-{}",
+        std::process::id()
+    );
+    let mut host = start(
+        &pipe,
+        "cmd.exe /d /q /c for /l %i in (1,1,40000) do @echo 0123456789012345678901234567890123456789 %i",
+        &dir,
+    );
+    let mut client = connect(&pipe, Duration::from_secs(30)).expect("client");
+    client.control.write_all(b"P").unwrap();
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(120) {
+        if host.try_wait().expect("failed to wait").is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let ended = host.try_wait().expect("failed to wait").is_some();
+    if !ended {
+        host.kill().ok();
+    }
+    drop(client);
+    assert!(ended, "the program didn't get to end");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn an_idle_host_ends_with_its_client() {
     let dir = log_dir("idle");
