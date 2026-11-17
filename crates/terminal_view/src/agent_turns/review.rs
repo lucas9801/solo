@@ -373,7 +373,10 @@ impl AgentTurnReview {
                 path_key,
                 buffer: file.buffer,
                 diff,
-                base: file.base.map(|base| base.into()),
+                // SOLO: without a BOM too, which the buffer doesn't have: with
+                // it, the first line always differs, and rejecting that would
+                // write a second BOM (R3 L-G7).
+                base: file.base.map(|base| normalized_text(base).into()),
                 expected: file.after.map(|after| normalized_text(after).into()),
                 diff_update: Task::ready(()).shared(),
                 _subscriptions: subscriptions,
@@ -2333,6 +2336,26 @@ mod tests {
             "b changed\nand more\n"
         );
         assert_eq!(hunk_count(&review, cx), 1);
+    }
+
+    /// A file with a BOM shows only what the turn changed: not its first line
+    /// for the BOM (R3 L-G7).
+    #[gpui::test]
+    async fn test_files_with_a_bom_show_only_their_changes(cx: &mut TestAppContext) {
+        let (_fs, review, cx) = open_review(
+            cx,
+            json!({ "a.txt": "\u{feff}one\r\nTWO\r\nthree\r\n" }),
+            &[("a.txt", Some("\u{feff}one\r\ntwo\r\nthree\r\n"))],
+        )
+        .await;
+        let rows = review.update(cx, |review, cx| {
+            let snapshot = review.multibuffer.read(cx).snapshot(cx);
+            snapshot
+                .diff_hunks_in_range(Point::zero()..Point::MAX)
+                .map(|hunk| hunk.row_range.start.0)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(rows.len(), 1, "{rows:?}");
     }
 
     /// A `.env` that was there all along, ignored, until the turn took it out

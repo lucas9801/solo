@@ -87,6 +87,11 @@ pub async fn download(
     smol::fs::create_dir_all(platform_dir)
         .await
         .with_context(|| format!("couldn't create {}", platform_dir.display()))?;
+    smol::unblock({
+        let platform_dir = platform_dir.to_path_buf();
+        move || remove_stale_downloads(&platform_dir, STALE_DOWNLOAD_AGE)
+    })
+    .await;
     // Downloaded next to it and renamed once checked, so a `.gz` in the
     // cache is always a whole, checked file.
     let partial = platform_dir.join(format!(
@@ -103,6 +108,32 @@ pub async fn download(
         .await
         .with_context(|| format!("couldn't move the remote server to {}", path.display()))?;
     Ok(path)
+}
+
+/// SOLO: a download left this long is one that never finished, say because
+/// Solo quit while downloading (R3 L-U9).
+const STALE_DOWNLOAD_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Removes the downloads in `platform_dir` last written longer than `age` ago.
+fn remove_stale_downloads(platform_dir: &Path, age: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(platform_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let is_download = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.contains(".gz.download-"));
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|elapsed| elapsed > age);
+        if is_download && stale {
+            std::fs::remove_file(entry.path()).ok();
+        }
+    }
 }
 
 fn version_path(platform_dir: &Path, version: &Version) -> PathBuf {
@@ -165,6 +196,32 @@ mod tests {
 
     fn version(text: &str) -> Version {
         Version::parse(text).unwrap()
+    }
+
+    /// Downloads that never finished don't stay (R3 L-U9).
+    #[test]
+    fn removes_stale_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join("2.3.0.gz.download-123");
+        let fresh = dir.path().join("2.3.0.gz.download-456");
+        let server = dir.path().join("2.3.0.gz");
+        for path in [&stale, &fresh, &server] {
+            std::fs::write(path, SERVER).unwrap();
+        }
+        let long_ago =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 60 * 60);
+        for path in [&stale, &server] {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(long_ago)
+                .unwrap();
+        }
+        remove_stale_downloads(dir.path(), STALE_DOWNLOAD_AGE);
+        assert!(!stale.exists());
+        assert!(fresh.exists());
+        assert!(server.exists());
     }
 
     #[test]

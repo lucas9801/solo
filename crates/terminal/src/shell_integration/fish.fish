@@ -34,8 +34,10 @@ function __solo_postexec --on-event fish_postexec
 end
 
 function __solo_report_cwd --on-variable PWD
-    set -l path (string replace -a '%' '%25' -- $PWD)
-    set path (string replace -a ' ' '%20' -- $path)
+    # SOLO: all but letters, digits and `/._~-` percent-encoded, control
+    # characters (which a folder's name can have, and would end the sequence
+    # early) and line breaks included.
+    set -l path (string escape --style=url -- $PWD)
     printf '\e]7;file://%s%s\a' $hostname $path
 end
 __solo_report_cwd

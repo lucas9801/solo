@@ -88,6 +88,24 @@ fn program(command: &str) -> Option<(&str, String)> {
     Some((program, name))
 }
 
+/// SOLO: whether `program` is only a name or path, maybe quoted, with nothing
+/// a shell would take for more (`x\claude.x;calc`), since it goes into the
+/// command offered to resume the session (R3 L-S6).
+fn is_plain_program(program: &str) -> bool {
+    let bare = ['"', '\'']
+        .into_iter()
+        .find_map(|quote| {
+            program
+                .strip_prefix(quote)
+                .and_then(|rest| rest.strip_suffix(quote))
+        })
+        .unwrap_or(program);
+    !bare.is_empty()
+        && bare.chars().all(|c| {
+            c.is_alphanumeric() || matches!(c, '\\' | '/' | ':' | '.' | '-' | '_' | '~' | '@' | '+')
+        })
+}
+
 /// The agent's name as shown, from its command.
 pub(crate) fn agent_display_name(command: &str) -> String {
     program(command)
@@ -101,6 +119,9 @@ pub(crate) fn agent_display_name(command: &str) -> String {
 /// works).
 pub(crate) fn resume_command(command: &str, session_id: Option<&str>) -> Option<String> {
     let (program, name) = program(command)?;
+    if !is_plain_program(program) {
+        return None;
+    }
     let by_id = session_id
         .filter(|id| terminal::shell_integration::is_session_id(id))
         .and_then(|id| {
@@ -373,6 +394,24 @@ mod tests {
         assert_eq!(resume_command("amp", None), None);
         assert_eq!(resume_command("my-agent", None), None);
         assert_eq!(resume_command("", None), None);
+    }
+
+    /// A saved command whose program carries more than a path isn't offered
+    /// to resume (R3 L-S6).
+    #[test]
+    fn test_resume_command_needs_a_plain_program() {
+        assert_eq!(resume_command(r"x\claude.x;calc", None), None);
+        assert_eq!(resume_command("claude&calc", None), None);
+        assert_eq!(resume_command("$(calc)/claude", None), None);
+        assert_eq!(resume_command("claude|calc", None), None);
+        assert_eq!(
+            resume_command(r#""C:\tools\claude.exe""#, None).as_deref(),
+            Some(r#""C:\tools\claude.exe" --continue"#)
+        );
+        assert_eq!(
+            resume_command("~/.local/bin/claude", None).as_deref(),
+            Some("~/.local/bin/claude --continue")
+        );
     }
 
     #[test]
