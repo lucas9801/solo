@@ -65,6 +65,9 @@ const MAX_FILES_OUTSIDE_REPOSITORY: usize = 20_000;
 /// A store nobody snapshotted with for this long is emptied the first time a
 /// process opens it.
 const MAX_STORE_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// SOLO: A store holding more than this is emptied the first time a process
+/// opens it too: snapshots aren't collected while in use (R3 L-G9).
+const MAX_STORE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Touched by every snapshot: when the store was last used, by any Solo.
 const LAST_USED_FILE: &str = "last-used";
 /// Locked around git commands on a store, which Solos running side by side
@@ -237,7 +240,10 @@ impl SnapshotStore {
             .map_err(|_| anyhow!("snapshot stores lock poisoned"))?
             .insert(store_dir.clone());
         std::fs::create_dir_all(&store_dir).with_context(|| format!("creating {store_dir:?}"))?;
-        if first_open && is_older_than(&store_dir.join(LAST_USED_FILE), MAX_STORE_AGE) {
+        if first_open
+            && (is_older_than(&store_dir.join(LAST_USED_FILE), MAX_STORE_AGE)
+                || holds_more_than(&store_dir.join("objects"), MAX_STORE_BYTES))
+        {
             empty_unused_store(&store_dir)?;
         }
         std::fs::create_dir_all(store_dir.join("objects"))
@@ -370,6 +376,68 @@ impl SnapshotStore {
             .command(&self.index_path())
             .args(["cat-file", "--filters"])
             .arg(format!("{tree}:{path}")))
+    }
+
+    /// SOLO: the contents of each `(tree, path)` as stored, for showing, with
+    /// one git process for all of them rather than one each (R3 L-G9). `None`
+    /// for one that can't be read. Unlike [`Self::file_contents`], line
+    /// endings and other filters aren't applied: with `--filters`, git (2.37
+    /// at least) reports the stored size for the filtered contents. The
+    /// review compares them without line endings anyway.
+    pub(crate) fn files_contents(
+        &self,
+        files: &[(String, String)],
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let mut child = self
+            .command(&self.index_path())
+            .args(["cat-file", "--batch"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("running git cat-file --batch")?;
+        // A path with a line break can't be asked for on a line.
+        let asked: Vec<bool> = files
+            .iter()
+            .map(|(_, path)| !path.contains(['\n', '\r']))
+            .collect();
+        let mut input = String::new();
+        for ((tree, path), asked) in files.iter().zip(&asked) {
+            if *asked {
+                input.push_str(&format!("{tree}:{path}\n"));
+            }
+        }
+        let mut stdin = child.stdin.take().context("no stdin")?;
+        let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+        let mut stdout = std::io::BufReader::new(child.stdout.take().context("no stdout")?);
+        let mut contents = Vec::with_capacity(files.len());
+        for asked in asked {
+            if !asked {
+                contents.push(None);
+                continue;
+            }
+            let mut header = String::new();
+            stdout.read_line(&mut header)?;
+            // `<object> <type> <size>`, or `<name> missing`.
+            let size = header
+                .trim_end()
+                .rsplit(' ')
+                .next()
+                .and_then(|size| size.parse::<usize>().ok())
+                .filter(|_| !header.trim_end().ends_with(" missing"));
+            let Some(size) = size else {
+                contents.push(None);
+                continue;
+            };
+            let mut bytes = vec![0; size + 1];
+            stdout.read_exact(&mut bytes)?;
+            bytes.pop();
+            contents.push(Some(bytes));
+        }
+        writer.join().ok();
+        child.wait().ok();
+        Ok(contents)
     }
 
     /// Puts the work tree back as it was in `target`: changed files get their
@@ -645,6 +713,32 @@ fn empty_unused_store(store_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// SOLO: whether the files under `directory` take more than `bytes`, counted
+/// until they do (R3 L-G9).
+fn holds_more_than(directory: &Path, bytes: u64) -> bool {
+    let mut total = 0u64;
+    let mut directories = vec![directory.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                directories.push(entry.path());
+            } else if file_type.is_file() {
+                total += entry.metadata().map_or(0, |metadata| metadata.len());
+                if total > bytes {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn is_older_than(path: &Path, age: Duration) -> bool {
     std::fs::metadata(path)
         .and_then(|metadata| metadata.modified())
@@ -888,6 +982,38 @@ mod tests {
         );
         assert_eq!(store.file_contents(&after, "new/c.txt").unwrap(), b"c\n");
         assert!(store.file_contents(&before, "new/c.txt").is_err());
+        // All at once, with one git (R3 L-G9).
+        assert_eq!(
+            store
+                .files_contents(&[
+                    (before.clone(), "a.txt".to_string()),
+                    (before.clone(), "new/c.txt".to_string()),
+                    (after.clone(), "new/c.txt".to_string()),
+                    (after, "x\ny".to_string()),
+                    (before, "untracked.txt".to_string()),
+                ])
+                .unwrap(),
+            vec![
+                Some(b"one\ntwo\nthree\n".to_vec()),
+                None,
+                Some(b"c\n".to_vec()),
+                None,
+                Some(b"before\n".to_vec()),
+            ]
+        );
+    }
+
+    /// Stores are emptied when they hold too much (R3 L-G9).
+    #[test]
+    fn test_holds_more_than() {
+        let temp = tempfile::tempdir().unwrap();
+        let objects = temp.path().join("objects");
+        std::fs::create_dir_all(objects.join("ab")).unwrap();
+        std::fs::write(objects.join("ab").join("cd"), vec![0u8; 100]).unwrap();
+        std::fs::write(objects.join("ef"), vec![0u8; 50]).unwrap();
+        assert!(holds_more_than(&objects, 120));
+        assert!(!holds_more_than(&objects, 150));
+        assert!(!holds_more_than(&temp.path().join("missing"), 0));
     }
 
     #[test]
