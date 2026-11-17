@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::IntoRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -275,7 +276,7 @@ pub(crate) fn start(
 ) -> Result<Connected> {
     let host = host_executable()?;
     let pipe = format!(
-        r"\\.\pipe\solo-terminal-{}-{}",
+        "{PIPE_PREFIX}{}-{}",
         std::process::id(),
         crate::shell_integration::new_nonce()
     );
@@ -337,8 +338,23 @@ pub(crate) fn start(
     connected
 }
 
+/// The prefix of every terminal host pipe's name.
+const PIPE_PREFIX: &str = r"\\.\pipe\solo-terminal-";
+
+/// SOLO: whether `pipe` names a terminal host pipe on this machine. Saved
+/// names come from the database, or `SOLO_TERMINAL_HOST_RECONNECT` in the
+/// settings' `terminal.env`; one like `\\server\pipe\x` would connect to
+/// another machine (R3 L-S10).
+fn is_terminal_host_pipe(pipe: &str) -> bool {
+    pipe.strip_prefix(PIPE_PREFIX)
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains(['\\', '/']))
+}
+
 /// Connects to the host on `pipe`, if it's still there.
 pub(crate) fn reconnect(pipe: &str, solo_going: SoloGoing) -> Result<Connected> {
+    if !is_terminal_host_pipe(pipe) {
+        bail!("{pipe:?} is not a terminal host pipe");
+    }
     connect(pipe, Duration::ZERO, None, solo_going)
 }
 
@@ -404,6 +420,11 @@ fn connect(
         host.as_deref_mut(),
     )?;
 
+    // SOLO: a pipe's name is free once its host ends, and anyone on the
+    // machine can make a pipe of that name: what's at the other end must
+    // run as this user (R3 M9).
+    check_pipe_server(&output).with_context(|| format!("connecting to {pipe}"))?;
+
     let header = read_line(&mut output)?;
     let mut fields = header.split(' ');
     if fields.next() != Some(HEADER) {
@@ -449,6 +470,71 @@ fn connect(
 }
 
 const ERROR_PIPE_BUSY: i32 = 231;
+/// `SECURITY_SQOS_PRESENT` is added by `OpenOptions`.
+const SECURITY_IDENTIFICATION: u32 = 1 << 16;
+
+/// SOLO: fails unless the process that made `pipe` runs as the same user as
+/// Solo (R3 M9).
+fn check_pipe_server(pipe: &File) -> Result<()> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Win32::Foundation::CloseHandle;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetNamedPipeServerProcessId(pipe: *mut std::ffi::c_void, server: *mut u32) -> i32;
+    }
+
+    let mut server_pid = 0u32;
+    if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut server_pid) } == 0 {
+        return Err(anyhow!(io::Error::last_os_error()).context("finding the pipe's server"));
+    }
+    let server = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, server_pid) }
+        .with_context(|| format!("opening the pipe's server process {server_pid}"))?;
+    let server_user = process_user(server);
+    unsafe { CloseHandle(server).ok() };
+    let own_user = process_user(unsafe { windows::Win32::System::Threading::GetCurrentProcess() })?;
+    let server_user = server_user?;
+    let same = unsafe {
+        windows::Win32::Security::EqualSid(token_user_sid(&server_user), token_user_sid(&own_user))
+    };
+    if same.is_err() {
+        bail!("the pipe's server (process {server_pid}) runs as another user");
+    }
+    Ok(())
+}
+
+/// The `TOKEN_USER` of `process`, in a buffer aligned for it.
+fn process_user(process: windows::Win32::Foundation::HANDLE) -> Result<Vec<u64>> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TokenUser};
+    use windows::Win32::System::Threading::OpenProcessToken;
+
+    let mut token = HANDLE::default();
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) }
+        .context("opening a process token")?;
+    let mut length = 0u32;
+    unsafe { GetTokenInformation(token, TokenUser, None, 0, &mut length).ok() };
+    let mut buffer = vec![0u64; (length as usize).div_ceil(8).max(1)];
+    let result = unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buffer.as_mut_ptr().cast()),
+            (buffer.len() * 8) as u32,
+            &mut length,
+        )
+    };
+    unsafe { CloseHandle(token).ok() };
+    result.context("reading a process's user")?;
+    Ok(buffer)
+}
+
+fn token_user_sid(buffer: &[u64]) -> windows::Win32::Security::PSID {
+    let user = buffer
+        .as_ptr()
+        .cast::<windows::Win32::Security::TOKEN_USER>();
+    unsafe { (*user).User.Sid }
+}
 
 fn open_pipe(
     name: &str,
@@ -458,7 +544,13 @@ fn open_pipe(
     mut host: Option<&mut Child>,
 ) -> Result<File> {
     loop {
-        let opened = OpenOptions::new().read(read).write(!read).open(name);
+        // SOLO: whatever is at the other end can't act as Solo's user
+        // (R3 M9).
+        let opened = OpenOptions::new()
+            .read(read)
+            .write(!read)
+            .security_qos_flags(SECURITY_IDENTIFICATION)
+            .open(name);
         match opened {
             Ok(pipe) => return Ok(pipe),
             Err(error) => {
@@ -863,6 +955,9 @@ fn is_host_exe(exe: &Path, host_dirs: &[PathBuf]) -> bool {
 
 /// Ends a host no terminal is connected to, and what it runs.
 pub fn end_running_host(pipe: &str) -> Result<()> {
+    if !is_terminal_host_pipe(pipe) {
+        bail!("{pipe:?} is not a terminal host pipe");
+    }
     let started = Instant::now();
     let mut output = open_pipe(&format!("{pipe}-out"), true, started, Duration::ZERO, None)?;
     let _input = open_pipe(&format!("{pipe}-in"), false, started, BUSY_TIMEOUT, None)?;
@@ -1109,6 +1204,25 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         *TEST_RUNNING_DIR.lock() = None;
+    }
+
+    /// A saved pipe name is only connected to when it's one of Solo's
+    /// terminal host pipes on this machine (R3 L-S10).
+    #[test]
+    fn test_reconnecting_only_to_terminal_host_pipes() {
+        for pipe in [
+            r"\\server\pipe\solo-terminal-1-2",
+            r"\\.\pipe\other-1-2",
+            r"\\.\pipe\solo-terminal-",
+            r"\\.\pipe\solo-terminal-x\..\other",
+            r"C:\solo-terminal-1",
+        ] {
+            let error = reconnect(pipe, SoloGoing::default()).err().unwrap();
+            assert!(
+                format!("{error:#}").contains("not a terminal host pipe"),
+                "{pipe}: {error:#}"
+            );
+        }
     }
 
     /// A terminal only to connect to a host doesn't start a shell when the

@@ -43,6 +43,7 @@ log.workspace = true
 markdown.workspace = true
 menu.workspace = true
 multi_buffer.workspace = true
+net_guard.workspace = true
 notifications.workspace = true
 picker.workspace = true
 project.workspace = true

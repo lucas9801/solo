@@ -107,7 +107,9 @@ fn session_files(sessions: &Path) -> Vec<PathBuf> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            // SOLO: the entry's own type: a directory link (a junction) isn't
+            // followed, since one back up the tree would be a loop (R3 L-A3).
+            if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
                 dirs.push(path);
             } else if path
                 .file_name()
@@ -432,7 +434,7 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
                     api_message_id: format!("total-{}", number(total, "total_tokens")),
                     model: None,
                     usage: TokenUsage {
-                        input: input.saturating_sub(cache_read + cache_creation),
+                        input: input.saturating_sub(cache_read.saturating_add(cache_creation)),
                         output: number(last, "output_tokens"),
                         cache_read,
                         cache_creation,
@@ -583,6 +585,30 @@ mod tests {
         assert_eq!(usage.context_tokens, Some(13_000));
         assert_eq!(usage.context_window, Some(258_400));
         assert_eq!(usage.model.as_deref(), Some("gpt-5.5-codex"));
+    }
+
+    /// A directory link (a junction, or a symlink) back up the tree isn't
+    /// followed round and round (R3 L-A3).
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "test")]
+    fn test_session_files_skip_directory_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let day = dir.path().join("2026").join("11");
+        std::fs::create_dir_all(&day).unwrap();
+        let file =
+            day.join("rollout-2026-11-09T09-00-00-01a182bf-336d-7c13-9879-86020812dc44.jsonl");
+        std::fs::write(&file, "").unwrap();
+        let status = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(day.join("loop"))
+            .arg(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(session_files(dir.path()), [file]);
     }
 
     #[test]

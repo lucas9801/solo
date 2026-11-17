@@ -314,6 +314,31 @@ impl SnapshotStore {
         if let Err(error) = std::fs::write(self.store_dir.join(LAST_USED_FILE), b"") {
             log::warn!("failed to mark {:?} as used: {error}", self.store_dir);
         }
+        match self.write_snapshot() {
+            Ok(tree) => Ok(tree),
+            // SOLO: the private index can name objects that are gone (a blob
+            // staged in the user's index, since unstaged and pruned by
+            // `git gc`); git trusts the index for files that look unchanged,
+            // so every snapshot would fail. Starting the index over hashes
+            // the files again (R3 M12).
+            Err(error) => {
+                log::warn!(
+                    "snapshot of {:?} failed, starting its index over: {error:#}",
+                    self.work_tree
+                );
+                let index = self.index_path();
+                match std::fs::remove_file(&index) {
+                    Ok(()) => self.write_snapshot(),
+                    Err(remove) if remove.kind() == std::io::ErrorKind::NotFound => Err(error),
+                    Err(remove) => {
+                        Err(error.context(format!("failed to remove {index:?}: {remove}")))
+                    }
+                }
+            }
+        }
+    }
+
+    fn write_snapshot(&self) -> Result<TreeId> {
         let index = self.index_path();
         if !index.exists() {
             if let Some(seed) = self.seed_index.as_ref().filter(|seed| seed.exists()) {
@@ -353,21 +378,28 @@ impl SnapshotStore {
         Ok(String::from_utf8_lossy(&tree).trim().to_string())
     }
 
-    /// Files that differ between two snapshots.
+    /// Files that differ between two snapshots. Repositories nested in the
+    /// work tree (a `git clone` into it, say) aren't files: they're left out.
     pub(crate) fn changed_files(&self, from: &str, to: &str) -> Result<Vec<ChangedFile>> {
+        Ok(self.changes(from, to)?.0)
+    }
+
+    /// The files that differ between two snapshots, and the nested
+    /// repositories (gitlinks) that do.
+    fn changes(&self, from: &str, to: &str) -> Result<(Vec<ChangedFile>, Vec<String>)> {
         if from == to {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         let output = run(self.command(&self.index_path()).args([
             "diff-tree",
             "-r",
             "-z",
             "--no-renames",
-            "--name-status",
+            "--raw",
             from,
             to,
         ]))?;
-        Ok(parse_name_status(&output))
+        Ok(parse_raw_diff(&output))
     }
 
     /// A file's contents in a snapshot, as it would be checked out.
@@ -464,15 +496,18 @@ impl SnapshotStore {
         if shown.is_some_and(|shown| shown != current) {
             return Err(WorkTreeChanged.into());
         }
-        let changed = self.changed_files(target, &current)?;
+        let (changed, nested_repositories) = self.changes(target, &current)?;
 
         // SOLO: git (for Windows) takes a junction for a directory, so files
         // through one are in snapshots; writing or deleting them would change
-        // files outside the work tree. They're left alone.
+        // files outside the work tree. They're left alone, as are repositories
+        // nested in the work tree, which aren't files to remove or check out
+        // (R3 M3).
         let skipped: Vec<String> = changed
             .iter()
             .filter(|file| linked_ancestor(&self.abs_path(&file.path), &self.work_tree).is_some())
             .map(|file| file.path.clone())
+            .chain(nested_repositories)
             .collect();
         if !skipped.is_empty() {
             log::warn!(
@@ -640,24 +675,37 @@ fn check(output: Output, name: &str) -> Result<Vec<u8>> {
     }
 }
 
-/// Parses `git diff-tree -z --name-status` output.
-fn parse_name_status(output: &[u8]) -> Vec<ChangedFile> {
+/// A gitlink's mode in a tree: a repository nested in the work tree.
+const GITLINK_MODE: &[u8] = b"160000";
+
+/// Parses `git diff-tree -z --raw` output (`:<mode> <mode> <id> <id>
+/// <status>`, then the path) into the changed files and, apart, the paths of
+/// nested repositories (gitlinks) that changed.
+fn parse_raw_diff(output: &[u8]) -> (Vec<ChangedFile>, Vec<String>) {
     let mut fields = output
         .split(|byte| *byte == 0)
         .filter(|field| !field.is_empty());
     let mut changed = Vec::new();
-    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
-        let change = match status.first() {
+    let mut gitlinks = Vec::new();
+    while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
+        let meta: Vec<&[u8]> = meta
+            .strip_prefix(b":")
+            .unwrap_or(meta)
+            .split(|byte| *byte == b' ')
+            .collect();
+        let path = String::from_utf8_lossy(path).into_owned();
+        if meta.iter().take(2).any(|mode| *mode == GITLINK_MODE) {
+            gitlinks.push(path);
+            continue;
+        }
+        let change = match meta.get(4).and_then(|status| status.first()) {
             Some(b'A') => FileChange::Added,
             Some(b'D') => FileChange::Deleted,
             _ => FileChange::Modified,
         };
-        changed.push(ChangedFile {
-            path: String::from_utf8_lossy(path).into_owned(),
-            change,
-        });
+        changed.push(ChangedFile { path, change });
     }
-    changed
+    (changed, gitlinks)
 }
 
 /// A directory name for the store of `work_tree`: readable, and unique by a hash.
@@ -1108,6 +1156,69 @@ mod tests {
         assert_eq!(store.snapshot().unwrap(), after);
     }
 
+    /// A repository the agent cloned into the work tree is left alone by a
+    /// rollback, which still restores the rest (R3 M3).
+    #[test]
+    fn test_restore_leaves_nested_repositories_alone() {
+        let (_temp, repository, storage) = repository();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let read = |path: &str| fs::read_to_string(repository.join(path)).ok();
+        let before = store.snapshot().unwrap();
+
+        let nested = repository.join("vendor/lib");
+        fs::create_dir_all(&nested).unwrap();
+        git(&nested, &["init", "--quiet"]);
+        fs::write(nested.join("lib.txt"), "lib\n").unwrap();
+        git(&nested, &["add", "."]);
+        git(&nested, &["commit", "--quiet", "-m", "lib"]);
+        fs::write(repository.join("a.txt"), "changed\n").unwrap();
+        let after = store.snapshot().unwrap();
+        assert_eq!(
+            sorted(store.changed_files(&before, &after).unwrap()),
+            vec![("a.txt".to_string(), FileChange::Modified)]
+        );
+
+        let restored = store.restore(&before).unwrap();
+        assert_eq!(restored.skipped, vec!["vendor/lib".to_string()]);
+        assert_eq!(read("a.txt").as_deref(), Some("one\ntwo\nthree\n"));
+        assert_eq!(read("vendor/lib/lib.txt").as_deref(), Some("lib\n"));
+        store.restore(&restored.undo).unwrap();
+        assert_eq!(read("a.txt").as_deref(), Some("changed\n"));
+    }
+
+    /// The private index names a blob staged by the user, then unstaged and
+    /// pruned: snapshots start the index over rather than fail from then on
+    /// (R3 M12).
+    #[test]
+    fn test_snapshot_recovers_from_a_pruned_staged_blob() {
+        let (_temp, repository, storage) = repository();
+        fs::write(repository.join("a.txt"), "staged\n").unwrap();
+        git(&repository, &["add", "a.txt"]);
+        let blob = git(&repository, &["rev-parse", ":a.txt"]);
+        let blob = blob.trim();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let first = store.snapshot().unwrap();
+
+        // Unstaged, and the blob pruned from the repository.
+        git(&repository, &["reset", "--quiet", "--", "a.txt"]);
+        fs::remove_file(
+            repository
+                .join(".git/objects")
+                .join(&blob[..2])
+                .join(&blob[2..]),
+        )
+        .unwrap();
+        fs::write(repository.join("src/b.txt"), "b changed\n").unwrap();
+
+        let second = store.snapshot().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(store.file_contents(&second, "a.txt").unwrap(), b"staged\n");
+        assert_eq!(
+            store.file_contents(&second, "src/b.txt").unwrap(),
+            b"b changed\n"
+        );
+    }
+
     #[test]
     fn test_restore_keeps_line_endings() {
         let (_temp, repository, storage) = repository();
@@ -1425,9 +1536,20 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_name_status() {
+    fn test_parse_raw_diff() {
+        let zero = "0".repeat(40);
+        let id = "1".repeat(40);
+        let output = format!(
+            ":100644 100644 {id} {id} M\0a b.txt\0\
+             :000000 100644 {zero} {id} A\0new\0\
+             :100644 000000 {id} {zero} D\0gone\0\
+             :100644 120000 {id} {id} T\0link\0\
+             :000000 160000 {zero} {id} A\0nested\0"
+        );
+        let (changed, gitlinks) = parse_raw_diff(output.as_bytes());
+        assert_eq!(gitlinks, vec!["nested".to_string()]);
         assert_eq!(
-            parse_name_status(b"M\0a b.txt\0A\0new\0D\0gone\0T\0link\0"),
+            changed,
             vec![
                 ChangedFile {
                     path: "a b.txt".into(),

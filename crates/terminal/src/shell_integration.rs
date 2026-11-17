@@ -292,7 +292,7 @@ fn contents_hash(contents: &[&str]) -> String {
 }
 
 /// Shells only load extra scripts from disk, so they go to the temp dir.
-fn write_script(name: &str, script: &str) -> std::io::Result<String> {
+pub(crate) fn write_script(name: &str, script: &str) -> std::io::Result<String> {
     let path = scripts_dir()?.join(name);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -334,8 +334,22 @@ pub fn powershell_script_command(name: &str, script: &str) -> std::io::Result<St
 fn powershell_load_command(path: &str) -> String {
     format!(
         ". ([scriptblock]::Create([IO.File]::ReadAllText('{}', [Text.Encoding]::UTF8)))",
-        path.replace('\'', "''")
+        powershell_single_quoted(path)
     )
+}
+
+/// SOLO: `text` for inside a PowerShell single-quoted string: each single
+/// quote doubled, curly ones included, which PowerShell takes for single
+/// quotes too (R3 L-S2).
+pub fn powershell_single_quoted(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    quoted
 }
 
 /// SOLO: Lets Claude Code started from the integrated shell report what it's
@@ -648,7 +662,7 @@ fn write_copilot_plugin(hook: &str, is_windows: bool) -> std::io::Result<String>
 /// Copilot hooks in Claude Code's format (PascalCase events), for each event
 /// Solo reports, with the kind of report each one is.
 fn copilot_hooks(hook: &str) -> serde_json::Value {
-    let powershell_path = hook.replace('\'', "''");
+    let powershell_path = powershell_single_quoted(hook);
     let sh_path = hook.replace('\'', r"'\''");
     let group = |kind: AgentHookKind| {
         let kind = kind.as_str();
@@ -756,7 +770,7 @@ fn write_opencode_plugins() -> std::io::Result<(String, String)> {
 }
 
 /// `path` with the platform's separators (the scripts' paths use `/`).
-fn native_path(path: &Path) -> PathBuf {
+pub(crate) fn native_path(path: &Path) -> PathBuf {
     if cfg!(windows) {
         PathBuf::from(path.to_string_lossy().replace('/', "\\"))
     } else {
@@ -924,14 +938,7 @@ fn codex_windows_hook_command(hook: &str) -> Option<String> {
     if plain && !hook.is_empty() {
         return Some(format!("'{hook} --agent codex'"));
     }
-    // PowerShell takes these as single quotes too.
-    let mut quoted = String::new();
-    for c in hook.chars() {
-        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
-            quoted.push(c);
-        }
-        quoted.push(c);
-    }
+    let quoted = powershell_single_quoted(hook);
     let command = format!("& '{quoted}' --agent codex");
     (!command.contains("'''") && !command.contains(['\n', '\r']))
         .then(|| format!("'''{command}'''"))
@@ -970,7 +977,7 @@ fn claude_code_settings_file_name(settings: &str) -> String {
 /// hook commands they're given for as long as they run, and their settings
 /// file and Codex's trust are keyed by the path, which mustn't change with
 /// each update (see [`crate::stable_programs`]).
-fn agent_hook_executable() -> Option<PathBuf> {
+pub(crate) fn agent_hook_executable() -> Option<PathBuf> {
     crate::stable_programs::program_path("solo-agent-hook")
 }
 
@@ -1614,7 +1621,9 @@ impl ShellIntegration {
 }
 
 /// Parses `file://host/path` as sent in OSC 7. The host is ignored; Windows
-/// paths arrive as `/C:/dir`.
+/// paths arrive as `/C:/dir`. SOLO: a network path (`//server/share`) is
+/// `None`: anything printed to the terminal can send OSC 7, and looking at
+/// the directory would connect to that machine (R3 L-S8).
 fn path_from_file_uri(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let path = &rest[rest.find('/')?..];
@@ -1624,11 +1633,17 @@ fn path_from_file_uri(uri: &str) -> Option<PathBuf> {
         .into_owned();
     let bytes = path.as_bytes();
     let is_drive_path = bytes.len() >= 3 && bytes[2] == b':' && bytes[1].is_ascii_alphabetic();
-    if is_drive_path {
-        Some(PathBuf::from(path[1..].replace('/', "\\")))
+    let path = if is_drive_path {
+        PathBuf::from(path[1..].replace('/', "\\"))
     } else {
-        Some(PathBuf::from(path))
-    }
+        PathBuf::from(path)
+    };
+    let network = is_network_path(&path)
+        || path
+            .to_str()
+            .and_then(|path| path.strip_prefix('/'))
+            .is_some_and(|rest| is_network_path(Path::new(rest)));
+    (!network).then_some(path)
 }
 
 #[cfg(test)]
@@ -1865,6 +1880,19 @@ mod tests {
         assert_eq!(path_from_file_uri("http://host/x"), None);
     }
 
+    /// A working directory on another machine isn't taken from OSC 7: looking
+    /// at it would connect there (R3 L-S8).
+    #[test]
+    fn network_directories_from_osc_7_are_ignored() {
+        assert_eq!(path_from_file_uri("file://host//server/share/dir"), None);
+        assert_eq!(path_from_file_uri("file://host/%5C%5Cserver%5Cshare"), None);
+        assert_eq!(path_from_file_uri("file://host///?/UNC/server/share"), None);
+        assert_eq!(
+            path_from_file_uri("file://host/C:/Users/me"),
+            Some(PathBuf::from(r"C:\Users\me"))
+        );
+    }
+
     #[test]
     fn integrates_supported_shells_without_user_args() {
         let env = &mut HashMap::default();
@@ -1919,7 +1947,8 @@ mod tests {
     #[allow(clippy::disallowed_methods, reason = "test")]
     fn powershell_loads_scripts_under_a_restricted_policy() {
         let temp = tempfile::tempdir().unwrap();
-        let directory = temp.path().join("it's 终端");
+        // PowerShell takes curly quotes for single quotes too (R3 L-S2).
+        let directory = temp.path().join("it's O’Brien ‘q‛ 终端");
         std::fs::create_dir_all(&directory).unwrap();
         let script = directory.join("script.ps1");
         std::fs::write(

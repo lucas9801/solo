@@ -734,12 +734,39 @@ fn resolve_dir(dir_part: &str, cwd: Option<&Path>) -> Option<PathBuf> {
     })
 }
 
+#[cfg(test)]
+mod quote_path_tests {
+    use super::*;
+
+    /// PowerShell takes curly quotes for single quotes too (R3 L-S2).
+    #[test]
+    fn test_powershell_paths_with_curly_quotes() {
+        assert_eq!(
+            quote_path("O’Brien.txt", ShellFlavor::PowerShell),
+            "'O’’Brien.txt'"
+        );
+        assert_eq!(
+            quote_path("it's ‘x‛", ShellFlavor::PowerShell),
+            "'it''s ‘‘x‛‛'"
+        );
+        assert_eq!(
+            quote_path("plain.txt", ShellFlavor::PowerShell),
+            "plain.txt"
+        );
+    }
+}
+
 fn quote_path(path: &str, flavor: ShellFlavor) -> String {
-    if !path.contains([' ', '\'', '"', '(', ')', '&', ';']) {
+    if !path.contains([
+        ' ', '\'', '"', '(', ')', '&', ';', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}',
+    ]) {
         return path.to_string();
     }
     match flavor {
-        ShellFlavor::PowerShell => format!("'{}'", path.replace('\'', "''")),
+        ShellFlavor::PowerShell => format!(
+            "'{}'",
+            terminal::shell_integration::powershell_single_quoted(path)
+        ),
         ShellFlavor::Posix => format!("'{}'", path.replace('\'', r"'\''")),
     }
 }

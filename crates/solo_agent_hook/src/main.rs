@@ -1,5 +1,5 @@
-//! SOLO: A Claude Code, Codex and Copilot CLI hook (and the command
-//! OpenCode's plugin runs) that tells the Solo terminal the agent runs in
+//! SOLO: A Claude Code, Codex, Copilot CLI, Gemini CLI, Qwen Code, Kimi Code
+//! and MastraCode hook (and the command the OpenCode, Kilo and Pi plugins run) that tells the Solo terminal the agent runs in
 //! what it's doing, with
 //! `OSC 6973 ; agent ; nonce=<nonce> ; <kind> ; <ms since the epoch> ; <session id>
 //! [; <agent> [; <working directory>]]` (parsed by
@@ -47,6 +47,12 @@ fn main() {
                 std::process::exit(2);
             }
         }
+        return;
+    }
+    // SOLO: hooks in an agent's own config (Kimi Code, MastraCode) run
+    // outside Solo's terminals too, where there's nothing to tell: no key.
+    if nonce.is_empty() {
+        read_hook_input(std::io::stdin().lock());
         return;
     }
     let input = read_hook_input(std::io::stdin().lock());
@@ -321,7 +327,10 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
         "PreToolUse" => matches!(field("tool_name"), Some("AskUserQuestion" | "ExitPlanMode"))
             .then_some("input"),
         "Notification" => match field("notification_type")? {
-            "permission_prompt" | "elicitation_dialog" | "agent_needs_input" => Some("input"),
+            // SOLO: Gemini CLI's tool approval.
+            "permission_prompt" | "elicitation_dialog" | "agent_needs_input" | "ToolPermission" => {
+                Some("input")
+            }
             "idle_prompt" => Some("idle"),
             _ => None,
         },
@@ -962,6 +971,60 @@ mod tests {
         assert_eq!(
             kind_of(r#"{"hook_event_name":"Interrupt","turn_id":"t"}"#, None),
             Some("stop")
+        );
+    }
+
+    /// SOLO: the events of the agents added after Claude Code, Codex and
+    /// Copilot CLI, as their hooks give them (fake inputs, after each
+    /// agent's docs), with the argument Solo sets each hook up with.
+    #[test]
+    fn reads_more_agents_events() {
+        // Gemini CLI (docs/hooks/reference.md).
+        let gemini = |event: &str, argument| {
+            kind_of(
+                &format!(
+                    r#"{{"session_id":"0b6f","hook_event_name":"{event}","cwd":"/r","timestamp":"t"}}"#
+                ),
+                Some(argument),
+            )
+        };
+        assert_eq!(gemini("SessionStart", "start"), Some("start"));
+        assert_eq!(gemini("BeforeAgent", "prompt"), Some("prompt"));
+        assert_eq!(gemini("AfterAgent", "stop"), Some("stop"));
+        assert_eq!(
+            kind_of(
+                r#"{"hook_event_name":"Notification","notification_type":"ToolPermission","message":"Allow?"}"#,
+                Some("input")
+            ),
+            Some("input")
+        );
+        // Kimi Code CLI and MastraCode: Claude Code's events plus their own.
+        for (event, argument, expected) in [
+            ("PermissionResult", "prompt", "prompt"),
+            ("Interrupt", "stop", "stop"),
+            ("AgentStart", "prompt", "prompt"),
+            ("AgentEnd", "stop", "stop"),
+            ("StopFailure", "stop", "stop"),
+        ] {
+            assert_eq!(
+                kind_of(
+                    &format!(r#"{{"hook_event_name":"{event}","session_id":"s-1","cwd":"/r"}}"#),
+                    Some(argument)
+                ),
+                Some(expected),
+                "{event}"
+            );
+        }
+        assert_eq!(
+            kind_of(
+                r#"{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","session_id":"k"}"#,
+                Some("input")
+            ),
+            Some("input")
+        );
+        assert_eq!(
+            session_id_of(r#"{"hook_event_name":"SessionStart","session_id":"a1b2-c3"}"#),
+            Some("a1b2-c3".to_string())
         );
     }
 

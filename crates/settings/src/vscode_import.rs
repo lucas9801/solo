@@ -210,6 +210,9 @@ impl VsCodeSettings {
             helix_mode: None,
             hide_mouse: None,
             ui_language: None,
+            // SOLO: offline mode and asking before downloads aren't imported.
+            network: None,
+            downloads: None,
             image_viewer: None,
             browser: None,
             markdown_preview: None,
@@ -996,6 +999,8 @@ impl VsCodeSettings {
             codex_hooks: None,
             copilot_hooks: None,
             opencode_hooks: None,
+            more_agent_hooks: None,
+            global_agent_hooks: None,
             keep_running_on_quit: None,
             follow_working_directory: None,
             agent_task_command: None,

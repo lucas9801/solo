@@ -1,0 +1,16 @@
+---
+● Run rm -rf target/debug
+
+ ╭────────────────────────────────────────────────────────────╮
+ │ Run command                                                  │
+ │                                                              │
+ │  rm -rf target/debug                                         │
+ │                                                              │
+ │ Do you want to run this command?                             │
+ │                                                              │
+ │ ❯ 1. Yes                                                     │
+ │   2. Yes, and approve `rm` for the rest of the session       │
+ │   3. No, and tell Copilot what to do differently (Esc)       │
+ │                                                              │
+ │ ↑↓ to navigate · Enter to select · Esc to cancel             │
+ ╰────────────────────────────────────────────────────────────╯

@@ -1,0 +1,13 @@
+---
+● Read src/lexer.rs
+  └ 120 lines read
+
+● Edit src/lexer.rs (+3 -1)
+
+∙ Thinking (Esc to cancel · 1.2 KiB)
+
+ ~/repo [main]                                     claude-sonnet-4.5 (1x)
+ ────────────────────────────────────────────────────────────
+ >  Enter @ to mention files or / for commands
+ ────────────────────────────────────────────────────────────
+ Ctrl+c Exit · Ctrl+r Expand recent

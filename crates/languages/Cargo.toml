@@ -39,6 +39,7 @@ json_schema_store.workspace = true
 language.workspace = true
 log.workspace = true
 lsp.workspace = true
+net_guard.workspace = true
 node_runtime.workspace = true
 parking_lot.workspace = true
 pet-conda.workspace = true

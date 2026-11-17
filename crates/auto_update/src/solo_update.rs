@@ -154,7 +154,11 @@ pub fn parse_version(tag: &str) -> Option<Version> {
 
 fn is_installer_asset(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.starts_with(&INSTALLER_PREFIX.to_ascii_lowercase()) && lower.ends_with(INSTALLER_SUFFIX)
+    lower.starts_with(&INSTALLER_PREFIX.to_ascii_lowercase())
+        && lower.ends_with(INSTALLER_SUFFIX)
+        // SOLO: the name is joined to the download folder (R3 L-U1).
+        && !name.contains(['/', '\\', ':'])
+        && !name.contains("..")
 }
 
 impl From<GithubAssetJson> for SoloInstaller {
@@ -166,6 +170,15 @@ impl From<GithubAssetJson> for SoloInstaller {
             size: asset.size,
         }
     }
+}
+
+/// How much of `total` bytes `written` is, in percent. The total comes from
+/// GitHub, so it can be anything (R3 L-U8).
+fn download_percent(written: u64, total: u64) -> u8 {
+    if total == 0 {
+        return 100;
+    }
+    (u128::from(written.min(total)) * 100 / u128::from(total)) as u8
 }
 
 fn parse_release_json(json: &[u8]) -> Result<(GithubReleaseJson, Version)> {
@@ -412,7 +425,7 @@ pub(crate) async fn download_asset(
         file.write_all(&buffer[..read]).await?;
         written += read as u64;
         if let Some(total) = total {
-            let percent = ((written.min(total) * 100) / total) as u8;
+            let percent = download_percent(written, total);
             if last_percent != Some(percent) {
                 last_percent = Some(percent);
                 on_progress(percent);
@@ -1110,6 +1123,10 @@ impl SoloUpdater {
         if !matches!(self.activity, Activity::Idle) {
             return;
         }
+        // SOLO: no automatic checks in offline mode.
+        if net_guard::is_offline() && !check_type.is_manual() {
+            return;
+        }
         self.activity = Activity::Checking;
         cx.notify();
         if check_type.is_manual() {
@@ -1523,6 +1540,24 @@ mod tests {
 
         assert!(parse_release(release_json("nightly", false, "").as_bytes()).is_err());
         assert!(parse_release(b"{\"message\": \"Not Found\"}").is_err());
+    }
+
+    /// The installer's name becomes a file name in the download folder: one
+    /// that leads out of it isn't an installer (R3 L-U1).
+    #[test]
+    fn installer_names_stay_in_the_download_folder() {
+        assert!(is_installer_asset("Solo-Setup-1.29.0.exe"));
+        assert!(!is_installer_asset(r"Solo-Setup-..\..\evil.exe"));
+        assert!(!is_installer_asset("Solo-Setup-../../evil.exe"));
+        assert!(!is_installer_asset("Solo-Setup-C:evil.exe"));
+    }
+
+    #[test]
+    fn download_percents_dont_overflow() {
+        assert_eq!(download_percent(50, 200), 25);
+        assert_eq!(download_percent(300, 200), 100);
+        assert_eq!(download_percent(u64::MAX / 2, u64::MAX), 49);
+        assert_eq!(download_percent(u64::MAX, u64::MAX), 100);
     }
 
     #[test]

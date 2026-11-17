@@ -383,7 +383,9 @@ impl Copilot {
         };
         this.start_copilot(true, false, cx);
         cx.observe_global::<SettingsStore>(move |this, cx| {
-            let ai_disabled = DisableAiSettings::get_global(cx).disable_ai;
+            // SOLO: Copilot is off in offline mode.
+            let ai_disabled =
+                DisableAiSettings::get_global(cx).disable_ai || net_guard::is_offline();
 
             if ai_disabled {
                 // Stop the server if AI is disabled
@@ -445,7 +447,8 @@ impl Copilot {
         awaiting_sign_in_after_start: bool,
         cx: &mut Context<Self>,
     ) {
-        if DisableAiSettings::get_global(cx).disable_ai {
+        // SOLO: Copilot is off in offline mode.
+        if DisableAiSettings::get_global(cx).disable_ai || net_guard::is_offline() {
             return;
         }
         if !matches!(self.server, CopilotServer::Disabled) {
@@ -1349,11 +1352,18 @@ async fn get_copilot_lsp(fs: Arc<dyn Fs>, node_runtime: NodeRuntime) -> anyhow::
     const SERVER_PATH: &str =
         "node_modules/@github/copilot-language-server/dist/language-server.js";
 
+    let server_path = paths::copilot_dir().join(SERVER_PATH);
+    let binary_path = copilot_lsp_native_binary_path()?;
+    // SOLO: ask before downloading Copilot; with updates off, use the
+    // installed one without checking.
+    let installed = fs.is_file(&binary_path).await;
+    if installed && !net_guard::updates_allowed() {
+        return Ok(binary_path);
+    }
+    net_guard::request(net_guard::Component::copilot(), installed).await?;
     let latest_version = node_runtime
         .npm_package_latest_version(PACKAGE_NAME)
         .await?;
-    let server_path = paths::copilot_dir().join(SERVER_PATH);
-    let binary_path = copilot_lsp_native_binary_path()?;
 
     fs.create_dir(paths::copilot_dir()).await?;
 

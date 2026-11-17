@@ -11,6 +11,16 @@ import { test } from "node:test"
 import { createEditReporter, createReporter, createResponseTimer, hookSender, isBusy, patchFiles, reportArguments, sessionOf, stateOf } from "./solo-opencode.js"
 
 const here = dirname(fileURLToPath(import.meta.url))
+// The hook processes the plugins start can still be running in the folder
+// for a moment (Windows won't remove it then): a folder left in the temp dir
+// isn't a failure.
+const removeTemp = (dir) => {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
+  } catch (error) {
+    console.warn(`left ${dir}: ${error.code}`)
+  }
+}
 const states = (reports) => reports.filter(Boolean).map((report) => `${report.state} ${report.session}`)
 
 test("maps events to states", () => {
@@ -232,6 +242,8 @@ function layout() {
   copyFileSync(join(here, "solo-opencode.js"), join(root, "opencode-plugin", "solo-opencode.js"))
   copyFileSync(join(here, "tui.js"), join(root, "opencode-plugin", "tui.js"))
   copyFileSync(join(here, "solo-v1.js"), join(root, "opencode-config", "plugins", "solo.js"))
+  mkdirSync(join(root, "kilo-config", "plugin"), { recursive: true })
+  copyFileSync(join(here, "solo-kilo.js"), join(root, "kilo-config", "plugin", "solo.js"))
   // What OpenCode 2 resolves `@opencode/plugin/tui` to, reduced.
   const sdk = join(root, "node_modules", "@opencode", "plugin")
   mkdirSync(sdk, { recursive: true })
@@ -271,7 +283,7 @@ test("the OpenCode 1 plugin reports through the hook", async () => {
     process.chdir(cwd)
     if (hook === undefined) delete process.env.SOLO_AGENT_HOOK
     else process.env.SOLO_AGENT_HOOK = hook
-    rmSync(root, { recursive: true, force: true })
+    removeTemp(root)
   }
 })
 
@@ -315,6 +327,35 @@ test("the OpenCode 2 TUI plugin follows the session it shows", async () => {
     process.chdir(cwd)
     if (hook === undefined) delete process.env.SOLO_AGENT_HOOK
     else process.env.SOLO_AGENT_HOOK = hook
-    rmSync(root, { recursive: true, force: true })
+    removeTemp(root)
+  }
+})
+
+test("the Kilo plugin reports through the hook as kilo", async () => {
+  const { root, log } = layout()
+  const cwd = process.cwd()
+  const hook = process.env.SOLO_AGENT_HOOK
+  try {
+    process.chdir(root)
+    process.env.SOLO_AGENT_HOOK = process.execPath
+    const module = await import(pathToFileURL(join(root, "kilo-config", "plugin", "solo.js")))
+    assert.deepEqual(Object.keys(module), ["SoloKiloStatus"])
+    const hooks = await module.SoloKiloStatus({ directory: root })
+    await hooks.event({ event: { type: "session.status", properties: { sessionID: "ses_k", status: { type: "busy" } } } })
+    await hooks.event({ event: { type: "permission.asked", properties: { id: "per_1", sessionID: "ses_k" } } })
+    await hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses_k" } } })
+    const lines = (await linesOf(log, 3)).map((line) => JSON.parse(line))
+    assert.deepEqual(lines.map((args) => args[2]).sort(), ["blocked", "idle", "working"])
+    for (const args of lines) {
+      assert.deepEqual(args.slice(3, 5), ["--agent", "kilo"])
+      assert.deepEqual(args.slice(7), ["--session", "ses_k", "--directory", root])
+    }
+    delete process.env.SOLO_AGENT_HOOK
+    assert.deepEqual(await module.SoloKiloStatus({ directory: root }), {})
+  } finally {
+    process.chdir(cwd)
+    if (hook === undefined) delete process.env.SOLO_AGENT_HOOK
+    else process.env.SOLO_AGENT_HOOK = hook
+    removeTemp(root)
   }
 })

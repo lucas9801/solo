@@ -1,0 +1,10 @@
+title: ⠙ parser
+---
+› explain the lexer
+
+• Exploring
+  └ Read lexer.rs
+
+› Implement {feature}
+
+  ? for shortcuts                                       98% context left

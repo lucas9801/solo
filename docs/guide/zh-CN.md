@@ -218,6 +218,9 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - **Codex hooks 也只对单次会话生效。** Solo 的 `codex` 包装函数会加上 `-c hooks.<事件>=...` 参数，Codex 把它们叠加在你自己的配置上，只对这次会话有效；**Solo 不会修改你的 `~/.codex/config.toml` 和 `hooks.json`**。Codex 只运行你信任过的 hooks，所以第一次启动时它会问你：选择信任后 Codex 会记住（由 Codex 写进它自己的配置）。这些 hooks 用完整路径运行 Solo 文件夹里的 `solo-agent-hook.exe`（Codex 在 Windows 上用 PowerShell 运行 hooks），所以 Solo 换了文件夹、或新版 Solo 改了 hooks 时，Codex 会再问一次。`codex login`、`codex mcp` 这类不启动会话的子命令原样执行；只有 `codex.cmd`、旁边没有 `codex.ps1` 或 `codex.exe` 时也原样执行。关闭方法：`"terminal": {"codex_hooks": false}`，对新开的终端生效。
 - **Copilot CLI hooks 也只对单次会话生效。** Solo 会把带 hooks 的一个小插件写到 `%TEMP%\solo-shell-integration\copilot-plugin`，`copilot` 包装函数用 `--plugin-dir` 加载它；**不会往 `~/.copilot` 里安装任何东西**。Copilot 用 PowerShell 运行这些 hooks（hooks 运行的是 `solo-agent-hook.exe`）。`copilot login`、`copilot plugin` 这类不启动会话的子命令原样执行。关闭方法：`"terminal": {"copilot_hooks": false}`，对新开的终端生效。
 - **OpenCode 的状态插件也只对单次会话生效。** OpenCode 没有命令式 hooks，所以 Solo 会把一个小的 JavaScript 插件写到 `%TEMP%\solo-shell-integration\opencode-plugin`（OpenCode 1 用的是 `opencode-config\plugins`），`opencode` 包装函数通过环境变量为这次会话加载它：OpenCode 2 用 `OPENCODE_CLI_CONFIG_CONTENT`（内容是你 `cli.json` 里的插件加上 Solo 的；Solo 只读取你的 `cli.json`，不修改它），OpenCode 1 用 `OPENCODE_CONFIG_DIR`。**不会往 `~/.config/opencode` 写任何东西**。如果你自己设置了其中某个变量，Solo 不会覆盖它（对应版本的 OpenCode 状态就改为读屏幕）。插件在一轮开始、请求权限或提问、一轮结束时运行 `solo-agent-hook.exe report`，并且只上报 OpenCode 窗口里当前显示的那个会话。重启后点“继续会话”会输入 `opencode --session <id>`。OpenCode 1 第一次运行时会往 `opencode-config` 里装它的插件依赖包。关闭方法：`"terminal": {"opencode_hooks": false}`，对新开的终端生效。
+- **Pi、oh-my-pi、Kilo Code CLI、Gemini CLI、Qwen Code 也只对单次会话生效**（`more_agent_hooks`）。Pi 和 oh-my-pi：`pi`、`omp` 包装函数加上 `-e <Solo 的扩展>`（`pi install` 之类的命令照原样运行）。Kilo：Solo 的终端把 `KILO_CONFIG_DIR` 设为 Solo 的一个插件目录，Kilo 会把它加到你自己的插件之外（你自己设了 `KILO_CONFIG_DIR` 时 Solo 不动它）。Gemini CLI 和 Qwen Code：Solo 的终端把 `GEMINI_CLI_SYSTEM_DEFAULTS_PATH` / `QWEN_CODE_SYSTEM_DEFAULTS_PATH` 设为 Solo 的一个带状态 hooks 的设置文件，它们会把这些 hooks 加到你自己的 hooks 之外；管理员的系统默认设置文件（或你自己让变量指向的文件）会被复制进去，照样生效。不会往这些 agent 的目录写任何东西。Gemini CLI 和 Qwen Code 通过各自的 shell 运行 Solo 的 hook 程序，这一点还没有用真实的 agent 验证过。
+- **Kimi Code CLI 和 MastraCode 只从你自己的配置读 hooks**，所以只给你列出的 agent 加：`"terminal": {"global_agent_hooks": ["kimi", "mastracode"]}`。第一次修改前 Solo 会把文件复制成 `<文件>.solo-backup`（`~/.kimi-code/config.toml` 或 `$KIMI_CODE_HOME`；`~/.mastracode/hooks.json`），并给自己加的条目做标记；把 agent 从列表里去掉，就只删除 Solo 加的条目。这些 hooks 在 Solo 的终端以外什么都不做。卸载 Solo 之前请先把它们从列表里去掉，否则 hooks 会一直指向 Solo 的 hook 程序。
+- **为什么是这个状态？** 在运行 agent 的终端里右键，选“为什么是这个 agent 状态？”，或者运行 `solo-cli agent why <id>`（当前终端用 `self`）：会说明状态来自 agent 的 hook、屏幕规则（匹配了哪条规则，来自 Solo 内置的规则还是你放在 Solo 配置目录 `agent-detection` 下的文件）还是终端输出，以及最后一次 hook 上报是什么时候。
 - **shell 集成**：PowerShell、bash、zsh、fish 在没有自定义启动参数时会加载 Solo 的集成脚本，这些脚本写在 `%TEMP%\solo-shell-integration`。PowerShell 用 `-NoExit -Command` 读取并执行这个脚本文件，不用 `-ExecutionPolicy Bypass`，也不用 `-EncodedCommand`。脚本先加载你自己的 profile，再加载集成。关闭方法：`"terminal": {"shell_integration": false}`。
 - **hooks 跑的程序**是安装目录里的 `solo-agent-hook.exe`。它从 stdin 读事件，往终端写一个转义序列，然后退出；它不联网，也不写文件。
 - **轮次快照**存在 `%LOCALAPPDATA%\Solo\agent_turns`，不碰你仓库里的东西。
@@ -240,13 +243,31 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 **只在你用到某个功能时才访问：**
 
 - 下载更新：Microsoft Store（Solo Code）；
-- 打开某种语言的文件时自动下载语言服务器：GitHub Releases、npm 源；系统里没有合适的 Node.js 时还会访问 `nodejs.org`；
+- Solo 自己下载的组件，先问过你（见下面的“下载前先询问”）：受信任项目的语言服务器（GitHub Releases、npm 源、`proxy.golang.org`、PyPI），系统里没有合适的 Node.js 时访问 `nodejs.org`，文件第一次格式化时装 Prettier，第一次调试时下载调试适配器，GitHub Copilot 的服务端；
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
 - 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；
 - Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 去掉了 agent 面板（Zed 自己的 agent 界面），它的下载（比如 WSL 沙箱要用的 Linux 版 Zed）也就不会发生。
 - 打开 ACP agent 注册表，或使用从注册表配置的 agent：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
 - 在终端里运行的 agent（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
+
+**下载前先询问。** Solo 自己要下载某个组件（语言服务器、Node.js、Prettier、调试适配器、GitHub Copilot、扩展更新）之前，会按组件问一次，并写明从哪里下载：
+
+- **允许（记住）**：下载，以后它的更新不再询问；
+- **暂不**：这次不下载，直到 Solo 重启；
+- **使用本地路径…**：打开设置文件，改用你自己装好的（`"node": { "path": ... }`、`"lsp": { "<服务器>": { "binary": { "path": ... } } }`）。
+
+同时来的几个请求合成一条通知，可以 **全部允许并记住**，也可以 **逐个选择…**。新项目的信任对话框会列出信任后 Solo 要下载的语言服务器，“允许这些下载”默认勾上，点一次就行。回答记在设置文件的 `downloads.allowed` 里，随时可以改。已经下载过的组件算作允许。Prettier 在文件第一次格式化时才安装，不在打开文件时安装；对未信任的项目，即使是 `"auto"` 模式也会先问。npm 安装 Solo 的包时加 `--ignore-scripts`（ESLint 服务端和扩展的包需要安装脚本，保留不加）。
+
+```json
+"downloads": {
+  "mode": "ask",         // "ask"、"auto"（不问直接下载）或 "never"
+  "allowed": { "rust-analyzer": true, "prettier": false },
+  "check_updates": true  // 允许的组件是否检查并下载更新
+}
+```
+
+**离线模式。** 点状态栏右侧的地球图标（或运行 `network: toggle offline mode`，或设置 `"network": { "offline": true }`）。之后 Solo 只连接本机和局域网（`localhost`、私有和链路本地地址、不带点的主机名、`.local`、`.lan`），所以本地模型（Ollama、LM Studio）、局域网里的服务和 SSH 照常可用。离线时什么都不下载，也不查版本：已经下载的语言服务器、Node.js、Prettier、调试适配器照常使用，缺的会提示“离线：未下载 X”。Copilot、云端 AI 服务、ACP agent 注册表、扩展商店和扩展更新、Solo 的自动检查更新和头像都会关闭。远程开发能用已经下载的远程服务端，但不会下载新的。终端里运行的 agent 不受影响。
 
 **远程开发暂时关闭：** SSH、WSL、Docker（开发容器）远程开发要在远端运行一个服务端。Solo 的 release 现在带有自己构建的 Linux 版（x86_64 和 aarch64），但还在测试中，所以这些入口仍然隐藏，触发时会提示暂不可用。在终端里用 `ssh`、`wsl` 照常可以。想试用的话，设置环境变量 `SOLO_REMOTE_DEVELOPMENT=1` 后重新启动 Solo：连接时会从 Solo 的 GitHub release 下载与当前版本对应的远程服务端（`github.com`，按 GitHub 提供的 SHA-256 校验），上传到远端，从 `~/.solo_server` 运行，数据放在 `~/.local/share/solo`，与 Zed 的分开。不会访问 Zed 的服务器。暂不支持 macOS 和 Windows 远端。
 
@@ -294,6 +315,8 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `codex_hooks` | `true` | 通过 `-c hooks...` 给 Codex 加状态 hooks |
 | `copilot_hooks` | `true` | 通过 `--plugin-dir` 给 Copilot CLI 加状态 hooks |
 | `opencode_hooks` | `true` | 每次会话给 OpenCode 加载一个状态插件 |
+| `more_agent_hooks` | `true` | 每次会话给 Pi、oh-my-pi、Kilo Code CLI、Gemini CLI、Qwen Code 加上状态上报 |
+| `global_agent_hooks` | `[]` | 允许 Solo 往自己配置里加状态 hooks 的 agent（`"kimi"`、`"mastracode"`） |
 | `keep_running_on_quit` | `true` | Solo 退出、更新或崩溃时，正在运行东西的终端继续运行，之后自动连回去 |
 | `agent_usage_display` | `"always"` | 运行中的 agent 的上下文、模型和思考强度、首字和速度、本轮用时和 token 显示在终端底部的细栏里（窗口窄时整段省略：先省掉本会话，再省掉本轮，再省掉首字和速度，再省掉模型，最后只留上下文进度条和百分比），标签上显示上下文圆环和百分比；`"tooltip"` 只在标签提示里显示 |
 | `agent_commands` | `[]` | 把其他程序也当作agent |
@@ -314,4 +337,4 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 
 这些通知只在 Solo 处于后台时出现。四项也都可以在 设置 > 终端 > 通知 里改。
 
-不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`。`"disable_ai"`（以及 `"agent": { "enabled": false }`）只关闭 Zed 自己的 AI 功能（内联助手、编辑预测、提交信息生成），不影响工作区标签、终端和其中运行的 agent、按轮审阅。
+不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`、`"network": { "offline": false }`（离线模式）、`"downloads"`（`"mode": "ask"` / `"auto"` / `"never"`，`"allowed": {}`，`"check_updates": true`；见第 9 节）。`"disable_ai"`（以及 `"agent": { "enabled": false }`）只关闭 Zed 自己的 AI 功能（内联助手、编辑预测、提交信息生成），不影响工作区标签、终端和其中运行的 agent、按轮审阅。

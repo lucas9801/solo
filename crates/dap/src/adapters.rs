@@ -271,6 +271,33 @@ pub struct GithubRepo {
     pub repo_owner: String,
 }
 
+/// SOLO: `fetch` (an adapter's latest version), as Solo's download rules
+/// say: with a version installed and no update checks allowed, an error, so
+/// the adapter uses the installed one; with none installed and no downloads
+/// allowed (offline, `downloads.mode` "never"), fails with why.
+pub async fn check_for_update<T>(
+    adapter_name: &DebugAdapterName,
+    fetch: impl Future<Output = Result<T>>,
+) -> Result<Result<T>> {
+    let installed = std::fs::read_dir(paths::debug_adapters_dir().join(adapter_name.as_ref()))
+        .is_ok_and(|mut entries| entries.next().is_some());
+    let component = net_guard::Component::debug_adapter(adapter_name.as_ref());
+    if installed {
+        if !net_guard::updates_allowed() {
+            return Ok(Err(anyhow::anyhow!("update checks are off")));
+        }
+    } else if let net_guard::Decision::Block(reason) =
+        net_guard::global().decision(&component, false, true)
+    {
+        return Err(net_guard::DownloadBlocked {
+            name: component.name,
+            reason,
+        }
+        .into());
+    }
+    Ok(fetch.await)
+}
+
 pub async fn download_adapter_from_github(
     adapter_name: DebugAdapterName,
     github_version: AdapterVersion,
@@ -284,6 +311,15 @@ pub async fn download_adapter_from_github(
     if version_path.exists() {
         return Ok(version_path);
     }
+
+    // SOLO: ask before downloading a debug adapter; not in offline mode.
+    let installed =
+        std::fs::read_dir(&adapter_path).is_ok_and(|mut entries| entries.next().is_some());
+    net_guard::request(
+        net_guard::Component::debug_adapter(adapter_name.as_ref()),
+        installed,
+    )
+    .await?;
 
     if !adapter_path.exists() {
         fs.create_dir(adapter_path.as_path())

@@ -1,0 +1,15 @@
+---
+⏺ I need one decision before I continue.
+
+────────────────────────────────────────────────────────────
+ ☐ Database
+
+Which database should the service use?
+
+❯ 1. PostgreSQL
+     Relational, the team already runs it
+  2. SQLite
+     Embedded, no server
+  3. Type something.
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
