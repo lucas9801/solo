@@ -73,6 +73,8 @@ pub struct TerminalSettings {
     pub codex_hooks: bool,
     pub copilot_hooks: bool,
     pub opencode_hooks: bool,
+    /// SOLO: Solo's IDE tools for agents (`ide_tools`).
+    pub ide_tools: bool,
     pub keep_running_on_quit: bool,
     pub follow_working_directory: bool,
     pub confirm_close: TerminalConfirmClose,
@@ -174,6 +176,7 @@ impl settings::Settings for TerminalSettings {
             codex_hooks: user_content.codex_hooks.unwrap(),
             copilot_hooks: user_content.copilot_hooks.unwrap(),
             opencode_hooks: user_content.opencode_hooks.unwrap(),
+            ide_tools: user_content.ide_tools.unwrap_or(true),
             keep_running_on_quit: user_content.keep_running_on_quit.unwrap(),
             follow_working_directory: user_content.follow_working_directory.unwrap(),
             confirm_close: user_content.confirm_close.unwrap(),

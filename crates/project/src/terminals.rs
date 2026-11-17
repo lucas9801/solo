@@ -439,7 +439,7 @@ impl Project {
 
             let builder = project
                 .update(cx, move |_, cx| {
-                    let (shell, env) = {
+                    let (shell, mut env) = {
                         match remote_client {
                             Some(remote_client) => {
                                 let empty_args = Vec::new();
@@ -495,6 +495,11 @@ impl Project {
                             }
                         }
                     };
+                    // SOLO: Solo's IDE tools for agents, through the agents'
+                    // wrappers set up above.
+                    if settings.shell_integration && settings.ide_tools && !is_via_remote {
+                        terminal::ide_tools::integrate(cx.weak_entity().into(), &mut env, cx);
+                    }
                     anyhow::Ok(TerminalBuilder::new(
                         local_path.map(|path| path.to_path_buf()),
                         TerminalMode::interactive(),

@@ -14,8 +14,8 @@ use alacritty_terminal::event::ShellMark as AlacShellMark;
 use serde::{Deserialize, Serialize};
 use util::shell::Shell;
 
-const POWERSHELL_SCRIPT: &str = include_str!("shell_integration/powershell.ps1");
-const BASH_SCRIPT: &str = include_str!("shell_integration/bash.sh");
+pub(crate) const POWERSHELL_SCRIPT: &str = include_str!("shell_integration/powershell.ps1");
+pub(crate) const BASH_SCRIPT: &str = include_str!("shell_integration/bash.sh");
 const FISH_SCRIPT: &str = include_str!("shell_integration/fish.fish");
 const ZSH_SCRIPT: &str = include_str!("shell_integration/zsh/integration.zsh");
 const CLAUDE_HOOK_POWERSHELL: &str = include_str!("shell_integration/claude_hook.ps1");
@@ -264,7 +264,7 @@ fn scripts_dir() -> std::io::Result<PathBuf> {
 }
 
 /// Shells only load extra scripts from disk, so they go to the temp dir.
-fn write_script(name: &str, script: &str) -> std::io::Result<String> {
+pub(crate) fn write_script(name: &str, script: &str) -> std::io::Result<String> {
     let path = scripts_dir()?.join(name);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

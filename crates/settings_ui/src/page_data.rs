@@ -7967,7 +7967,7 @@ fn terminal_page() -> SettingsPage {
         ]
     }
 
-    fn behavior_settings_section() -> [SettingsPageItem; 6] {
+    fn behavior_settings_section() -> [SettingsPageItem; 7] {
         [
             SettingsPageItem::SectionHeader("Behavior Settings"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -8063,6 +8063,21 @@ fn terminal_page() -> SettingsPage {
                     pick: |settings_content| settings_content.terminal.as_ref()?.bell.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.terminal.get_or_insert_default().bell = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            // SOLO: Solo's IDE tools for agents in its terminals.
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "IDE Tools For Agents",
+                description: "Let Claude Code and Codex started in a terminal ask Solo's language servers about its workspace (symbols, definitions, references, diagnostics) through a read-only MCP server. Takes effect in new terminals.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("terminal.ide_tools"),
+                    pick: |settings_content| settings_content.terminal.as_ref()?.ide_tools.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.terminal.get_or_insert_default().ide_tools = value;
                     },
                 }),
                 metadata: None,

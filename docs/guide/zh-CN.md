@@ -174,6 +174,14 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - **按轮审阅和暂停。** 一轮结束时，即使暂停了后台分析，Solo 仍会让 rust-analyzer 对改过的文件跑一次 `cargo check`，这一轮的诊断仍然完整；关掉以后就不比较 Rust 的诊断了。
 - **语言服务起不来时**，如果 Solo 认得原因（例如 roslyn 缺 .NET 运行时、下载失败），状态栏会直接写出原因；点一下可以看到解决办法和下载链接。
 
+### 给 agent 用的 IDE 工具
+在 Solo 终端里启动的 agent 可以直接问 Solo 的语言服务，不用靠搜文本。范围是这个终端所属的工作区，一共四个只读工具：`workspace_symbols`（按名字找函数、类型）、`go_to_definition`（跳到定义）、`find_references`（找调用和引用，不会把同名的文本也算进来）、`diagnostics`（某个文件的错误和警告，或者整个工作区各文件的数量）。它们用的是 Solo 已经在跑的语言服务，agent 不会再起一份 rust-analyzer；问到某个文件时，如果它的语言服务还没启动，会顺便启动。
+- **Claude Code** 通过 `claude` 包装函数（`--mcp-config`）拿到这些工具，**Codex** 通过 `codex` 包装函数（`-c mcp_servers.solo-ide...`），服务名都叫 `solo-ide`，只对这次会话有效，不会改你自己的配置。前提是终端开着 shell 集成；Claude Code 还需要开着 `claude_code_hooks`。
+- **其他支持 MCP 的 agent** 可以自己配置：终端里 `SOLO_IDE_MCP_URL` 是服务地址（streamable HTTP），`SOLO_IDE_TOKEN` 是要放进 `Authorization: Bearer` 的 token。
+- **只限本工作区。** 服务只监听 127.0.0.1。每个工作区有自己的随机 token，只有这个工作区的终端拿得到；工具只接受、只显示这个工作区里的文件（工作区外的文件、`.env` 这类私密文件都不行），也不会改任何东西。
+- **局限。** agent 在磁盘上改了文件后，诊断可能还没更新（比如 rust-analyzer 的 `cargo check` 要等 Solo 保存文件时才跑），所以最后还是要让 agent 编译或跑测试确认。Solo 重启后保留下来的终端拿的还是旧地址，新开一个终端就能再用。
+- 关闭方法：`"terminal": {"ide_tools": false}`（新开的终端不再带这些工具，已经开着的终端发来的请求也会被拒绝）。
+
 ## 7. 支持哪些 agent、支持到什么程度
 
 | 功能 | Claude Code | Codex、Copilot CLI、OpenCode | gemini、qwen、amp、cursor-agent 等 | aider、`agent_commands` 里加的程序 |
@@ -275,6 +283,7 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `codex_hooks` | `true` | 通过 `-c hooks...` 给 Codex 加状态 hooks |
 | `copilot_hooks` | `true` | 通过 `--plugin-dir` 给 Copilot CLI 加状态 hooks |
 | `opencode_hooks` | `true` | 每次会话给 OpenCode 加载一个状态插件 |
+| `ide_tools` | `true` | 以 MCP 服务的形式给 Claude Code 和 Codex 提供 Solo 的只读 IDE 工具（符号、定义、引用、诊断） |
 | `keep_running_on_quit` | `true` | Solo 退出、更新或崩溃时，正在运行东西的终端继续运行，之后自动连回去 |
 | `agent_usage_display` | `"always"` | 运行中的 agent 的上下文、模型和思考强度、首字和速度、本轮用时和 token 显示在终端底部的细栏里（窗口窄时整段省略：先省掉本会话，再省掉本轮，再省掉首字和速度，再省掉模型，最后只留上下文进度条和百分比），标签上显示上下文圆环和百分比；`"tooltip"` 只在标签提示里显示 |
 | `agent_commands` | `[]` | 把其他程序也当作agent |
