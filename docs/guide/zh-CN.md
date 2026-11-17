@@ -8,40 +8,43 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
 
 ## 2. 安装
 
-两种方式都只为当前用户安装，不需要管理员权限，默认装到 `%LOCALAPPDATA%\Programs\Solo`。
+从 [Microsoft Store](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct) 安装 **Solo Code**：点链接下载一个小安装程序，运行后直接为当前用户装好，不打开商店应用。装好后有开始菜单项、可以在 Windows 命令行里用的 `solo` 命令，以及资源管理器右键菜单里的“通过 Solo Code 打开”（在 Windows 11 自己的菜单里，不只在“显示更多选项”里）。
 
-- **安装包** `Solo-Setup-<版本>.exe`：安装界面有中文和英文，会创建开始菜单项，桌面图标可选（默认不勾选），在资源管理器右键菜单里加上“通过 Solo 打开”（默认勾选），并在“设置 → 应用”里加上卸载入口。
-- **便携 zip** `Solo-<版本>-windows-x64.zip`：解压后可以直接运行 `solo.exe`；也可以运行
+GitHub 上每个版本还有一个**便携 zip** `Solo-<版本>-windows-x64.zip`：解压后可以直接运行 `solo.exe`；也可以运行
 
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File install.ps1
-  ```
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
 
-  这会把文件复制到 `%LOCALAPPDATA%\Programs\Solo`，创建开始菜单和桌面快捷方式，并在右键菜单里加上“通过 Solo 打开”（加 `-NoContextMenu` 就不加右键菜单）。
+这会把文件复制到 `%LOCALAPPDATA%\Programs\Solo`（只为当前用户，不需要管理员权限），创建开始菜单和桌面快捷方式，并在右键菜单里加上“通过 Solo 打开”（Windows 11 上在“显示更多选项”里；加 `-NoContextMenu` 就不加右键菜单）。
 
-**右键菜单“通过 Solo 打开”**：在文件、文件夹、文件夹空白处和驱动器上都有（Windows 11 上在“显示更多选项”里）。打开文件夹时，Solo 没在运行就启动并打开它；已在运行就在现有窗口里加一个工作区标签并切过去，这个文件夹已经有标签时直接切到那个标签。打开文件时，放进包含它的那个标签，没有就放进当前标签，不会新开窗口。卸载时（包括 `install.ps1 -Uninstall`）右键菜单会一起删掉；不想要的话，安装时取消勾选这一项。
+发布里不再有安装程序（`Solo-Setup-<版本>.exe`）。用它装的 Solo 还能继续用，但不会再更新；要用新版本，请从商店安装 Solo Code（旧的 Solo 可以在“设置 → 应用”里卸载）。
 
-安装目录里有 `solo.exe`、`solo-agent-hook.exe`（Claude Code 用它上报状态）、`solo-update-helper.exe`（安装更新用）、`solo-terminal-host.exe`（运行终端的 shell，让它能在 Solo 关掉后继续跑）、`OpenConsole.exe` 和 `conpty.dll`（终端运行时），以及几份许可证文件。
+**右键菜单“通过 Solo 打开”**：在文件、文件夹、文件夹空白处和驱动器上都有。打开文件夹时，Solo 没在运行就启动并打开它；已在运行就在现有窗口里加一个工作区标签并切过去，这个文件夹已经有标签时直接切到那个标签。打开文件时，放进包含它的那个标签，没有就放进当前标签，不会新开窗口。卸载时（包括 `install.ps1 -Uninstall`）右键菜单会一起删掉。
+
+zip 的目录里有 `solo.exe`、`solo-cli.exe`（agent 用的命令行）、`solo-agent-hook.exe`（Claude Code 用它上报状态）、`solo-update-helper.exe`、`solo-terminal-host.exe`（运行终端的 shell，让它能在 Solo 关掉后继续跑）、`OpenConsole.exe` 和 `conpty.dll`（终端运行时），以及几份许可证文件。Solo Code 里的程序相同。
 
 ## 3. 更新
 
-- Solo 启动 30 秒后检查一次 [GitHub Releases](https://github.com/lucas9801/solo/releases)，之后每 6 小时检查一次。只有稳定版会检查。
+- Solo 启动 30 秒后检查一次有没有新版本，之后每 6 小时检查一次（只有稳定版会检查）：Solo Code 问 Microsoft Store，便携 zip 查 [GitHub Releases](https://github.com/lucas9801/solo/releases)。
 - 有新版本时，标题栏最右边（窗口按钮左侧）出现“↑ 更新到 <版本>”按钮，不弹通知。点开是一句更新概要和“更新并重启”“退出时安装”“查看更新内容”“跳过此版本”；有 agent 在运行时会提示现在更新会结束哪些，并把“退出时安装”放在前面。下载进度、“退出时更新到 <版本>”和“更新失败”（菜单里写原因，可以“重试”）也显示在这个按钮上。跳过的版本不再提示，有更新的版本时按钮再出现。Solo 不会在你没同意的情况下安装任何东西。
 - 从 Microsoft Store 装的 Solo Code 也在 Solo 里更新，用同一个按钮，不打开商店：商店允许时（商店里开着“自动更新应用”、网络不按流量计费）先在后台静默下载；“更新并重启”交给商店安装，装完 Windows 会重新打开 Solo。商店不允许静默安装时，会弹出商店的小确认框。
 - **关于 Solo** 窗口显示版本、发布日期和提交号（点击可复制），是否已是最新，以及“检查更新”按钮；还有用户指南、本版本发行说明、GitHub 仓库和许可的链接。“复制”按钮复制版本、提交号和系统信息，方便报告问题。
-- 选了更新以后：安装包会下载到 `%TEMP%\solo-update\`，Solo 像正常退出一样关闭窗口（未保存的文件会询问你），然后由 `solo-update-helper.exe` 等 Solo 退出，在原来的目录静默运行安装包，装完再启动 Solo。安装日志在 `%TEMP%\solo-update\install.log`，helper 的错误记录在同一个目录的 `update-helper.log`。
+- 便携 zip 不会自己更新：按钮的菜单里只有“查看更新内容”（新的 zip 就在那个页面上）和“跳过此版本”。
 - 要关闭自动检查，在设置里写 `"auto_update": false`。命令面板里的 **Check for Updates（检查更新）** 不受这个设置影响，总会检查。
 
 ## 4. 卸载与彻底清除
 
-- 安装包版：在“设置 → 应用”里卸载 Solo。
+- Solo Code：在“设置 → 应用”里卸载。
 - zip 版：
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Solo\install.ps1" -Uninstall
   ```
 
-**两种方式都只删程序本身，不删你的设置和数据。** 要彻底清除，先关掉 Solo，再运行（第一行结束还在后台运行的终端）：
+- 用以前版本的安装程序装的 Solo：在“设置 → 应用”里卸载 Solo。
+
+**卸载只删程序本身，不删你的设置和数据**（Windows 放在 Solo Code 包目录里的文件除外，见第 5 节）。要彻底清除，先关掉 Solo，再运行（第一行结束还在后台运行的终端）：
 
 ```powershell
 Get-Process solo-terminal-host -ErrorAction SilentlyContinue | Stop-Process
@@ -63,10 +66,12 @@ Solo 不会修改你的 Claude Code 配置（见第 8 节），所以那边没�
 | `%APPDATA%\Solo` | 设置目录：`settings.json`、`keymap.json`、`tasks.json`、`debug.json`、`AGENTS.md`、`workflows.json`（保存的命令） |
 | `%LOCALAPPDATA%\Solo` | 数据目录：`logs\`（日志）、`db\`（工作区和会话状态）、`extensions\`、`languages\`（自动下载的语言服务器）、`node\`、`external_agents\`、`terminal_sessions\`（终端内容恢复，30 天后清理）、`agent_turns\`（agent 轮次快照）、`terminal-host\`（终端宿主进程的副本）、`hang_traces\` |
 | `%TEMP%\solo-shell-integration` | shell 集成脚本和 Claude Code 的 hook 设置文件 |
-| `%TEMP%\solo-update` | 下载的更新安装包和安装日志 |
+| `%TEMP%\solo-update` | 以前的版本下载的更新安装包和安装日志 |
 | 项目里的 `.solo\` | 项目设置、任务和调试配置（也会读 Zed 的 `.zed\`） |
 
 Solo 的目录和 Zed 的完全分开，同时装了两者也不会互相影响。
+
+从商店装的 Solo Code：Windows 可能把 `%APPDATA%\Solo` 和 `%LOCALAPPDATA%\Solo` 里新建的文件改放到包自己的目录（`%LOCALAPPDATA%\Packages\lucas9801.SoloCode_*\LocalCache`），卸载 Solo Code 时这个目录会被删除。
 
 ## 6. 第一次使用：在 Solo 终端里跑 agent
 
@@ -206,8 +211,8 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - **hooks 跑的程序**是安装目录里的 `solo-agent-hook.exe`。它从 stdin 读事件，往终端写一个转义序列，然后退出；它不联网，也不写文件。
 - **轮次快照**存在 `%LOCALAPPDATA%\Solo\agent_turns`，不碰你仓库里的东西。
 - **agent 任务**会在你的仓库里新建分支和工作树，并往仓库的 git 配置里写 `branch.<分支>.solotask` / `solobase`（跨仓库任务还有 `sologroup`）。这些只在你新建任务时才会发生。
-- **更新**：只有你点了更新才会安装，由 `solo-update-helper.exe` 在 Solo 退出后静默运行安装包。
-- **`solo://` 链接**：安装程序为当前用户（`HKCU\Software\Classes\solo`）注册 `solo://` 链接，`solo://settings/terminal.font_size`（跳到这一项设置）或分享的技能链接因此会在 Solo 里打开，卸载时删除。Solo 不注册 `zed://`，那是 Zed 的，但传给 Solo 的 `zed://` 链接照样能打开。任何网页都能打开这种链接，所以打开文件、连接 SSH 主机、克隆或打开仓库的链接（`solo://file/...`、`solo://ssh/...`、`solo://git/...`）会先问你，写明是哪个文件、哪台主机、哪个仓库。
+- **更新**：只有你点了更新才会安装，由 Microsoft Store 安装（Solo Code）；便携 zip 不安装更新。
+- **`solo://` 链接**：Solo Code 的安装包为当前用户注册 `solo://` 链接，`solo://settings/terminal.font_size`（跳到这一项设置）或分享的技能链接因此会在 Solo 里打开，卸载时删除。Solo 不注册 `zed://`，那是 Zed 的，但传给 Solo 的 `zed://` 链接照样能打开。任何网页都能打开这种链接，所以打开文件、连接 SSH 主机、克隆或打开仓库的链接（`solo://file/...`、`solo://ssh/...`、`solo://git/...`）会先问你，写明是哪个文件、哪台主机、哪个仓库。
 - **终端宿主进程**：每个终端的 shell 跑在各自的 `solo-terminal-host.exe` 里，它从 `%LOCALAPPDATA%\Solo\terminal-host` 里的副本启动（这样更新时可以替换 Solo 的文件）。它和 Solo 之间用只有你这个用户能打开的命名管道通信；shell 结束、关掉标签，或者 Solo 结束而终端里没在运行东西时，它就结束（见第 6 节）。
 - Solo 会读 Claude Code 的对话记录（`~/.claude/projects`）和 Codex 的会话记录（`~/.codex/sessions`），用来显示时间线和会话信息，只读不写。
 
@@ -219,11 +224,11 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 
 | 地址 | 用途 | 怎么关 |
 | --- | --- | --- |
-| `api.github.com` | 检查 Solo 更新（启动 30 秒后，之后每 6 小时） | `"auto_update": false` |
+| Microsoft Store（Solo Code）或 `api.github.com`（便携 zip） | 检查 Solo 更新（启动 30 秒后，之后每 6 小时） | `"auto_update": false` |
 
 **只在你用到某个功能时才访问：**
 
-- 下载更新安装包：`github.com` 和 GitHub 的下载 CDN；
+- 下载更新：Microsoft Store（Solo Code）；
 - 打开某种语言的文件时自动下载语言服务器：GitHub Releases、npm 源；系统里没有合适的 Node.js 时还会访问 `nodejs.org`；
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
@@ -237,15 +242,15 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 ## 10. 故障排查
 
 ### 被安全软件拦截
-**症状**：终端打不开、一打开就关、提示符一直不出现；Claude Code 的状态一直不更新；更新装不上。
+**症状**：终端打不开、一打开就关、提示符一直不出现；Claude Code 的状态一直不更新。
 
-**原因**：Solo 会用 PowerShell 执行 `%TEMP%` 里的脚本，Claude Code 每个事件都会运行 `solo-agent-hook.exe`，更新时 helper 会静默运行安装包。有些安全软件会把这些行为当成可疑操作。
+**原因**：Solo 会用 PowerShell 执行 `%TEMP%` 里的脚本，Claude Code 每个事件都会运行 `solo-agent-hook.exe`。有些安全软件会把这些行为当成可疑操作。
 
 **处理**：
 
-1. 把以下位置加入安全软件的信任或白名单：安装目录 `%LOCALAPPDATA%\Programs\Solo`（里面有 solo.exe、solo-agent-hook.exe、solo-update-helper.exe、OpenConsole.exe、conpty.dll），以及 `%TEMP%\solo-shell-integration` 和 `%TEMP%\solo-update`。
+1. 把以下位置加入安全软件的信任或白名单：安装目录（zip 版是 `%LOCALAPPDATA%\Programs\Solo`，Solo Code 在 `C:\Program Files\WindowsApps` 下；里面有 solo.exe、solo-agent-hook.exe、solo-terminal-host.exe、OpenConsole.exe、conpty.dll），`%LOCALAPPDATA%\Solo\terminal-host`（终端宿主进程的副本），以及 `%TEMP%\solo-shell-integration`。
 2. 想确认是不是被拦了：在设置里写 `"terminal": {"shell_integration": false}`，再新开一个终端。如果这样能用，就说明拦的是集成脚本。
-3. 向厂商报告误报：例如 360 可以通过开放平台 open.soft.360.cn 提交（待核实）；其他厂商一般也有误报申诉入口。提交时附上安装包和版本号。
+3. 向厂商报告误报：例如 360 可以通过开放平台 open.soft.360.cn 提交（待核实）；其他厂商一般也有误报申诉入口。提交时附上版本号（用 zip 版的话附上 zip）。
 
 ### 终端打不开
 - 先看日志（见下文），搜索 `shell integration` 或 `failed to`。
@@ -265,7 +270,6 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - 日志：`%LOCALAPPDATA%\Solo\logs\Solo.log`，更早的内容在 `Solo.log.old`（日志变大时移过去）。命令面板里的 `solo: open log` 打开日志，`solo: reveal log in file manager` 在资源管理器里显示。
 - 卡顿 trace：`%LOCALAPPDATA%\Solo\hang_traces\`。
 - 崩溃：崩溃后先看 `%LOCALAPPDATA%\Solo\logs\Solo.log`（日志变大后旧内容会移到 `Solo.log.old`）。Solo 自身出错（panic）导致的崩溃会记在里面：搜 `panicked at`，后面是出错的位置、消息和调用栈，报告问题时请附上这一段。Solo 默认不生成 minidump；需要 minidump 时，设置环境变量 `ZED_GENERATE_MINIDUMPS=1` 后再启动 Solo，文件会写到 logs 目录（具体文件名待核实）。
-- 更新失败：看 `%TEMP%\solo-update\install.log` 和 `update-helper.log`。
 - 提交问题：[github.com/lucas9801/solo/issues](https://github.com/lucas9801/solo/issues)，附上日志。
 
 ## 11. 常用设置速查
