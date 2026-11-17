@@ -348,6 +348,28 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub opencode_hooks: Option<bool>,
+    /// Whether Pi, oh-my-pi, Kilo Code CLI, Gemini CLI and Qwen Code started
+    /// in a terminal with shell integration report what they're doing, for
+    /// that session only: Pi and oh-my-pi through an extension Solo loads
+    /// with `-e`, Kilo through a plugin folder in `KILO_CONFIG_DIR`, Gemini
+    /// CLI and Qwen Code through hooks in a system defaults settings file of
+    /// Solo's (`GEMINI_CLI_SYSTEM_DEFAULTS_PATH`,
+    /// `QWEN_CODE_SYSTEM_DEFAULTS_PATH`), which they add to your own hooks.
+    /// Nothing is written to the agents' config. Takes effect in new
+    /// terminals.
+    ///
+    /// Default: true
+    pub more_agent_hooks: Option<bool>,
+    /// Agents that read status hooks only from your own config file, whose
+    /// config Solo may add its hooks to: "kimi" (Kimi Code CLI,
+    /// `~/.kimi-code/config.toml`) and "mastracode" (`~/.mastracode/hooks.json`).
+    /// Solo backs the file up first (`<file>.solo-backup`) and marks its
+    /// entries; taking an agent off the list removes them and nothing else.
+    /// The hooks do nothing outside Solo's terminals. Take the agents off
+    /// the list before uninstalling Solo.
+    ///
+    /// Default: []
+    pub global_agent_hooks: Option<Vec<String>>,
     /// On Windows, terminals run their shell in a small background process
     /// (`solo-terminal-host`). When Solo quits, or restarts for an update,
     /// terminals that are running a command or an agent keep running there,
@@ -401,7 +423,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         open_links_on_click,
         notify_long_commands_after_seconds, program_notifications, agent_input_notifications,
         agent_stopped_notifications, restore_contents,
-        agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, opencode_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
+        agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, opencode_hooks, more_agent_hooks, global_agent_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
         agent_task_command, agent_control, agent_usage_display,
     },
     defaults: {},

@@ -1,0 +1,14 @@
+---
+╭────────────────────────────────────────────────────────────╮
+│ ?  Edit src/lexer.rs: let token = next(); => let token = … │
+│                                                            │
+│ 12 -    let token = next();                                │
+│ 12 +    let token = self.next_token()?;                    │
+│                                                            │
+│ Apply this change?                                         │
+│                                                            │
+│ ● 1. Yes, allow once                                       │
+│   2. Yes, allow always                                     │
+│   3. Modify with external editor                           │
+│   4. No, suggest changes (esc)                             │
+╰────────────────────────────────────────────────────────────╯

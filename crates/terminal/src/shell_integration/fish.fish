@@ -61,8 +61,9 @@ function fish_prompt
     printf '\e]133;B\a'
 end
 
-# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's) write to this terminal.
-if set -q SOLO_CLAUDE_SETTINGS; or set -q SOLO_CODEX_ARGS; or set -q SOLO_COPILOT_PLUGIN; or set -q SOLO_OPENCODE_CONFIG_DIR
+# Agents' hooks (Claude Code's, Codex's, Copilot's, OpenCode's, and the others
+# Solo's hook program reports for) write to this terminal.
+if set -q SOLO_CLAUDE_SETTINGS; or set -q SOLO_CODEX_ARGS; or set -q SOLO_COPILOT_PLUGIN; or set -q SOLO_OPENCODE_CONFIG_DIR; or set -q SOLO_AGENT_HOOK
     set -l solo_tty (tty 2>/dev/null)
     and set -gx SOLO_AGENT_TTY $solo_tty
 end
@@ -129,6 +130,32 @@ if set -q SOLO_OPENCODE_CONFIG_DIR; and not functions -q opencode
             set -a solo_env OPENCODE_CONFIG_DIR=$SOLO_OPENCODE_CONFIG_DIR
         end
         env $solo_env opencode $argv
+    end
+end
+
+# SOLO: Pi and oh-my-pi report what they're doing through an extension Solo
+# loads for the session with -e (see SOLO_PI_EXTENSION).
+# Functions of the user's own stay.
+function __solo_pi_like
+    set -l program $argv[1]
+    set -e argv[1]
+    if contains -- "$argv[1]" install remove uninstall update list config plugin plugins help
+        or not test -r "$SOLO_PI_EXTENSION"
+        command $program $argv
+    else
+        command $program -e "$SOLO_PI_EXTENSION" $argv
+    end
+end
+if set -q SOLO_PI_EXTENSION
+    if not functions -q pi
+        function pi
+            __solo_pi_like pi $argv
+        end
+    end
+    if not functions -q omp
+        function omp
+            __solo_pi_like omp $argv
+        end
     end
 end
 

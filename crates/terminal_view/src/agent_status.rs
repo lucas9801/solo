@@ -125,6 +125,27 @@ pub(crate) struct AgentActivity {
     /// SOLO: reads Copilot CLI's telemetry file for how fast its model
     /// answers, while Copilot runs.
     pub(crate) copilot_telemetry: Option<Task<()>>,
+    /// SOLO: what decided the status last, for "why this status".
+    source: Option<StatusSource>,
+}
+
+/// SOLO: What decided an agent's status, for "why this status"
+/// (`solo-cli agent why`, the terminal's context menu).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StatusSource {
+    /// The agent's last hook report (and, after it, your answer or the
+    /// agent going quiet).
+    Hook,
+    /// The screen plainly showed a question or work, which wins over the
+    /// hook's last report.
+    ScreenOverHook,
+    /// The screen rules for the agent.
+    Screen,
+    /// Neither: the agent's output (a spinner while it works, quiet when it
+    /// stops, the bell when it needs you).
+    Output,
+    /// The program isn't running any more.
+    Exit,
 }
 
 /// SOLO: how long an agent works in its turns: from when it's shown working
@@ -793,7 +814,7 @@ impl TerminalView {
             .screen_read
             .then_some(activity.screen.status)
             .flatten();
-        let status = match activity.hook {
+        let (status, source) = match activity.hook {
             Some(hook) if running => {
                 let status = status_from_hook(
                     hook.kind,
@@ -807,7 +828,7 @@ impl TerminalView {
                     && activity.screen.visible_blocker
                     && screen_status == Some(AgentStatus::NeedsInput)
                 {
-                    AgentStatus::NeedsInput
+                    (AgentStatus::NeedsInput, StatusSource::ScreenOverHook)
                 } else if status == AgentStatus::Idle
                     && activity.screen_read
                     && activity.screen.visible_working
@@ -816,22 +837,257 @@ impl TerminalView {
                     // So does work plainly on screen ("esc to interrupt"):
                     // a report or a quiet spell that said it stopped was about
                     // something else.
-                    AgentStatus::Working
+                    (AgentStatus::Working, StatusSource::ScreenOverHook)
                 } else {
-                    status
+                    (status, StatusSource::Hook)
                 }
             }
-            _ if running && screen_status.is_some() => screen_status.unwrap_or(AgentStatus::Idle),
-            _ => status_from(
-                running,
-                exit_code,
-                activity.output_at,
-                activity.attention_at,
-                user_input.typed_at,
-                now,
+            _ if running && screen_status.is_some() => (
+                screen_status.unwrap_or(AgentStatus::Idle),
+                StatusSource::Screen,
+            ),
+            _ => (
+                status_from(
+                    running,
+                    exit_code,
+                    activity.output_at,
+                    activity.attention_at,
+                    user_input.typed_at,
+                    now,
+                ),
+                if running {
+                    StatusSource::Output
+                } else {
+                    StatusSource::Exit
+                },
             ),
         };
+        activity.source = Some(source);
         Some((name, status))
+    }
+}
+
+impl TerminalView {
+    /// SOLO: Why the agent in this terminal shows the status it does: what
+    /// decided it (a hook report, the screen rules, the agent's output), the
+    /// rule that matched and when the last hook report came. `None` without
+    /// an agent.
+    pub(crate) fn agent_status_explanation(&self) -> Option<StatusExplanation> {
+        let (agent, status) = self.agent_status()?;
+        let activity = &self.agent_activity;
+        let now = Instant::now();
+        let screen = activity.screen_read.then_some(&activity.screen);
+        Some(StatusExplanation {
+            agent: agent.to_string(),
+            status,
+            source: activity.source,
+            hook: activity
+                .hook
+                .map(|hook| (hook.kind, now.saturating_duration_since(hook.received_at))),
+            rules: screen.and_then(|screen| {
+                let manifest = screen.manifest?;
+                Some(RulesUsed {
+                    agent: manifest.id.clone(),
+                    file: manifest.origin.clone(),
+                    rule: screen.rule.clone(),
+                    screen_status: screen.status,
+                    skipped_by: screen.skipped_by.clone(),
+                    holding_working: agent_detection::holds_working(screen),
+                })
+            }),
+            output_ago: activity
+                .output_at
+                .map(|output_at| now.saturating_duration_since(output_at)),
+            unseen_finish: activity.unseen_finish,
+        })
+    }
+}
+
+/// SOLO: The answer to "why this status".
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StatusExplanation {
+    pub agent: String,
+    pub status: AgentStatus,
+    pub source: Option<StatusSource>,
+    /// The last hook report and how long ago it came.
+    pub hook: Option<(AgentHookKind, Duration)>,
+    /// The screen rules read, if the agent has them.
+    pub rules: Option<RulesUsed>,
+    /// How long ago the agent last printed something of its own.
+    pub output_ago: Option<Duration>,
+    /// Shown as done: a turn ended while you weren't looking.
+    pub unseen_finish: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RulesUsed {
+    /// The rules' agent id.
+    pub agent: String,
+    /// The user's rules file; `None` for the bundled rules.
+    pub file: Option<PathBuf>,
+    /// The rule that matched last; `None`: none did, which reads as idle.
+    pub rule: Option<String>,
+    pub screen_status: Option<AgentStatus>,
+    /// A rule for a screen that says nothing (a menu, a viewer) matched last.
+    pub skipped_by: Option<String>,
+    /// The screen reads as idle, but it's held as working for a moment.
+    pub holding_working: bool,
+}
+
+fn hook_kind_text(kind: AgentHookKind, chinese: bool) -> &'static str {
+    match (kind, chinese) {
+        (AgentHookKind::SessionStarted, false) => "session started",
+        (AgentHookKind::SessionStarted, true) => "会话开始",
+        (AgentHookKind::PromptSubmitted, false) => "prompt submitted (turn started)",
+        (AgentHookKind::PromptSubmitted, true) => "提交了提示（本轮开始）",
+        (AgentHookKind::NeedsInput, false) => "needs input (permission or question)",
+        (AgentHookKind::NeedsInput, true) => "需要你（权限或提问）",
+        (AgentHookKind::Stopped, false) => "stopped (turn ended)",
+        (AgentHookKind::Stopped, true) => "停止（本轮结束）",
+        (AgentHookKind::Idle, false) => "idle",
+        (AgentHookKind::Idle, true) => "空闲",
+    }
+}
+
+fn status_text(status: AgentStatus, chinese: bool) -> &'static str {
+    match (status, chinese) {
+        (AgentStatus::Working, false) => "working",
+        (AgentStatus::Working, true) => "工作中",
+        (AgentStatus::NeedsInput, false) => "needs input",
+        (AgentStatus::NeedsInput, true) => "需要你",
+        (AgentStatus::Idle, false) => "idle",
+        (AgentStatus::Idle, true) => "空闲",
+        (AgentStatus::Finished, false) => "done",
+        (AgentStatus::Finished, true) => "已完成",
+        (AgentStatus::Done, false) => "exited",
+        (AgentStatus::Done, true) => "已退出",
+        (AgentStatus::Failed, false) => "failed",
+        (AgentStatus::Failed, true) => "失败",
+    }
+}
+
+fn ago(duration: Duration, chinese: bool) -> String {
+    let secs = duration.as_secs();
+    let amount = if secs < 120 {
+        format!("{secs}s")
+    } else {
+        format!("{}m", secs / 60)
+    };
+    if chinese {
+        format!("{amount}前")
+    } else {
+        format!("{amount} ago")
+    }
+}
+
+impl StatusExplanation {
+    /// The explanation as lines of text.
+    pub(crate) fn text(&self, chinese: bool) -> String {
+        let mut lines = Vec::new();
+        lines.push(if chinese {
+            format!("{}：{}", self.agent, status_text(self.status, true))
+        } else {
+            format!("{}: {}", self.agent, status_text(self.status, false))
+        });
+        let hook = self.hook.map(|(kind, age)| {
+            if chinese {
+                format!(
+                    "最后一次 hook 上报：{}，{}",
+                    hook_kind_text(kind, true),
+                    ago(age, true)
+                )
+            } else {
+                format!(
+                    "Last hook report: {}, {}",
+                    hook_kind_text(kind, false),
+                    ago(age, false)
+                )
+            }
+        });
+        let rule_line = self.rules.as_ref().map(|rules| {
+            let file = match (&rules.file, chinese) {
+                (Some(file), _) => file.display().to_string(),
+                (None, false) => "bundled rules".to_string(),
+                (None, true) => "内置规则".to_string(),
+            };
+            let matched = match (&rules.rule, &rules.skipped_by, chinese) {
+                (_, Some(skip), false) => {
+                    format!("rule \"{skip}\" matched a screen that says nothing (a menu or viewer), so the last state stays")
+                }
+                (_, Some(skip), true) => format!("规则 \"{skip}\" 匹配到不说明状态的界面（菜单、查看器），保持上一个状态"),
+                (Some(rule), None, false) => format!(
+                    "rule \"{rule}\" matched ({})",
+                    rules.screen_status.map_or("-", |status| status_text(status, false))
+                ),
+                (Some(rule), None, true) => format!(
+                    "匹配规则 \"{rule}\"（{}）",
+                    rules.screen_status.map_or("-", |status| status_text(status, true))
+                ),
+                (None, None, false) => {
+                    "no rule matched, which reads as idle (only known prompts count as needing you)".to_string()
+                }
+                (None, None, true) => "没有规则匹配，按空闲处理（只有认得的批准、提问界面才算需要你）".to_string(),
+            };
+            let held = match (rules.holding_working, chinese) {
+                (true, false) => "; the screen looks idle, held as working for a moment",
+                (true, true) => "；屏幕像是空闲，暂时仍按工作中处理",
+                _ => "",
+            };
+            if chinese {
+                format!("屏幕规则（{}，{file}）：{matched}{held}", rules.agent)
+            } else {
+                format!("Screen rules ({}, {file}): {matched}{held}", rules.agent)
+            }
+        });
+        let source = match (self.source, chinese) {
+            (Some(StatusSource::Hook), false) => {
+                "Decided by the agent's hook report (a hook report wins over the screen, except for a question or work plainly on screen; after you answer or interrupt, the agent counts as working only while it keeps printing)."
+            }
+            (Some(StatusSource::Hook), true) => {
+                "由 agent 的 hook 上报决定（hook 优先于屏幕，除非屏幕上明确显示提问或工作；你回答或打断之后，只在它继续输出时算工作中）。"
+            }
+            (Some(StatusSource::ScreenOverHook), false) => {
+                "Decided by the screen: it plainly shows a question or work, which wins over the hook's last report."
+            }
+            (Some(StatusSource::ScreenOverHook), true) => {
+                "由屏幕决定：屏幕上明确显示提问或工作，优先于 hook 的最后一次上报。"
+            }
+            (Some(StatusSource::Screen), false) => {
+                "Decided by the screen rules (the agent doesn't report through hooks)."
+            }
+            (Some(StatusSource::Screen), true) => "由屏幕规则决定（这个 agent 没有 hook 上报）。",
+            (Some(StatusSource::Output), false) => {
+                "Decided by the agent's output: no hook reports and no screen rules for it. Printing means working, 3 seconds of quiet means idle, the bell means it needs you."
+            }
+            (Some(StatusSource::Output), true) => {
+                "由输出推测：没有 hook 上报，也没有它的屏幕规则。有输出算工作中，安静 3 秒算空闲，响铃算需要你。"
+            }
+            (Some(StatusSource::Exit), false) => "The program has exited.",
+            (Some(StatusSource::Exit), true) => "程序已经退出。",
+            (None, false) => "Not known yet.",
+            (None, true) => "还不知道。",
+        };
+        lines.push(source.to_string());
+        lines.extend(hook);
+        lines.extend(rule_line);
+        if let Some(output_ago) = self.output_ago {
+            lines.push(if chinese {
+                format!("最后一次输出：{}", ago(output_ago, true))
+            } else {
+                format!("Last output: {}", ago(output_ago, false))
+            });
+        }
+        if self.unseen_finish {
+            lines.push(
+                if chinese {
+                    "显示为已完成：本轮在你没看这个终端时结束，看过之后变为空闲。"
+                } else {
+                    "Shown as done: the turn ended while you weren't looking at this terminal; it turns idle once you do."
+                }
+                .to_string(),
+            );
+        }
+        lines.join("\n")
     }
 }
 
@@ -895,6 +1151,59 @@ mod tests {
         );
         // Idle without a turn ending isn't done.
         assert_eq!(shown_status(Idle, None, false, false), (Idle, false));
+    }
+
+    #[test]
+    fn explains_where_a_status_came_from() {
+        let explanation = StatusExplanation {
+            agent: "codex".to_string(),
+            status: AgentStatus::NeedsInput,
+            source: Some(StatusSource::ScreenOverHook),
+            hook: Some((AgentHookKind::PromptSubmitted, Duration::from_secs(4))),
+            rules: Some(RulesUsed {
+                agent: "codex".to_string(),
+                file: None,
+                rule: Some("live_strong_blocker".to_string()),
+                screen_status: Some(AgentStatus::NeedsInput),
+                skipped_by: None,
+                holding_working: false,
+            }),
+            output_ago: Some(Duration::from_secs(1)),
+            unseen_finish: false,
+        };
+        let text = explanation.text(false);
+        assert!(text.starts_with("codex: needs input\n"), "{text}");
+        assert!(text.contains("wins over the hook's last report"), "{text}");
+        assert!(
+            text.contains("Last hook report: prompt submitted (turn started), 4s ago"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Screen rules (codex, bundled rules): rule \"live_strong_blocker\" matched (needs input)"),
+            "{text}"
+        );
+        let chinese = explanation.text(true);
+        assert!(
+            chinese.contains("匹配规则 \"live_strong_blocker\""),
+            "{chinese}"
+        );
+
+        let unmatched = StatusExplanation {
+            source: Some(StatusSource::Screen),
+            hook: None,
+            rules: Some(RulesUsed {
+                rule: None,
+                screen_status: Some(AgentStatus::Idle),
+                ..explanation.rules.clone().unwrap()
+            }),
+            ..explanation
+        };
+        let text = unmatched.text(false);
+        assert!(
+            text.contains("no rule matched, which reads as idle"),
+            "{text}"
+        );
+        assert!(!text.contains("Last hook report"), "{text}");
     }
 
     #[test]

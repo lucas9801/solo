@@ -138,6 +138,9 @@ pub struct SendKeystroke(String);
 actions!(
     terminal,
     [
+        /// SOLO: Explains why the agent in the terminal shows its status:
+        /// a hook report, a screen rule, or its output.
+        ExplainAgentStatus,
         /// Reruns the last executed task in the terminal.
         RerunTask,
     ]
@@ -161,6 +164,7 @@ pub fn init(cx: &mut App) {
     agent_board::init(cx);
     workspace_terminals::init(cx);
     workspace_grouping::init(cx);
+    sync_global_agent_hooks(cx);
 
     register_serializable_item::<TerminalView>(cx);
 
@@ -169,6 +173,24 @@ pub fn init(cx: &mut App) {
         workspace.register_action(open_workflows_file);
     })
     .detach();
+}
+
+/// SOLO: Keeps the status hooks in the config of the agents listed in the
+/// `global_agent_hooks` setting (Kimi Code CLI, MastraCode), and takes them
+/// out of the others', whenever the list changes.
+fn sync_global_agent_hooks(cx: &mut App) {
+    let mut applied: Option<Vec<String>> = None;
+    let mut sync = move |cx: &mut App| {
+        let enabled = TerminalSettings::get_global(cx).global_agent_hooks.clone();
+        if applied.as_ref() == Some(&enabled) {
+            return;
+        }
+        applied = Some(enabled.clone());
+        cx.background_spawn(async move { terminal::global_agent_hooks::apply(&enabled) })
+            .detach();
+    };
+    sync(cx);
+    cx.observe_global::<settings::SettingsStore>(sync).detach();
 }
 
 fn open_workflows_file(
@@ -805,6 +827,7 @@ impl TerminalView {
         let shell_integration_active = self.terminal.read(cx).shell_integration().is_active();
         let has_mermaid_diagram = self.terminal.read(cx).mermaid_diagram(None).is_some();
         let has_agent_turns = agent_turns::has_turns(self, cx);
+        let has_agent_status = self.agent_status().is_some();
         let has_failed_command = self.failed_command_block(cx).is_some();
         let offers_remote_control = self.offers_remote_control();
         // SOLO: no agent panel to add selections to.
@@ -883,6 +906,12 @@ impl TerminalView {
                     menu.action(
                         util::i18n::tr("Review Agent Changes", "查看 agent 改动"),
                         Box::new(agent_turns::ReviewAgentTurn),
+                    )
+                })
+                .when(has_agent_status, |menu| {
+                    menu.action(
+                        util::i18n::tr("Why This Agent Status?", "为什么是这个 agent 状态？"),
+                        Box::new(ExplainAgentStatus),
                     )
                 })
                 .when(
@@ -1015,6 +1044,32 @@ impl TerminalView {
             .map(|task| terminal_rerun_override(&task.spawned_task.id))
             .unwrap_or_default();
         window.dispatch_action(Box::new(task), cx);
+    }
+
+    /// SOLO: Shows why the agent shows the status it does.
+    fn explain_agent_status(
+        &mut self,
+        _: &ExplainAgentStatus,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(explanation) = self.agent_status_explanation() else {
+            return;
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        struct AgentStatusExplanation;
+        let text = explanation.text(util::i18n::is_chinese());
+        workspace.update(cx, |workspace, cx| {
+            workspace.show_toast(
+                workspace::Toast::new(
+                    workspace::notifications::NotificationId::unique::<AgentStatusExplanation>(),
+                    text,
+                ),
+                cx,
+            );
+        });
     }
 
     fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
@@ -1886,6 +1941,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::editor_paste))
             .on_action(cx.listener(TerminalView::paste_text))
             .on_action(cx.listener(TerminalView::clear))
+            .on_action(cx.listener(TerminalView::explain_agent_status))
             .on_action(cx.listener(TerminalView::scroll_line_up))
             .on_action(cx.listener(TerminalView::scroll_line_down))
             .on_action(cx.listener(TerminalView::scroll_page_up))

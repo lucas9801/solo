@@ -1,0 +1,7 @@
+---
+✦ All 42 tests pass now.
+
+╭────────────────────────────────────────────────────────────╮
+│ >   Type your message or @path/to/file                     │
+╰────────────────────────────────────────────────────────────╯
+~/repo (main*)        no sandbox        gemini-2.5-pro (97% context left)

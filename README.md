@@ -155,8 +155,12 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 |---|---|---|---|
 | Claude Code、Codex、Copilot CLI | Solo 加的 hooks，准确上报 | 支持 | 接最近一次会话 |
 | OpenCode | Solo 加的插件，准确上报 | 支持 | 接回原来的会话 |
-| Gemini CLI、Cursor CLI | 读屏幕 | 支持 | 接最近一次会话 |
-| Amp、Qwen Code、Kimi、Cline 等 16 种 | 读屏幕 | 支持 | 不支持 |
+| Gemini CLI、Qwen Code | Solo 为这次会话加的 hooks（系统默认设置文件），准确上报 | 支持 | 接回原来的会话 |
+| Pi、oh-my-pi | Solo 用 `-e` 加载的扩展，准确上报 | 支持 | 接回原来的会话 |
+| Kilo Code CLI | Solo 的插件目录（`KILO_CONFIG_DIR`），准确上报 | 支持 | 接回原来的会话 |
+| Kimi Code CLI、MastraCode | 在设置 `global_agent_hooks` 里逐个开启后写入它们的配置（先备份，可干净移除）；未开启时读屏幕（Kimi）或终端输出 | 支持 | 开启后接回原来的会话 |
+| Cursor CLI | 读屏幕 | 支持 | 接最近一次会话 |
+| Amp、Cline、Droid 等其余有规则的 agent | 读屏幕 | 支持 | 不支持 |
 | Aider 和用 `agent_commands` 加的程序 | 终端输出 | 不支持 | Aider 恢复聊天记录，其他不支持 |
 | 其他程序 | [状态协议](docs/agent-status-protocol.md) | 支持 | 不支持 |
 
