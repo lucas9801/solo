@@ -1,0 +1,8 @@
+---
+  ~ Preparing to run command...
+
+  △ Permission required
+  $ rm -rf target/debug
+
+  Allow once   Allow always   Reject
+                    ⇆ select  enter confirm  esc dismiss

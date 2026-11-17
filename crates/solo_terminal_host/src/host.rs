@@ -23,8 +23,10 @@ use crate::log::Log;
 use crate::screen::Screen;
 use crate::{HEADER, PROTOCOL, REPLAY_END, Running, Spec, running};
 
-/// Only the user who made the pipes (Solo's user) may open them.
-const OWNER_ONLY: &str = "D:P(A;;GA;;;OW)";
+/// Only the user who made the pipes (Solo's user) may open them. SOLO: and
+/// only from medium integrity up: unlabeled, a low integrity process of that
+/// user (a sandboxed browser, say) could still read them (R3 L-H1).
+const OWNER_ONLY: &str = "D:P(A;;GA;;;OW)S:(ML;;NWNR;;;ME)";
 
 pub fn main() {
     let mut input = String::new();
@@ -721,6 +723,50 @@ mod tests {
         let mut read = [0u8; 2];
         client_out.read_exact(&mut read).unwrap();
         assert_eq!(&read, b"hi");
+    }
+
+    /// The pipes are labeled medium integrity, with no reading or writing up:
+    /// a low integrity process can't open them (R3 L-H1).
+    #[test]
+    fn test_pipes_keep_out_low_integrity() {
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SE_KERNEL_OBJECT,
+        };
+        let name = unique_pipe_name();
+        let pipe = make_pipe(&name, true, true).expect("pipe");
+        let sddl = unsafe {
+            let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+            let error = GetSecurityInfo(
+                pipe,
+                SE_KERNEL_OBJECT,
+                LABEL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut descriptor,
+            );
+            CloseHandle(pipe);
+            assert_eq!(error, 0, "GetSecurityInfo");
+            let mut text: windows_sys::core::PWSTR = null_mut();
+            let converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                SDDL_REVISION_1,
+                LABEL_SECURITY_INFORMATION,
+                &mut text,
+                null_mut(),
+            );
+            LocalFree(descriptor as HLOCAL);
+            assert_ne!(
+                converted, 0,
+                "ConvertSecurityDescriptorToStringSecurityDescriptorW"
+            );
+            let len = (0..).take_while(|&ix| *text.add(ix) != 0).count();
+            let sddl = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+            LocalFree(text as HLOCAL);
+            sddl
+        };
+        assert!(sddl.contains("ML;;NWNR;;;ME"), "{sddl}");
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::{
     time::Instant,
 };
 
-use gpui::App;
+use gpui::{App, AppContext as _, Context, Task};
 use util::truncate_and_trailoff;
 
 use crate::{TerminalView, agent_status::AgentStatus};
@@ -128,6 +128,8 @@ pub(crate) struct TitleState {
     /// The git branch of a directory, and the last command finished when it
     /// was read, since a command may switch branches.
     git_branch: Option<(PathBuf, Option<Instant>, Option<String>)>,
+    /// SOLO: reads the git branch off the UI thread (R3 M11).
+    git_branch_read: Option<Task<()>>,
     /// When a program last set the terminal's title.
     program_title_at: Option<Instant>,
 }
@@ -277,10 +279,13 @@ impl TerminalView {
     }
 
     /// Reads the git branch again when the directory changed or a command
-    /// finished since it was read.
-    pub(crate) fn update_title_git_branch(&mut self, cx: &App) {
+    /// finished since it was read, in the background: the disk may be slow
+    /// (R3 M11). The branch read before for the same directory shows
+    /// meanwhile.
+    pub(crate) fn update_title_git_branch(&mut self, cx: &mut Context<Self>) {
         let Some(directory) = self.title_working_directory(cx) else {
             self.tab_title.git_branch = None;
+            self.tab_title.git_branch_read = None;
             return;
         };
         let last_finished = self
@@ -299,8 +304,32 @@ impl TerminalView {
         {
             return;
         }
-        let branch = crate::input::git_branch(&directory);
-        self.tab_title.git_branch = Some((directory, last_finished, branch));
+        let previous = self
+            .tab_title
+            .git_branch
+            .take()
+            .filter(|(cached, _, _)| *cached == directory)
+            .and_then(|(_, _, branch)| branch);
+        self.tab_title.git_branch = Some((directory.clone(), last_finished, previous));
+        let read = cx.background_spawn({
+            let directory = directory.clone();
+            async move { crate::input::git_branch(&directory) }
+        });
+        self.tab_title.git_branch_read = Some(cx.spawn(async move |this, cx| {
+            let branch = read.await;
+            this.update(cx, |this, cx| {
+                if let Some((cached, finished, shown)) = this.tab_title.git_branch.as_mut()
+                    && *cached == directory
+                    && *finished == last_finished
+                    && *shown != branch
+                {
+                    *shown = branch;
+                    cx.notify();
+                    this.update_tab_after_output(cx);
+                }
+            })
+            .ok();
+        }));
     }
 }
 

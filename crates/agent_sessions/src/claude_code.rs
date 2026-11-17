@@ -279,6 +279,19 @@ fn transcripts_in(dir: &Path) -> Vec<SessionLocation> {
     transcripts
 }
 
+/// SOLO: a file of Claude Code's that's meant to be small, such as the record
+/// of a running instance, or `None` if it's not (R3 L-A3).
+fn read_small_file(path: &Path) -> Option<String> {
+    const MAX_BYTES: u64 = 1024 * 1024;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= MAX_BYTES).then_some(text)
+}
+
 /// The session a Claude process below `shell_pid` runs, from the record of
 /// running instances.
 fn session_of_process_below(config_dir: &Path, shell_pid: u32) -> Option<String> {
@@ -291,7 +304,7 @@ fn session_of_process_below(config_dir: &Path, shell_pid: u32) -> Option<String>
                 return None;
             }
             let pid = path.file_stem()?.to_str()?.parse::<u32>().ok()?;
-            let record: Value = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+            let record: Value = serde_json::from_str(&read_small_file(&path)?).ok()?;
             let session_id = record.get("sessionId")?.as_str()?.to_string();
             Some((pid, session_id))
         })
@@ -673,6 +686,21 @@ fn context_window(model: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::{SessionState, UsageSummary};
+
+    /// Records of running instances are read only when small (R3 L-A3).
+    #[test]
+    fn test_read_small_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let small = dir.path().join("1.json");
+        std::fs::write(&small, r#"{"sessionId":"x"}"#).unwrap();
+        assert_eq!(
+            read_small_file(&small).as_deref(),
+            Some(r#"{"sessionId":"x"}"#)
+        );
+        let big = dir.path().join("2.json");
+        std::fs::write(&big, " ".repeat(1024 * 1024 + 1)).unwrap();
+        assert_eq!(read_small_file(&big), None);
+    }
 
     /// A made-up session in the shape of a real Claude Code transcript.
     const SESSION: &str = r#"{"type":"mode","mode":"normal","sessionId":"s1"}

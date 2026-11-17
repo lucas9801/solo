@@ -571,6 +571,19 @@ fn show_toast(workspace: &Entity<Workspace>, message: String, cx: &mut App) {
     });
 }
 
+/// SOLO: where the diff of a task's changes is written: by repository and
+/// branch, since a task spanning repositories has the same branch in each
+/// (R3 L-G10).
+fn task_diff_path(task: &AgentTask) -> PathBuf {
+    let repository = task
+        .repository_root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let file_name = format!("{repository}-{}.diff", task.branch).replace(['/', '\\', ':'], "-");
+    paths::temp_dir().join("agent-task-diffs").join(file_name)
+}
+
 /// Writes the task's changes to a `.diff` file and opens it.
 fn open_task_diff(
     workspace: Entity<Workspace>,
@@ -578,8 +591,7 @@ fn open_task_diff(
     window: &mut Window,
     cx: &mut App,
 ) -> Task<Result<()>> {
-    let file_name = format!("{}.diff", task.branch.replace(['/', '\\'], "-"));
-    let path = paths::temp_dir().join("agent-task-diffs").join(file_name);
+    let path = task_diff_path(&task);
     window.spawn(cx, async move |cx| {
         let diff = cx
             .background_spawn({
@@ -1223,6 +1235,9 @@ enum FinishAction {
 #[derive(Clone, Default)]
 struct TaskDetails {
     uncommitted: git::UncommittedChanges,
+    /// SOLO: for deleting, the ignored files deleted with the worktree
+    /// (R3 L-G3).
+    ignored: Vec<String>,
     unmerged_commits: Vec<String>,
     base_worktree: Option<PathBuf>,
     base_uncommitted: git::UncommittedChanges,
@@ -1744,6 +1759,12 @@ impl AgentTasksModal {
                         Some(worktree) if worktree.exists() => git::uncommitted_changes(worktree)?,
                         _ => Vec::new(),
                     };
+                    let ignored = match (&task.worktree_path, action) {
+                        (Some(worktree), FinishAction::Delete) if worktree.exists() => {
+                            git::ignored_files(worktree)?
+                        }
+                        _ => Vec::new(),
+                    };
                     let unmerged_commits = git::unmerged_commits(&task)?;
                     let base_worktree = git::base_worktree(&task)?;
                     let base_uncommitted = match (&base_worktree, action) {
@@ -1752,6 +1773,7 @@ impl AgentTasksModal {
                     };
                     anyhow::Ok(TaskDetails {
                         uncommitted,
+                        ignored,
                         unmerged_commits,
                         base_worktree,
                         base_uncommitted,
@@ -2079,7 +2101,9 @@ impl AgentTasksModal {
                                         .style(ButtonStyle::Subtle)
                                         .label_size(LabelSize::Small)
                                         .tooltip(ui::Tooltip::text(url.clone()))
-                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                        .on_click(move |_, window, cx| {
+                                            workspace::Workspace::open_web_link(&url, window, cx)
+                                        }),
                                     )
                                     .child(
                                         Button::new(
@@ -2297,6 +2321,24 @@ impl AgentTasksModal {
                                 &details.uncommitted,
                                 MAX_LISTED_CHANGES,
                                 Color::Error,
+                            ));
+                        }
+                        if !details.ignored.is_empty() {
+                            body = body.child(lines_section(
+                                if chinese {
+                                    format!(
+                                        "这些被忽略的文件也会删除（{}）：",
+                                        details.ignored.len()
+                                    )
+                                } else {
+                                    format!(
+                                        "These ignored files are deleted too ({}):",
+                                        details.ignored.len()
+                                    )
+                                },
+                                &details.ignored,
+                                MAX_LISTED_CHANGES,
+                                Color::Warning,
                             ));
                         }
                         if !details.unmerged_commits.is_empty() {
@@ -2537,6 +2579,24 @@ impl Render for AgentTasksModal {
 mod tests {
     use super::*;
     use gpui::{TestAppContext, VisualTestContext};
+
+    /// Each part of a task spanning repositories has a diff file of its own.
+    #[test]
+    fn test_task_diff_paths_differ_by_repository() {
+        let task = |repository: &str| git::AgentTask {
+            name: "Fix".into(),
+            branch: "agent/fix".into(),
+            base_branch: "main".into(),
+            worktree_path: None,
+            repository_root: PathBuf::from(repository),
+            port: None,
+            group: None,
+        };
+        let first = task_diff_path(&task("/code/api"));
+        let second = task_diff_path(&task("/code/web"));
+        assert_ne!(first, second);
+        assert_eq!(first.file_name().unwrap(), "api-agent-fix.diff");
+    }
     use project::{FakeFs, Project};
     use settings::SettingsStore;
     use util::path;

@@ -92,7 +92,6 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 - **时间线**（Claude Code、Codex）：每一轮的提示词、读过和改过的文件、跑过的命令和回答。
 - **把东西发给 agent**：编辑器里 `Ctrl+Alt+K` 发送选中内容或光标位置，`Ctrl+Alt+Shift+M` 发送当前文件的诊断信息。
 - 关闭正在跑 agent 的终端或窗口前先确认。
-- Claude Code 终端的菜单里可以"开启手机控制"（Claude Code 的 `/remote-control`）。
 
 **工作区**
 
@@ -146,14 +145,22 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 - 设置页里能改终端、通知、语言服务等；设置和数据放在 Solo 自己的目录里，和 Zed 分开。
 - 不用注册账号，不发送遥测；默认只检查更新。
 
+**开发中**
+
+- 手机端：在手机上查看和控制电脑上的 agent。
+
 ## 支持的 agent
 
 | agent | 状态从哪里来 | 按轮审阅 | 重启后接着用 |
 |---|---|---|---|
 | Claude Code、Codex、Copilot CLI | Solo 加的 hooks，准确上报 | 支持 | 接最近一次会话 |
 | OpenCode | Solo 加的插件，准确上报 | 支持 | 接回原来的会话 |
-| Gemini CLI、Cursor CLI | 读屏幕 | 支持 | 接最近一次会话 |
-| Amp、Qwen Code、Kimi、Cline 等 16 种 | 读屏幕 | 支持 | 不支持 |
+| Gemini CLI、Qwen Code | Solo 为这次会话加的 hooks（系统默认设置文件），准确上报 | 支持 | 接回原来的会话 |
+| Pi、oh-my-pi | Solo 用 `-e` 加载的扩展，准确上报 | 支持 | 接回原来的会话 |
+| Kilo Code CLI | Solo 的插件目录（`KILO_CONFIG_DIR`），准确上报 | 支持 | 接回原来的会话 |
+| Kimi Code CLI、MastraCode | 在设置 `global_agent_hooks` 里逐个开启后写入它们的配置（先备份，可干净移除）；未开启时读屏幕（Kimi）或终端输出 | 支持 | 开启后接回原来的会话 |
+| Cursor CLI | 读屏幕 | 支持 | 接最近一次会话 |
+| Amp、Cline、Droid 等其余有规则的 agent | 读屏幕 | 支持 | 不支持 |
 | Aider 和用 `agent_commands` 加的程序 | 终端输出 | 不支持 | Aider 恢复聊天记录，其他不支持 |
 | 其他程序 | [状态协议](docs/agent-status-protocol.md) | 支持 | 不支持 |
 

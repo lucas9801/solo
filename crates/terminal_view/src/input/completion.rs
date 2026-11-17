@@ -112,7 +112,12 @@ pub async fn complete_async(
     depth: CompletionDepth,
 ) -> Result<CompletionSet> {
     let flavor = ShellFlavor::from_shell(shell.as_deref());
-    let cursor = cursor.min(input.len());
+    // SOLO: on a character boundary, or slicing at it panics (R3, the
+    // unchecked `input[cursor..]`).
+    let mut cursor = cursor.min(input.len());
+    while !input.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
     let tokens = command_tokens(&input[..cursor]);
     let Some(current) = tokens.last() else {
         return Ok(CompletionSet::default());
@@ -729,12 +734,39 @@ fn resolve_dir(dir_part: &str, cwd: Option<&Path>) -> Option<PathBuf> {
     })
 }
 
+#[cfg(test)]
+mod quote_path_tests {
+    use super::*;
+
+    /// PowerShell takes curly quotes for single quotes too (R3 L-S2).
+    #[test]
+    fn test_powershell_paths_with_curly_quotes() {
+        assert_eq!(
+            quote_path("O’Brien.txt", ShellFlavor::PowerShell),
+            "'O’’Brien.txt'"
+        );
+        assert_eq!(
+            quote_path("it's ‘x‛", ShellFlavor::PowerShell),
+            "'it''s ‘‘x‛‛'"
+        );
+        assert_eq!(
+            quote_path("plain.txt", ShellFlavor::PowerShell),
+            "plain.txt"
+        );
+    }
+}
+
 fn quote_path(path: &str, flavor: ShellFlavor) -> String {
-    if !path.contains([' ', '\'', '"', '(', ')', '&', ';']) {
+    if !path.contains([
+        ' ', '\'', '"', '(', ')', '&', ';', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}',
+    ]) {
         return path.to_string();
     }
     match flavor {
-        ShellFlavor::PowerShell => format!("'{}'", path.replace('\'', "''")),
+        ShellFlavor::PowerShell => format!(
+            "'{}'",
+            terminal::shell_integration::powershell_single_quoted(path)
+        ),
         ShellFlavor::Posix => format!("'{}'", path.replace('\'', r"'\''")),
     }
 }
@@ -771,6 +803,24 @@ mod tests {
                 ("lg".to_string(), "log --oneline --graph".to_string()),
             ]
         );
+    }
+
+    /// A cursor inside a character is taken back to its start, not a panic.
+    #[test]
+    fn test_cursor_inside_a_character() {
+        for cursor in 0..=20 {
+            futures::executor::block_on(complete_async(
+                None,
+                "git ch文件".to_string(),
+                cursor,
+                None,
+                CompletionDepth {
+                    quick: true,
+                    ..CompletionDepth::default()
+                },
+            ))
+            .ok();
+        }
     }
 
     fn complete_now(input: &str, cwd: Option<&Path>) -> CompletionSet {

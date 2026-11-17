@@ -1,7 +1,9 @@
 //! The host's own log: what Solo told it (the control bytes), its clients
 //! coming and going, and why it ended, so a terminal that didn't survive
 //! Solo quitting can be explained. One file a day in Solo's logs folder,
-//! shared by all hosts; files older than [`KEEP_DAYS`] go.
+//! shared by all hosts; files older than [`KEEP_DAYS`] go. SOLO: a day's
+//! file stops growing at [`MAX_FILE_BYTES`] (R3 L-H4): each resize writes a
+//! line.
 
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -13,12 +15,14 @@ use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 
 const PREFIX: &str = "terminal-host-";
 const KEEP_DAYS: u64 = 7;
+const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 pub struct Log {
     dir: Option<PathBuf>,
     /// Who's logging: the host's process id and the end of its pipe's name.
     who: String,
     lock: Mutex<()>,
+    max_file_bytes: u64,
 }
 
 impl Log {
@@ -32,6 +36,7 @@ impl Log {
             dir,
             who: format!("{} {name}", std::process::id()),
             lock: Mutex::new(()),
+            max_file_bytes: MAX_FILE_BYTES,
         }
     }
 
@@ -55,7 +60,12 @@ impl Log {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         // Opened for each line, as other hosts write to it too.
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
-            file.write_all(line.as_bytes()).ok();
+            let full = file
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() >= self.max_file_bytes);
+            if !full {
+                file.write_all(line.as_bytes()).ok();
+            }
         }
     }
 }
@@ -126,6 +136,25 @@ mod tests {
         );
         // Without a folder (an older Solo), nothing is written.
         Log::new(None, "x").write("nothing");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A day's file stops growing at its limit (R3 L-H4).
+    #[test]
+    fn test_log_files_have_a_limit() {
+        let dir = std::env::temp_dir().join(format!(
+            "solo-terminal-host-log-limit-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = Log::new(dir.to_str(), "x");
+        log.max_file_bytes = 200;
+        for _ in 0..20 {
+            log.write("resize 120x30");
+        }
+        let path = dir.join(file_name(&local_time()));
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert!((200..300).contains(&size), "{size}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

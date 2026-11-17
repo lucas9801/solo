@@ -66,6 +66,15 @@ const RESUME_ARGUMENTS: &[(&str, &str)] = &[
     ("cursor-agent", "resume"),
     // aider options: `--restore-chat-history` restores the previous chat.
     ("aider", "--restore-chat-history"),
+    // SOLO: Pi (docs/cli.md) and oh-my-pi: `-c, --continue`.
+    ("pi", "--continue"),
+    ("omp", "--continue"),
+    // Kilo Code CLI (an OpenCode fork): `-c, --continue`.
+    ("kilo", "--continue"),
+    // Kimi Code CLI: `-c, --continue` continues the last session here.
+    ("kimi", "--continue"),
+    // Qwen Code (a Gemini CLI fork): `--continue`.
+    ("qwen", "--continue"),
 ];
 
 /// What resumes a session by its id, for the agents whose hook reports a
@@ -76,6 +85,20 @@ const RESUME_BY_ID: &[(&str, &str)] = &[
     // "Session ID to continue". OpenCode 2 documents it for `opencode mini`
     // and `opencode run` (https://opencode.ai/docs/cli/commands/).
     ("opencode", "--session"),
+    // SOLO: the agents whose hooks or plugins report a session id.
+    // Gemini CLI: `--resume <id>` (session management docs).
+    ("gemini", "--resume"),
+    // Qwen Code: `--resume <id>`.
+    ("qwen", "--resume"),
+    // Pi: `--session <path|id>`; oh-my-pi: `--resume <id|path>`.
+    ("pi", "--session"),
+    ("omp", "--resume"),
+    // Kilo Code CLI: `-s <session id>` (src/cli/cmd/tui.ts).
+    ("kilo", "-s"),
+    // Kimi Code CLI: `-S, --session <id>`.
+    ("kimi", "--session"),
+    // MastraCode: `mastracode resume <thread id>`.
+    ("mastracode", "resume"),
 ];
 
 /// The program of `command` as typed, and its name, lowercase.
@@ -86,6 +109,24 @@ fn program(command: &str) -> Option<(&str, String)> {
         .to_string_lossy()
         .to_lowercase();
     Some((program, name))
+}
+
+/// SOLO: whether `program` is only a name or path, maybe quoted, with nothing
+/// a shell would take for more (`x\claude.x;calc`), since it goes into the
+/// command offered to resume the session (R3 L-S6).
+fn is_plain_program(program: &str) -> bool {
+    let bare = ['"', '\'']
+        .into_iter()
+        .find_map(|quote| {
+            program
+                .strip_prefix(quote)
+                .and_then(|rest| rest.strip_suffix(quote))
+        })
+        .unwrap_or(program);
+    !bare.is_empty()
+        && bare.chars().all(|c| {
+            c.is_alphanumeric() || matches!(c, '\\' | '/' | ':' | '.' | '-' | '_' | '~' | '@' | '+')
+        })
 }
 
 /// The agent's name as shown, from its command.
@@ -101,6 +142,9 @@ pub(crate) fn agent_display_name(command: &str) -> String {
 /// works).
 pub(crate) fn resume_command(command: &str, session_id: Option<&str>) -> Option<String> {
     let (program, name) = program(command)?;
+    if !is_plain_program(program) {
+        return None;
+    }
     let by_id = session_id
         .filter(|id| terminal::shell_integration::is_session_id(id))
         .and_then(|id| {
@@ -368,11 +412,37 @@ mod tests {
             resume_command("cursor-agent", None).as_deref(),
             Some("cursor-agent resume")
         );
+        assert_eq!(
+            resume_command("qwen", None).as_deref(),
+            Some("qwen --continue")
+        );
+        assert_eq!(
+            resume_command("omp", None).as_deref(),
+            Some("omp --continue")
+        );
         // Not confirmed in their documentation.
-        assert_eq!(resume_command("qwen", None), None);
+        assert_eq!(resume_command("mastracode", None), None);
         assert_eq!(resume_command("amp", None), None);
         assert_eq!(resume_command("my-agent", None), None);
         assert_eq!(resume_command("", None), None);
+    }
+
+    /// A saved command whose program carries more than a path isn't offered
+    /// to resume (R3 L-S6).
+    #[test]
+    fn test_resume_command_needs_a_plain_program() {
+        assert_eq!(resume_command(r"x\claude.x;calc", None), None);
+        assert_eq!(resume_command("claude&calc", None), None);
+        assert_eq!(resume_command("$(calc)/claude", None), None);
+        assert_eq!(resume_command("claude|calc", None), None);
+        assert_eq!(
+            resume_command(r#""C:\tools\claude.exe""#, None).as_deref(),
+            Some(r#""C:\tools\claude.exe" --continue"#)
+        );
+        assert_eq!(
+            resume_command("~/.local/bin/claude", None).as_deref(),
+            Some("~/.local/bin/claude --continue")
+        );
     }
 
     #[test]
@@ -394,6 +464,20 @@ mod tests {
             resume_command("opencode", Some("ses_1; rm -rf /")).as_deref(),
             Some("opencode --continue")
         );
+        // SOLO: the agents added with their hooks and plugins.
+        for (command, expected) in [
+            ("gemini", "gemini --resume 0f6ed4b2-755b"),
+            ("pi", "pi --session 0f6ed4b2-755b"),
+            ("omp", "omp --resume 0f6ed4b2-755b"),
+            ("kilo", "kilo -s 0f6ed4b2-755b"),
+            ("kimi", "kimi --session 0f6ed4b2-755b"),
+            ("mastracode", "mastracode resume 0f6ed4b2-755b"),
+        ] {
+            assert_eq!(
+                resume_command(command, Some("0f6ed4b2-755b")).as_deref(),
+                Some(expected)
+            );
+        }
         // Agents that resume by id only when listed.
         assert_eq!(
             resume_command("claude", Some("0f6ed4b2-755b-4e18-8bd1-f60252548036")).as_deref(),

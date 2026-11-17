@@ -176,6 +176,14 @@
     },
   },
   {
+    // SOLO: copies the selected part of the path on the "Could not open file" page.
+    "context": "InvalidItem",
+    "use_key_equivalents": true,
+    "bindings": {
+      "ctrl-c": "invalid_item::Copy",
+    },
+  },
+  {
     "context": "Editor && jupyter",
     "use_key_equivalents": true,
     "bindings": {
@@ -1647,6 +1655,22 @@
       "ctrl-alt-shift-backspace": "branch_picker::ForceDeleteBranch",
       "ctrl-shift-i": "branch_picker::CycleBranchFilter",
       "ctrl-k": "branch_picker::ToggleFilterMenu",
+    },
+  },
+  {
+    "context": "BrowserView",
+    "bindings": {
+      "alt-left": "browser::GoBack",
+      "alt-right": "browser::GoForward",
+      "f5": "browser::Reload",
+      "ctrl-r": "browser::Reload",
+      "ctrl-f5": "browser::HardReload",
+      "ctrl-shift-r": "browser::HardReload",
+      "ctrl-l": "browser::FocusAddressBar",
+      "alt-d": "browser::FocusAddressBar",
+      "ctrl-shift-i": "browser::OpenDevTools",
+      "f12": "browser::OpenDevTools",
+      "ctrl-f": "browser::FindInPage",
     },
   },
   {

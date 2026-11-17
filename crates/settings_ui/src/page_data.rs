@@ -71,6 +71,8 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
         panels_page(),
         debugger_page(),
         terminal_page(),
+        // SOLO: Solo's built-in browser.
+        browser_page(),
         version_control_page(),
         // SOLO: no collaboration settings: Solo has no collaboration.
         ai_page(cx),
@@ -9311,6 +9313,60 @@ fn without_threads_sidebar(
                 if setting.field.json_path().is_some_and(|path| path.starts_with("agent.threads_sidebar")))
         })
         .collect()
+}
+
+/// SOLO: Solo's built-in browser.
+fn browser_page() -> SettingsPage {
+    fn browser_section() -> [SettingsPageItem; 3] {
+        [
+            SettingsPageItem::SectionHeader("Browser"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Open Links In",
+                description: "Web links in the terminal, the Markdown preview and the timeline. Ctrl+Shift+click opens a link the other way.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("browser.open_links"),
+                    pick: |settings_content| settings_content.browser.as_ref()?.open_links.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.browser.get_or_insert_default().open_links = value;
+                    },
+                }),
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    should_do_titlecase: Some(false),
+                    ..Default::default()
+                })),
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Allow Agents to Control the Browser",
+                description: "Agents started in Solo's terminal afterwards can open, read and click pages in Solo's browser, including signed-in pages. Needs Node.js. Takes effect after Solo restarts.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("browser.allow_agent_control"),
+                    pick: |settings_content| {
+                        settings_content
+                            .browser
+                            .as_ref()?
+                            .allow_agent_control
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .browser
+                            .get_or_insert_default()
+                            .allow_agent_control = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
+    SettingsPage {
+        title: "Browser",
+        items: concat_sections![browser_section()],
+    }
 }
 
 fn network_page() -> SettingsPage {

@@ -1054,6 +1054,31 @@ pub mod agent_terminal {
         pub comments: Vec<DocumentComment>,
     }
 
+    /// Pastes comments on elements of a web page into the prompt of the agent
+    /// used last, or of one to choose.
+    #[derive(PartialEq, Clone, Debug, Action)]
+    #[action(namespace = terminal, no_json, no_register)]
+    pub struct SendPageCommentsToAgent {
+        pub url: String,
+        pub comments: Vec<PageComment>,
+        pub choose_terminal: bool,
+    }
+
+    #[derive(PartialEq, Clone, Debug, Default)]
+    pub struct PageComment {
+        /// A CSS selector that finds the element.
+        pub selector: String,
+        /// The start of the element's text.
+        pub text: String,
+        /// Its HTML, maybe shortened.
+        pub html: String,
+        /// Computed styles as `name value` pairs.
+        pub styles: Vec<(String, String)>,
+        /// A screenshot of the element.
+        pub screenshot: Option<std::path::PathBuf>,
+        pub comment: String,
+    }
+
     #[derive(PartialEq, Clone, Debug)]
     pub struct DocumentComment {
         /// 1-based, inclusive.
@@ -1062,5 +1087,35 @@ pub mod agent_terminal {
         /// The text commented on, maybe shortened.
         pub quote: String,
         pub comment: String,
+    }
+}
+
+/// SOLO: Solo's built-in browser.
+pub mod browser {
+    use gpui::{Action, actions};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    actions!(
+        browser,
+        [
+            /// Opens a new tab of Solo's browser in the editor area.
+            OpenBrowser,
+        ]
+    );
+
+    /// Opens a web link where the "open links" setting says: Solo's browser
+    /// or the system browser.
+    #[derive(PartialEq, Clone, Default, Debug, Deserialize, JsonSchema, Action)]
+    #[action(namespace = browser)]
+    #[serde(deny_unknown_fields)]
+    pub struct OpenUrl {
+        pub url: String,
+        /// Opens the link the other way (Ctrl+Shift+click).
+        #[serde(default)]
+        pub alternate: bool,
+        /// Opens the page without moving focus to it.
+        #[serde(default)]
+        pub in_background: bool,
     }
 }
