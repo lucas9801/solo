@@ -416,6 +416,10 @@ fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     hide_window(&mut command);
+    // SOLO: in a process group of its own, so stopping it stops what it
+    // started too (R3 L-S9).
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn().context(if util::i18n::is_chinese() {
         "无法启动"
     } else {
@@ -483,7 +487,8 @@ fn run(
     Ok(stdout)
 }
 
-/// Stops the agent and what it started (`claude.cmd` runs node under cmd.exe).
+/// Stops the agent and what it started (`claude.cmd` runs node under cmd.exe;
+/// `claude` may be a shell script running node elsewhere).
 #[allow(
     clippy::disallowed_methods,
     reason = "generating runs on a background thread"
@@ -500,6 +505,15 @@ fn kill_tree(child: &mut Child) {
         hide_window(&mut taskkill);
         taskkill.status().ok();
     }
+    // SOLO: its process group, which `run` started it in (R3 L-S9).
+    #[cfg(unix)]
+    Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok();
     child.kill().ok();
     child.wait().ok();
 }
