@@ -488,6 +488,27 @@ pub fn uncommitted_changes(worktree: &Path) -> Result<UncommittedChanges> {
         .collect())
 }
 
+/// SOLO: the ignored files and folders in `worktree` (`.env`, a local
+/// database, `node_modules/`), which deleting the task deletes too: they're
+/// not among its uncommitted changes (R3 L-G3). A folder that's ignored whole
+/// is one entry.
+pub fn ignored_files(worktree: &Path) -> Result<Vec<String>> {
+    let output = git_ok(
+        worktree,
+        [
+            "status",
+            "--porcelain",
+            "--ignored",
+            "--untracked-files=normal",
+        ],
+    )?;
+    Ok(output
+        .lines()
+        .filter_map(|line| line.strip_prefix("!! "))
+        .map(str::to_string)
+        .collect())
+}
+
 /// One line per commit the task has that its base branch doesn't.
 pub fn unmerged_commits(task: &AgentTask) -> Result<Vec<String>> {
     let output = git_ok(
@@ -656,10 +677,30 @@ pub fn delete_task(task: &AgentTask) -> Result<()> {
             ],
         );
         if let Err(error) = removed {
+            // SOLO: a worktree locked with `git worktree lock` is the user's
+            // to keep (R3 L-G2).
+            if is_locked(repository, worktree)? {
+                if is_chinese() {
+                    bail!(
+                        "{} 被 git worktree lock 锁定，没有删除。",
+                        worktree.display()
+                    );
+                }
+                bail!(
+                    "{} is locked (git worktree lock), so nothing was deleted.",
+                    worktree.display()
+                );
+            }
             // Programs that just ended in it may still hold files for a moment
             // on Windows.
             log::warn!("git worktree remove failed, deleting the directory: {error:#}");
-            remove_dir_with_retries(worktree)?;
+            if let Err(error) = remove_dir_with_retries(worktree) {
+                // SOLO: what did go is forgotten, still (R3 L-G2).
+                if let Err(prune_error) = git_ok(repository, ["worktree", "prune"]) {
+                    log::warn!("git worktree prune failed: {prune_error:#}");
+                }
+                return Err(error);
+            }
         }
     }
     git_ok(repository, ["worktree", "prune"])?;
@@ -671,6 +712,20 @@ pub fn delete_task(task: &AgentTask) -> Result<()> {
         std::fs::remove_dir(group).ok();
     }
     Ok(())
+}
+
+/// Whether the worktree at `worktree` is locked (`git worktree lock`).
+fn is_locked(repository: &Path, worktree: &Path) -> Result<bool> {
+    let output = git_ok(repository, ["worktree", "list", "--porcelain"])?;
+    let mut in_worktree = false;
+    for line in output.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            in_worktree = same_directory(&native_path(path), worktree);
+        } else if in_worktree && (line == "locked" || line.starts_with("locked ")) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn remove_dir_with_retries(directory: &Path) -> Result<()> {
@@ -1040,6 +1095,70 @@ mod tests {
         assert!(keep_worktree.join("shared.txt").exists());
         assert!(branch_exists(&root, &keep.branch));
         assert_eq!(list_tasks(&root).unwrap().len(), 1);
+    }
+
+    /// Deleting a task lists its ignored files, which go with it (R3 L-G3).
+    #[test]
+    fn ignored_files_are_listed() {
+        let (_temp, root) = new_repository();
+        fs::write(
+            root.join(".gitignore"),
+            ".env
+cache/
+",
+        )
+        .unwrap();
+        commit_all(&root, "ignore");
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Env", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        assert!(ignored_files(&worktree).unwrap().is_empty());
+        fs::write(
+            worktree.join(".env"),
+            "SECRET=1
+",
+        )
+        .unwrap();
+        fs::create_dir_all(worktree.join("cache").join("a")).unwrap();
+        fs::write(worktree.join("cache").join("a").join("b.bin"), "x").unwrap();
+        fs::write(
+            worktree.join("new.txt"),
+            "new
+",
+        )
+        .unwrap();
+
+        assert_eq!(ignored_files(&worktree).unwrap(), [".env", "cache/"]);
+        delete_task(&task).unwrap();
+    }
+
+    /// A locked worktree isn't deleted by force when git won't remove it
+    /// (R3 L-G2).
+    #[test]
+    fn deleting_a_task_keeps_a_locked_worktree() {
+        let (_temp, root) = new_repository();
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Keep", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        fs::write(
+            worktree.join("work.txt"),
+            "kept
+",
+        )
+        .unwrap();
+        run_git(&root, &["worktree", "lock", worktree.to_str().unwrap()]);
+
+        assert!(delete_task(&task).is_err());
+        assert_eq!(
+            fs::read_to_string(worktree.join("work.txt")).unwrap(),
+            "kept
+"
+        );
+        assert!(branch_exists(&root, &task.branch));
+
+        run_git(&root, &["worktree", "unlock", worktree.to_str().unwrap()]);
+        delete_task(&task).unwrap();
+        assert!(!worktree.exists());
     }
 
     #[test]

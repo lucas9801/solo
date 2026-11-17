@@ -1223,6 +1223,9 @@ enum FinishAction {
 #[derive(Clone, Default)]
 struct TaskDetails {
     uncommitted: git::UncommittedChanges,
+    /// SOLO: for deleting, the ignored files deleted with the worktree
+    /// (R3 L-G3).
+    ignored: Vec<String>,
     unmerged_commits: Vec<String>,
     base_worktree: Option<PathBuf>,
     base_uncommitted: git::UncommittedChanges,
@@ -1744,6 +1747,12 @@ impl AgentTasksModal {
                         Some(worktree) if worktree.exists() => git::uncommitted_changes(worktree)?,
                         _ => Vec::new(),
                     };
+                    let ignored = match (&task.worktree_path, action) {
+                        (Some(worktree), FinishAction::Delete) if worktree.exists() => {
+                            git::ignored_files(worktree)?
+                        }
+                        _ => Vec::new(),
+                    };
                     let unmerged_commits = git::unmerged_commits(&task)?;
                     let base_worktree = git::base_worktree(&task)?;
                     let base_uncommitted = match (&base_worktree, action) {
@@ -1752,6 +1761,7 @@ impl AgentTasksModal {
                     };
                     anyhow::Ok(TaskDetails {
                         uncommitted,
+                        ignored,
                         unmerged_commits,
                         base_worktree,
                         base_uncommitted,
@@ -2297,6 +2307,24 @@ impl AgentTasksModal {
                                 &details.uncommitted,
                                 MAX_LISTED_CHANGES,
                                 Color::Error,
+                            ));
+                        }
+                        if !details.ignored.is_empty() {
+                            body = body.child(lines_section(
+                                if chinese {
+                                    format!(
+                                        "这些被忽略的文件也会删除（{}）：",
+                                        details.ignored.len()
+                                    )
+                                } else {
+                                    format!(
+                                        "These ignored files are deleted too ({}):",
+                                        details.ignored.len()
+                                    )
+                                },
+                                &details.ignored,
+                                MAX_LISTED_CHANGES,
+                                Color::Warning,
                             ));
                         }
                         if !details.unmerged_commits.is_empty() {
