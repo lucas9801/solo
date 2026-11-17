@@ -153,7 +153,18 @@ pub(crate) fn most_recently_focused_first(views: &mut [Entity<TerminalView>], cx
 /// each line as a command or prompt of its own.
 pub(crate) fn can_paste_to_agent(view: &TerminalView, message: &str, cx: &App) -> bool {
     view.runs_agent(cx)
-        && (!message.trim_end().contains('\n') || view.terminal.read(cx).bracketed_paste_enabled())
+        && (!needs_bracketed_paste(message) || view.terminal.read(cx).bracketed_paste_enabled())
+}
+
+/// SOLO: whether `message` has more than one line, or control characters
+/// (a carriage return, escape sequences, ctrl-c): without bracketed paste
+/// they'd reach the agent or the shell as keys, submitting or doing what they
+/// stand for (R3 L-S7). A tab or a line break at the end is fine.
+pub(crate) fn needs_bracketed_paste(message: &str) -> bool {
+    message
+        .trim_end()
+        .chars()
+        .any(|c| c.is_control() && c != '\t')
 }
 
 impl TerminalView {
@@ -673,7 +684,7 @@ fn send_to_agent_terminal(
     let directory = terminal.read(cx).working_directory();
     let message = context.message(directory.as_deref());
     // Without bracketed paste each line would reach the agent as a prompt of its own.
-    if message.trim_end().contains('\n') && !terminal.read(cx).bracketed_paste_enabled() {
+    if needs_bracketed_paste(&message) && !terminal.read(cx).bracketed_paste_enabled() {
         cx.write_to_clipboard(ClipboardItem::new_string(message));
         struct NoBracketedPasteToast;
         show_toast::<NoBracketedPasteToast>(
@@ -1077,6 +1088,18 @@ mod tests {
                 "- docs/plan.md:10-12 — \"Step three\" — Split this step.\n  And test it.\n",
             )
         );
+    }
+
+    #[test]
+    fn test_needs_bracketed_paste() {
+        assert!(!needs_bracketed_paste("fix the build"));
+        assert!(!needs_bracketed_paste("a\tb\n"));
+        assert!(!needs_bracketed_paste("done\r\n"));
+        assert!(needs_bracketed_paste("one\ntwo"));
+        assert!(needs_bracketed_paste("one\rrm -rf x"));
+        assert!(needs_bracketed_paste("text\x1b[Z"));
+        assert!(needs_bracketed_paste("stop\x03 now"));
+        assert!(needs_bracketed_paste("next\u{85}line"));
     }
 
     #[test]

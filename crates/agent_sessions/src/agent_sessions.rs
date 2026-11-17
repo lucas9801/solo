@@ -224,22 +224,25 @@ pub struct TokenUsage {
 impl TokenUsage {
     /// Every input token the model processed, cached or not.
     pub fn total_input(&self) -> u64 {
-        self.input + self.cache_read + self.cache_creation
+        self.input
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_creation)
     }
 
     pub fn total(&self) -> u64 {
-        self.total_input() + self.output
+        self.total_input().saturating_add(self.output)
     }
 
     pub fn is_empty(&self) -> bool {
         self.total() == 0
     }
 
+    /// SOLO: saturating, since the counts come from transcripts (R3 L-A2).
     fn add(&mut self, other: &TokenUsage) {
-        self.input += other.input;
-        self.output += other.output;
-        self.cache_read += other.cache_read;
-        self.cache_creation += other.cache_creation;
+        self.input = self.input.saturating_add(other.input);
+        self.output = self.output.saturating_add(other.output);
+        self.cache_read = self.cache_read.saturating_add(other.cache_read);
+        self.cache_creation = self.cache_creation.saturating_add(other.cache_creation);
     }
 
     fn subtract(&mut self, other: &TokenUsage) {
@@ -757,6 +760,23 @@ impl TranscriptReader {
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    /// Counts come from transcripts, so they can be anything; adding them
+    /// doesn't overflow (R3 L-A2).
+    #[test]
+    fn test_token_counts_saturate() {
+        let huge = TokenUsage {
+            input: u64::MAX,
+            output: u64::MAX,
+            cache_read: u64::MAX,
+            cache_creation: u64::MAX,
+        };
+        let mut sum = huge;
+        sum.add(&huge);
+        assert_eq!(sum, huge);
+        assert_eq!(sum.total_input(), u64::MAX);
+        assert_eq!(sum.total(), u64::MAX);
+    }
 
     #[test]
     fn test_reader_waits_for_whole_lines() {

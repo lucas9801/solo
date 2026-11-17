@@ -304,6 +304,9 @@ fn region_counts_are_positive_and_bounded() {
         "top_non_empty_lines(1)",
         "top_non_empty_lines(65535)",
         " bottom_lines(3) ",
+        // As Herdr takes them.
+        "bottom_lines(0)",
+        "bottom_non_empty_lines(07)",
     ] {
         assert!(Region::parse(good).is_ok(), "{good}");
     }
@@ -315,8 +318,79 @@ fn region_counts_are_positive_and_bounded() {
         "top_non_empty_lines(99999999999999999999999)",
         "after_last_promt_marker",
         "bottom_lines()",
+        "bottom_lines(-1)",
     ] {
         assert!(Region::parse(bad).is_err(), "{bad}");
+    }
+}
+
+/// Herdr's `end_anchored_footer_gates_allow_only_auxiliary_tail`: a regex
+/// anchored at the end (`\z`) with only a known tail after the footer.
+#[test]
+fn end_anchored_footer_gates_allow_only_auxiliary_tail() {
+    let manifest = manifest(
+        r#"
+[[rules]]
+id = "live_controls"
+state = "blocked"
+region = "whole_recent"
+regex = ['(?i)(?:^|\n)controls:\s+(?:confirm-marker|select-marker\s+navigate-marker)\s+cancel-marker[ \t]*\n---[^\n]*(?:\npanel: \d+(?:\nrow: [^\n]+)+(?:\n… \+\d+ pending)?)?(?:\n[ \t]*)*\z']
+"#,
+    );
+    let state = |screen: &str| detect(&manifest, screen).state;
+    let footer = "controls: select-marker navigate-marker cancel-marker";
+    for tail in [
+        "--- name",
+        "--- name\npanel: 5\nrow: active\nrow: pending\nrow: pending\nrow: pending\nrow: done\n",
+        "--- name\npanel: 5\nrow: active\nrow: done\n… +3 pending",
+    ] {
+        let live = format!("old output\n{footer}\n{tail}");
+        assert_eq!(state(&live), DetectedState::Blocked, "{live:?}");
+        for later in [
+            "new output",
+            "prompt:",
+            "--- next\nprompt:",
+            "prompt: continue…",
+            "working: processing…",
+            "…ordinary output",
+            "finished…",
+            "… +2 arbitrary words",
+        ] {
+            assert_eq!(state(&format!("{live}\n{later}")), DetectedState::Idle);
+        }
+    }
+    for tail in [
+        "--- name\n… +2 pending",
+        "--- name\nrow: active",
+        "--- name\npanel: 5",
+        "--- name\npanel: 5\nrow: active\n  working: processing…",
+        "--- name\npanel: 5\nrow: active\n  prompt: continue…",
+    ] {
+        assert_eq!(state(&format!("{footer}\n{tail}")), DetectedState::Idle);
+    }
+    for controls in [
+        "controls: confirm-marker cancel-marker",
+        "controls: select-marker\nnavigate-marker cancel-marker",
+        "controls:\nselect-marker\nnavigate-marker\ncancel-marker",
+    ] {
+        assert_eq!(
+            state(&format!("{controls}\n--- name")),
+            DetectedState::Blocked
+        );
+    }
+    for controls in [
+        "controls: select-marker cancel-marker",
+        "controls: navigate-marker cancel-marker",
+        "controls: confirm-marker",
+        "controls: select-marker unrelated navigate-marker cancel-marker",
+        "controls: select-marker\nprompt: navigate-marker cancel-marker",
+    ] {
+        assert_eq!(
+            state(&format!(
+                "confirm-marker navigate-marker\n{controls}\n--- name"
+            )),
+            DetectedState::Idle
+        );
     }
 }
 

@@ -1493,7 +1493,8 @@ fn reject_all_label(file_count: usize) -> String {
 }
 
 /// SOLO: What to tell about files a rollback left alone because they're in
-/// a linked folder (a junction or symlink).
+/// a linked folder (a junction or symlink), or are repositories nested in the
+/// work tree.
 fn skipped_message(skipped: &[String]) -> Option<SharedString> {
     if skipped.is_empty() {
         return None;
@@ -1505,14 +1506,14 @@ fn skipped_message(skipped: &[String]) -> Option<SharedString> {
     }
     Some(if is_chinese() {
         format!(
-            "{} 个文件在链接的文件夹里，没有改动：{}",
+            "{} 项在链接的文件夹或嵌套仓库里，没有改动：{}",
             skipped.len(),
             names.join("、")
         )
         .into()
     } else {
         format!(
-            "{} files in linked folders were left alone: {}",
+            "{} items in linked folders or nested repositories were left alone: {}",
             skipped.len(),
             names.join(", ")
         )

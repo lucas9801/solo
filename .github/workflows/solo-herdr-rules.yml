@@ -1,0 +1,62 @@
+# SOLO: Checks whether Solo's agent screen-detection rules
+# (vendor/herdr_agent_detection, from Herdr, Apache-2.0) and the rule language
+# its interpreter (crates/agent_detection) understands have fallen behind
+# Herdr's (script/check-herdr-rules.py).
+#
+# Weekly, and on changes to the rules or the interpreter. When a scheduled run
+# finds Solo behind, it opens an issue (or comments on the open one); the job
+# fails either way so it shows in the Actions list. Nothing is changed in the
+# repository.
+
+name: Solo agent rules vs Herdr
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  pull_request:
+    paths:
+      - vendor/herdr_agent_detection/**
+      - crates/agent_detection/**
+      - script/check-herdr-rules.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Compare with Herdr
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare the rules
+        id: compare
+        run: |
+          set +e
+          python3 script/check-herdr-rules.py > report.txt
+          status=$?
+          cat report.txt
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit $status
+
+      - name: Open or update the issue
+        if: failure() && github.event_name == 'schedule' && steps.compare.outputs.status == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          title="Agent detection rules are behind Herdr"
+          number=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file report.txt
+          else
+            gh issue create --title "$title" --body-file report.txt
+          fi

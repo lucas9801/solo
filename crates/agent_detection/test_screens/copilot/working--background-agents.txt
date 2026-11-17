@@ -1,0 +1,9 @@
+---
+● Task Explore the parser
+  └ started in the background
+
+ ◎ Waiting for background agents · 2 running
+
+ ────────────────────────────────────────────────────────────
+ >  Enter @ to mention files or / for commands
+ ────────────────────────────────────────────────────────────

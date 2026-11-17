@@ -1,0 +1,8 @@
+---
+• Worked for 1m 05s
+
+• Done: the parser handles trailing commas now.
+
+› Implement {feature}
+
+  ? for shortcuts                                       93% context left

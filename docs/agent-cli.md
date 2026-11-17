@@ -40,6 +40,19 @@ branch, directory and title, tab-separated. Statuses:
 | `done` | It finished a turn nobody has looked at yet; it waits for the next prompt. |
 | `exited`, `failed` | The agent exited (`failed`: with an error). |
 
+### `why`
+
+```
+solo-cli agent why <id> [--json]
+```
+
+Why the agent shows the status it does: whether it came from the agent's
+hook reports, the screen rules (which rule matched, and whether the rules are
+Solo's bundled ones or your own file in the `agent-detection` folder of Solo's
+config) or its output, and how long ago the last hook report came. `explain`
+is another name for it. The terminal's context menu has the same as "Why This
+Agent Status?".
+
 ### `new-task`
 
 ```

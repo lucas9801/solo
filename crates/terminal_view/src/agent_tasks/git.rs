@@ -188,8 +188,11 @@ pub fn repository_info(directory: &Path) -> Result<RepositoryInfo> {
         .filter(|_| common_dir.file_name() == Some(OsStr::new(".git")))
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow!("bare repositories aren't supported"))?;
-    let current_branch = git_ok(directory, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+    // SOLO: not `--short`, which makes `main` `heads/main` when a tag is
+    // also called `main` (R3 L-G4).
+    let current_branch = git_ok(directory, ["symbolic-ref", "--quiet", "HEAD"])
         .ok()
+        .and_then(|head| head.strip_prefix("refs/heads/").map(str::to_string))
         .filter(|branch| !branch.is_empty());
     Ok(RepositoryInfo {
         main_root,
@@ -314,6 +317,12 @@ pub fn plan_group_task(
 
 /// Creates the task's branch from its base branch, checked out in a new
 /// worktree.
+/// SOLO: a branch by its full ref name, which a tag of the same name doesn't
+/// shadow and git can't take for an option (R3 L-G4).
+fn branch_ref(branch: &str) -> String {
+    format!("refs/heads/{branch}")
+}
+
 pub fn create_task(repository: &RepositoryInfo, plan: &TaskPlan) -> Result<AgentTask> {
     if let Some(parent) = plan.worktree_path.parent() {
         std::fs::create_dir_all(parent)
@@ -327,7 +336,7 @@ pub fn create_task(repository: &RepositoryInfo, plan: &TaskPlan) -> Result<Agent
             OsStr::new("-b"),
             OsStr::new(&plan.branch),
             plan.worktree_path.as_os_str(),
-            OsStr::new(&plan.base_branch),
+            OsStr::new(&branch_ref(&plan.base_branch)),
         ],
     )
     .context("git worktree add failed")?;
@@ -517,7 +526,11 @@ pub fn unmerged_commits(task: &AgentTask) -> Result<Vec<String>> {
             "log",
             "--oneline",
             "--no-decorate",
-            &format!("{}..{}", task.base_branch, task.branch),
+            &format!(
+                "{}..{}",
+                branch_ref(&task.base_branch),
+                branch_ref(&task.branch)
+            ),
         ],
     )?;
     Ok(output.lines().map(str::to_string).collect())
@@ -539,7 +552,10 @@ pub fn diff_against_base(task: &AgentTask) -> Result<String> {
         .worktree_path
         .as_deref()
         .ok_or_else(|| anyhow!(tr("The task's worktree is gone", "任务的工作树已不存在")))?;
-    let merge_base = git_ok(worktree, ["merge-base", &task.base_branch, "HEAD"])?;
+    let merge_base = git_ok(
+        worktree,
+        ["merge-base", &branch_ref(&task.base_branch), "HEAD"],
+    )?;
     let mut diff = git_ok(
         worktree,
         ["diff", "--no-color", "--no-ext-diff", &merge_base],
@@ -556,7 +572,18 @@ pub fn diff_against_base(task: &AgentTask) -> Result<String> {
         // `--no-index` exits with 1 when the files differ, which they do.
         let output = git(
             worktree,
-            ["diff", "--no-color", "--no-index", "--", "/dev/null", file],
+            [
+                "diff",
+                "--no-color",
+                // SOLO: not the user's external diff or textconv programs,
+                // for each new file (R3 L-G1).
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-index",
+                "--",
+                "/dev/null",
+                file,
+            ],
         )?;
         let text = String::from_utf8_lossy(&output.stdout);
         if !text.is_empty() {
@@ -611,7 +638,7 @@ pub fn merge_task(task: &AgentTask) -> Result<MergeOutcome> {
             "--no-edit",
             "-m",
             &message,
-            &task.branch,
+            &branch_ref(&task.branch),
         ],
     )?;
     if output.status.success() {
@@ -620,6 +647,13 @@ pub fn merge_task(task: &AgentTask) -> Result<MergeOutcome> {
     let conflicts = git_ok(&target, ["diff", "--name-only", "--diff-filter=U"])?;
     let conflicts: Vec<String> = conflicts.lines().map(str::to_string).collect();
     if conflicts.is_empty() || !merge_in_progress(&target) {
+        // SOLO: a hook stopped it, say: no merge of the task is left in
+        // progress there either (R3 L-G5). There was none before.
+        if merge_in_progress(&target)
+            && let Err(error) = git_ok(&target, ["merge", "--abort"])
+        {
+            log::warn!("failed to abort the merge that failed: {error:#}");
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         bail!("git merge failed: {}", format!("{stderr}\n{stdout}").trim());
@@ -1037,6 +1071,83 @@ mod tests {
             "one\nmain\nthree\n"
         );
         assert!(uncommitted_changes(&root).unwrap().is_empty());
+        delete_task(&task).unwrap();
+    }
+
+    /// A merge a hook stops (not a conflict) is aborted rather than left in
+    /// progress where the base branch is checked out (R3 L-G5).
+    #[test]
+    fn merges_stopped_by_a_hook_are_aborted() {
+        let (_temp, root) = new_repository();
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Edit", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        fs::write(worktree.join("task.txt"), "task\n").unwrap();
+        commit_all(&worktree, "task edit");
+        fs::write(root.join("main.txt"), "main\n").unwrap();
+        commit_all(&root, "main edit");
+        let hook = root.join(".git").join("hooks").join("pre-merge-commit");
+        fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert!(merge_task(&task).is_err());
+        assert!(!merge_in_progress(&root));
+        assert!(!root.join("task.txt").exists());
+        assert!(uncommitted_changes(&root).unwrap().is_empty());
+        fs::remove_file(&hook).unwrap();
+        delete_task(&task).unwrap();
+    }
+
+    /// A tag named like the base branch doesn't stand in for it (R3 L-G4).
+    #[test]
+    fn branches_win_over_tags_of_the_same_name() {
+        let (_temp, root) = new_repository();
+        run_git(&root, &["tag", "main"]);
+        fs::write(root.join("main.txt"), "main\n").unwrap();
+        commit_all(&root, "main edit");
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Edit", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        assert!(worktree.join("main.txt").exists());
+        fs::write(worktree.join("task.txt"), "task\n").unwrap();
+        commit_all(&worktree, "task edit");
+
+        assert_eq!(unmerged_commits(&task).unwrap().len(), 1);
+        let diff = diff_against_base(&task).unwrap();
+        assert!(diff.contains("task.txt"), "{diff}");
+        assert!(!diff.contains("main.txt"), "{diff}");
+        assert_eq!(merge_task(&task).unwrap(), MergeOutcome::Merged);
+        delete_task(&task).unwrap();
+    }
+
+    /// The diff of a task's new files doesn't run the user's external diff
+    /// program (R3 L-G1).
+    #[test]
+    fn task_diffs_skip_external_diff_programs() {
+        let (temp, root) = new_repository();
+        let marker = temp.path().join("external-diff-ran");
+        let marker_path = marker.to_string_lossy().replace('\\', "/");
+        run_git(
+            &root,
+            &[
+                "config",
+                "diff.external",
+                &format!("echo ran >\"{marker_path}\""),
+            ],
+        );
+        let info = repository_info(&root).unwrap();
+        let task = create_task(&info, &plan_task(&info, "Edit", "../worktrees").unwrap()).unwrap();
+        let worktree = task.worktree_path.clone().unwrap();
+        fs::write(worktree.join("new.txt"), "new\n").unwrap();
+
+        let diff = diff_against_base(&task).unwrap();
+        assert!(diff.contains("+new"), "{diff}");
+        assert!(!marker.exists());
         delete_task(&task).unwrap();
     }
 
