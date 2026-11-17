@@ -160,7 +160,10 @@ pub fn integrate_shell(
         }
         // The bash.exe in System32 runs WSL, which can't read the script's path.
         Some("bash") if !(is_windows && program.to_lowercase().contains("system32")) => {
-            match write_script("bash-integration.sh", BASH_SCRIPT) {
+            match write_script(
+                &format!("bash-integration-{}.sh", contents_hash(&[BASH_SCRIPT])),
+                BASH_SCRIPT,
+            ) {
                 Ok(path) => vec!["--rcfile".to_string(), path, "-i".to_string()],
                 Err(error) => {
                     log::warn!("failed to write the bash shell integration script: {error}");
@@ -168,7 +171,10 @@ pub fn integrate_shell(
                 }
             }
         }
-        Some("fish") => match write_script("fish-integration.fish", FISH_SCRIPT) {
+        Some("fish") => match write_script(
+            &format!("fish-integration-{}.fish", contents_hash(&[FISH_SCRIPT])),
+            FISH_SCRIPT,
+        ) {
             Ok(path) => vec![
                 "--init-command".to_string(),
                 format!("source '{}'", path.replace('\'', "\\'")),
@@ -207,9 +213,14 @@ pub(crate) fn new_nonce() -> String {
 }
 
 fn integrate_zsh(env: &mut HashMap<String, String>) -> std::io::Result<()> {
-    let integration = write_script("zsh/integration.zsh", ZSH_SCRIPT)?;
+    let mut contents = vec![ZSH_SCRIPT];
     for (name, script) in ZSH_STARTUP_FILES {
-        write_script(&format!("zsh/{name}"), script)?;
+        contents.extend([name, script]);
+    }
+    let dir = format!("zsh-{}", contents_hash(&contents));
+    let integration = write_script(&format!("{dir}/integration.zsh"), ZSH_SCRIPT)?;
+    for (name, script) in ZSH_STARTUP_FILES {
+        write_script(&format!("{dir}/{name}"), script)?;
     }
     let user_zdotdir = env
         .get("ZDOTDIR")
@@ -228,7 +239,9 @@ fn integrate_zsh(env: &mut HashMap<String, String>) -> std::io::Result<()> {
 }
 
 /// Where the scripts go: a directory in the temp dir of this user's own.
-fn scripts_dir() -> std::io::Result<PathBuf> {
+/// SOLO: also for other files agents read, such as the settings of the agent
+/// generating commands (R3 L-S1).
+pub fn scripts_dir() -> std::io::Result<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
@@ -261,6 +274,21 @@ fn scripts_dir() -> std::io::Result<PathBuf> {
         // Windows' temp dir is the user's own.
         Ok(std::env::temp_dir().join("solo-shell-integration"))
     }
+}
+
+/// SOLO: a short hash of `contents`, which names the files Solo writes for
+/// shells and agents by what's in them: Solo versions or builds running side
+/// by side don't swap each other's, and a hook never points at the program of
+/// another, maybe deleted, Solo (R3 L-S5). FNV-1a, which doesn't change
+/// between Rust versions like `DefaultHasher` may.
+fn contents_hash(contents: &[&str]) -> String {
+    let hash = contents
+        .iter()
+        .flat_map(|part| part.bytes().chain([0]))
+        .fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ byte as u64).wrapping_mul(0x100000001b3)
+        });
+    format!("{:08x}", hash as u32)
 }
 
 /// Shells only load extra scripts from disk, so they go to the temp dir.
@@ -398,8 +426,8 @@ fn codex_has_own_telemetry(env: &HashMap<String, String>) -> bool {
 /// SOLO: Lets GitHub Copilot CLI started from the integrated shell report
 /// what it's doing through hooks, so its turns are tracked like Claude Code's.
 ///
-/// The hooks are in a plugin Solo writes (`copilot-plugin` beside the shell
-/// scripts), whose folder the shell scripts get in `SOLO_COPILOT_PLUGIN`;
+/// The hooks are in a plugin Solo writes (`copilot-plugin-<hash>` beside the
+/// shell scripts), whose folder the shell scripts get in `SOLO_COPILOT_PLUGIN`;
 /// they wrap `copilot` to load it with `--plugin-dir`, for that session only.
 /// Nothing is installed into Copilot's own folder.
 ///
@@ -495,10 +523,11 @@ fn write_copilot_plugin(hook: &str, is_windows: bool) -> std::io::Result<String>
         "description": "Reports what Copilot is doing to the Solo terminal it runs in.",
     });
     let manifest = serde_json::to_string_pretty(&manifest).map_err(std::io::Error::other)?;
-    write_script("copilot-plugin/.claude-plugin/plugin.json", &manifest)?;
     let hooks =
         serde_json::to_string_pretty(&copilot_hooks(hook)).map_err(std::io::Error::other)?;
-    let hooks_path = write_script("copilot-plugin/hooks/hooks.json", &hooks)?;
+    let dir = format!("copilot-plugin-{}", contents_hash(&[&manifest, &hooks]));
+    write_script(&format!("{dir}/.claude-plugin/plugin.json"), &manifest)?;
+    let hooks_path = write_script(&format!("{dir}/hooks/hooks.json"), &hooks)?;
     let dir = Path::new(&hooks_path)
         .parent()
         .and_then(Path::parent)
@@ -589,9 +618,22 @@ const OPENCODE_V1_PLUGIN: &str = include_str!("shell_integration/opencode/solo-v
 /// plugin imports from the former); returns the plugin's file URL and the
 /// config folder.
 fn write_opencode_plugins() -> std::io::Result<(String, String)> {
-    write_script("opencode-plugin/solo-opencode.js", OPENCODE_SHARED)?;
-    let tui = write_script("opencode-plugin/tui.js", OPENCODE_TUI_PLUGIN)?;
-    let v1 = write_script("opencode-config/plugins/solo.js", OPENCODE_V1_PLUGIN)?;
+    let dir = format!(
+        "opencode-{}",
+        contents_hash(&[OPENCODE_SHARED, OPENCODE_TUI_PLUGIN, OPENCODE_V1_PLUGIN])
+    );
+    write_script(
+        &format!("{dir}/opencode-plugin/solo-opencode.js"),
+        OPENCODE_SHARED,
+    )?;
+    let tui = write_script(
+        &format!("{dir}/opencode-plugin/tui.js"),
+        OPENCODE_TUI_PLUGIN,
+    )?;
+    let v1 = write_script(
+        &format!("{dir}/opencode-config/plugins/solo.js"),
+        OPENCODE_V1_PLUGIN,
+    )?;
     let plugin_dir = native_path(Path::new(&tui).parent().unwrap_or(Path::new("")));
     let plugin = url::Url::from_file_path(&plugin_dir).map_err(|()| {
         std::io::Error::other(format!("{} isn't an absolute path", plugin_dir.display()))
@@ -1913,6 +1955,25 @@ mod tests {
             opencode_cli_config(plugin, Some(("{ // comment", dir))),
             None
         );
+    }
+
+    /// Plugins with different hook programs (Solos side by side) go to
+    /// different folders, named by their contents (R3 L-S5).
+    #[test]
+    fn copilot_plugins_are_named_by_their_contents() {
+        let first = write_copilot_plugin("/solo-a/solo-agent-hook", false).unwrap();
+        let second = write_copilot_plugin("/solo-b/solo-agent-hook", false).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            write_copilot_plugin("/solo-a/solo-agent-hook", false).unwrap(),
+            first
+        );
+        let hooks = |dir: &str| {
+            std::fs::read_to_string(Path::new(dir).join("hooks").join("hooks.json")).unwrap()
+        };
+        assert!(hooks(&first).contains("/solo-a/"));
+        assert!(hooks(&second).contains("/solo-b/"));
+        assert_ne!(contents_hash(&["ab", "c"]), contents_hash(&["a", "bc"]));
     }
 
     #[test]
