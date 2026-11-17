@@ -21,9 +21,8 @@ fn git_sha() -> Option<String> {
 
 // SOLO: every exe Solo ships carries Solo's version, the version of the zed
 // crate (crates/zed/Cargo.toml, which script/release-solo.ps1 sets), not the
-// version of the crate it's built from (the CLI and the helpers are 0.1.0).
-// SignPath Foundation wants the same product name and product version on all
-// signed files (docs/signpath-application.md).
+// version of the crate it's built from (the CLI and the helpers are 0.1.0),
+// so every exe of a release has the same product name and product version.
 const SOLO_CARGO_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../zed/Cargo.toml");
 
 /// The `version` of the `[package]` in crates/zed/Cargo.toml.
@@ -64,7 +63,7 @@ fn build_metadata(pkg_version: &str) -> String {
     format!("{pkg_version}+{metadata}")
 }
 
-// SOLO: as in docs/code-signing-policy.md ("Version information").
+// SOLO: the company and copyright every exe carries.
 const COMPANY_NAME: &str = "lucas9801";
 const LEGAL_COPYRIGHT: &str = "Copyright lucas9801 and Solo contributors. Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0-or-later";
 

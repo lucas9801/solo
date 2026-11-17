@@ -2,8 +2,7 @@
 
 [← README](../README.md)
 
-Building Solo from source, moved here from the README. Signing:
-[code signing policy](code-signing-policy.md).
+Building Solo from source, moved here from the README.
 
 ## Building
 
@@ -12,13 +11,13 @@ for the toolchain (the README's "从源码编译" section lists what Solo needs)
 
 ```powershell
 cargo run -p zed              # debug build, runs target\debug\solo.exe
-script\package-solo.ps1       # optimized build, packaged as dist\Solo-<version>-windows-x64.zip
+script\package-solo.ps1       # optimized build, staged in dist\Solo
 ```
 
-The zip contains `install.ps1`, which installs Solo for the current user with
-Start menu and desktop shortcuts. Releases no longer have an installer
-(`Solo-Setup-<version>.exe`, Inno Setup): Solo is installed from the Microsoft
-Store (see below).
+`dist\Solo` is what the Microsoft Store package is made from (see below);
+`solo.exe` also runs straight from there. Releases have no other Windows
+download: the installer (`Solo-Setup-<version>.exe`) and the portable zip
+are no longer made, and Solo is installed from the Microsoft Store.
 
 ### Notes for local builds
 
@@ -73,28 +72,37 @@ Store (see below).
 Solo checks for a newer version 30 seconds after it starts and every 6 hours
 after that (turn this off with `"auto_update": false`; **Check for Updates**
 in the command palette always checks). The Store package asks the Store,
-which installs the update. Other builds ask
-[Solo's GitHub releases](https://github.com/lucas9801/solo/releases); as releases
-no longer have an installer, they only offer the release page, where the zip
-is (`crates/auto_update/src/solo_update.rs`; Solo builds from before the
-change installed `Solo-Setup-<version>.exe` themselves).
+which installs the update. Other builds (built from source, or installed
+with the installer or zip of earlier releases) ask
+[Solo's GitHub releases](https://github.com/lucas9801/solo/releases); as
+releases have no Windows download any more, a newer one is offered with
+"Get It from the Microsoft Store", which opens Solo Code's Store page
+(`crates/auto_update/src/solo_update.rs`). Builds from before installed
+`Solo-Setup-<version>.exe` themselves, and so find nothing to install.
 
 Releases are built by GitHub Actions, not locally (local builds are for
 testing). A version tag starts the
 [Solo package workflow](../.github/workflows/solo-package.yml), which builds
 Solo, checks the version information of its exes (product name Solo, Solo's
-version, built from the tagged commit), packages the zip, and creates a
-draft GitHub release with it, the remote servers and the notes in
-`docs/release-notes/<version>.md`. Running copies of Solo only update to
-published releases.
+version, built from the tagged commit), makes the Store package, builds the
+Linux remote servers, and creates a draft GitHub release with the remote
+servers and the notes in `docs/release-notes/<version>.md`. Running copies
+of Solo only update to published releases.
+
+Nothing is signed by the workflow any more: the Store signs its package.
+The repository settings used for SignPath signing are no longer read and can
+be deleted: the variables `SOLO_SIGNPATH_ENABLED`, `SIGNPATH_ORGANIZATION_ID`,
+`SIGNPATH_PROJECT_SLUG` and `SIGNPATH_SIGNING_POLICY_SLUG`, and the secret
+`SIGNPATH_API_TOKEN`.
 
 ## The Microsoft Store package
 
 Solo is packaged as an MSIX for the Microsoft Store, where it's listed as
-Solo Code; that's how it's installed. `script\package-solo-msix.ps1` makes the package from a release
-build staged by `package-solo.ps1`; it refuses a debug build (one reads its
-assets and shaders from the source tree, so it crashes once installed) and,
-for the Store, a build that isn't of the stable channel:
+Solo Code; that's how it's installed. `script\package-solo-msix.ps1` makes
+the package from a release build staged by `package-solo.ps1`; it refuses a
+debug build (one reads its assets and shaders from the source tree, so it
+crashes once installed) and, for the Store, a build that isn't of the stable
+channel:
 
 ```powershell
 script\package-solo.ps1 -Step Stage     # release build in dist\Solo

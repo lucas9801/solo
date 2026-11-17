@@ -21,6 +21,8 @@ pub enum UpdateAction {
     Restart,
     /// Install when the user quits Solo.
     OnQuit,
+    /// The release notes; for an update Solo can't install itself, the
+    /// Microsoft Store page, where it's got instead.
     ViewNotes,
     Skip,
     /// Try again after a failure.
@@ -170,12 +172,20 @@ pub fn update_menu(
         UpdateAction::OnQuit,
         text(chinese, "Install When Solo Quits", "退出时安装"),
     );
-    let notes = offer.filter(|offer| offer.notes_url.is_some()).map(|_| {
-        MenuItem::Action(
-            UpdateAction::ViewNotes,
-            text(chinese, "View Release Notes", "查看更新内容"),
-        )
-    });
+    let notes = offer
+        .filter(|offer| offer.notes_url.is_some())
+        .map(|offer| {
+            let label = if offer.can_install {
+                text(chinese, "View Release Notes", "查看更新内容")
+            } else {
+                text(
+                    chinese,
+                    "Get It from the Microsoft Store",
+                    "从 Microsoft Store 获取",
+                )
+            };
+            MenuItem::Action(UpdateAction::ViewNotes, label)
+        });
     let skip = offer.filter(|offer| offer.version.is_some()).map(|_| {
         MenuItem::Action(
             UpdateAction::Skip,
@@ -618,7 +628,7 @@ mod tests {
             actions(&menu),
             [Some(UpdateAction::ViewNotes), Some(UpdateAction::Skip)]
         );
-        // Solo can't install it itself: only the release page.
+        // Solo can't install it itself: only the Microsoft Store page.
         let page_only = UpdateOffer {
             can_install: false,
             can_install_on_quit: true,
@@ -636,6 +646,19 @@ mod tests {
         assert_eq!(
             actions(&menu),
             [Some(UpdateAction::ViewNotes), Some(UpdateAction::Skip)]
+        );
+        assert_eq!(
+            menu.items[0],
+            MenuItem::Action(UpdateAction::ViewNotes, "从 Microsoft Store 获取".into())
+        );
+        let menu =
+            update_menu(&ButtonState::Available, Some(&page_only), None, &[], false).unwrap();
+        assert_eq!(
+            menu.items[0],
+            MenuItem::Action(
+                UpdateAction::ViewNotes,
+                "Get It from the Microsoft Store".into()
+            )
         );
     }
 

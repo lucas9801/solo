@@ -16,11 +16,12 @@
 //!   and the installer starts it again; "install when Solo quits" waits for
 //!   the user to quit, so agents running in terminals carry on meanwhile.
 //!
-//! Releases no longer carry the installer (`Solo-Setup-<version>.exe`):
-//! Solo is installed from the Microsoft Store, which updates it. For a
-//! release without one, the button still says a newer version is out, but
-//! its menu only offers the release notes (where the portable zip is) and
-//! skipping the version: nothing is downloaded and nothing fails.
+//! Releases no longer carry a Windows download (neither the installer
+//! `Solo-Setup-<version>.exe` nor a zip): Solo is installed from the
+//! Microsoft Store, which updates it. For a release without an installer,
+//! the button still says a newer version is out, but its menu only offers
+//! Solo Code's page in the Microsoft Store ([`STORE_PAGE_URL`]) and skipping
+//! the version: nothing is downloaded and nothing fails.
 //!
 //! Only stable builds check. Automatic checks follow the `auto_update`
 //! setting; the "check for updates" command always checks.
@@ -59,6 +60,10 @@ pub const SOLO_GITHUB_REPO: &str = "lucas9801/solo";
 pub fn is_store_package() -> bool {
     util::packaged::is_packaged()
 }
+
+/// Solo Code's page in the Microsoft Store, which builds that can't install
+/// a release themselves offer.
+pub const STORE_PAGE_URL: &str = "https://apps.microsoft.com/detail/9NBW452JVWN6";
 
 pub(crate) const LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/lucas9801/solo/releases/latest";
@@ -954,13 +959,28 @@ fn failure_reason(prefix: &str, error: &anyhow::Error) -> String {
     truncate_at_boundary(&format!("{prefix}{error:#}"), REASON_MAX_CHARS)
 }
 
+/// Whether Solo can install `release` itself.
+fn can_install_release(release: &SoloRelease) -> bool {
+    can_install() && release.installer.is_some()
+}
+
+/// The page the update menu opens for `release`: its release notes, or the
+/// Microsoft Store page when Solo can't install it itself.
+fn page_for(release: &SoloRelease) -> &str {
+    if can_install_release(release) {
+        &release.html_url
+    } else {
+        STORE_PAGE_URL
+    }
+}
+
 /// What the update button offers for `release`.
 fn offer_for(release: &SoloRelease) -> UpdateOffer {
     UpdateOffer {
         version: Some(release.version.clone()),
         notes: Some(release.notes.clone()),
-        notes_url: Some(release.html_url.clone()),
-        can_install: can_install() && release.installer.is_some(),
+        notes_url: Some(page_for(release).to_string()),
+        can_install: can_install_release(release),
         can_install_on_quit: true,
     }
 }
@@ -1052,7 +1072,7 @@ impl SoloUpdater {
             }
             UpdateAction::ViewNotes => {
                 if let Some(release) = &self.release {
-                    cx.open_url(&release.html_url);
+                    cx.open_url(page_for(release));
                 }
             }
             UpdateAction::Skip => self.skip(cx),
@@ -1198,7 +1218,7 @@ impl SoloUpdater {
                 );
                 return;
             }
-            cx.open_url(&release.html_url);
+            cx.open_url(STORE_PAGE_URL);
             return;
         };
         let version = release.version.clone();
@@ -1537,10 +1557,11 @@ mod tests {
     }
 
     #[test]
-    fn release_without_installer_offers_only_its_page() {
+    fn release_without_installer_offers_the_store_page() {
         let offer = offer_for(&release("1.29.0"));
         assert!(!offer.can_install);
-        assert_eq!(offer.notes_url.as_deref(), Some("https://example.com"));
+        assert_eq!(offer.notes_url.as_deref(), Some(STORE_PAGE_URL));
+        assert_eq!(page_for(&release("1.29.0")), STORE_PAGE_URL);
     }
 
     #[test]

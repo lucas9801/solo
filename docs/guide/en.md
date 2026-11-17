@@ -19,42 +19,32 @@ without opening the Store app. It has a Start menu entry, the `solo` command
 in Windows' command line, and "Open with Solo Code" in Explorer's context menu
 (in Windows 11's own menu, not only under "Show more options").
 
-Each release on GitHub also has a **portable zip**
-`Solo-<version>-windows-x64.zip`: run `solo.exe` straight from the unpacked
-folder, or run
+Releases on GitHub no longer have a Windows download: the installer
+(`Solo-Setup-<version>.exe`) and the portable zip
+(`Solo-<version>-windows-x64.zip`) are no longer made. A Solo installed from
+either keeps working but isn't updated any more; when a newer version is out
+its update button offers Solo Code's Store page. Install Solo Code from the
+Store, and uninstall the old Solo (section 4).
 
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
-
-to copy it to `%LOCALAPPDATA%\Programs\Solo` (for the current user, no
-administrator rights) with Start menu and desktop shortcuts and "Open with
-Solo" in the context menu (on Windows 11 under "Show more options";
-`-NoContextMenu` leaves it out).
-
-Releases no longer have an installer (`Solo-Setup-<version>.exe`). A Solo
-installed with one keeps working but isn't updated any more; to get new
-versions, install Solo Code from the Store (and uninstall the old Solo from
-Settings → Apps).
-
-**"Open with Solo"** is on files, folders, a folder's background and drives. A
-folder opens in Solo, started if it isn't running; a running Solo adds a
+**"Open with Solo Code"** is on files, folders, a folder's background and
+drives. A folder opens in Solo, started if it isn't running; a running Solo adds a
 workspace tab for it to its window and switches to it, or switches to the
 folder's tab if it has one already. A file opens in the tab whose folder holds
-it, or else in the current tab, never in a new window. Uninstalling
-(`install.ps1 -Uninstall` too) removes the menu.
+it, or else in the current tab, never in a new window. Uninstalling removes
+the menu.
 
-The zip's folder holds `solo.exe`, `solo-cli.exe` (the command line agents
-use), `solo-agent-hook.exe` (which Claude Code runs to report its status),
+Solo Code holds `solo.exe`, `solo-cli.exe` (the command line agents use),
+`solo-agent-hook.exe` (which Claude Code runs to report its status),
 `solo-update-helper.exe`, `solo-terminal-host.exe` (which runs a terminal's
 shell, so it can outlive Solo), `OpenConsole.exe` and `conpty.dll` (the
-terminal runtime), and license files. Solo Code has the same programs.
+terminal runtime), and license files.
 
 ## 3. Updating
 
 - Solo checks for a newer version 30 seconds after it starts and every 6
-  hours after that (stable builds only): Solo Code asks the Microsoft Store,
-  the portable zip [its GitHub releases](https://github.com/lucas9801/solo/releases).
+  hours after that (stable builds only): Solo Code asks the Microsoft Store;
+  other builds (from source, or an earlier release's installer or zip) ask
+  [its GitHub releases](https://github.com/lucas9801/solo/releases).
 - A newer version shows an "↑ Update to <version>" button at the right end of
   the title bar, left of the window buttons; there's no notification. Its menu
   has a one-line summary and Update and Restart, Install When Solo Quits, View
@@ -74,15 +64,16 @@ terminal runtime), and license files. Solo Code has the same programs.
   copy), whether Solo is up to date with a **Check for Updates** button, and
   links to this guide, the release notes, the repository and the license.
   **Copy** copies the version, commit and system details for a bug report.
-- The portable zip doesn't update itself: its button's menu has View Release
-  Notes, where the new zip is, and Skip This Version.
+- Builds that aren't Solo Code don't update themselves: their button's menu
+  has Get It from the Microsoft Store, which opens Solo Code's Store page, and
+  Skip This Version.
 - `"auto_update": false` turns off the automatic checks. **Check for Updates**
   in the command palette always checks.
 
 ## 4. Uninstalling and removing everything
 
 - Solo Code: uninstall it from Settings → Apps.
-- Zip:
+- A Solo installed from an earlier release's zip:
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Solo\install.ps1" -Uninstall
@@ -534,7 +525,7 @@ To treat another program as an agent:
   `sologroup` for a task spanning repositories). This
   only happens when you create a task.
 - **Updates** are installed only when you choose to, by the Microsoft Store
-  (Solo Code); the portable zip doesn't install updates.
+  (Solo Code); other builds don't install updates.
 - **`solo://` links:** Solo Code's package registers it for `solo://` links,
   for your user only, so links such as
   `solo://settings/terminal.font_size` (jumps to that setting) or a shared
@@ -566,7 +557,7 @@ collaboration and Zed's own auto-update are off or hidden.
 
 | Address | Why | How to turn it off |
 | --- | --- | --- |
-| The Microsoft Store (Solo Code) or `api.github.com` (the portable zip) | Solo update checks (30 s after start, then every 6 h) | `"auto_update": false` |
+| The Microsoft Store (Solo Code) or `api.github.com` (other builds) | Solo update checks (30 s after start, then every 6 h) | `"auto_update": false` |
 
 **Contacted only when you use a feature:**
 
@@ -616,8 +607,8 @@ suspicious.
 **What to do**:
 
 1. Add these to your security software's trusted list:
-   the install folder (the zip's `%LOCALAPPDATA%\Programs\Solo`; Solo
-   Code's is under `C:\Program Files\WindowsApps`), with solo.exe,
+   the install folder (Solo Code's is under `C:\Program Files\WindowsApps`),
+   with solo.exe,
    solo-agent-hook.exe, solo-terminal-host.exe, OpenConsole.exe and
    conpty.dll; `%LOCALAPPDATA%\Solo\terminal-host` (the terminal host's
    copy); and `%TEMP%\solo-shell-integration`.
@@ -626,7 +617,7 @@ suspicious.
    works now, the integration script was being blocked.
 3. Report the false positive to the vendor, for example through 360's open
    platform at open.soft.360.cn (unverified). Other vendors have similar
-   false-positive forms. Include the version (and the zip, if you use it).
+   false-positive forms. Include the version.
 
 ### A terminal won't open
 - Check the log (below) for `shell integration` or `failed to`.

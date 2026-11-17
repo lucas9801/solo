@@ -10,33 +10,25 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
 
 从 [Microsoft Store](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct) 安装 **Solo Code**：点链接下载一个小安装程序，运行后直接为当前用户装好，不打开商店应用。装好后有开始菜单项、可以在 Windows 命令行里用的 `solo` 命令，以及资源管理器右键菜单里的“通过 Solo Code 打开”（在 Windows 11 自己的菜单里，不只在“显示更多选项”里）。
 
-GitHub 上每个版本还有一个**便携 zip** `Solo-<版本>-windows-x64.zip`：解压后可以直接运行 `solo.exe`；也可以运行
+GitHub 上的发布不再有 Windows 下载：安装程序（`Solo-Setup-<版本>.exe`）和便携 zip（`Solo-<版本>-windows-x64.zip`）都不再提供。用它们装的 Solo 还能继续用，但不会再更新；有新版本时，更新按钮会给出 Solo Code 的商店页面。请从商店安装 Solo Code，再卸载旧的 Solo（见第 4 节）。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
+**右键菜单“通过 Solo Code 打开”**：在文件、文件夹、文件夹空白处和驱动器上都有。打开文件夹时，Solo 没在运行就启动并打开它；已在运行就在现有窗口里加一个工作区标签并切过去，这个文件夹已经有标签时直接切到那个标签。打开文件时，放进包含它的那个标签，没有就放进当前标签，不会新开窗口。卸载时右键菜单会一起删掉。
 
-这会把文件复制到 `%LOCALAPPDATA%\Programs\Solo`（只为当前用户，不需要管理员权限），创建开始菜单和桌面快捷方式，并在右键菜单里加上“通过 Solo 打开”（Windows 11 上在“显示更多选项”里；加 `-NoContextMenu` 就不加右键菜单）。
-
-发布里不再有安装程序（`Solo-Setup-<版本>.exe`）。用它装的 Solo 还能继续用，但不会再更新；要用新版本，请从商店安装 Solo Code（旧的 Solo 可以在“设置 → 应用”里卸载）。
-
-**右键菜单“通过 Solo 打开”**：在文件、文件夹、文件夹空白处和驱动器上都有。打开文件夹时，Solo 没在运行就启动并打开它；已在运行就在现有窗口里加一个工作区标签并切过去，这个文件夹已经有标签时直接切到那个标签。打开文件时，放进包含它的那个标签，没有就放进当前标签，不会新开窗口。卸载时（包括 `install.ps1 -Uninstall`）右键菜单会一起删掉。
-
-zip 的目录里有 `solo.exe`、`solo-cli.exe`（agent 用的命令行）、`solo-agent-hook.exe`（Claude Code 用它上报状态）、`solo-update-helper.exe`、`solo-terminal-host.exe`（运行终端的 shell，让它能在 Solo 关掉后继续跑）、`OpenConsole.exe` 和 `conpty.dll`（终端运行时），以及几份许可证文件。Solo Code 里的程序相同。
+Solo Code 里有 `solo.exe`、`solo-cli.exe`（agent 用的命令行）、`solo-agent-hook.exe`（Claude Code 用它上报状态）、`solo-update-helper.exe`、`solo-terminal-host.exe`（运行终端的 shell，让它能在 Solo 关掉后继续跑）、`OpenConsole.exe` 和 `conpty.dll`（终端运行时），以及几份许可证文件。
 
 ## 3. 更新
 
-- Solo 启动 30 秒后检查一次有没有新版本，之后每 6 小时检查一次（只有稳定版会检查）：Solo Code 问 Microsoft Store，便携 zip 查 [GitHub Releases](https://github.com/lucas9801/solo/releases)。
+- Solo 启动 30 秒后检查一次有没有新版本，之后每 6 小时检查一次（只有稳定版会检查）：Solo Code 问 Microsoft Store；其他版本（从源码构建，或以前的安装程序、zip 装的）查 [GitHub Releases](https://github.com/lucas9801/solo/releases)。
 - 有新版本时，标题栏最右边（窗口按钮左侧）出现“↑ 更新到 <版本>”按钮，不弹通知。点开是一句更新概要和“更新并重启”“退出时安装”“查看更新内容”“跳过此版本”；有 agent 在运行时会提示现在更新会结束哪些，并把“退出时安装”放在前面。下载进度、“退出时更新到 <版本>”和“更新失败”（菜单里写原因，可以“重试”）也显示在这个按钮上。跳过的版本不再提示，有更新的版本时按钮再出现。Solo 不会在你没同意的情况下安装任何东西。
 - 从 Microsoft Store 装的 Solo Code 也在 Solo 里更新，用同一个按钮，不打开商店：商店允许时（商店里开着“自动更新应用”、网络不按流量计费）先在后台静默下载；“更新并重启”交给商店安装，装完 Windows 会重新打开 Solo。商店不允许静默安装时，会弹出商店的小确认框。
 - **关于 Solo** 窗口显示版本、发布日期和提交号（点击可复制），是否已是最新，以及“检查更新”按钮；还有用户指南、本版本发行说明、GitHub 仓库和许可的链接。“复制”按钮复制版本、提交号和系统信息，方便报告问题。
-- 便携 zip 不会自己更新：按钮的菜单里只有“查看更新内容”（新的 zip 就在那个页面上）和“跳过此版本”。
+- 不是 Solo Code 的版本不会自己更新：按钮的菜单里只有“从 Microsoft Store 获取”（打开 Solo Code 的商店页面）和“跳过此版本”。
 - 要关闭自动检查，在设置里写 `"auto_update": false`。命令面板里的 **Check for Updates（检查更新）** 不受这个设置影响，总会检查。
 
 ## 4. 卸载与彻底清除
 
 - Solo Code：在“设置 → 应用”里卸载。
-- zip 版：
+- 用以前版本的 zip 装的 Solo：
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Solo\install.ps1" -Uninstall
@@ -211,7 +203,7 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - **hooks 跑的程序**是安装目录里的 `solo-agent-hook.exe`。它从 stdin 读事件，往终端写一个转义序列，然后退出；它不联网，也不写文件。
 - **轮次快照**存在 `%LOCALAPPDATA%\Solo\agent_turns`，不碰你仓库里的东西。
 - **agent 任务**会在你的仓库里新建分支和工作树，并往仓库的 git 配置里写 `branch.<分支>.solotask` / `solobase`（跨仓库任务还有 `sologroup`）。这些只在你新建任务时才会发生。
-- **更新**：只有你点了更新才会安装，由 Microsoft Store 安装（Solo Code）；便携 zip 不安装更新。
+- **更新**：只有你点了更新才会安装，由 Microsoft Store 安装（Solo Code）；其他版本不安装更新。
 - **`solo://` 链接**：Solo Code 的安装包为当前用户注册 `solo://` 链接，`solo://settings/terminal.font_size`（跳到这一项设置）或分享的技能链接因此会在 Solo 里打开，卸载时删除。Solo 不注册 `zed://`，那是 Zed 的，但传给 Solo 的 `zed://` 链接照样能打开。任何网页都能打开这种链接，所以打开文件、连接 SSH 主机、克隆或打开仓库的链接（`solo://file/...`、`solo://ssh/...`、`solo://git/...`）会先问你，写明是哪个文件、哪台主机、哪个仓库。
 - **终端宿主进程**：每个终端的 shell 跑在各自的 `solo-terminal-host.exe` 里，它从 `%LOCALAPPDATA%\Solo\terminal-host` 里的副本启动（这样更新时可以替换 Solo 的文件）。它和 Solo 之间用只有你这个用户能打开的命名管道通信；shell 结束、关掉标签，或者 Solo 结束而终端里没在运行东西时，它就结束（见第 6 节）。
 - Solo 会读 Claude Code 的对话记录（`~/.claude/projects`）和 Codex 的会话记录（`~/.codex/sessions`），用来显示时间线和会话信息，只读不写。
@@ -224,7 +216,7 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 
 | 地址 | 用途 | 怎么关 |
 | --- | --- | --- |
-| Microsoft Store（Solo Code）或 `api.github.com`（便携 zip） | 检查 Solo 更新（启动 30 秒后，之后每 6 小时） | `"auto_update": false` |
+| Microsoft Store（Solo Code）或 `api.github.com`（其他版本） | 检查 Solo 更新（启动 30 秒后，之后每 6 小时） | `"auto_update": false` |
 
 **只在你用到某个功能时才访问：**
 
@@ -248,9 +240,9 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 
 **处理**：
 
-1. 把以下位置加入安全软件的信任或白名单：安装目录（zip 版是 `%LOCALAPPDATA%\Programs\Solo`，Solo Code 在 `C:\Program Files\WindowsApps` 下；里面有 solo.exe、solo-agent-hook.exe、solo-terminal-host.exe、OpenConsole.exe、conpty.dll），`%LOCALAPPDATA%\Solo\terminal-host`（终端宿主进程的副本），以及 `%TEMP%\solo-shell-integration`。
+1. 把以下位置加入安全软件的信任或白名单：安装目录（Solo Code 在 `C:\Program Files\WindowsApps` 下；里面有 solo.exe、solo-agent-hook.exe、solo-terminal-host.exe、OpenConsole.exe、conpty.dll），`%LOCALAPPDATA%\Solo\terminal-host`（终端宿主进程的副本），以及 `%TEMP%\solo-shell-integration`。
 2. 想确认是不是被拦了：在设置里写 `"terminal": {"shell_integration": false}`，再新开一个终端。如果这样能用，就说明拦的是集成脚本。
-3. 向厂商报告误报：例如 360 可以通过开放平台 open.soft.360.cn 提交（待核实）；其他厂商一般也有误报申诉入口。提交时附上版本号（用 zip 版的话附上 zip）。
+3. 向厂商报告误报：例如 360 可以通过开放平台 open.soft.360.cn 提交（待核实）；其他厂商一般也有误报申诉入口。提交时附上版本号。
 
 ### 终端打不开
 - 先看日志（见下文），搜索 `shell integration` 或 `failed to`。
