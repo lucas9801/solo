@@ -14,8 +14,8 @@ use alacritty_terminal::event::ShellMark as AlacShellMark;
 use serde::{Deserialize, Serialize};
 use util::shell::Shell;
 
-const POWERSHELL_SCRIPT: &str = include_str!("shell_integration/powershell.ps1");
-const BASH_SCRIPT: &str = include_str!("shell_integration/bash.sh");
+pub(crate) const POWERSHELL_SCRIPT: &str = include_str!("shell_integration/powershell.ps1");
+pub(crate) const BASH_SCRIPT: &str = include_str!("shell_integration/bash.sh");
 const FISH_SCRIPT: &str = include_str!("shell_integration/fish.fish");
 const ZSH_SCRIPT: &str = include_str!("shell_integration/zsh/integration.zsh");
 const CLAUDE_HOOK_POWERSHELL: &str = include_str!("shell_integration/claude_hook.ps1");

@@ -8,6 +8,8 @@ pub use host::{HostLink, RunningHost, end_running_host, running_hosts};
 mod mermaid;
 pub use mermaid::is_complete as mermaid_diagram_is_complete;
 mod pty_info;
+// SOLO: Solo's IDE tools for agents in the terminal.
+pub mod ide_tools;
 pub mod agent_integrations;
 pub mod global_agent_hooks;
 pub mod shell_integration;

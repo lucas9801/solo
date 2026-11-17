@@ -50,6 +50,7 @@ serde_json_lenient.workspace = true
 settings.workspace = true
 shellexpand.workspace = true
 shlex.workspace = true
+solo_ide_tools.workspace = true
 terminal.workspace = true
 theme.workspace = true
 theme_settings.workspace = true

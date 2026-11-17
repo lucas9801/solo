@@ -15736,6 +15736,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "solo_ide_tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collections",
+ "futures 0.3.34",
+ "gpui",
+ "language",
+ "log",
+ "lsp",
+ "project",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "settings",
+ "terminal",
+ "text",
+ "tiny_http",
+ "util",
+]
+
+[[package]]
 name = "solo_terminal_host"
 version = "0.1.0"
 dependencies = [
@@ -16626,6 +16648,7 @@ dependencies = [
  "settings",
  "shellexpand",
  "shlex 2.0.1",
+ "solo_ide_tools",
  "task",
  "tasks_ui",
  "tempfile",

@@ -508,6 +508,37 @@ the background; on a large repository that can take several GB of memory.
   recognizes the cause (for example a missing .NET runtime for roslyn, or a
   download that failed); click it for the fix and a download link.
 
+### IDE tools for agents
+Agents started in a Solo terminal can ask Solo's language servers about that
+terminal's workspace instead of searching the text, through four read-only
+tools: `workspace_symbols` (find a function or type by name),
+`go_to_definition`, `find_references` (callers and uses, not just matching
+text) and `diagnostics` (errors and warnings of a file, or counts for the
+workspace). They use the language servers Solo already runs, so the agent
+doesn't start a second rust-analyzer; asking about a file starts its server
+if it isn't running yet.
+- **Claude Code** gets them through the `claude` wrapper (`--mcp-config`) and
+  **Codex** through the `codex` wrapper (`-c mcp_servers.solo-ide...`), as a
+  server named `solo-ide`, for that session only: your own config isn't
+  changed. Both need the shell integration, and Claude Code also its hooks
+  (`claude_code_hooks`).
+- **Other agents** that support MCP can be pointed at it: the terminal has the
+  server's address in `SOLO_IDE_MCP_URL` (streamable HTTP) and the token to
+  send as `Authorization: Bearer` in `SOLO_IDE_TOKEN`.
+- **With a proxy** (`HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` set), Solo adds
+  `127.0.0.1` and `localhost` to the terminal's `NO_PROXY`: a proxy can't
+  reach the server on this machine.
+- **Only this workspace.** The server listens on 127.0.0.1 only. Each
+  workspace has its own random token, which only its terminals get, and the
+  tools only take and show files of that workspace (not files outside it, not
+  `.env`-like private files). They change nothing.
+- **Limits.** Diagnostics can lag behind edits the agent makes on disk (for
+  example rust-analyzer's `cargo check` runs when Solo saves a file), so tell
+  the agent to build or test to be sure. A terminal that survived a Solo
+  restart keeps the old address; open a new terminal to get the tools again.
+- To turn them off: `"terminal": {"ide_tools": false}` (new terminals don't
+  get them, and older ones are refused).
+
 ## 7. Supported agents
 
 | | Claude Code | Codex, Copilot CLI, OpenCode | gemini, qwen, amp, cursor-agent and others | aider, programs in `agent_commands` |
@@ -802,6 +833,7 @@ Solo's own settings, under `"terminal"`:
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
 | `opencode_hooks` | `true` | load a status plugin into OpenCode for each session |
+| `ide_tools` | `true` | give Claude Code and Codex Solo's read-only IDE tools (symbols, definitions, references, diagnostics) as an MCP server |
 | `more_agent_hooks` | `true` | status reporting for Pi, oh-my-pi, Kilo Code CLI, Gemini CLI and Qwen Code, for each session |
 | `global_agent_hooks` | `[]` | agents (`"kimi"`, `"mastracode"`) whose own config Solo may add status hooks to |
 | `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
