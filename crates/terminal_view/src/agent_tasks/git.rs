@@ -1101,32 +1101,16 @@ mod tests {
     #[test]
     fn ignored_files_are_listed() {
         let (_temp, root) = new_repository();
-        fs::write(
-            root.join(".gitignore"),
-            ".env
-cache/
-",
-        )
-        .unwrap();
+        fs::write(root.join(".gitignore"), ".env\ncache/\n").unwrap();
         commit_all(&root, "ignore");
         let info = repository_info(&root).unwrap();
         let task = create_task(&info, &plan_task(&info, "Env", "../worktrees").unwrap()).unwrap();
         let worktree = task.worktree_path.clone().unwrap();
         assert!(ignored_files(&worktree).unwrap().is_empty());
-        fs::write(
-            worktree.join(".env"),
-            "SECRET=1
-",
-        )
-        .unwrap();
+        fs::write(worktree.join(".env"), "SECRET=1\n").unwrap();
         fs::create_dir_all(worktree.join("cache").join("a")).unwrap();
         fs::write(worktree.join("cache").join("a").join("b.bin"), "x").unwrap();
-        fs::write(
-            worktree.join("new.txt"),
-            "new
-",
-        )
-        .unwrap();
+        fs::write(worktree.join("new.txt"), "new\n").unwrap();
 
         assert_eq!(ignored_files(&worktree).unwrap(), [".env", "cache/"]);
         delete_task(&task).unwrap();
@@ -1140,19 +1124,13 @@ cache/
         let info = repository_info(&root).unwrap();
         let task = create_task(&info, &plan_task(&info, "Keep", "../worktrees").unwrap()).unwrap();
         let worktree = task.worktree_path.clone().unwrap();
-        fs::write(
-            worktree.join("work.txt"),
-            "kept
-",
-        )
-        .unwrap();
+        fs::write(worktree.join("work.txt"), "kept\n").unwrap();
         run_git(&root, &["worktree", "lock", worktree.to_str().unwrap()]);
 
         assert!(delete_task(&task).is_err());
         assert_eq!(
             fs::read_to_string(worktree.join("work.txt")).unwrap(),
-            "kept
-"
+            "kept\n"
         );
         assert!(branch_exists(&root, &task.branch));
 
