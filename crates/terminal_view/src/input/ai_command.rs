@@ -244,6 +244,13 @@ pub fn generate_with(
 /// An empty directory the agent runs in, so nothing from the project (hooks,
 /// MCP servers, CLAUDE.md, AGENTS.md) loads.
 fn work_dir() -> Result<PathBuf> {
+    // SOLO: on Unix the temp dir is shared between users, who mustn't be able
+    // to make this directory first and swap Claude Code's settings (R3 L-S1).
+    #[cfg(unix)]
+    let dir = terminal::shell_integration::scripts_dir()
+        .context("finding the directory to generate commands in")?
+        .join("ai-command");
+    #[cfg(not(unix))]
     let dir = std::env::temp_dir().join("solo-ai-command");
     std::fs::create_dir_all(&dir).context("creating the directory to generate commands in")?;
     let settings = dir.join("claude-settings.json");
@@ -291,6 +298,8 @@ pub fn agent_args(
         AgentKind::Codex => {
             // Per Codex's CLI reference: a read-only sandbox, no shell tool,
             // and nothing saved; `-` reads the prompt from stdin.
+            // SOLO: the MCP servers of the user's own Codex config (not the
+            // project's) still start (R3 L-S9).
             for arg in [
                 "exec",
                 "--sandbox",
@@ -439,7 +448,15 @@ fn run(
             kill_tree(&mut child);
             return Err(anyhow!(Cancelled));
         }
-        match child.try_wait()? {
+        // SOLO: the agent doesn't outlive a failure to wait for it (R3 L-S9).
+        let exited = match child.try_wait() {
+            Ok(exited) => exited,
+            Err(error) => {
+                kill_tree(&mut child);
+                return Err(error.into());
+            }
+        };
+        match exited {
             Some(status) => break status,
             None if Instant::now() >= deadline => {
                 kill_tree(&mut child);
@@ -488,10 +505,17 @@ fn kill_tree(child: &mut Child) {
 }
 
 /// Strips code fences, a leading prompt sign and surrounding blank lines.
+/// SOLO: and control characters but tabs and line breaks, which would reach
+/// the shell as keys, an escape sequence say (R3 L-S9).
 pub fn clean_answer(answer: &str) -> String {
-    let lines: Vec<&str> = answer
+    let lines: Vec<String> = answer
         .lines()
         .filter(|line| !line.trim_start().starts_with("```"))
+        .map(|line| {
+            line.chars()
+                .filter(|c| !c.is_control() || *c == '\t')
+                .collect()
+        })
         .collect();
     let text = lines.join("\n");
     let text = text.trim();
@@ -514,6 +538,11 @@ mod tests {
         );
         assert_eq!(clean_answer("  `ls -la`  "), "ls -la");
         assert_eq!(clean_answer("$ du -sh *\n"), "du -sh *");
+        // Control characters would reach the shell as keys (R3 L-S9).
+        assert_eq!(
+            clean_answer("ls\x1b[2J\r -la\x03\r\n\techo\x07 hi\r\n"),
+            "ls[2J -la\n\techo hi"
+        );
         assert_eq!(
             clean_answer("Get-ChildItem |\n  Sort-Object Length"),
             "Get-ChildItem |\n  Sort-Object Length"
