@@ -4,7 +4,7 @@
 
 Solo 是给 AI 编程 agent 用的编辑器，基于 [Zed](https://github.com/zed-industries/zed)：终端占满窗口，Claude Code、Codex 这些 agent 在真终端里跑；需要看代码时，完整的代码编辑器从右边打开，随时看 agent 改了什么。
 
-[下载 Windows 版（Microsoft Store）](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct) · [GitHub 安装包](https://github.com/lucas9801/solo/releases/latest) · [用户指南](docs/guide/zh-CN.md) · [和其他工具比较](docs/site/zh/compare/index.md) · [English](docs/site/en/index.md)
+[下载 Windows 版（Microsoft Store）](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct) · [用户指南](docs/guide/zh-CN.md) · [和其他工具比较](docs/site/zh/compare/index.md) · [English](docs/site/en/index.md)
 
 https://github.com/user-attachments/assets/df4a53d7-075a-44b7-9874-f3f71f2eaf61
 
@@ -108,30 +108,13 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 
 Solo 目前只有 Windows x64 版。
 
-**Microsoft Store（推荐）**：点[这里](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct)下载一个小安装程序，运行后直接装好 Solo Code，不打开商店应用。更新也在 Solo 里完成，见下面的"更新"。
-
-下面两种方式只为当前用户安装，不需要管理员权限，默认装到 `%LOCALAPPDATA%\Programs\Solo`。
-
-**方式一：安装包**
-
-1. 从 [Releases](https://github.com/lucas9801/solo/releases/latest) 下载 `Solo-Setup-<版本>.exe`。
-2. 运行安装包（有中文和英文界面）。它会创建开始菜单项，桌面图标可选（默认不勾），在资源管理器右键菜单里加上"通过 Solo 打开"（默认勾选，Windows 11 上在"显示更多选项"里），并在"设置 → 应用"里加上卸载入口。
-3. 安装包还没有代码签名（见下面的[代码签名政策](#code-signing-policy)），第一次运行时 Windows 可能提示"已保护你的电脑"，点"更多信息 → 仍要运行"。
-
-**方式二：便携 zip**
-
-1. 下载 `Solo-<版本>-windows-x64.zip` 并解压。
-2. 直接运行里面的 `solo.exe`；或者在解压出的文件夹里运行下面的命令，把它装到 `%LOCALAPPDATA%\Programs\Solo`，创建开始菜单和桌面快捷方式，并在右键菜单里加上"通过 Solo 打开"（不要右键菜单就加 `-NoContextMenu`）：
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File install.ps1
-   ```
+从 [Microsoft Store](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct) 安装：点链接下载一个小安装程序，运行后直接装好 Solo Code，不打开商店应用。
 
 **开始用**：打开 Solo，打开一个项目文件夹，在终端里运行 `claude`、`codex` 或你常用的 agent（agent 要你自己先装好）。
 
-**更新**：Solo 启动 30 秒后检查一次 GitHub Releases，之后每 6 小时一次。有新版本时标题栏最右边出现更新按钮（不弹通知），你同意了才会更新；有 agent 在跑时可以选"退出时安装"。不想自动检查，在设置里写 `"auto_update": false`。
+**更新**：在 Solo 里完成，不打开商店。Solo 启动 30 秒后检查一次，之后每 6 小时一次。有新版本时标题栏最右边出现更新按钮（不弹通知），你同意了才会更新；有 agent 在跑时可以选"退出时安装"。不想自动检查，在设置里写 `"auto_update": false`。
 
-**卸载**：安装包版在"设置 → 应用"里卸载；zip 版运行 `install.ps1 -Uninstall`（命令见[用户指南](docs/guide/zh-CN.md#4-卸载与彻底清除)）。卸载不会删除设置和数据，彻底清除的方法也在那一节。
+**卸载**：在"设置 → 应用"里卸载 Solo Code。卸载不会删除设置和数据，彻底清除的方法见[用户指南](docs/guide/zh-CN.md#4-卸载与彻底清除)。
 
 ## 从源码编译
 
@@ -169,8 +152,8 @@ script\package-solo.ps1   # 优化构建，输出 dist\Solo-<版本>-windows-x64
 
 ## 现在的状态
 
-- **只有 Windows 版。** 安装包还没有代码签名，第一次运行时 Windows 可能提示"已保护你的电脑"，点"更多信息 → 仍要运行"。
-- **不用注册账号，不发送遥测。** 默认只会定期访问 GitHub 检查更新（可以关掉），其余网络访问都由你用到的功能触发，详见[隐私说明](docs/guide/zh-CN.md#9-隐私与网络)。
+- **只有 Windows 版。**
+- **不用注册账号，不发送遥测。** 默认只会定期检查更新（可以关掉），其余网络访问都由你用到的功能触发，详见[隐私说明](docs/guide/zh-CN.md#9-隐私与网络)。
 - **开源**，GPL-3.0。
 
 ## Code signing policy
