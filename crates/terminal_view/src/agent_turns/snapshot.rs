@@ -375,7 +375,102 @@ impl SnapshotStore {
             );
         }
         let tree = run(self.command(&index).arg("write-tree"))?;
-        Ok(String::from_utf8_lossy(&tree).trim().to_string())
+        let tree = String::from_utf8_lossy(&tree).trim().to_string();
+        self.with_linked_worktrees(tree)
+    }
+
+    /// SOLO: `tree` with the linked worktrees in this folder snapshotted in
+    /// place of the nested repositories they'd be otherwise: an agent task
+    /// across repositories works in a folder with one worktree of each, and
+    /// what the agent changes in them is the turn's (R3 M3). Each worktree
+    /// has its own store; this store reads their objects through
+    /// `objects/info/alternates`. Repositories cloned into a folder (with a
+    /// `.git` folder, not file) stay nested repositories, left alone.
+    fn with_linked_worktrees(&self, tree: TreeId) -> Result<TreeId> {
+        if self.is_repository() {
+            return Ok(tree);
+        }
+        let listing = run(self
+            .command(&self.index_path())
+            .args(["ls-tree", "-r", "-z", &tree]))?;
+        let worktrees: Vec<String> = listing
+            .split(|byte| *byte == 0)
+            .filter_map(|entry| {
+                let (meta, path) = std::str::from_utf8(entry).ok()?.split_once('\t')?;
+                meta.starts_with("160000 ").then(|| path.to_string())
+            })
+            .filter(|path| self.work_tree.join(path).join(".git").is_file())
+            .collect();
+        if worktrees.is_empty() {
+            return Ok(tree);
+        }
+        let storage_root = self
+            .store_dir
+            .parent()
+            .context("the snapshot store has no parent folder")?;
+        let index = self.store_dir.join("worktrees-index");
+        std::fs::remove_file(&index).ok();
+        run(self.command(&index).args(["read-tree", &tree]))?;
+        for path in &worktrees {
+            let directory = self.work_tree.join(path);
+            let snapshot = SnapshotStore::open(&directory, storage_root).and_then(|store| {
+                anyhow::ensure!(store.is_repository(), "{directory:?} isn't a repository");
+                let _lock = store.lock_store()?;
+                let tree = store.snapshot_locked()?;
+                Ok((store, tree))
+            });
+            let (store, subtree) = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    log::warn!("not snapshotting the worktree {directory:?}: {error:#}");
+                    continue;
+                }
+            };
+            self.add_alternates(
+                [store.store_dir.join("objects")]
+                    .into_iter()
+                    .chain(store.alternate_objects.clone()),
+            )?;
+            run(self
+                .command(&index)
+                .args(["update-index", "--force-remove", "--"])
+                .arg(path))?;
+            run(self
+                .command(&index)
+                .args(["read-tree", &format!("--prefix={path}/"), &subtree]))?;
+        }
+        let combined = run(self.command(&index).arg("write-tree"));
+        std::fs::remove_file(&index).ok();
+        Ok(String::from_utf8_lossy(&combined?).trim().to_string())
+    }
+
+    /// Adds `directories` to the object directories this store reads from.
+    fn add_alternates(&self, directories: impl IntoIterator<Item = PathBuf>) -> Result<()> {
+        let file = self
+            .store_dir
+            .join("objects")
+            .join("info")
+            .join("alternates");
+        let mut lines: Vec<String> = std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let before = lines.len();
+        for directory in directories {
+            let line = directory.to_string_lossy().replace('\\', "/");
+            if !lines.contains(&line) {
+                lines.push(line);
+            }
+        }
+        if lines.len() != before {
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&file, lines.join("\n") + "\n")
+                .with_context(|| format!("writing {file:?}"))?;
+        }
+        Ok(())
     }
 
     /// Files that differ between two snapshots. Repositories nested in the
@@ -385,7 +480,8 @@ impl SnapshotStore {
     }
 
     /// The files that differ between two snapshots, and the nested
-    /// repositories (gitlinks) that do.
+    /// repositories (gitlinks) that do, with the files whose names aren't
+    /// UTF-8 (see [`parse_raw_diff`]).
     fn changes(&self, from: &str, to: &str) -> Result<(Vec<ChangedFile>, Vec<String>)> {
         if from == to {
             return Ok((Vec::new(), Vec::new()));
@@ -679,8 +775,10 @@ fn check(output: Output, name: &str) -> Result<Vec<u8>> {
 const GITLINK_MODE: &[u8] = b"160000";
 
 /// Parses `git diff-tree -z --raw` output (`:<mode> <mode> <id> <id>
-/// <status>`, then the path) into the changed files and, apart, the paths of
-/// nested repositories (gitlinks) that changed.
+/// <status>`, then the path) into the changed files and, apart, the paths to
+/// leave alone: nested repositories (gitlinks) that changed, and (SOLO, R3
+/// L-G6) files whose names aren't UTF-8, which Unix allows: written back as
+/// lossy text, they'd name another file. Those are shown lossily.
 fn parse_raw_diff(output: &[u8]) -> (Vec<ChangedFile>, Vec<String>) {
     let mut fields = output
         .split(|byte| *byte == 0)
@@ -693,7 +791,10 @@ fn parse_raw_diff(output: &[u8]) -> (Vec<ChangedFile>, Vec<String>) {
             .unwrap_or(meta)
             .split(|byte| *byte == b' ')
             .collect();
-        let path = String::from_utf8_lossy(path).into_owned();
+        let Ok(path) = String::from_utf8(path.to_vec()) else {
+            gitlinks.push(String::from_utf8_lossy(path).into_owned());
+            continue;
+        };
         if meta.iter().take(2).any(|mode| *mode == GITLINK_MODE) {
             gitlinks.push(path);
             continue;
@@ -1186,6 +1287,61 @@ mod tests {
         assert_eq!(read("a.txt").as_deref(), Some("changed\n"));
     }
 
+    /// An agent task across repositories works in a folder of linked
+    /// worktrees: what it changes in them is snapshotted, shown and rolled
+    /// back like any file (R3 M3).
+    #[test]
+    fn test_linked_worktrees_in_a_folder_are_snapshotted() {
+        let (temp, repository, storage) = repository();
+        let group = temp.path().join("task");
+        fs::create_dir_all(&group).unwrap();
+        let worktree = group.join("repo");
+        git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "task",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        fs::write(group.join("notes.txt"), "notes\n").unwrap();
+        let store = SnapshotStore::open(&group, &storage).unwrap();
+        assert!(!store.is_repository());
+        let read = |path: &str| fs::read_to_string(group.join(path)).ok();
+        let before = store.snapshot().unwrap();
+
+        fs::write(worktree.join("a.txt"), "changed\n").unwrap();
+        fs::write(worktree.join("src/new.txt"), "new\n").unwrap();
+        fs::write(group.join("notes.txt"), "more notes\n").unwrap();
+        let after = store.snapshot().unwrap();
+        assert_eq!(
+            sorted(store.changed_files(&before, &after).unwrap()),
+            vec![
+                ("notes.txt".to_string(), FileChange::Modified),
+                ("repo/a.txt".to_string(), FileChange::Modified),
+                ("repo/src/new.txt".to_string(), FileChange::Added),
+            ]
+        );
+        assert_eq!(
+            store.file_contents(&before, "repo/a.txt").unwrap(),
+            b"one\ntwo\nthree\n"
+        );
+
+        let restored = store.restore(&before).unwrap();
+        assert!(restored.skipped.is_empty(), "{:?}", restored.skipped);
+        assert_eq!(read("repo/a.txt").as_deref(), Some("one\ntwo\nthree\n"));
+        assert_eq!(read("repo/src/new.txt"), None);
+        assert_eq!(read("notes.txt").as_deref(), Some("notes\n"));
+        // The worktree's own repository doesn't see the rollback as changes.
+        assert_eq!(git(&worktree, &["status", "--porcelain"]), "");
+        store.restore(&restored.undo).unwrap();
+        assert_eq!(read("repo/a.txt").as_deref(), Some("changed\n"));
+        assert_eq!(read("repo/src/new.txt").as_deref(), Some("new\n"));
+    }
+
     /// The private index names a blob staged by the user, then unstaged and
     /// pruned: snapshots start the index over rather than fail from then on
     /// (R3 M12).
@@ -1546,8 +1702,15 @@ mod tests {
              :100644 120000 {id} {id} T\0link\0\
              :000000 160000 {zero} {id} A\0nested\0"
         );
-        let (changed, gitlinks) = parse_raw_diff(output.as_bytes());
-        assert_eq!(gitlinks, vec!["nested".to_string()]);
+        let mut output = output.into_bytes();
+        // A name that isn't UTF-8 is left alone (R3 L-G6).
+        output.extend(format!(":100644 100644 {id} {id} M\0").as_bytes());
+        output.extend(b"caf\xe9.txt\0");
+        let (changed, gitlinks) = parse_raw_diff(&output);
+        assert_eq!(
+            gitlinks,
+            vec!["nested".to_string(), "caf\u{fffd}.txt".to_string()]
+        );
         assert_eq!(
             changed,
             vec![
