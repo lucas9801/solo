@@ -423,10 +423,13 @@ fn json<T: Serialize>(value: &T) -> String {
 }
 
 /// Runs `solo-cli agent <args>`, from the terminal `caller` if it runs in one.
+/// `connected` says whether the CLI is still there to answer: `wait` stops
+/// once it isn't.
 pub async fn run(
     args: Vec<String>,
     caller: Option<String>,
     cwd: Option<PathBuf>,
+    connected: &dyn Fn() -> bool,
     cx: &mut AsyncApp,
 ) -> AgentCliOutput {
     // SOLO: nothing of the request is looked at while the CLI is off.
@@ -475,7 +478,7 @@ pub async fn run(
         }),
         Command::Send { id, text } => cx.update(|cx| send(&id, &text, caller, cx)),
         Command::Wait { id, until, timeout } => {
-            wait(&id, until, timeout, caller, json_output, cx).await
+            wait(&id, until, timeout, caller, json_output, connected, cx).await
         }
         Command::Output { id, lines } => {
             cx.update(|cx| output(&id, lines, caller, json_output, cx))
@@ -547,6 +550,7 @@ async fn wait(
     timeout: Option<Duration>,
     caller: Option<&str>,
     json_output: bool,
+    connected: &dyn Fn() -> bool,
     cx: &mut AsyncApp,
 ) -> AgentCliOutput {
     let found = match cx.update(|cx| find(id, caller, cx)) {
@@ -595,6 +599,11 @@ async fn wait(
             };
         }
         cx.background_executor().timer(WAIT_POLL).await;
+        // SOLO: no one to answer, say the CLI was stopped: stop looking too
+        // (R3 L-H6).
+        if !connected() {
+            return AgentCliOutput::error("`solo-cli agent wait` is gone");
+        }
     }
 }
 

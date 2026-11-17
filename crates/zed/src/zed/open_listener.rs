@@ -769,7 +769,8 @@ pub async fn handle_cli_connection(
             }
             // SOLO: `solo-cli agent ...`.
             CliRequest::Agent { args, caller, cwd } => {
-                let output = terminal_view::agent_cli::run(args, caller, cwd, cx).await;
+                let connected = || responses.send(CliResponse::Ping).is_ok();
+                let output = terminal_view::agent_cli::run(args, caller, cwd, &connected, cx).await;
                 if !output.stdout.is_empty() {
                     responses
                         .send(CliResponse::Stdout {
