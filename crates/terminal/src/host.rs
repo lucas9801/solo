@@ -484,6 +484,71 @@ fn open_pipe(
 }
 
 fn read_line(pipe: &mut File) -> Result<String> {
+    read_line_within(pipe, START_TIMEOUT)
+}
+
+/// SOLO: [`read_line`], giving up after `timeout`: what's at the other end of
+/// the pipe may never write (R3 L-H5).
+fn read_line_within(pipe: &mut File, timeout: Duration) -> Result<String> {
+    let watchdog = Watchdog::start(timeout)?;
+    let line = read_header_line(pipe);
+    if watchdog.stop() {
+        bail!("no header from the terminal host within {timeout:?}");
+    }
+    line
+}
+
+/// Cancels what the thread that started it is reading or writing, after a
+/// while, until stopped.
+struct Watchdog {
+    stop: std::sync::mpsc::Sender<()>,
+    thread: std::thread::JoinHandle<bool>,
+}
+
+impl Watchdog {
+    fn start(timeout: Duration) -> Result<Self> {
+        use windows::Win32::System::Threading::{GetCurrentThreadId, OpenThread, THREAD_TERMINATE};
+        // A real handle: the thread's pseudo handle is the watchdog's own on
+        // its thread. CancelSynchronousIo needs THREAD_TERMINATE.
+        let thread = unsafe { OpenThread(THREAD_TERMINATE, false, GetCurrentThreadId()) }
+            .context("opening the reading thread")?;
+        let thread = thread.0 as isize;
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            use std::sync::mpsc::RecvTimeoutError;
+            use windows::Win32::Foundation::{CloseHandle, HANDLE};
+            use windows::Win32::System::IO::CancelSynchronousIo;
+            let thread = HANDLE(thread as *mut std::ffi::c_void);
+            let mut fired = false;
+            if stopped.recv_timeout(timeout) == Err(RecvTimeoutError::Timeout) {
+                fired = true;
+                // Again until stopped: the thread may be between reads.
+                loop {
+                    unsafe { CancelSynchronousIo(thread).ok() };
+                    if stopped.recv_timeout(Duration::from_millis(10))
+                        != Err(RecvTimeoutError::Timeout)
+                    {
+                        break;
+                    }
+                }
+            }
+            unsafe { CloseHandle(thread).ok() };
+            fired
+        });
+        Ok(Self {
+            stop,
+            thread: watchdog,
+        })
+    }
+
+    /// Stops it; whether it fired.
+    fn stop(self) -> bool {
+        self.stop.send(()).ok();
+        self.thread.join().unwrap_or(true)
+    }
+}
+
+fn read_header_line(pipe: &mut File) -> Result<String> {
     let mut line = Vec::new();
     let mut byte = [0u8; 1];
     while line.len() < 1024 {
@@ -826,6 +891,21 @@ mod tests {
     use super::*;
     use crate::terminal_settings::{AlternateScroll, CursorShape};
     use crate::{Terminal, TerminalBuilder, TerminalMode};
+
+    /// Reading the header gives up when nothing comes (R3 L-H5).
+    #[test]
+    fn reading_the_header_gives_up() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let mut reader = File::from(std::os::windows::io::OwnedHandle::from(reader));
+        let started = Instant::now();
+        assert!(read_line_within(&mut reader, Duration::from_millis(200)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+        writer.write_all(b"SOLO-TERMINAL-HOST 1\n").unwrap();
+        assert_eq!(
+            read_line_within(&mut reader, Duration::from_secs(10)).unwrap(),
+            "SOLO-TERMINAL-HOST 1"
+        );
+    }
 
     fn init_test(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
