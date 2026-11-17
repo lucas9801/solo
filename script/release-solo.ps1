@@ -3,9 +3,8 @@
 # and pushes the branch and the tag. Nothing is built here: the tag starts the
 # "Solo package" workflow (.github/workflows/solo-package.yml), which builds
 # Solo on GitHub's runners, checks solo.exe was built from the tagged commit,
-# has it signed (once SignPath signing is turned on, see
-# docs\code-signing-policy.md), packages the zip, and creates a draft GitHub
-# release with it and the notes. Check the draft, then publish
+# makes the Microsoft Store package, and creates a draft GitHub release with
+# the remote servers and the notes. Check the draft, then publish
 # it (on GitHub, or `gh release edit v<version> --draft=false`); running
 # copies of Solo update only from published releases. Publishing it also
 # submits the Microsoft Store package (Solo Code) to Partner Center
@@ -47,8 +46,8 @@
 # signed in); -DryRun checks it too. -SkipCiCheck releases without checking,
 # for emergencies only.
 #
-# To build packages locally (for testing only; releases come from CI), run
-# script\package-solo.ps1.
+# To build the Store package locally (for testing only; releases come from
+# CI), see docs\development.md ("The Microsoft Store package").
 
 param(
     [ValidateSet("", "patch", "minor", "major")]
