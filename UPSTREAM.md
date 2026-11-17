@@ -27,8 +27,10 @@ $base = "4d847859f5506471bd80ca78ee6ced161b19a4e8"   # the table above
 git -C $zed fetch origin --tags
 $new  = git -C $zed rev-parse origin/main              # or a release tag, e.g. v1.29.0
 
-# Zed's changes, without the files Solo removed from Zed and Zed's own
-# agent rules (.rules, CLAUDE.md, AGENTS.md). It lists what it left out.
+# Zed's changes, without the files Solo removed from Zed, the files Zed
+# added under directories Solo removed entirely (such as crates/collab), and
+# Zed's own agent rules (.rules, CLAUDE.md, AGENTS.md). It lists what it
+# left out.
 python script/zed-update-patch.py --zed $zed --base $base --new $new -o ..\zed.patch
 
 # The three-way merge needs Zed's version of each file at the base: the
@@ -45,8 +47,9 @@ Then:
    change and Solo's (Solo's changes to Zed's code are marked `// SOLO:`).
    For `Cargo.lock`, take Zed's version and let cargo bring it up to date:
    `git checkout --theirs Cargo.lock`, then `cargo check -p zed --bin solo`.
-2. New files (`A`) Zed added for things Solo removed (its own workflows,
-   docs site or bundling scripts) can be removed with `git rm`.
+2. New files (`A`) Zed added for things Solo removed but whose directory
+   Solo still has (its own workflows in `.github/workflows`, bundling
+   scripts in `script/`) can be removed with `git rm`.
 3. Build and test as for any change, and fix Solo's code where Zed's APIs
    changed.
 4. Change the table above to `$new`, its date and the version in Zed's

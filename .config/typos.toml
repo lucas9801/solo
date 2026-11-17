@@ -17,9 +17,6 @@ extend-exclude = [
     # Some mock data is flagged as typos.
     "crates/assistant_tools/src/web_search_tool.rs",
 
-    # Suppress false positives in database schema.
-    "crates/collab/migrations/20251208000000_test_schema.sql",
-
     # Vendored JSON schemas from SchemaStore.
     "crates/json_schema_store/src/schemas/",
 
@@ -37,11 +34,6 @@ extend-exclude = [
     "crates/git/test_data/golden/blame_incremental_complex.json",
     # We have some base64-encoded data that is incorrectly being flagged.
     "crates/rpc/src/auth.rs",
-    # glsl isn't recognized by this tool.
-    "extensions/glsl/languages/glsl/",
-    # Protols is the name of the language server.
-    "extensions/proto/extension.toml",
-    "extensions/proto/src/language_servers/protols.rs",
     # Windows likes its abbreviations.
     "crates/gpui_windows/src/directx_renderer.rs",
     "crates/gpui_windows/src/events.rs",
