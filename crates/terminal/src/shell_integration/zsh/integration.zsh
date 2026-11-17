@@ -32,6 +32,18 @@ __solo_precmd_status() {
     fi
     local uri_path=${PWD//\%/%25}
     uri_path=${uri_path// /%20}
+    # SOLO: a control character, which a folder's name can have, would end
+    # the sequence early.
+    if [[ $uri_path == *[[:cntrl:]]* ]]; then
+        local encoded= c
+        for c in "${(@s::)uri_path}"; do
+            if [[ $c == [[:cntrl:]] ]]; then
+                printf -v c '%%%02X' "'$c"
+            fi
+            encoded+=$c
+        done
+        uri_path=$encoded
+    fi
     printf '\e]7;file://%s%s\a' "${HOST-}" "$uri_path"
     return $exit_code
 }
@@ -74,7 +86,11 @@ if [[ -n ${SOLO_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} )); then
                     ;;
             esac
         done
-        if [[ -r $SOLO_CLAUDE_SETTINGS ]]; then
+        if [[ -r $SOLO_CLAUDE_SETTINGS && -n ${SOLO_CLAUDE_MCP_CONFIG-} && -r $SOLO_CLAUDE_MCP_CONFIG ]]; then
+            # Solo's browser, when agents may control it (before --settings,
+            # which ends --mcp-config's list of files).
+            command claude --mcp-config "$SOLO_CLAUDE_MCP_CONFIG" --settings "$SOLO_CLAUDE_SETTINGS" "$@"
+        elif [[ -r $SOLO_CLAUDE_SETTINGS ]]; then
             command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
         else
             command claude "$@"

@@ -23,8 +23,8 @@ use terminal::terminal_settings::TerminalSettings;
 use ui::{ListItem, ListItemSpacing, prelude::*};
 use workspace::{ModalView, Toast, Workspace, item::Item as _, notifications::NotificationId};
 use zed_actions::agent_terminal::{
-    DocumentComment, SendDiagnosticsToAgent, SendDocumentCommentsToAgent, SendPositionToAgent,
-    SendSelectionToAgent,
+    DocumentComment, PageComment, SendDiagnosticsToAgent, SendDocumentCommentsToAgent,
+    SendPageCommentsToAgent, SendPositionToAgent, SendSelectionToAgent,
 };
 
 use crate::{
@@ -105,6 +105,16 @@ pub(crate) fn init(cx: &mut App) {
                 let action = action.clone();
                 window.defer(cx, move |window, cx| {
                     send_document_comments(&workspace, action, window, cx)
+                });
+            },
+        );
+        // From a page in Solo's browser.
+        workspace.register_action(
+            |_, action: &SendPageCommentsToAgent, window, cx: &mut Context<Workspace>| {
+                let workspace = cx.entity();
+                let action = action.clone();
+                window.defer(cx, move |window, cx| {
+                    send_page_comments(&workspace, action, window, cx)
                 });
             },
         );
@@ -263,6 +273,10 @@ pub(crate) enum AgentContext {
         path: PathBuf,
         comments: Vec<DocumentComment>,
     },
+    PageComments {
+        url: String,
+        comments: Vec<PageComment>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -384,6 +398,44 @@ impl AgentContext {
                         "- {path}:{} — \"{quote}\" — {text}\n",
                         line_range(comment.start_line, comment.end_line)
                     ));
+                }
+                message
+            }
+            AgentContext::PageComments { url, comments } => {
+                let mut message = format!("Comments on {url}:\n");
+                for comment in comments {
+                    // Continuation lines are indented to keep each comment one item.
+                    let text = comment.comment.trim().replace('\n', "\n  ");
+                    let quote = comment.text.replace('"', "'");
+                    if quote.is_empty() {
+                        message.push_str(&format!("- {} — {text}\n", comment.selector));
+                    } else {
+                        message.push_str(&format!("- {} \"{quote}\" — {text}\n", comment.selector));
+                    }
+                    if !comment.html.is_empty() {
+                        // On one line, so the HTML can't look like more items.
+                        let html = comment
+                            .html
+                            .lines()
+                            .map(str::trim)
+                            .filter(|line| !line.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        message.push_str(&format!("  html: {html}\n"));
+                    }
+                    if !comment.styles.is_empty() {
+                        let styles = comment
+                            .styles
+                            .iter()
+                            .map(|(name, value)| format!("{name} {value}"))
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        message.push_str(&format!("  style: {styles}\n"));
+                    }
+                    if let Some(screenshot) = &comment.screenshot {
+                        let screenshot = screenshot.to_string_lossy().replace('\\', "/");
+                        message.push_str(&format!("  screenshot: {screenshot}\n"));
+                    }
                 }
                 message
             }
@@ -576,6 +628,48 @@ fn send_document_comments(
     };
     let agent = agent.clone();
     send_to_agent_terminal(workspace, &agent, &context, window, cx);
+}
+
+/// Sends comments on a web page to the agent used last, or to one to choose.
+/// Without an agent terminal they're copied to the clipboard.
+fn send_page_comments(
+    workspace: &Entity<Workspace>,
+    action: SendPageCommentsToAgent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if action.comments.is_empty() {
+        return;
+    }
+    let context = AgentContext::PageComments {
+        url: action.url,
+        comments: action.comments,
+    };
+    let agents = agent_terminals(workspace, cx);
+    let Some(last_used) = agents.first() else {
+        cx.write_to_clipboard(ClipboardItem::new_string(context.message(None)));
+        struct NoAgentForPageCommentsToast;
+        show_toast::<NoAgentForPageCommentsToast>(
+            workspace,
+            util::i18n::tr(
+                "No terminal is running an AI agent; copied the comments to the clipboard instead",
+                "没有终端在运行 AI agent，批注已改为复制到剪贴板",
+            ),
+            cx,
+        );
+        return;
+    };
+    if !action.choose_terminal || agents.len() == 1 {
+        let last_used = last_used.clone();
+        send_to_agent_terminal(workspace, &last_used, &context, window, cx);
+        return;
+    }
+    let weak_workspace = workspace.downgrade();
+    workspace.update(cx, |workspace, cx| {
+        workspace.toggle_modal(window, cx, |window, cx| {
+            AgentTerminalPicker::new(weak_workspace, agents, context, window, cx)
+        })
+    });
 }
 
 /// Pastes `context` into the agent's prompt and switches to its terminal.
@@ -1006,6 +1100,82 @@ mod tests {
         assert!(needs_bracketed_paste("text\x1b[Z"));
         assert!(needs_bracketed_paste("stop\x03 now"));
         assert!(needs_bracketed_paste("next\u{85}line"));
+    }
+
+    #[test]
+    fn test_page_comments_message() {
+        let context = AgentContext::PageComments {
+            url: "http://localhost:5173/settings".into(),
+            comments: vec![
+                PageComment {
+                    selector: "h2.title".into(),
+                    text: "账户设置".into(),
+                    html: "<h2 class=\"title\">账户设置</h2>".into(),
+                    styles: vec![
+                        ("font-size".into(), "16px".into()),
+                        ("font-weight".into(), "600".into()),
+                        ("color".into(), "#1f2430".into()),
+                    ],
+                    screenshot: Some(PathBuf::from(
+                        r"C:\Users\me\AppData\Local\Solo\browser\picks\1.png",
+                    )),
+                    comment: "字号改成 20px".into(),
+                },
+                PageComment {
+                    selector: "button.save".into(),
+                    text: "Say \"hi\"".into(),
+                    html: "<button class=\"save\">\n  Say \"hi\"\n</button>".into(),
+                    styles: Vec::new(),
+                    screenshot: None,
+                    comment: "Make it the primary color.\nAnd 8px from Cancel.".into(),
+                },
+                PageComment {
+                    selector: "div:nth-child(2)".into(),
+                    comment: "Remove this".into(),
+                    ..Default::default()
+                },
+            ],
+        };
+        assert_eq!(
+            context.message(None),
+            concat!(
+                "Comments on http://localhost:5173/settings:\n",
+                "- h2.title \"账户设置\" — 字号改成 20px\n",
+                "  html: <h2 class=\"title\">账户设置</h2>\n",
+                "  style: font-size 16px; font-weight 600; color #1f2430\n",
+                "  screenshot: C:/Users/me/AppData/Local/Solo/browser/picks/1.png\n",
+                "- button.save \"Say 'hi'\" — Make it the primary color.\n  And 8px from Cancel.\n",
+                "  html: <button class=\"save\"> Say \"hi\" </button>\n",
+                "- div:nth-child(2) — Remove this\n",
+            )
+        );
+    }
+
+    #[gpui::test]
+    async fn test_page_comments_without_an_agent_go_to_the_clipboard(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_, workspace, window) = crate::tests::init_test_with_window(cx).await;
+        let action = SendPageCommentsToAgent {
+            url: "http://localhost:5173/".into(),
+            comments: vec![PageComment {
+                selector: "button.save".into(),
+                text: "保存".into(),
+                comment: "改成主色".into(),
+                ..Default::default()
+            }],
+            choose_terminal: false,
+        };
+        window
+            .update(cx, |_, window, cx| {
+                send_page_comments(&workspace, action, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some("Comments on http://localhost:5173/:\n- button.save \"保存\" — 改成主色\n".into())
+        );
     }
 
     #[test]

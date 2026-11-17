@@ -27,7 +27,12 @@ fn main() {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis().to_string())
         .unwrap_or_default();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // SOLO: not `args()`, which panics on an argument that isn't Unicode
+    // (R3 L-H7); such an argument fails the checks below instead.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     let nonce = terminal_nonce();
     if args.first().map(String::as_str) == Some("report") {
         match report_sequence(&args[1..], &sent_at_ms, &nonce) {
@@ -44,16 +49,13 @@ fn main() {
         }
         return;
     }
-    let mut input = String::new();
     // SOLO: hooks in an agent's own config (Kimi Code, MastraCode) run
     // outside Solo's terminals too, where there's nothing to tell: no key.
     if nonce.is_empty() {
-        std::io::stdin().read_to_string(&mut input).ok();
+        read_hook_input(std::io::stdin().lock());
         return;
     }
-    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("solo-agent-hook: failed to read the hook input: {error}");
-    }
+    let input = read_hook_input(std::io::stdin().lock());
     let (argument, agent) = hook_arguments(&args);
     let Some(kind) = kind_of(&input, argument) else {
         return;
@@ -233,6 +235,28 @@ fn hook_arguments(args: &[String]) -> (Option<&str>, Option<&str>) {
         }
     }
     (kind, agent)
+}
+
+/// SOLO: the most of the hook's JSON input read (R3 L-H8). More, as for a
+/// Write of a huge file, is dropped whole: the report then goes by the hook's
+/// argument alone.
+const MAX_HOOK_INPUT: u64 = 32 * 1024 * 1024;
+
+/// The hook's JSON input from `reader`, or nothing if it's longer than
+/// [`MAX_HOOK_INPUT`] or can't be read.
+fn read_hook_input(reader: impl std::io::Read) -> String {
+    let mut input = String::new();
+    match reader.take(MAX_HOOK_INPUT + 1).read_to_string(&mut input) {
+        Ok(read) if read as u64 <= MAX_HOOK_INPUT => input,
+        Ok(_) => {
+            eprintln!("solo-agent-hook: the hook input is too long, ignored");
+            String::new()
+        }
+        Err(error) => {
+            eprintln!("solo-agent-hook: failed to read the hook input: {error}");
+            String::new()
+        }
+    }
 }
 
 /// Whether `agent` can go into the escape sequence as an agent's name: up to
@@ -496,6 +520,18 @@ fn write_to_terminal(bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hook input is read up to a limit (R3 L-H8).
+    #[test]
+    fn hook_input_has_a_limit() {
+        use std::io::Read as _;
+        let input = r#"{"hook_event_name":"Stop"}"#;
+        assert_eq!(read_hook_input(input.as_bytes()), input);
+        let long = std::io::repeat(b' ').take(MAX_HOOK_INPUT + 1);
+        assert_eq!(read_hook_input(long), "");
+        let longest = std::io::repeat(b' ').take(MAX_HOOK_INPUT);
+        assert_eq!(read_hook_input(longest).len() as u64, MAX_HOOK_INPUT);
+    }
 
     /// SOLO: Claude Code's edits are reported with the file (R3 M5).
     #[test]

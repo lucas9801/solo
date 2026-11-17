@@ -493,11 +493,20 @@ impl Project {
                                         &mut env,
                                     );
                                 }
+                                // SOLO: Solo's browser, for agents, when allowed.
+                                terminal::shell_integration::integrate_browser(
+                                    path_style.is_windows(),
+                                    &mut env,
+                                );
                                 (shell, env)
                             }
                             None => {
                                 let mut env = env;
                                 terminal::shell_integration::add_terminal_env(&mut env);
+                                terminal::shell_integration::integrate_browser(
+                                    path_style.is_windows(),
+                                    &mut env,
+                                );
                                 (settings.shell, env)
                             }
                         }

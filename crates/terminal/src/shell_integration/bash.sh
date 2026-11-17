@@ -61,6 +61,19 @@ __solo_prompt_command() {
     fi
     path=${path//%/%25}
     path=${path// /%20}
+    # SOLO: a control character, which a folder's name can have, would end
+    # the sequence early.
+    if [[ $path == *[[:cntrl:]]* ]]; then
+        local encoded= c i
+        for (( i = 0; i < ${#path}; i++ )); do
+            c=${path:i:1}
+            if [[ $c == [[:cntrl:]] ]]; then
+                printf -v c '%%%02X' "'$c"
+            fi
+            encoded+=$c
+        done
+        path=$encoded
+    fi
     printf '\e]7;file://%s%s\a' "${HOSTNAME-}" "$path"
 
     if [[ -n "$__solo_original_prompt_command" ]]; then
@@ -123,7 +136,14 @@ if [[ -n "${SOLO_CLAUDE_SETTINGS-}" ]] && ! declare -F claude >/dev/null; then
             esac
         done
         if [[ -r "$SOLO_CLAUDE_SETTINGS" ]]; then
-            command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
+            # Solo's browser, when agents may control it. --mcp-config adds to
+            # the user's own MCP servers; it takes several files, so it goes
+            # before --settings, which ends the list.
+            if [[ -n "${SOLO_CLAUDE_MCP_CONFIG-}" && -r "$SOLO_CLAUDE_MCP_CONFIG" ]]; then
+                command claude --mcp-config "$SOLO_CLAUDE_MCP_CONFIG" --settings "$SOLO_CLAUDE_SETTINGS" "$@"
+            else
+                command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
+            fi
         else
             command claude "$@"
         fi

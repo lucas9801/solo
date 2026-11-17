@@ -545,8 +545,17 @@ fn run() -> Result<()> {
 
     // SOLO: `solo-cli agent ...` asks the running Solo and prints its answer;
     // it doesn't start Solo.
-    if std::env::args().nth(1).as_deref() == Some("agent") {
-        let status = run_agent(std::env::args().skip(2).collect())?;
+    // Arguments that aren't Unicode are an error, not a panic (R3 L-H7).
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("agent")) {
+        let Ok(args) = std::env::args_os()
+            .skip(2)
+            .map(std::ffi::OsString::into_string)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            eprintln!("solo-cli agent: the arguments must be valid Unicode");
+            std::process::exit(2);
+        };
+        let status = run_agent(args)?;
         std::process::exit(status);
     }
 

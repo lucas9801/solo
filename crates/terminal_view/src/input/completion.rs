@@ -112,7 +112,12 @@ pub async fn complete_async(
     depth: CompletionDepth,
 ) -> Result<CompletionSet> {
     let flavor = ShellFlavor::from_shell(shell.as_deref());
-    let cursor = cursor.min(input.len());
+    // SOLO: on a character boundary, or slicing at it panics (R3, the
+    // unchecked `input[cursor..]`).
+    let mut cursor = cursor.min(input.len());
+    while !input.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
     let tokens = command_tokens(&input[..cursor]);
     let Some(current) = tokens.last() else {
         return Ok(CompletionSet::default());
@@ -798,6 +803,24 @@ mod tests {
                 ("lg".to_string(), "log --oneline --graph".to_string()),
             ]
         );
+    }
+
+    /// A cursor inside a character is taken back to its start, not a panic.
+    #[test]
+    fn test_cursor_inside_a_character() {
+        for cursor in 0..=20 {
+            futures::executor::block_on(complete_async(
+                None,
+                "git ch文件".to_string(),
+                cursor,
+                None,
+                CompletionDepth {
+                    quick: true,
+                    ..CompletionDepth::default()
+                },
+            ))
+            .ok();
+        }
     }
 
     fn complete_now(input: &str, cwd: Option<&Path>) -> CompletionSet {

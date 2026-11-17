@@ -108,6 +108,15 @@
     // workspace when the centered layout is used.
     "right_padding": 0.2,
   },
+  // Solo's built-in browser
+  "browser": {
+    // Where web links in the terminal, the Markdown preview and the timeline open:
+    // "local_in_solo" (localhost and friends in Solo, the rest in the system browser),
+    // "all_in_solo" or "all_in_system". Ctrl+Shift+click opens a link the other way.
+    "open_links": "local_in_solo",
+    // Let agents started in Solo's terminal control Solo's browser (takes effect after a restart).
+    "allow_agent_control": false,
+  },
   // Image viewer settings
   "image_viewer": {
     // The unit for image file sizes: "binary" (KiB, MiB) or decimal (KB, MB)

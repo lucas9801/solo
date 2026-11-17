@@ -151,11 +151,17 @@ fn location(path: PathBuf, matched_by: MatchedBy) -> Option<SessionLocation> {
     })
 }
 
+/// SOLO: the most of a session's first record read (R3 L-A3). It carries
+/// Codex's instructions, some tens of KB.
+const MAX_FIRST_RECORD_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Where a session started, from its first record.
 fn session_cwd(path: &Path) -> Option<PathBuf> {
     let file = std::fs::File::open(path).ok()?;
     let mut first = String::new();
-    BufReader::new(file).read_line(&mut first).ok()?;
+    BufReader::new(file.take(MAX_FIRST_RECORD_BYTES))
+        .read_line(&mut first)
+        .ok()?;
     let record: Value = serde_json::from_str(&first).ok()?;
     (record.get("type")?.as_str()? == "session_meta")
         .then(|| {

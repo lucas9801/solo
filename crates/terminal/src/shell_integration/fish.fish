@@ -34,8 +34,10 @@ function __solo_postexec --on-event fish_postexec
 end
 
 function __solo_report_cwd --on-variable PWD
-    set -l path (string replace -a '%' '%25' -- $PWD)
-    set path (string replace -a ' ' '%20' -- $path)
+    # SOLO: all but letters, digits and `/._~-` percent-encoded, control
+    # characters (which a folder's name can have, and would end the sequence
+    # early) and line breaks included.
+    set -l path (string escape --style=url -- $PWD)
     printf '\e]7;file://%s%s\a' $hostname $path
 end
 __solo_report_cwd
@@ -81,6 +83,10 @@ if set -q SOLO_CLAUDE_SETTINGS; and not functions -q claude
             or string match -q -- '--settings=*' $argv
             or not test -r "$SOLO_CLAUDE_SETTINGS"
             command claude $argv
+        else if set -q SOLO_CLAUDE_MCP_CONFIG; and test -r "$SOLO_CLAUDE_MCP_CONFIG"
+            # Solo's browser, when agents may control it (before --settings,
+            # which ends --mcp-config's list of files).
+            command claude --mcp-config "$SOLO_CLAUDE_MCP_CONFIG" --settings "$SOLO_CLAUDE_SETTINGS" $argv
         else
             command claude --settings "$SOLO_CLAUDE_SETTINGS" $argv
         end

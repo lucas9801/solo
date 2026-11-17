@@ -97,6 +97,12 @@ if ($env:SOLO_CLAUDE_SETTINGS -and -not (Get-Command -Name claude -CommandType F
         $settings = @()
         if (-not $asTyped -and (Test-Path -LiteralPath $env:SOLO_CLAUDE_SETTINGS)) {
             $settings = @('--settings', $env:SOLO_CLAUDE_SETTINGS)
+            # Solo's browser, when agents may control it. --mcp-config adds to
+            # the user's own MCP servers; it takes several files, so it goes
+            # before --settings, which ends the list.
+            if ($env:SOLO_CLAUDE_MCP_CONFIG -and (Test-Path -LiteralPath $env:SOLO_CLAUDE_MCP_CONFIG)) {
+                $settings = @('--mcp-config', $env:SOLO_CLAUDE_MCP_CONFIG) + $settings
+            }
         }
         $Global:LASTEXITCODE = 0
         if ($MyInvocation.ExpectingInput) {
