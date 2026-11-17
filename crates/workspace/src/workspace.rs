@@ -9733,12 +9733,79 @@ impl Workspace {
                         resolved_path
                     })
                 };
+                // SOLO: the trust dialog lists the language servers the
+                // project's files need that Solo would download.
+                if self.project().read(cx).is_local() {
+                    note_language_servers_before_trust(self.project().clone(), cx);
+                }
                 self.toggle_modal(window, cx, |window, cx| {
                     SecurityModal::new(worktree_store, remote_host, home_dir_task, window, cx)
                 });
             }
         }
     }
+}
+
+/// SOLO: notes (`net_guard::note_before_trust`) the language servers that the
+/// files of `project`'s untrusted worktrees would start and that aren't
+/// downloaded yet, once the worktrees are scanned.
+fn note_language_servers_before_trust(project: Entity<Project>, cx: &mut App) {
+    let worktrees = project
+        .read(cx)
+        .worktrees(cx)
+        .filter_map(|worktree| {
+            let scanned = worktree.read(cx).as_local()?.scan_complete();
+            Some((worktree.downgrade(), scanned))
+        })
+        .collect::<Vec<_>>();
+    let languages = project.read(cx).languages().clone();
+    cx.spawn(async move |cx| {
+        for (worktree, scanned) in worktrees {
+            scanned.await;
+            cx.update(|cx| {
+                let Some(worktree) = worktree.upgrade() else {
+                    return;
+                };
+                let extensions = worktree
+                    .read(cx)
+                    .files(false, 0)
+                    .take(20_000)
+                    .filter_map(|entry| entry.path.extension().map(str::to_string))
+                    .collect::<HashSet<_>>();
+                let language_names = extensions
+                    .iter()
+                    .filter_map(|extension| languages.language_name_for_extension(extension))
+                    .collect::<HashSet<_>>();
+                for name in language_names {
+                    let available = languages
+                        .lsp_adapters(&name)
+                        .into_iter()
+                        .filter(|adapter| !adapter.adapter.is_extension())
+                        .map(|adapter| adapter.name())
+                        .collect::<Vec<_>>();
+                    let settings = language::language_settings::LanguageSettings::resolve(
+                        None,
+                        Some(&name),
+                        cx,
+                    );
+                    for server in settings.customized_language_servers(&available) {
+                        let downloaded = languages
+                            .language_server_download_dir(&server)
+                            .is_some_and(|dir| {
+                                std::fs::read_dir(dir)
+                                    .is_ok_and(|mut entries| entries.next().is_some())
+                            });
+                        if !downloaded {
+                            net_guard::note_before_trust(net_guard::Component::language_server(
+                                &server.0,
+                            ));
+                        }
+                    }
+                }
+            });
+        }
+    })
+    .detach();
 }
 
 fn project_window_title(project: &Project, cx: &App) -> String {

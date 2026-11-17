@@ -1745,6 +1745,31 @@
   // (github.com/lucas9801/solo) shortly after startup and then every 6 hours,
   // and asks before installing anything. Stable builds only.
   "auto_update": true,
+  // Offline mode. Solo then only connects to this computer and the local
+  // network (local models such as Ollama, LAN servers, SSH keep working),
+  // downloads nothing, and doesn't check for updates. Also a button in the
+  // status bar.
+  "network": {
+    "offline": false,
+  },
+  // What Solo does when it needs to download a component by itself: a
+  // language server, Node.js, Prettier, a debug adapter, GitHub Copilot, or
+  // extension updates.
+  "downloads": {
+    // "ask": ask once per component (default)
+    // "auto": download without asking
+    // "never": never download; use only what's installed (and the paths in
+    //          `node.path`, `lsp.<server>.binary.path`)
+    "mode": "ask",
+    // Components that may (true) or may not (false) be downloaded, by id: a
+    // language server's name ("rust-analyzer", "vtsls"), "node", "prettier",
+    // "copilot", "extension-updates", or a debug adapter ("codelldb",
+    // "js-debug", "delve", "debugpy"). Solo adds the ones you allow.
+    // Components already downloaded count as allowed.
+    "allowed": {},
+    // Whether allowed components check for and download their updates.
+    "check_updates": true,
+  },
   // How to render LSP `textDocument/documentColor` colors in the editor.
   //
   // Possible values:

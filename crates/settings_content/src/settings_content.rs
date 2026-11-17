@@ -6,6 +6,8 @@ mod fallible_options;
 mod language;
 mod language_model;
 pub mod merge_from;
+// SOLO: offline mode and asking before downloads.
+mod network;
 mod project;
 mod serde_helper;
 mod terminal;
@@ -22,6 +24,7 @@ pub use fallible_options::*;
 pub use language::*;
 pub use language_model::*;
 pub use merge_from::MergeFrom as MergeFromTrait;
+pub use network::*;
 pub use project::*;
 use serde::de::DeserializeOwned;
 pub use serde_helper::{
@@ -296,6 +299,12 @@ pub struct SettingsContent {
     /// Default: system
     pub ui_language: Option<UiLanguage>,
 
+    /// SOLO: offline mode.
+    pub network: Option<NetworkSettingsContent>,
+
+    /// SOLO: what Solo does when it needs to download a component.
+    pub downloads: Option<DownloadsSettingsContent>,
+
     pub journal: Option<JournalSettingsContent>,
 
     /// A map of log scopes to the desired log level.
@@ -445,6 +454,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         call_hierarchy, command_palette, file_finder, git_panel, tabs, tab_bar, tab_switcher, status_bar, preview_tabs, agent,
         agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
         git,
+        network, downloads,
         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
         ui_language, journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,

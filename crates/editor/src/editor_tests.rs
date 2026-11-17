@@ -30507,6 +30507,99 @@ fn completion_menu_entries(menu: &CompletionsMenu) -> Vec<String> {
         .collect()
 }
 
+// SOLO: the default Prettier is installed on the first format, not when a
+// file opens.
+#[gpui::test]
+async fn test_default_prettier_installed_on_first_format(cx: &mut TestAppContext) {
+    init_test(cx, |settings| {
+        settings.defaults.formatter = Some(FormatterList::Single(Formatter::Prettier))
+    });
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_file(path!("/file.ts"), Default::default()).await;
+    let project = Project::test(fs, [path!("/file.ts").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(Arc::new(Language::new(
+        LanguageConfig {
+            name: "TypeScript".into(),
+            matcher: (LanguageMatcher {
+                path_suffixes: vec!["ts".into()],
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        },
+        Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+    )));
+    update_test_language_settings(cx, &|settings| {
+        settings.defaults.prettier.get_or_insert_default().allowed = Some(true);
+    });
+    let _ = language_registry.register_fake_lsp("TypeScript", FakeLspAdapter::default());
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/file.ts"), cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+    let prettier_installed = |cx: &mut TestAppContext| {
+        project.read_with(cx, |project, cx| {
+            project
+                .lsp_store()
+                .read(cx)
+                .prettier_store()
+                .unwrap()
+                .read(cx)
+                .default_prettier_installed()
+        })
+    };
+    assert!(
+        !prettier_installed(cx),
+        "opening a file shouldn't install Prettier"
+    );
+
+    let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
+    let (editor, cx) = cx.add_window_view(|window, cx| build_editor(buffer, window, cx));
+    editor.update_in(cx, |editor, window, cx| {
+        editor.set_text(
+            "one
+", window, cx,
+        )
+    });
+    editor
+        .update_in(cx, |editor, window, cx| {
+            editor.perform_format(
+                project.clone(),
+                FormatTrigger::Manual,
+                FormatTarget::Buffers(editor.buffer().read(cx).all_buffers()),
+                window,
+                cx,
+            )
+        })
+        .unwrap()
+        .await;
+    assert_eq!(
+        editor.update(cx, |editor, cx| editor.text(cx)),
+        "one
+"
+        .to_string()
+            + project::TEST_PRETTIER_FORMAT_SUFFIX,
+    );
+    assert!(
+        project.read_with(cx, |project, cx| {
+            project
+                .lsp_store()
+                .read(cx)
+                .prettier_store()
+                .unwrap()
+                .read(cx)
+                .default_prettier_installed()
+        }),
+        "the first format installs Prettier"
+    );
+}
+
 #[gpui::test]
 async fn test_document_format_with_prettier(cx: &mut TestAppContext) {
     init_test(cx, |settings| {

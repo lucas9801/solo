@@ -57,6 +57,9 @@ pub async fn download(
             return Ok(path);
         }
     }
+    // Offline mode: SSH works with a remote server already downloaded, but
+    // none is downloaded.
+    net_guard::ensure_online(util::i18n::tr("the remote server", "远程服务器"))?;
 
     let url = match &version {
         Some(version) => release_api_url(version),

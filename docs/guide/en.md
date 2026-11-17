@@ -562,9 +562,11 @@ collaboration and Zed's own auto-update are off or hidden.
 **Contacted only when you use a feature:**
 
 - downloading an update: the Microsoft Store (Solo Code);
-- language servers downloaded when you open a file in that language: GitHub
-  releases, the npm registry, and `nodejs.org` if no suitable Node.js is
-  installed;
+- components Solo downloads by itself, after asking (see "Asking before
+  downloading" below): language servers for a trusted project (GitHub
+  releases, the npm registry, `proxy.golang.org`, PyPI), `nodejs.org` if no
+  suitable Node.js is installed, Prettier on a file's first format, debug
+  adapters on the first debug session, GitHub Copilot's server;
 - AI providers you set up yourself (Anthropic, OpenAI, Ollama, ...);
 - avatars in git blame and commit details: `avatars.githubusercontent.com` and
   the GitHub API;
@@ -581,6 +583,47 @@ collaboration and Zed's own auto-update are off or hidden.
   `cdn.agentclientprotocol.com` and the icon URLs the registry lists;
 - the agents you run in the terminal (Claude Code, Codex, ...) make their own
   connections, not through Solo.
+
+**Asking before downloading.** Before Solo downloads a component by itself
+(a language server, Node.js, Prettier, a debug adapter, GitHub Copilot,
+extension updates), it asks once per component, naming where it comes from:
+
+- **Allow (remember)** downloads it, and it updates later without asking;
+- **Not now** skips it until Solo restarts;
+- **Use a local path…** opens the settings file, to point Solo at a copy you
+  installed (`"node": { "path": ... }`, `"lsp": { "<server>": { "binary":
+  { "path": ... } } }`).
+
+Requests that come together are asked together, with **Allow all and
+remember** and **Choose…**. The trust dialog of a new project lists the
+language servers Solo will ask for, with "Allow these downloads" ticked, so
+trusting takes one click. Answers are kept in `downloads.allowed` in your
+settings file, where you can change them. Components already downloaded count
+as allowed. Prettier is installed on a file's first format, not when it
+opens, and for a project you haven't trusted Solo asks even in `"auto"` mode.
+npm installs Solo's packages with `--ignore-scripts` (ESLint's server and
+extensions' packages need their scripts and keep them).
+
+```json
+"downloads": {
+  "mode": "ask",         // "ask", "auto" (download without asking) or "never"
+  "allowed": { "rust-analyzer": true, "prettier": false },
+  "check_updates": true  // whether allowed components update
+}
+```
+
+**Offline mode.** Click the globe at the right of the status bar (or run
+`network: toggle offline mode`, or set `"network": { "offline": true }`).
+Solo then only connects to this computer and the local network (`localhost`,
+private and link-local addresses, names without a dot, `.local`, `.lan`), so
+local models (Ollama, LM Studio), servers on your LAN and SSH keep working.
+It downloads nothing and checks no versions: language servers, Node.js,
+Prettier and debug adapters already downloaded are used; one that's missing
+says "Offline: X not downloaded". Copilot, cloud AI providers, the ACP agent
+registry, the extension store and extension updates, Solo's automatic update
+checks and avatars are off. Remote development works with a remote server
+already downloaded, but none is downloaded. The agents you run in the
+terminal aren't affected.
 
 **Remote development is off for now:** SSH, WSL and Docker (dev container)
 remote development run a server on the remote side. Solo's releases now carry
@@ -690,8 +733,10 @@ These notifications only show while Solo is in the background. All four are
 also in Settings > Terminal > Notifications.
 
 Outside `"terminal"`: `"ui_language"` (`"system"`, `"en"` or `"zh"`; the
-environment variable `SOLO_LANGUAGE` overrides it), `"auto_update"` and
-`"disable_ai"`. `"disable_ai"` (and `"agent": { "enabled": false }`) turn off
+environment variable `SOLO_LANGUAGE` overrides it), `"auto_update"`,
+`"disable_ai"`, `"network": { "offline": false }` (offline mode) and
+`"downloads"` (`"mode": "ask"` / `"auto"` / `"never"`, `"allowed": {}`,
+`"check_updates": true`; see section 9). `"disable_ai"` (and `"agent": { "enabled": false }`) turn off
 only Zed's own AI features (inline assistant, edit predictions, commit message
 generation); workspace tabs, terminals and the agents running in them, and
 turn review are unaffected.

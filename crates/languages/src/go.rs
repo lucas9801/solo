@@ -160,6 +160,8 @@ impl LspInstaller for GoLspAdapter {
                 return Ok(path);
             }
 
+            // SOLO: no `go install` in offline mode.
+            net_guard::ensure_online("gopls")?;
             let gobin_dir = container_dir.join("gobin");
             fs::create_dir_all(&gobin_dir).await?;
             let install_output = util::command::new_command(go)

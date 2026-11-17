@@ -49,6 +49,7 @@ language_core.workspace = true
 itertools.workspace = true
 log.workspace = true
 lsp.workspace = true
+net_guard.workspace = true
 parking_lot.workspace = true
 postage = { workspace = true, features = ["futures-traits", "logging", "blocking"] }
 rand = { workspace = true, optional = true }

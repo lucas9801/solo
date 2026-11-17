@@ -221,13 +221,31 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 **只在你用到某个功能时才访问：**
 
 - 下载更新：Microsoft Store（Solo Code）；
-- 打开某种语言的文件时自动下载语言服务器：GitHub Releases、npm 源；系统里没有合适的 Node.js 时还会访问 `nodejs.org`；
+- Solo 自己下载的组件，先问过你（见下面的“下载前先询问”）：受信任项目的语言服务器（GitHub Releases、npm 源、`proxy.golang.org`、PyPI），系统里没有合适的 Node.js 时访问 `nodejs.org`，文件第一次格式化时装 Prettier，第一次调试时下载调试适配器，GitHub Copilot 的服务端；
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
 - 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；
 - Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 去掉了 agent 面板（Zed 自己的 agent 界面），它的下载（比如 WSL 沙箱要用的 Linux 版 Zed）也就不会发生。
 - 打开 ACP agent 注册表，或使用从注册表配置的 agent：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
 - 在终端里运行的 agent（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
+
+**下载前先询问。** Solo 自己要下载某个组件（语言服务器、Node.js、Prettier、调试适配器、GitHub Copilot、扩展更新）之前，会按组件问一次，并写明从哪里下载：
+
+- **允许（记住）**：下载，以后它的更新不再询问；
+- **暂不**：这次不下载，直到 Solo 重启；
+- **使用本地路径…**：打开设置文件，改用你自己装好的（`"node": { "path": ... }`、`"lsp": { "<服务器>": { "binary": { "path": ... } } }`）。
+
+同时来的几个请求合成一条通知，可以 **全部允许并记住**，也可以 **逐个选择…**。新项目的信任对话框会列出信任后 Solo 要下载的语言服务器，“允许这些下载”默认勾上，点一次就行。回答记在设置文件的 `downloads.allowed` 里，随时可以改。已经下载过的组件算作允许。Prettier 在文件第一次格式化时才安装，不在打开文件时安装；对未信任的项目，即使是 `"auto"` 模式也会先问。npm 安装 Solo 的包时加 `--ignore-scripts`（ESLint 服务端和扩展的包需要安装脚本，保留不加）。
+
+```json
+"downloads": {
+  "mode": "ask",         // "ask"、"auto"（不问直接下载）或 "never"
+  "allowed": { "rust-analyzer": true, "prettier": false },
+  "check_updates": true  // 允许的组件是否检查并下载更新
+}
+```
+
+**离线模式。** 点状态栏右侧的地球图标（或运行 `network: toggle offline mode`，或设置 `"network": { "offline": true }`）。之后 Solo 只连接本机和局域网（`localhost`、私有和链路本地地址、不带点的主机名、`.local`、`.lan`），所以本地模型（Ollama、LM Studio）、局域网里的服务和 SSH 照常可用。离线时什么都不下载，也不查版本：已经下载的语言服务器、Node.js、Prettier、调试适配器照常使用，缺的会提示“离线：未下载 X”。Copilot、云端 AI 服务、ACP agent 注册表、扩展商店和扩展更新、Solo 的自动检查更新和头像都会关闭。远程开发能用已经下载的远程服务端，但不会下载新的。终端里运行的 agent 不受影响。
 
 **远程开发暂时关闭：** SSH、WSL、Docker（开发容器）远程开发要在远端运行一个服务端。Solo 的 release 现在带有自己构建的 Linux 版（x86_64 和 aarch64），但还在测试中，所以这些入口仍然隐藏，触发时会提示暂不可用。在终端里用 `ssh`、`wsl` 照常可以。想试用的话，设置环境变量 `SOLO_REMOTE_DEVELOPMENT=1` 后重新启动 Solo：连接时会从 Solo 的 GitHub release 下载与当前版本对应的远程服务端（`github.com`，按 GitHub 提供的 SHA-256 校验），上传到远端，从 `~/.solo_server` 运行，数据放在 `~/.local/share/solo`，与 Zed 的分开。不会访问 Zed 的服务器。暂不支持 macOS 和 Windows 远端。
 
@@ -295,4 +313,4 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 
 这些通知只在 Solo 处于后台时出现。四项也都可以在 设置 > 终端 > 通知 里改。
 
-不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`。`"disable_ai"`（以及 `"agent": { "enabled": false }`）只关闭 Zed 自己的 AI 功能（内联助手、编辑预测、提交信息生成），不影响工作区标签、终端和其中运行的 agent、按轮审阅。
+不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`、`"network": { "offline": false }`（离线模式）、`"downloads"`（`"mode": "ask"` / `"auto"` / `"never"`，`"allowed": {}`，`"check_updates": true`；见第 9 节）。`"disable_ai"`（以及 `"agent": { "enabled": false }`）只关闭 Zed 自己的 AI 功能（内联助手、编辑预测、提交信息生成），不影响工作区标签、终端和其中运行的 agent、按轮审阅。

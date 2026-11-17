@@ -1375,6 +1375,7 @@ dependencies = [
  "gpui",
  "http_client",
  "log",
+ "net_guard",
  "parking_lot",
  "paths",
  "raw-window-handle",
@@ -3345,6 +3346,7 @@ dependencies = [
  "language",
  "log",
  "lsp",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "paths",
@@ -4041,6 +4043,7 @@ dependencies = [
  "http_client",
  "language",
  "log",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "paths",
@@ -4082,6 +4085,7 @@ dependencies = [
  "http_client",
  "language",
  "log",
+ "net_guard",
  "node_runtime",
  "paths",
  "serde_json",
@@ -5554,6 +5558,7 @@ dependencies = [
  "log",
  "lsp",
  "moka",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "paths",
@@ -6507,6 +6512,7 @@ dependencies = [
  "markdown",
  "menu",
  "multi_buffer",
+ "net_guard",
  "notifications",
  "picker",
  "pretty_assertions",
@@ -8692,6 +8698,7 @@ dependencies = [
  "language_core",
  "log",
  "lsp",
+ "net_guard",
  "parking_lot",
  "postage",
  "pretty_assertions",
@@ -9006,6 +9013,7 @@ dependencies = [
  "language",
  "log",
  "lsp",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "pet",
@@ -10440,6 +10448,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "net_guard"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures 0.3.34",
+ "http_client",
+ "log",
+ "parking_lot",
+ "util",
+]
+
+[[package]]
+name = "net_guard_ui"
+version = "0.1.0"
+dependencies = [
+ "collections",
+ "fs",
+ "futures 0.3.34",
+ "gpui",
+ "net_guard",
+ "settings",
+ "ui",
+ "util",
+ "workspace",
+ "zed_actions",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10480,6 +10516,7 @@ dependencies = [
  "futures 0.3.34",
  "http_client",
  "log",
+ "net_guard",
  "paths",
  "semver",
  "serde",
@@ -12932,6 +12969,7 @@ dependencies = [
  "log",
  "lsp",
  "markdown",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "path",
@@ -20175,6 +20213,7 @@ dependencies = [
  "log",
  "markdown",
  "menu",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "postage",
@@ -20743,6 +20782,8 @@ dependencies = [
  "migrator",
  "mimalloc",
  "miniprofiler_ui",
+ "net_guard",
+ "net_guard_ui",
  "nix",
  "node_runtime",
  "notifications",

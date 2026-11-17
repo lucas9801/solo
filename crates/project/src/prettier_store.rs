@@ -13,7 +13,7 @@ use futures::{
     future::{self, Shared},
     stream::FuturesUnordered,
 };
-use gpui::{AppContext as _, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui::{App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use language::{
     Buffer, LanguageRegistry, LocalFile, OffsetUtf16,
     language_settings::{Formatter, LanguageSettings},
@@ -28,7 +28,8 @@ use util::{ResultExt, TryFutureExt, rel_path::RelPath};
 
 use crate::{
     File, PathChange, ProjectEntryId, Worktree, lsp_store::WorktreeId,
-    project_settings::ProjectSettings, worktree_store::WorktreeStore,
+    project_settings::ProjectSettings, trusted_worktrees::TrustedWorktrees,
+    worktree_store::WorktreeStore,
 };
 
 pub struct PrettierStore {
@@ -217,6 +218,26 @@ impl PrettierStore {
         }
     }
 
+    /// SOLO: whether the default Prettier is installed (in tests, installing
+    /// it is instant).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn default_prettier_installed(&self) -> bool {
+        self.default_prettier.instance().is_some()
+    }
+
+    /// SOLO: whether the worktree is trusted (a buffer outside any worktree
+    /// counts as trusted).
+    fn is_trusted(&self, worktree: Option<WorktreeId>, cx: &mut App) -> bool {
+        let Some(worktree_id) = worktree else {
+            return true;
+        };
+        TrustedWorktrees::try_get_global(cx).is_none_or(|trusted_worktrees| {
+            trusted_worktrees.update(cx, |trusted_worktrees, cx| {
+                trusted_worktrees.can_trust(&self.worktree_store, worktree_id, cx)
+            })
+        })
+    }
+
     fn prettier_ignore_for_buffer(
         &mut self,
         buffer: &Entity<Buffer>,
@@ -337,6 +358,9 @@ impl PrettierStore {
                 ControlFlow::Continue(Some(installation_task)) => {
                     log::info!("Waiting for default prettier to install");
                     if let Err(e) = installation_task.await {
+                        // SOLO: a download the rules didn't allow isn't a
+                        // failed attempt; it's tried again on the next format.
+                        let blocked = e.downcast_ref::<net_guard::DownloadBlocked>().is_some();
                         prettier_store.update(cx, |project, _| {
                             if let PrettierInstallation::NotInstalled {
                                 installation_task,
@@ -345,7 +369,9 @@ impl PrettierStore {
                             } = &mut project.default_prettier.prettier
                             {
                                 *installation_task = None;
-                                *attempts += 1;
+                                if !blocked {
+                                    *attempts += 1;
+                                }
                             }
                         })?;
                         anyhow::bail!(
@@ -621,7 +647,10 @@ impl PrettierStore {
                                 log::error!("Failed to install default prettier: {e:#}");
                                 prettier_store.update(cx, |prettier_store, _| {
                                     if let PrettierInstallation::NotInstalled { attempts, not_installed_plugins, .. } = &mut prettier_store.default_prettier.prettier {
-                                        *attempts += 1;
+                                        // SOLO: a download the rules didn't allow isn't a failed attempt.
+                                        if e.downcast_ref::<net_guard::DownloadBlocked>().is_none() {
+                                            *attempts += 1;
+                                        }
                                         new_plugins.extend(not_installed_plugins.iter().cloned());
                                         installation_attempt = *attempts;
                                         needs_install = true;
@@ -652,6 +681,30 @@ impl PrettierStore {
                             needs_install |= !new_plugins.is_empty();
                         })?;
                         if needs_install {
+                            // SOLO: Prettier is downloaded only for trusted
+                            // projects (unless the user allows it), as Solo's
+                            // download rules say, and not offline.
+                            let trusted = prettier_store.update(cx, |prettier_store, cx| {
+                                prettier_store.is_trusted(worktree, cx)
+                            })?;
+                            let installed = fs
+                                .is_dir(&default_prettier_dir().join("node_modules").join("prettier"))
+                                .await;
+                            if let Err(blocked) = net_guard::request_for_project(
+                                net_guard::Component::prettier(),
+                                installed,
+                                trusted,
+                            )
+                            .await
+                            {
+                                log::info!("Not installing the default prettier: {blocked}");
+                                prettier_store.update(cx, |prettier_store, _| {
+                                    if let PrettierInstallation::NotInstalled { installation_task, .. } = &mut prettier_store.default_prettier.prettier {
+                                        *installation_task = None;
+                                    }
+                                })?;
+                                return Err(Arc::new(anyhow::Error::from(blocked)));
+                            }
                             log::info!("Initializing default prettier with plugins {new_plugins:?}");
                             let installed_plugins = new_plugins.clone();
                             cx.background_spawn(async move {

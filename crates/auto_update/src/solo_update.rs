@@ -1110,6 +1110,10 @@ impl SoloUpdater {
         if !matches!(self.activity, Activity::Idle) {
             return;
         }
+        // SOLO: no automatic checks in offline mode.
+        if net_guard::is_offline() && !check_type.is_manual() {
+            return;
+        }
         self.activity = Activity::Checking;
         cx.notify();
         if check_type.is_manual() {
