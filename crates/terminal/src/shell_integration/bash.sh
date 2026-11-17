@@ -61,6 +61,19 @@ __solo_prompt_command() {
     fi
     path=${path//%/%25}
     path=${path// /%20}
+    # SOLO: a control character, which a folder's name can have, would end
+    # the sequence early.
+    if [[ $path == *[[:cntrl:]]* ]]; then
+        local encoded= c i
+        for (( i = 0; i < ${#path}; i++ )); do
+            c=${path:i:1}
+            if [[ $c == [[:cntrl:]] ]]; then
+                printf -v c '%%%02X' "'$c"
+            fi
+            encoded+=$c
+        done
+        path=$encoded
+    fi
     printf '\e]7;file://%s%s\a' "${HOSTNAME-}" "$path"
 
     if [[ -n "$__solo_original_prompt_command" ]]; then

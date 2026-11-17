@@ -32,6 +32,18 @@ __solo_precmd_status() {
     fi
     local uri_path=${PWD//\%/%25}
     uri_path=${uri_path// /%20}
+    # SOLO: a control character, which a folder's name can have, would end
+    # the sequence early.
+    if [[ $uri_path == *[[:cntrl:]]* ]]; then
+        local encoded= c
+        for c in "${(@s::)uri_path}"; do
+            if [[ $c == [[:cntrl:]] ]]; then
+                printf -v c '%%%02X' "'$c"
+            fi
+            encoded+=$c
+        done
+        uri_path=$encoded
+    fi
     printf '\e]7;file://%s%s\a' "${HOST-}" "$uri_path"
     return $exit_code
 }
