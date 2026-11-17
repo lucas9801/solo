@@ -1966,6 +1966,10 @@
       "**/.zed/settings.json", // zed project settings
       "/**/zed/settings.json", // zed user settings
       "/**/zed/keymap.json",
+      // SOLO: and Solo's own project and user settings.
+      "**/.solo/settings.json",
+      "/**/{solo,Solo}/settings.json",
+      "/**/{solo,Solo}/keymap.json",
     ],
     // When to show edit predictions previews in buffer.
     // This setting takes two possible values:
@@ -2452,6 +2456,9 @@
       "**/.zed/*.json",
       "**/.vscode/**/*.json",
       "**/{zed,Zed}/{settings,keymap,tasks,debug}.json",
+      // SOLO: and Solo's own project and user settings files.
+      "**/.solo/*.json",
+      "**/{solo,Solo}/{settings,keymap,tasks,debug}.json",
       "tsconfig*.json",
     ],
     "Markdown": [".rules", ".cursorrules", ".windsurfrules", ".clinerules"],
