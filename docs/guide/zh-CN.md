@@ -57,6 +57,7 @@ Solo 不会修改你的 Claude Code 配置（见第 8 节），所以那边没�
 | --- | --- |
 | `%APPDATA%\Solo` | 设置目录：`settings.json`、`keymap.json`、`tasks.json`、`debug.json`、`AGENTS.md`、`workflows.json`（保存的命令） |
 | `%LOCALAPPDATA%\Solo` | 数据目录：`logs\`（日志）、`db\`（工作区和会话状态）、`extensions\`、`languages\`（自动下载的语言服务器）、`node\`、`external_agents\`、`terminal_sessions\`（终端内容恢复，30 天后清理）、`agent_turns\`（agent 轮次快照）、`terminal-host\`（终端宿主进程的副本）、`hang_traces\` |
+| `%LOCALAPPDATA%\Solo\browser` | 内置浏览器的 Cookie、网站数据和元素截图（`picks\`，保留一周） |
 | `%TEMP%\solo-shell-integration` | shell 集成脚本和 Claude Code 的 hook 设置文件 |
 | `%TEMP%\solo-update` | 以前的版本下载的更新安装包和安装日志 |
 | 项目里的 `.solo\` | 项目设置、任务和调试配置（也会读 Zed 的 `.zed\`） |
@@ -137,6 +138,24 @@ Solo 不会在 agent 工作时自动打开它改的文件。
 - 在 Markdown 预览里选中文字，右键选 **批注…**。批注列在文档下方；点 **发给 agent**，所有批注连同行号和原文一起粘贴给最近改过这份文档的 agent（没有的话给最近用过的）。你读过之后文档又被改了，上方会提示新增和删除了多少行；**显示改动** 会标出改过的段落，**标为已读** 表示看完了。
 - agent 可以用 `solo-cli agent` 驱动其他终端（列出终端、发消息、等它完成、读它的回答、新开任务），见 [agent-cli.md](../agent-cli.md)。设置项 `agent_control` 控制它能做到什么程度。从微软商店装的 Solo Code 里，`solo-cli` 只在 Solo 的终端里能用。
 - 在 Claude Code 终端的菜单里选“开启手机控制”，Solo 会往 Claude Code 里输入 `/remote-control`，之后可以用手机上的 Claude App 继续这个会话。
+
+### 内置浏览器
+网页在编辑区的标签页里打开，放在终端旁边，用的是 Windows 11 自带的 Microsoft Edge WebView2 运行时（电脑上没有时，标签页里会提示并给出下载按钮）。
+
+- **打开网页**：在终端、Markdown 预览或时间线里 `ctrl`+点击链接。打开到哪里由 设置 › 浏览器 › **链接打开方式** 决定：默认本机地址（localhost、127.0.0.1、[::1]、*.localhost）用 Solo 浏览器，其他用系统浏览器；也可以都用 Solo 浏览器，或都用系统浏览器。`ctrl+shift`+点击换另一种方式打开。已经打开的同一网址会切过去，不会再开一个。命令面板里的 **浏览器: 打开浏览器** 打开一个空标签页。
+- **工具栏**：后退、前进、刷新（右键：不用缓存刷新）、地址栏（`5173` 和 `localhost:5173` 都等于 `http://localhost:5173/`；只打开 http、https 和本机的 HTML 文件）、视口（桌面、平板 768×1024、手机 390×844）、**选取**，以及 `⋯` 菜单：开发者工具（`f12`）、在页面中查找（`ctrl+f`）、在系统浏览器中打开、复制网址。
+- 网页里打开新窗口的链接在 Solo 里开新标签页。重启 Solo 后恢复打开的网页（只保存网址）。
+- 网页有焦点时，Solo 带 `ctrl`、`alt` 的快捷键和功能键照样有效，但网页编辑文字要用的留给网页：`ctrl+a/c/v/x/z/y`、按词移动和删除、`ctrl+b/i/u/k`、`ctrl+enter`。`esc` 和 `tab` 也留给网页。
+- Cookie 和网站数据存在 `%LOCALAPPDATA%\Solo\browser`。
+
+**给网页元素写批注。** 点 **选取** 后，鼠标下的元素会加框并显示选择器和尺寸；点击元素（不会触发网页自己的点击）弹出批注框。加过的元素在页面上显示编号，点编号可以改或删除。`esc` 退出选取。**发送给 agent · n** 把批注粘贴到最近用过的 agent 的输入里（不自动发送），旁边的箭头可以选别的 agent。每条带上元素的选择器、文字、HTML（超过约 1 KB 截断）、几项计算后的样式和元素截图的路径；截图存在 `%LOCALAPPDATA%\Solo\browser\picks`，保留一周。没有 agent 在运行时，批注复制到剪贴板。刷新或热更新后，按选择器重新找到元素。
+
+**让 agent 操作浏览器。** 打开 设置 › 浏览器 › **允许 agent 操作浏览器**（默认关闭，重启 Solo 后生效）后，Solo 浏览器会在 127.0.0.1 上开一个随机的调试端口，之后在 Solo 终端里新启动的 agent 可以在里面打开网页、读取、点击、填表、截图，你能看着它操作。**这包括你已登录的网页，而且本机任何找到这个端口的程序都能这样做**，所以只在需要时打开。
+
+- Claude Code 会多一个名叫 `solo-browser` 的 MCP 服务器（Playwright MCP，用 `npx` 运行，需要 Node.js）：`claude` 包装函数在 `--settings` 前加上 `--mcp-config`，叠加在你自己的 MCP 服务器上，不改动它们。和包装函数一样，需要 `"claude_code_hooks"` 开着。
+- Codex 通过每次会话的 `-c mcp_servers.solo-browser=...` 得到同一个服务器（需要 `"codex_hooks"`）。
+- 每个终端都有 `SOLO_BROWSER_CDP=http://127.0.0.1:<端口>`。其他 agent（Copilot CLI、OpenCode）可以在自己的 MCP 配置里加一个运行 `npx -y @playwright/mcp@0.0.85 --cdp-endpoint $SOLO_BROWSER_CDP` 的服务器。
+- agent 打开的网页显示为编辑区里的标签页，不抢焦点。至少要开着一个浏览器标签页，agent 才能找到浏览器。
 
 ### 关掉 Solo，agent 照样在跑
 每个终端的 shell 跑在一个小的后台进程 `solo-terminal-host.exe` 里。Solo 退出、更新重启，甚至崩溃时，正在运行东西（agent，或者编译之类的命令）的终端会在那里继续跑；Solo 再打开那个工作区时会自动连回去，期间的输出也都在。空闲的 shell 还是随 Solo 一起结束；关掉终端标签会结束里面运行的东西。
