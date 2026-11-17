@@ -4,39 +4,19 @@
 
 ## English
 
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-
-> Status: Solo has applied (or is about to apply) to SignPath Foundation.
-> Until signing is turned on, releases are built and packaged the same way
-> but are **not signed**; this page describes how they are signed once it is.
-
-### What is signed
-
-Only files built from this repository ([github.com/lucas9801/solo](https://github.com/lucas9801/solo))
-by its GitHub Actions workflow
-[`solo-package.yml`](../.github/workflows/solo-package.yml), on GitHub-hosted
-runners, from a version tag (`v*`) on the `main` branch. Nothing built on a
-developer's computer is signed.
-
-Signed in one SignPath signing request per release, approved by hand:
-Solo's own programs, `solo.exe`, `solo-cli.exe`, `solo-agent-hook.exe`,
-`solo-update-helper.exe` and `solo-terminal-host.exe`. The portable zip
-`Solo-<version>-windows-x64.zip` is made from these signed files. Releases no
-longer have an installer: Solo is installed from the Microsoft Store (as Solo
-Code), whose package Microsoft signs when it's published there; it isn't
-signed through SignPath.
-
-`conpty.dll` and `OpenConsole.exe` (Microsoft's console host, from
-[microsoft/terminal](https://github.com/microsoft/terminal), MIT) are shipped
-as Microsoft signs them and are not re-signed. Every file in the packages,
-with its source and license, is listed in
-[package-contents.md](package-contents.md).
+Solo is installed and updated only from the Microsoft Store, where it's
+listed as Solo Code. Microsoft signs the Store package when it's published;
+the files in it aren't signed separately. Releases on GitHub have no Windows
+download any more (no installer, no zip), and nothing is signed through
+SignPath.
 
 ### Version information
 
-Each of Solo's own programs carries the same version information
-(`crates/windows_resources`), which SignPath checks before signing
-([`script/signpath/exes.xml`](../script/signpath/exes.xml)):
+Each of Solo's own programs (`solo.exe`, `solo-cli.exe`,
+`solo-agent-hook.exe`, `solo-update-helper.exe`, `solo-terminal-host.exe`)
+carries the same version information (`crates/windows_resources`), which
+[`solo-package.yml`](../.github/workflows/solo-package.yml) checks after
+building:
 
 | Field | Value |
 |---|---|
@@ -46,16 +26,8 @@ Each of Solo's own programs carries the same version information
 | Copyright | `Copyright lucas9801 and Solo contributors. Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0-or-later` |
 | Comments | the build, `<version>+stable.<run>.<commit>` |
 
-### Team roles
-
-| Role | Members |
-|---|---|
-| Committers and reviewers | [lucas9801](https://github.com/lucas9801) (repository owner) |
-| Approvers (approve each signing request) | [lucas9801](https://github.com/lucas9801) (repository owner) |
-
-Changes from anyone else (pull requests) are reviewed by a committer before
-they are merged. Changes merged from upstream Zed are reviewed the same way.
-All members use multi-factor authentication on GitHub and on SignPath.
+Every file in the package, with its source and license, is listed in
+[package-contents.md](package-contents.md).
 
 ### Privacy
 
@@ -72,7 +44,7 @@ code at version 2.2.0):
 
 | What | Where | When | How to turn it off |
 |---|---|---|---|
-| Update check | The Microsoft Store edition asks the Store (Windows' `StoreContext`); the portable build asks `api.github.com` (this repository's releases) | 30 s after start, then every 6 hours | `"auto_update": false` |
+| Update check | Solo Code from the Microsoft Store asks the Store (Windows' `StoreContext`); other builds (from source, or earlier releases' installer or zip) ask `api.github.com` (this repository's releases) | 30 s after start, then every 6 hours | `"auto_update": false` |
 | Language servers and Node.js | GitHub releases, the npm registry, `nodejs.org` | When a file of a language is opened whose language server isn't installed yet (and checks for newer versions) | `"enable_language_server": false`, per language `"language_servers"`, or a language server's `binary.path` in `"lsp"` |
 | Extension updates | Zed's extension API (`api.zed.dev`) | Only when extensions are installed | Don't install extensions, or `"auto_update_extensions": { "<id>": false }` |
 | Git avatars | `avatars.githubusercontent.com` / GitHub API | When commit details of a GitHub repository are shown | `"git": { "blame": { "show_avatar": false } }` |
@@ -82,36 +54,18 @@ Code) are not part of Solo and follow their own policies.
 
 ### Where this policy is linked
 
-From the [README](../README.md#code-signing-policy) and from the notes of every
-release ([releases](https://github.com/lucas9801/solo/releases)).
+From the [README](../README.md#code-signing-policy). Release notes linked it
+until releases stopped being signed.
 
 ## 中文
 
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-（免费代码签名由 SignPath.io 提供，证书来自 SignPath Foundation。）
-
-> 状态：Solo 正在（或即将）向 SignPath Foundation 申请。签名开启之前，发布版照常构建和打包，但**没有签名**；本页说明开启之后怎么签。
-
-### 签什么
-
-只签由本仓库（[github.com/lucas9801/solo](https://github.com/lucas9801/solo)）的 GitHub Actions 工作流 [`solo-package.yml`](../.github/workflows/solo-package.yml) 在 GitHub 托管的运行器上、从 `main` 分支上的版本标签（`v*`）构建出的文件。开发者本机构建的东西一律不签。
-
-每个版本一次 SignPath 签名请求，要人工批准：签 Solo 自己的程序 `solo.exe`、`solo-cli.exe`、`solo-agent-hook.exe`、`solo-update-helper.exe`、`solo-terminal-host.exe`。便携版 zip（`Solo-<版本>-windows-x64.zip`）用这些签好的文件打包。发布里不再有安装程序：Solo 从 Microsoft Store 安装（名为 Solo Code），它的安装包在 Store 上架时由微软签名，不经过 SignPath。
-
-`conpty.dll` 和 `OpenConsole.exe`（微软的控制台宿主，来自 [microsoft/terminal](https://github.com/microsoft/terminal)，MIT 许可）保持微软自己的签名，不重新签。发布的文件里每个文件的来源和许可证见 [package-contents.md](package-contents.md)。
+Solo 只从 Microsoft Store 安装和更新，在 Store 上名为 Solo Code。Store 安装包在上架时由微软签名，里面的文件不单独签名。GitHub 上的发布不再有 Windows 下载（没有安装程序，也没有 zip），也不再通过 SignPath 签名。
 
 ### 版本信息
 
-Solo 自己的每个程序都带同样的版本信息（`crates/windows_resources`），SignPath 签名前会核对（[`script/signpath/exes.xml`](../script/signpath/exes.xml)）：产品名 `Solo`；产品版本和文件版本都是 Solo 的版本（如 `2.3.0`）；公司 `lucas9801`（仓库所有者）；版权 `Copyright lucas9801 and Solo contributors. Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0-or-later`；备注（Comments）是构建号 `<版本>+stable.<运行号>.<提交>`。
+Solo 自己的每个程序（`solo.exe`、`solo-cli.exe`、`solo-agent-hook.exe`、`solo-update-helper.exe`、`solo-terminal-host.exe`）都带同样的版本信息（`crates/windows_resources`），[`solo-package.yml`](../.github/workflows/solo-package.yml) 构建后会核对：产品名 `Solo`；产品版本和文件版本都是 Solo 的版本（如 `2.3.0`）；公司 `lucas9801`（仓库所有者）；版权 `Copyright lucas9801 and Solo contributors. Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0-or-later`；备注（Comments）是构建号 `<版本>+stable.<运行号>.<提交>`。
 
-### 成员与角色
-
-| 角色 | 成员 |
-|---|---|
-| 提交者和审阅者 | [lucas9801](https://github.com/lucas9801)（仓库所有者） |
-| 批准者（批准每一次签名请求） | [lucas9801](https://github.com/lucas9801)（仓库所有者） |
-
-其他人的改动（pull request）由提交者审阅后才合并；从上游 Zed 合并的改动同样审阅。所有成员在 GitHub 和 SignPath 上都开启两步验证。
+安装包里每个文件的来源和许可证见 [package-contents.md](package-contents.md)。
 
 ### 隐私
 
@@ -121,7 +75,7 @@ Solo 是代码编辑器，它的联网大多是用户要求的：用户自己配
 
 | 做什么 | 访问哪里 | 什么时候 | 怎么关 |
 |---|---|---|---|
-| 检查更新 | Microsoft Store 版问 Store（Windows 的 `StoreContext`）；便携版问 `api.github.com`（本仓库的 releases） | 启动 30 秒后，之后每 6 小时 | `"auto_update": false` |
+| 检查更新 | 从 Microsoft Store 装的 Solo Code 问 Store（Windows 的 `StoreContext`）；其他版本（从源码构建，或以前的安装程序、zip 装的）问 `api.github.com`（本仓库的 releases） | 启动 30 秒后，之后每 6 小时 | `"auto_update": false` |
 | 语言服务器和 Node.js | GitHub releases、npm 仓库、`nodejs.org` | 打开某种语言的文件而它的语言服务器还没装时（也会检查新版本） | `"enable_language_server": false`、按语言设置 `"language_servers"`，或在 `"lsp"` 里给语言服务器指定 `binary.path` |
 | 扩展更新 | Zed 的扩展 API（`api.zed.dev`） | 只在装了扩展时 | 不装扩展，或设置 `"auto_update_extensions": { "<扩展 id>": false }` |
 | Git 头像 | `avatars.githubusercontent.com` / GitHub API | 显示 GitHub 仓库的提交详情时 | `"git": { "blame": { "show_avatar": false } }` |
@@ -130,4 +84,4 @@ Solo 是代码编辑器，它的联网大多是用户要求的：用户自己配
 
 ### 本页在哪里链接
 
-[README](../README.md#code-signing-policy) 和每个 release 的说明（[releases](https://github.com/lucas9801/solo/releases)）。
+[README](../README.md#code-signing-policy)。发布不再签名之后，release 说明里不再链接本页。
