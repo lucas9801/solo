@@ -122,7 +122,14 @@ if [[ -n "${SOLO_CLAUDE_SETTINGS-}" ]] && ! declare -F claude >/dev/null; then
             esac
         done
         if [[ -r "$SOLO_CLAUDE_SETTINGS" ]]; then
-            command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
+            # Solo's browser, when agents may control it. --mcp-config adds to
+            # the user's own MCP servers; it takes several files, so it goes
+            # before --settings, which ends the list.
+            if [[ -n "${SOLO_CLAUDE_MCP_CONFIG-}" && -r "$SOLO_CLAUDE_MCP_CONFIG" ]]; then
+                command claude --mcp-config "$SOLO_CLAUDE_MCP_CONFIG" --settings "$SOLO_CLAUDE_SETTINGS" "$@"
+            else
+                command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
+            fi
         else
             command claude "$@"
         fi

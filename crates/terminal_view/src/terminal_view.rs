@@ -1688,7 +1688,7 @@ fn subscribe_for_terminal_events(
                     terminal_view.agent_response_reported(response, cx)
                 }
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
-                    MaybeNavigationTarget::Url(url) => cx.open_url(url),
+                    MaybeNavigationTarget::Url(url) => Workspace::open_web_link(url, window, cx),
                     MaybeNavigationTarget::PathLike(_)
                         if let Some(diagram) =
                             terminal.read(cx).opened_word().cloned().and_then(|word| {
