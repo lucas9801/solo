@@ -97,8 +97,8 @@ jobs:
           path: ${{ runner.temp }}/webrtc
           key: webrtc-${{ env.WEBRTC_TAG }}-win-x64-release
 
-      - name: Download the prebuilt WebRTC
-        if: steps.webrtc-cache.outputs.cache-hit != 'true'
+      - name: Download or check the prebuilt WebRTC
+        # Also on a cache hit: it checks the cached zip and unpacks it again.
         run: ./script/solo-ci-webrtc.ps1 -Tag $env:WEBRTC_TAG -Sha256 $env:WEBRTC_SHA256 -Dir "${{ runner.temp }}/webrtc"
 
       - name: Use the prebuilt WebRTC
