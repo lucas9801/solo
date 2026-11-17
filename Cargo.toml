@@ -1213,10 +1213,3 @@ large_enum_variant = "allow"
 # Boolean expressions can be hard to read, requiring only the minimal form gets in the way
 nonminimal_bool = "allow"
 
-
-# Dylint discovers our custom lints through this entry, so `cargo dylint --all`
-# runs them without a `--path` argument. The `lints` package pins its own
-# nightly toolchain (see `tooling/lints/rust-toolchain.toml`) and is kept out of
-# this workspace on purpose.
-[workspace.metadata.dylint]
-libraries = [{ path = "tooling/lints" }]
