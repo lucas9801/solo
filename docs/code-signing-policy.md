@@ -54,8 +54,8 @@ Code) are not part of Solo and follow their own policies.
 
 ### Where this policy is linked
 
-From the [README](../README.md#code-signing-policy). Release notes linked it
-until releases stopped being signed.
+From the README's "更多文档" list. Release notes linked it until releases
+stopped being signed.
 
 ## 中文
 
@@ -84,4 +84,4 @@ Solo 是代码编辑器，它的联网大多是用户要求的：用户自己配
 
 ### 本页在哪里链接
 
-[README](../README.md#code-signing-policy)。发布不再签名之后，release 说明里不再链接本页。
+README 的"更多文档"。发布不再签名之后，release 说明里不再链接本页。

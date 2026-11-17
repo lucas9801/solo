@@ -193,10 +193,10 @@ cargo run -p zed        # 调试版，生成并运行 target\debug\solo.exe
 **发行构建和打包**：
 
 ```powershell
-script\package-solo.ps1   # 优化构建，输出 dist\Solo-<版本>-windows-x64.zip
+script\package-solo.ps1   # 优化构建，把要打包的文件放到 dist\Solo
 ```
 
-脚本会先生成依赖的许可清单（需要时自动安装 cargo-about）。可选参数：`-TargetDir`（cargo 输出目录）、`-OutDir`（输出目录，默认 `dist`）、`-SignCommand`（签名命令）。
+脚本会先生成依赖的许可清单（需要时自动安装 cargo-about）。可选参数：`-TargetDir`（cargo 输出目录）、`-OutDir`（输出目录，默认 `dist`）。商店包用 `script\package-solo-msix.ps1` 从 `dist\Solo` 生成，见[从源码构建](docs/development.md)。
 
 **注意**：
 
@@ -210,23 +210,14 @@ script\package-solo.ps1   # 优化构建，输出 dist\Solo-<版本>-windows-x64
 - **不用注册账号，不发送遥测。** 默认只会定期检查更新（可以关掉），其余网络访问都由你用到的功能触发，详见[隐私说明](docs/guide/zh-CN.md#9-隐私与网络)。
 - **开源**，GPL-3.0。
 
-## Code signing policy
-
-Free code signing provided by [SignPath.io](https://about.signpath.io),
-certificate by [SignPath Foundation](https://signpath.org) — once Solo's
-application is approved; until then releases are unsigned. What is signed, who
-approves it, and what Solo sends over the network:
-[Code signing policy / 代码签名政策](docs/code-signing-policy.md). Every file
-in the packages and its license: [package contents](docs/package-contents.md).
-
-免费的代码签名由 SignPath.io 提供，证书来自 SignPath Foundation——要等 Solo 的申请通过，在那之前发布的版本没有签名。签什么、谁批准、Solo 会访问哪些网络，见上面的代码签名政策。
-
 ## 更多文档
 
 - [用户指南](docs/guide/zh-CN.md)（[English](docs/guide/en.md)）：所有功能和设置的说明
 - [功能参考（英文）](docs/reference.md)：完整功能清单、设置项、agent 支持表
 - [agent 状态协议](docs/agent-status-protocol.md)、[给 agent 用的命令行](docs/agent-cli.md)
 - [从源码构建](docs/development.md)：构建细节，版本怎么构建和发布
+- [包里有哪些文件](docs/package-contents.md)：每个文件的来源和许可证
+- [签名、版本信息和网络访问](docs/code-signing-policy.md)：商店包由谁签名，Solo 会主动访问哪些网络
 
 ## 致谢与许可
 
