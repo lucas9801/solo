@@ -471,7 +471,13 @@ pub(crate) fn code_span_path(text: &str, root: Option<&Path>) -> Option<PathBuf>
         return None;
     }
     match parse_link(text, root) {
-        Link::File { path, .. } if path.is_absolute() => Some(path),
+        // SOLO: not on another machine, which looking at it (as rendering
+        // does, on the main thread) would connect to (R3 L-G12).
+        Link::File { path, .. }
+            if path.is_absolute() && !terminal::shell_integration::is_network_path(&path) =>
+        {
+            Some(path)
+        }
         _ => None,
     }
 }
@@ -1700,6 +1706,9 @@ mod tests {
         assert_eq!(code_span_path(".cpp", Some(root)), None);
         assert_eq!(code_span_path("main.rs", None), None);
         assert_eq!(code_span_path("https://example.com/a.rs", Some(root)), None);
+        // Not looked at on another machine (R3 L-G12).
+        assert_eq!(code_span_path(r"\\server\share\a.rs", Some(root)), None);
+        assert_eq!(code_span_path("//server/share/a.rs", Some(root)), None);
     }
 
     #[test]

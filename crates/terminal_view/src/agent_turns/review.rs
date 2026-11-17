@@ -1635,33 +1635,37 @@ fn load_bases(
     after: &str,
     changed: Vec<ChangedFile>,
 ) -> (Vec<FileContents>, usize) {
-    let text_in = |tree: &str, path: &str| {
-        store
-            .file_contents(tree, path)
-            .log_err()
+    // SOLO: all the contents with one git process, not two for each file
+    // (R3 L-G9).
+    let mut wanted = Vec::new();
+    for file in &changed {
+        if file.change != FileChange::Added {
+            wanted.push((before.to_string(), file.path.clone()));
+        }
+        if file.change != FileChange::Deleted {
+            wanted.push((after.to_string(), file.path.clone()));
+        }
+    }
+    let contents = store
+        .files_contents(&wanted)
+        .log_err()
+        .unwrap_or_else(|| vec![None; wanted.len()]);
+    let mut contents = contents.into_iter().map(|bytes| {
+        bytes
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .filter(|text| !text.contains('\0'))
-    };
+    });
     let mut skipped = 0;
     let mut files = Vec::new();
     for file in changed {
-        let base = if file.change == FileChange::Added {
-            None
-        } else {
-            let Some(text) = text_in(before, &file.path) else {
-                skipped += 1;
-                continue;
-            };
-            Some(text)
-        };
-        let after = if file.change == FileChange::Deleted {
-            None
-        } else {
-            let Some(text) = text_in(after, &file.path) else {
-                skipped += 1;
-                continue;
-            };
-            Some(text)
+        let base = (file.change != FileChange::Added).then(|| contents.next().flatten());
+        let after = (file.change != FileChange::Deleted).then(|| contents.next().flatten());
+        let (Some(base), Some(after)) = (
+            base.map_or(Some(None), |text| text.map(Some)),
+            after.map_or(Some(None), |text| text.map(Some)),
+        ) else {
+            skipped += 1;
+            continue;
         };
         let abs_path = store.abs_path(&file.path);
         files.push((file.path, abs_path, base, after));

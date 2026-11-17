@@ -457,10 +457,15 @@ impl SessionState {
         let adapter = location.agent.adapter();
         let mut state = Self::new(location.agent);
         let mut reader = TranscriptReader::new(location.path.clone());
-        for line in reader.read_new_lines()?.lines {
-            state.apply_all(adapter.parse_line(&line));
+        loop {
+            let new_lines = reader.read_new_lines()?;
+            for line in &new_lines.lines {
+                state.apply_all(adapter.parse_line(line));
+            }
+            if !new_lines.more {
+                return Ok(state);
+            }
         }
-        Ok(state)
     }
 
     pub fn apply_all(&mut self, entries: impl IntoIterator<Item = TranscriptEntry>) {
@@ -665,7 +670,15 @@ pub struct NewLines {
     /// before no longer applies.
     pub restarted: bool,
     pub lines: Vec<String>,
+    /// SOLO: there's more to read already: a read takes at most
+    /// [`MAX_READ_BYTES`] (R3 L-A1).
+    pub more: bool,
 }
+
+/// SOLO: the most of a transcript read at once, so a transcript of hundreds
+/// of MB is read (and applied) a piece at a time rather than held whole, a few
+/// times over, in memory (R3 L-A1).
+pub const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Reads what was appended to a transcript since the last read. A line still
 /// being written (with no newline yet) waits for the next read.
@@ -678,6 +691,7 @@ pub struct TranscriptReader {
     /// the file no longer has them there, it was replaced with another, maybe
     /// longer one (R3 L-A4).
     tail: Vec<u8>,
+    max_read_bytes: u64,
 }
 
 const TAIL_BYTES: usize = 64;
@@ -689,6 +703,7 @@ impl TranscriptReader {
             offset: 0,
             partial_line: Vec::new(),
             tail: Vec::new(),
+            max_read_bytes: MAX_READ_BYTES,
         }
     }
 
@@ -701,6 +716,7 @@ impl TranscriptReader {
             offset,
             partial_line: Vec::new(),
             tail: Vec::new(),
+            max_read_bytes: MAX_READ_BYTES,
         }
     }
 
@@ -724,8 +740,11 @@ impl TranscriptReader {
         file.seek(SeekFrom::Start(self.offset))?;
         let mut bytes = std::mem::take(&mut self.partial_line);
         let partial_len = bytes.len();
-        let read = file.take(len - self.offset).read_to_end(&mut bytes)?;
+        let read = file
+            .take((len - self.offset).min(self.max_read_bytes))
+            .read_to_end(&mut bytes)?;
         self.offset += read as u64;
+        new_lines.more = read > 0 && self.offset < len;
         self.tail.extend_from_slice(&bytes[partial_len..]);
         let extra = self.tail.len().saturating_sub(TAIL_BYTES);
         self.tail.drain(..extra);
@@ -804,13 +823,7 @@ mod tests {
         assert_eq!(new_lines.lines, ["{\"d\":4}"]);
 
         // Replaced with a longer file: read again from the start (R3 L-A4).
-        std::fs::write(
-            &path,
-            "{\"e\":5}
-{\"f\":6}
-",
-        )
-        .unwrap();
+        std::fs::write(&path, "{\"e\":5}\n{\"f\":6}\n").unwrap();
         let new_lines = reader.read_new_lines().unwrap();
         assert!(new_lines.restarted);
         assert_eq!(new_lines.lines, ["{\"e\":5}", "{\"f\":6}"]);
@@ -819,14 +832,33 @@ mod tests {
             .append(true)
             .open(&path)
             .unwrap();
-        file.write_all(
-            b"{\"g\":7}
-",
-        )
-        .unwrap();
+        file.write_all(b"{\"g\":7}\n").unwrap();
         let new_lines = reader.read_new_lines().unwrap();
         assert!(!new_lines.restarted);
         assert_eq!(new_lines.lines, ["{\"g\":7}"]);
+    }
+
+    /// A long transcript is read a piece at a time, each piece whole lines,
+    /// with `more` saying there's more (R3 L-A1).
+    #[test]
+    fn test_reader_reads_long_transcripts_in_pieces() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n").unwrap();
+        let mut reader = TranscriptReader::new(path);
+        reader.max_read_bytes = 10;
+        let mut lines = Vec::new();
+        let mut reads = 0;
+        loop {
+            let new_lines = reader.read_new_lines().unwrap();
+            reads += 1;
+            lines.extend(new_lines.lines);
+            if !new_lines.more {
+                break;
+            }
+        }
+        assert_eq!(lines, ["{\"a\":1}", "{\"b\":2}", "{\"c\":3}"]);
+        assert!(reads >= 3, "{reads}");
     }
 
     #[test]

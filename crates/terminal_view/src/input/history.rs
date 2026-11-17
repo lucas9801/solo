@@ -216,7 +216,9 @@ impl CommandHistory {
 /// goes: `cd godot_engine` can't inside `godot_engine` itself, where there's
 /// no `godot_engine` to go into. Commands that aren't a plain `cd` can.
 fn can_change_directory(command: &str, cwd: Option<&Path>) -> bool {
-    let Some(cwd) = cwd else {
+    // SOLO: a directory on another machine isn't looked at, here on the main
+    // thread (R3 L-G12).
+    let Some(cwd) = cwd.filter(|cwd| !terminal::shell_integration::is_network_path(cwd)) else {
         return true;
     };
     let mut words = command.trim().splitn(2, char::is_whitespace);
@@ -393,6 +395,11 @@ mod tests {
         assert_eq!(history.suggestion_in("cargo", &context), Some("cargo test"));
         assert!(can_change_directory("cd -", context.cwd.as_deref()));
         assert!(can_change_directory("cd ..", context.cwd.as_deref()));
+        // A directory on another machine isn't looked at (R3 L-G12).
+        assert!(can_change_directory(
+            "cd missing",
+            Some(Path::new(r"\\server\share"))
+        ));
     }
 
     #[test]

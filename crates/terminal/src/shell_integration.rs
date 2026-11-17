@@ -489,7 +489,12 @@ pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
     let Some(hook) = agent_hook_executable() else {
         return;
     };
-    match codex_hook_args(is_windows, &hook.to_string_lossy()) {
+    let hook = if is_windows {
+        path_for_any_windows_shell(&hook)
+    } else {
+        hook.to_string_lossy().into_owned()
+    };
+    match codex_hook_args(is_windows, &hook) {
         Some(mut args) => {
             // SOLO: and its log events, for how fast its model answers.
             if !codex_has_own_telemetry(env)
@@ -499,10 +504,9 @@ pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
             }
             env.insert("SOLO_CODEX_ARGS".to_string(), args.join("\n"));
         }
-        None => log::warn!(
-            "Codex can't be given a hook command for {}: it won't report its status",
-            hook.display()
-        ),
+        None => {
+            log::warn!("Codex can't be given a hook command for {hook}: it won't report its status")
+        }
     }
 }
 
@@ -850,7 +854,12 @@ const CODEX_HOOK_EVENTS: [&str; 5] = [
 /// either (or Solo's folder, on Windows) makes it ask to trust them again.
 fn codex_hook_args(is_windows: bool, hook: &str) -> Option<Vec<String>> {
     let command = if is_windows {
-        codex_windows_hook_command(hook)?
+        // SOLO: a short (8.3) path has a '~', which both shells take as it is.
+        if is_bare_windows_path(hook) {
+            format!("'{hook} --agent codex'")
+        } else {
+            codex_windows_hook_command(hook)?
+        }
     } else {
         "'\"$SOLO_AGENT_HOOK\" --agent codex'".to_string()
     };
@@ -871,6 +880,51 @@ fn codex_hook_args(is_windows: bool, hook: &str) -> Option<Vec<String>> {
             })
             .collect(),
     )
+}
+
+/// SOLO: `path` in a form both PowerShell and `cmd /C` run bare: as it is if
+/// it needs no quoting, else its short (8.3) form if that doesn't either, which
+/// Codex's `cmd /C` (without PowerShell) can run too (R3 L-S4).
+fn path_for_any_windows_shell(path: &Path) -> String {
+    let long = path.to_string_lossy().into_owned();
+    if is_bare_windows_path(&long) {
+        return long;
+    }
+    #[cfg(windows)]
+    if let Some(short) = short_windows_path(path).filter(|short| is_bare_windows_path(short)) {
+        return short;
+    }
+    long
+}
+
+/// Whether `path` runs as it is in both PowerShell and `cmd /C`.
+fn is_bare_windows_path(path: &str) -> bool {
+    !path.is_empty()
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '\\' | ':' | '.' | '_' | '-' | '~'))
+}
+
+/// The short (8.3) form of `path`, if the volume has one.
+#[cfg(windows)]
+fn short_windows_path(path: &Path) -> Option<String> {
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+    use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let long = windows::core::PCWSTR(wide.as_ptr());
+    // SAFETY: `long` is a NUL-terminated string that outlives the calls, and
+    // the buffer is as long as the length passed.
+    let length = unsafe { GetShortPathNameW(long, None) } as usize;
+    if length == 0 {
+        return None;
+    }
+    let mut buffer = vec![0u16; length];
+    let written = unsafe { GetShortPathNameW(long, Some(&mut buffer)) } as usize;
+    if written == 0 || written >= length {
+        return None;
+    }
+    buffer.truncate(written);
+    std::ffi::OsString::from_wide(&buffer).into_string().ok()
 }
 
 /// The hook command for Codex on Windows, as a TOML literal string: one that
@@ -943,6 +997,11 @@ fn claude_code_settings(hook: &ClaudeHook) -> serde_json::Value {
     let command = |kind: AgentHookKind| {
         // Exec form, so there's no shell in between. In the background, so
         // Claude Code doesn't wait for them.
+        // SOLO: the hooks' `args` (exec form) need Claude Code 2.1.139 or
+        // later, per its changelog ("Added hook `args: string[]` field (exec
+        // form) that spawns the command directly without a shell"); `async`
+        // is older (R3 L-S3). An older Claude Code would run `command`
+        // through a shell, without the arguments.
         let (program, args) = match hook {
             // It reads the event from its input; the kind is a fallback.
             ClaudeHook::Executable(path) => (path.as_str(), vec![kind.as_str()]),
@@ -2407,6 +2466,39 @@ mod tests {
         }
         // A path TOML can't hold in a literal string.
         assert_eq!(codex_hook_args(true, r"C:\a''b\solo-agent-hook.exe"), None);
+        // A short (8.3) path, which `cmd /C` runs too (R3 L-S4).
+        let args = codex_hook_args(true, r"C:\PROGRA~1\Solo\SOLO-A~1.EXE").unwrap();
+        assert!(
+            args[1].contains(r"command='C:\PROGRA~1\Solo\SOLO-A~1.EXE --agent codex'"),
+            "{}",
+            args[1]
+        );
+    }
+
+    /// A hook path with spaces or parentheses goes to Codex in its short
+    /// form, which `cmd /C` runs too, where the volume has short names
+    /// (R3 L-S4).
+    #[cfg(windows)]
+    #[test]
+    fn windows_hook_paths_for_any_shell() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("Solo Code (x86)");
+        std::fs::create_dir_all(&dir).unwrap();
+        let hook = dir.join("solo-agent-hook.exe");
+        std::fs::write(&hook, "").unwrap();
+        let path = path_for_any_windows_shell(&hook);
+        if path != hook.to_string_lossy() {
+            assert!(is_bare_windows_path(&path), "{path}");
+            assert_eq!(
+                std::fs::canonicalize(&path).unwrap(),
+                std::fs::canonicalize(&hook).unwrap()
+            );
+        }
+        let bare = Path::new(r"C:\Solo\solo-agent-hook.exe");
+        assert_eq!(
+            path_for_any_windows_shell(bare),
+            r"C:\Solo\solo-agent-hook.exe"
+        );
     }
 
     /// SOLO: Claude reports the files it edits (R3 M5).

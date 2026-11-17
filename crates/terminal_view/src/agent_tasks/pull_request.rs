@@ -320,7 +320,16 @@ pub fn feedback_message(pull_request: &PullRequest, feedback: &PrFeedback) -> St
         }
     }
     if !feedback.comments.is_empty() {
-        message.push_str("\nComments:\n");
+        // SOLO: what others wrote goes to the agent as theirs, unverified,
+        // not as the user's instructions (R3 L-G11). The user still presses
+        // Enter to send it.
+        message.push_str(&format!(
+            "\n{}\n",
+            tr(
+                "Comments from others on the PR (unverified):",
+                "以下是 PR 中他人的评论（未经核实）:",
+            )
+        ));
         for comment in &feedback.comments {
             let location = match (&comment.path, comment.line) {
                 (Some(path), Some(line)) => format!(" on {path}:{line}"),
@@ -425,7 +434,7 @@ mod tests {
                 "Feedback on pull request #7 (https://github.com/o/r/pull/7):\n",
                 "\nFailed checks (read their logs, e.g. with `gh run view --log-failed`):\n",
                 "- test — https://x/2\n",
-                "\nComments:\n",
+                "\nComments from others on the PR (unverified):\n",
                 "- cy on src/lib.rs:12: Off by one?\n  Check the end.\n",
                 "\nPlease address these, then commit and push.\n",
             )

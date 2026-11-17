@@ -7,6 +7,10 @@
 #
 # The tag must match WEBRTC_TAG in the livekit-rust-sdks revision pinned in
 # Cargo.toml; the hash is the one GitHub shows for the release asset.
+#
+# The zip stays in <Dir>, so a CI cache of <Dir> holds it: run again, it
+# checks the zip's SHA-256 (downloading it only if it's missing or doesn't
+# match) and unpacks it afresh, so nothing from a cache is used unchecked.
 
 param(
     [Parameter(Mandatory = $true)][string]$Tag,
@@ -21,15 +25,25 @@ $url = "https://github.com/zed-industries/livekit-rust-sdks/releases/download/$T
 New-Item -ItemType Directory -Force $Dir | Out-Null
 $zip = Join-Path $Dir "webrtc-$Triple.zip"
 
-Write-Host "Downloading $url"
-Invoke-WebRequest -Uri $url -OutFile $zip
-$actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
-if ($actual -ne $Sha256.ToLowerInvariant()) {
-    throw "SHA-256 of $url is $actual, expected $Sha256"
+function Get-Sha256($path) {
+    (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
 }
 
+if ((Test-Path $zip) -and (Get-Sha256 $zip) -eq $Sha256.ToLowerInvariant()) {
+    Write-Host "Using the checked $zip"
+} else {
+    Write-Host "Downloading $url"
+    Invoke-WebRequest -Uri $url -OutFile $zip
+    $actual = Get-Sha256 $zip
+    if ($actual -ne $Sha256.ToLowerInvariant()) {
+        Remove-Item -Force $zip
+        throw "SHA-256 of $url is $actual, expected $Sha256"
+    }
+}
+
+$unpacked = Join-Path $Dir $Triple
+if (Test-Path $unpacked) { Remove-Item -Recurse -Force $unpacked }
 Expand-Archive -Path $zip -DestinationPath $Dir -Force
-Remove-Item -Force $zip
 if (-not (Test-Path (Join-Path $Dir "$Triple\webrtc.ninja"))) {
     throw "The WebRTC archive didn't unpack to $Dir\$Triple"
 }

@@ -42,19 +42,24 @@ impl AgentSession {
                     let (returned_reader, read) = cx
                         .background_spawn(async move {
                             let read = reader.read_new_lines().map(|new_lines| {
-                                let NewLines { restarted, lines } = new_lines;
+                                let NewLines {
+                                    restarted,
+                                    lines,
+                                    more,
+                                } = new_lines;
                                 let entries: Vec<TranscriptEntry> = lines
                                     .iter()
                                     .flat_map(|line| adapter.parse_line(line))
                                     .collect();
-                                (restarted, entries)
+                                (restarted, entries, more)
                             });
                             (reader, read)
                         })
                         .await;
                     reader = returned_reader;
+                    let more = matches!(read, Ok((_, _, true)));
                     let applied = this.update(cx, |this, cx| match read {
-                        Ok((restarted, entries)) => this.apply(restarted, entries, cx),
+                        Ok((restarted, entries, _)) => this.apply(restarted, entries, cx),
                         Err(error) => {
                             log::debug!(
                                 "failed to read agent transcript {:?}: {error}",
@@ -65,7 +70,11 @@ impl AgentSession {
                     if applied.is_err() {
                         break;
                     }
-                    cx.background_executor().timer(POLL_INTERVAL).await;
+                    // SOLO: the rest of a long transcript right away, a
+                    // piece at a time (R3 L-A1).
+                    if !more {
+                        cx.background_executor().timer(POLL_INTERVAL).await;
+                    }
                 }
             }
         });
