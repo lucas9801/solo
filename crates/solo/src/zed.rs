@@ -101,13 +101,13 @@ use solo_actions::{
     About, OpenBrowser, OpenDocs, OpenProjectTasks, OpenServerSettings, OpenSettingsFile,
     OpenZedUrl, Quit,
 };
+use workspace::Pane;
 use workspace::{
-    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Panel, Toast, Workspace,
-    WorkspaceSettings, create_and_open_local_file,
-    notifications::simple_message_notification::MessageNotification, open_new,
+    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Panel, Workspace, WorkspaceSettings,
+    create_and_open_local_file, notifications::simple_message_notification::MessageNotification,
+    open_new,
 };
 use workspace::{CloseProject, CloseWindow, RestoreBanner, with_active_or_new_workspace};
-use workspace::{Pane, notifications::DetachAndPromptErr};
 
 pub struct CrashHandler(pub Arc<crashes::Client>);
 
@@ -1248,32 +1248,8 @@ fn register_actions(
                 }
             }
         })
-        .register_action(|_, _: &install_cli::RegisterZedScheme, window, cx| {
-            cx.spawn_in(window, async move |workspace, cx| {
-                install_cli::register_zed_scheme(cx).await?;
-                workspace.update_in(cx, |workspace, _, cx| {
-                    struct RegisterZedScheme;
-
-                    workspace.show_toast(
-                        Toast::new(
-                            NotificationId::unique::<RegisterZedScheme>(),
-                            format!(
-                                "zed:// links will now open in {}.",
-                                ReleaseChannel::global(cx).display_name()
-                            ),
-                        ),
-                        cx,
-                    )
-                })?;
-                Ok(())
-            })
-            .detach_and_prompt_err(
-                "Error registering zed:// scheme",
-                window,
-                cx,
-                |_, _, _| None,
-            );
-        })
+        // SOLO: no command to register the upstream URL scheme; Solo leaves
+        // it to the upstream app (see the user guide).
         .register_action(open_project_settings_file)
         .register_action(open_project_tasks_file)
         .register_action(open_worktree_setup_tasks_file)
@@ -6411,7 +6387,7 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(actions_without_namespace, Vec::<&str>::new());
 
-            let expected_namespaces = vec![
+            let mut expected_namespaces = vec![
                 "action",
                 "activity_indicator",
                 "agent",
@@ -6428,7 +6404,6 @@ mod tests {
                 "browser",
                 "buffer_search",
                 "call_hierarchy",
-                "cli",
                 "collab",
                 "command_palette",
                 "console",
@@ -6511,6 +6486,11 @@ mod tests {
                 "zed_predict_onboarding",
                 "zeta",
             ];
+            // SOLO: on Windows nothing registers a `cli` action any more (the
+            // CLI install action is for macOS and Linux).
+            if cfg!(not(target_os = "windows")) {
+                expected_namespaces.push("cli");
+            }
             assert_eq!(
                 all_namespaces,
                 expected_namespaces
