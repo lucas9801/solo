@@ -31,6 +31,7 @@ Solo 是一个给 AI agent 用的编辑器，基于 [Zed](https://github.com/zed
 - **工作区标签：** 一个项目一个标签，切换时终端、编辑器、文件树一起换；标签上显示这个项目里 agent 的状态，后台项目有 agent 在等你也看得到。
 - **agent 看板：** 左侧栏列出所有 agent 和任务，等你回复的排在最前面。
 - **agent 任务：** 一个任务一个 git worktree 和分支，互不干扰；做完合并、开 PR 或丢弃。工作区里有几个仓库时，一个任务可以同时横跨它们。[详细 →](features/parallel.md)
+- **内置浏览器：** 本机网页在终端旁边的标签页里打开；在页面上点选元素写批注，一次发给 agent，带上选择器、HTML 和截图。打开设置后，agent 也能在里面打开网页、点击、截图，你看着它操作。[详细 →](features/browser.md)
 - **agent 也能指挥 Solo：** 终端里的 agent 可以用 `solo-cli agent` 查看、等待、给别的 agent 发消息，或者新开一个任务。
 
 ## 终端本身也好用
@@ -45,5 +46,5 @@ Solo 是一个给 AI agent 用的编辑器，基于 [Zed](https://github.com/zed
 
 - **只有 Windows 版**，从 [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)）安装，或者用 [GitHub 上的安装程序](https://github.com/lucas9801/solo/releases/latest)（未签名），都在 Solo 里更新。
 - **关掉 Solo，agent 照样在跑。** 每个终端的 shell 跑在一个小的后台进程里：退出 Solo、更新重启，甚至 Solo 崩溃，正在运行东西（agent、编译）的终端都会继续跑，Solo 再打开时自动连回去，画面也都在。空闲的 shell 还是随 Solo 一起结束。
-- 不用注册账号，不发送遥测。默认只会定期检查更新（可以关掉），其余网络访问都由你用到的功能触发，详见[隐私说明](../../guide/zh-CN.md#9-隐私与网络)。
+- 不用注册账号，不发送遥测。默认只会定期检查更新（可以关掉），其余网络访问都由你用到的功能触发，详见[隐私说明](../../guide/zh-CN.md#9-隐私与网络)。下载语言服务等工具前先问你，离线模式下只访问本机和局域网。
 - 开源，GPL-3.0。
