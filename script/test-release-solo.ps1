@@ -65,7 +65,7 @@ try {
 
     Test-Release "neither -Bump nor -Version" @("-DryRun") $false "Give either"
     Test-Release "both -Bump and -Version" @("-Bump", "minor", "-Version", "2.5.0", "-DryRun") $false "Give either"
-    Test-Release "a patch version from main is refused" @("-Bump", "patch", "-DryRun") $false "released from release/2.4"
+    Test-Release "a patch version from main" @("-Bump", "patch", "-DryRun") $true "patch version Solo 2.4.2"
     Test-Release "a version that isn't the next one is refused" @("-Version", "2.7.0", "-DryRun") $false "isn't the next"
     Test-Release "a minor version from main" @("-Bump", "minor", "-DryRun") $true "create release/2.5"
     Test-Release "-Version names the next minor version" @("-Version", "2.5.0", "-DryRun") $true "minor version Solo 2.5.0"
