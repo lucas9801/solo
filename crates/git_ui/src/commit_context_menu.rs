@@ -21,7 +21,6 @@ actions!(
 );
 
 const COMMIT_TAG_LIST_WIDTH_IN_REMS: Rems = rems(10.);
-pub(crate) const CUSTOM_GIT_COMMANDS_DOCS_SLUG: &str = "tasks#custom-git-commands";
 
 pub(crate) struct CommitContextMenuData {
     pub(crate) sha: Oid,
@@ -163,11 +162,8 @@ pub(crate) fn commit_context_menu(
                             .icon(IconName::ArrowUpRight)
                             .icon_color(Color::Muted)
                             .icon_position(IconPosition::End)
-                            .handler(|_window, cx| {
-                                let docs_url =
-                                    release_channel::docs_url(CUSTOM_GIT_COMMANDS_DOCS_SLUG, cx);
-                                cx.open_url(&docs_url);
-                            }),
+                            // SOLO: Solo's user guide, not Zed's docs.
+                            .handler(|_window, cx| cx.open_url(util::i18n::guide_url())),
                     );
                 }
 

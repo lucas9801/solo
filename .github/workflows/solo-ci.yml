@@ -5,14 +5,6 @@
 # On every push and pull request to main and release/<x.y> branches it
 # checks that the `solo` binary builds and runs the tests of the crates Solo
 # changes most. It never uploads or publishes anything.
-#
-# WebRTC: livekit's webrtc-sys (pulled in through call/livekit_client) links a
-# prebuilt libwebrtc. Without LK_CUSTOM_WEBRTC its build script downloads it
-# (93 MB) from zed-industries/livekit-rust-sdks' releases into its OUT_DIR on
-# every fresh build. Here it's downloaded once, its SHA-256 checked, cached
-# with actions/cache and passed with LK_CUSTOM_WEBRTC, as Solo is built
-# locally. WEBRTC_TAG must match WEBRTC_TAG in the livekit-rust-sdks revision
-# pinned in Cargo.toml (webrtc-sys/build/src/lib.rs).
 
 name: Solo CI
 
@@ -38,8 +30,6 @@ env:
   # scarcest thing on a hosted runner.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
-  WEBRTC_TAG: webrtc-0001d84-4
-  WEBRTC_SHA256: b16f68e1fef8bd8089b9c7fc46c3c9b43ad5257c84460794a3668ec5accc1f13
 
 jobs:
   check-and-test:
@@ -75,23 +65,6 @@ jobs:
           rustup toolchain install
           rustc --version
           cargo --version
-
-      - name: Cache the prebuilt WebRTC
-        id: webrtc-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/webrtc
-          key: webrtc-${{ env.WEBRTC_TAG }}-win-x64-release
-
-      - name: Download or check the prebuilt WebRTC
-        # Also on a cache hit: it checks the cached zip and unpacks it again.
-        run: ./script/solo-ci-webrtc.ps1 -Tag $env:WEBRTC_TAG -Sha256 $env:WEBRTC_SHA256 -Dir "${{ runner.temp }}/webrtc"
-
-      - name: Use the prebuilt WebRTC
-        run: |
-          $dir = Join-Path "${{ runner.temp }}" "webrtc/win-x64-release"
-          if (-not (Test-Path (Join-Path $dir "webrtc.ninja"))) { throw "No WebRTC in $dir" }
-          "LK_CUSTOM_WEBRTC=$dir" >> $env:GITHUB_ENV
 
       - name: Cache cargo registry and dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3

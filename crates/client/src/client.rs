@@ -26,7 +26,7 @@ use futures::{
     future::BoxFuture,
     stream::BoxStream,
 };
-use gpui::{App, AsyncApp, Entity, Global, Task, TaskExt, WeakEntity, actions};
+use gpui::{App, AsyncApp, Entity, Global, Task, TaskExt, WeakEntity};
 use http_client::{HttpClient, HttpClientWithUrl, http, read_proxy_from_env};
 use parking_lot::{Mutex, RwLock};
 use postage::watch;
@@ -57,7 +57,6 @@ use util::{ConnectionResult, ResultExt};
 
 pub use llm_token::*;
 pub use rpc::*;
-pub use telemetry_events::Event;
 pub use user::*;
 
 static ZED_SERVER_URL: LazyLock<Option<String>> =
@@ -87,18 +86,6 @@ pub static ZED_ALWAYS_ACTIVE: LazyLock<bool> =
 pub const INITIAL_RECONNECTION_DELAY: Duration = Duration::from_millis(500);
 pub const MAX_RECONNECTION_DELAY: Duration = Duration::from_secs(30);
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
-
-actions!(
-    client,
-    [
-        /// Signs in to Zed account.
-        SignIn,
-        /// Signs out of Zed account.
-        SignOut,
-        /// Reconnects to the collaboration server.
-        Reconnect
-    ]
-);
 
 #[derive(Deserialize, RegisterSetting)]
 pub struct ClientSettings {
@@ -163,40 +150,9 @@ impl Settings for ProxySettings {
     }
 }
 
-pub fn init(client: &Arc<Client>, cx: &mut App) {
-    let client = Arc::downgrade(client);
-    cx.on_action({
-        let client = client.clone();
-        move |_: &SignIn, cx| {
-            if let Some(client) = client.upgrade() {
-                cx.spawn(async move |cx| client.sign_in_with_optional_connect(true, cx).await)
-                    .detach_and_log_err(cx);
-            }
-        }
-    })
-    .on_action({
-        let client = client.clone();
-        move |_: &SignOut, cx| {
-            if let Some(client) = client.upgrade() {
-                cx.spawn(async move |cx| {
-                    client.sign_out(cx).await;
-                })
-                .detach();
-            }
-        }
-    })
-    .on_action({
-        let client = client;
-        move |_: &Reconnect, cx| {
-            if let Some(client) = client.upgrade() {
-                cx.spawn(async move |cx| {
-                    client.reconnect(cx);
-                })
-                .detach();
-            }
-        }
-    });
-}
+/// SOLO: Zed registered its sign in, sign out and reconnect actions here; Solo
+/// has no Zed account, so it has none. Kept so that callers don't change.
+pub fn init(_client: &Arc<Client>, _cx: &mut App) {}
 
 pub type MessageToClientHandler = Box<dyn Fn(&MessageToClient, &mut App) + Send + Sync + 'static>;
 
@@ -556,14 +512,15 @@ impl settings::Settings for TelemetrySettings {
 
 impl Client {
     pub fn new(
-        clock: Arc<dyn SystemClock>,
+        // SOLO: was for Zed's telemetry events, which Solo doesn't send.
+        _clock: Arc<dyn SystemClock>,
         http: Arc<HttpClientWithUrl>,
         cx: &mut App,
     ) -> Arc<Self> {
         Arc::new(Self {
             id: AtomicU64::new(0),
             peer: Peer::new(0),
-            telemetry: Telemetry::new(clock, http.clone(), cx),
+            telemetry: Telemetry::new(cx),
             cloud_client: Arc::new(CloudApiClient::new(http.clone())),
             http,
             credentials_provider: ClientCredentialsProvider::new(cx),
@@ -882,6 +839,13 @@ impl Client {
         try_provider: bool,
         cx: &AsyncApp,
     ) -> Result<Credentials> {
+        // SOLO: Solo has no Zed account. It never signs in to zed.dev: no
+        // browser sign-in, and no check of stored Zed credentials against
+        // Zed's servers. Tests that fake Zed's server still sign in.
+        if !self.fakes_zed_server() {
+            return Err(anyhow!("Solo doesn't sign in to a Zed account"));
+        }
+
         let is_reauthenticating = if self.status().borrow().is_signed_out() {
             self.set_status(Status::Authenticating, cx);
             false
@@ -1256,6 +1220,16 @@ impl Client {
         .detach();
 
         Ok(())
+    }
+
+    /// SOLO: whether a test fakes Zed's server, the only case in which Solo
+    /// signs in (see [`Self::sign_in`]).
+    fn fakes_zed_server(&self) -> bool {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.authenticate.read().is_some() {
+            return true;
+        }
+        false
     }
 
     fn authenticate(self: &Arc<Self>, cx: &AsyncApp) -> Task<Result<Credentials>> {
@@ -1928,64 +1902,6 @@ impl ProtoClient for Client {
 
 /// prefix for the zed:// url scheme
 pub const ZED_URL_SCHEME: &str = "zed";
-
-/// A parsed Zed link that can be handled internally by the application.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ZedLink {
-    /// Join a channel: `zed.dev/channel/channel-name-123` or `zed://channel/channel-name-123`
-    Channel { channel_id: u64 },
-    /// Open channel notes: `zed.dev/channel/channel-name-123/notes` or with heading `notes#heading`
-    ChannelNotes {
-        channel_id: u64,
-        heading: Option<String>,
-    },
-}
-
-/// Parses the given link into a Zed link.
-///
-/// Returns a [`Some`] containing the parsed link if the link is a recognized Zed link
-/// that should be handled internally by the application.
-/// Returns [`None`] for links that should be opened in the browser.
-pub fn parse_zed_link(link: &str, cx: &App) -> Option<ZedLink> {
-    let server_url = &ClientSettings::get_global(cx).server_url;
-    let path = link
-        .strip_prefix(server_url)
-        .and_then(|result| result.strip_prefix('/'))
-        .or_else(|| {
-            link.strip_prefix(ZED_URL_SCHEME)
-                .and_then(|result| result.strip_prefix("://"))
-        })?;
-
-    let mut parts = path.split('/');
-
-    if parts.next() != Some("channel") {
-        return None;
-    }
-
-    let slug = parts.next()?;
-    let id_str = slug.split('-').next_back()?;
-    let channel_id = id_str.parse::<u64>().ok()?;
-
-    let Some(next) = parts.next() else {
-        return Some(ZedLink::Channel { channel_id });
-    };
-
-    if let Some(heading) = next.strip_prefix("notes#") {
-        return Some(ZedLink::ChannelNotes {
-            channel_id,
-            heading: Some(heading.to_string()),
-        });
-    }
-
-    if next == "notes" {
-        return Some(ZedLink::ChannelNotes {
-            channel_id,
-            heading: None,
-        });
-    }
-
-    None
-}
 
 #[cfg(test)]
 mod tests {

@@ -34,8 +34,6 @@
 # signs) or with the installer from the GitHub release. Nothing here is
 # signed: the installer and Solo's exes in it are unsigned. Releases have no
 # zip.
-#
-# See solo-ci.yml for why WebRTC is downloaded separately.
 
 name: Solo package
 
@@ -53,8 +51,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  WEBRTC_TAG: webrtc-0001d84-4
-  WEBRTC_SHA256: b16f68e1fef8bd8089b9c7fc46c3c9b43ad5257c84460794a3668ec5accc1f13
 
 jobs:
   build:
@@ -96,23 +92,6 @@ jobs:
         run: |
           rustup toolchain install
           rustc --version
-
-      - name: Cache the prebuilt WebRTC
-        id: webrtc-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/webrtc
-          key: webrtc-${{ env.WEBRTC_TAG }}-win-x64-release
-
-      - name: Download or check the prebuilt WebRTC
-        # Also on a cache hit: it checks the cached zip and unpacks it again.
-        run: ./script/solo-ci-webrtc.ps1 -Tag $env:WEBRTC_TAG -Sha256 $env:WEBRTC_SHA256 -Dir "${{ runner.temp }}/webrtc"
-
-      - name: Use the prebuilt WebRTC
-        run: |
-          $dir = Join-Path "${{ runner.temp }}" "webrtc/win-x64-release"
-          if (-not (Test-Path (Join-Path $dir "webrtc.ninja"))) { throw "No WebRTC in $dir" }
-          "LK_CUSTOM_WEBRTC=$dir" >> $env:GITHUB_ENV
 
       # Only the registry, git checkouts and cargo-about: a cached solo-dist
       # target wouldn't fit next to solo-ci's cache, and release builds should

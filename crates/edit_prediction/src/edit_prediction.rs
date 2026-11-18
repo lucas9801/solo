@@ -100,6 +100,7 @@ mod edit_prediction_tests;
 
 use crate::cursor_excerpt::expand_context_syntactically_then_linewise;
 use crate::data_collection::{CapturedPredictionContext, capture_prediction_context};
+pub use crate::example_spec::EditPredictionRating;
 use crate::example_spec::RecentFile;
 use crate::license_detection::LicenseDetectionWatcher;
 use crate::mercury::Mercury;
@@ -108,7 +109,6 @@ use crate::onboarding_modal::ZedPredictModal;
 use crate::prediction::EditPredictionResult;
 pub use crate::prediction::{EditPrediction, EditPredictionId, EditPredictionInputs};
 pub use language_model::ApiKeyState;
-pub use telemetry_events::EditPredictionRating;
 pub use zed_edit_prediction_delegate::ZedEditPredictionDelegate;
 
 actions!(
@@ -2792,6 +2792,12 @@ impl EditPredictionStore {
                 all_language_settings(None, cx).edit_predictions.provider,
                 EditPredictionProvider::Ollama | EditPredictionProvider::OpenAiCompatibleApi
             );
+        // SOLO: never Zed's hosted edit predictions: they need a Zed account,
+        // which Solo doesn't have. Zeta through Ollama or an OpenAI-compatible
+        // server still works. (This crate's tests fake Zed's server.)
+        if is_cloud_zeta && !cfg!(test) {
+            return Task::ready(Ok(None));
+        }
         if is_cloud_zeta && !self.client.cloud_client().has_credentials() {
             return Task::ready(Ok(None));
         }

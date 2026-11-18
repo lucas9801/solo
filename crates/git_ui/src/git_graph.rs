@@ -1,8 +1,8 @@
 pub use crate::commit_context_menu::{CopyCommitSha, CopyCommitTag, OpenCommitView};
 use crate::{
     commit_context_menu::{
-        CUSTOM_GIT_COMMANDS_DOCS_SLUG, CommitContextMenuData, CommitContextMenuSource,
-        commit_context_menu, git_context_menu_tasks, git_task_context,
+        CommitContextMenuData, CommitContextMenuSource, commit_context_menu,
+        git_context_menu_tasks, git_task_context,
     },
     commit_tooltip::CommitAvatar,
     commit_view::CommitView,
@@ -1416,12 +1416,8 @@ impl RefMenuEntry {
                     .icon(IconName::ArrowUpRight)
                     .icon_color(Color::Muted)
                     .icon_position(IconPosition::End)
-                    .handler(|_window, cx| {
-                        cx.open_url(&release_channel::docs_url(
-                            CUSTOM_GIT_COMMANDS_DOCS_SLUG,
-                            cx,
-                        ));
-                    }),
+                    // SOLO: Solo's user guide, not Zed's docs.
+                    .handler(|_window, cx| cx.open_url(util::i18n::guide_url())),
             );
         }
 
