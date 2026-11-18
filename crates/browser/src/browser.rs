@@ -2,7 +2,7 @@
 //!
 //! Pages are shown by the system's WebView2 runtime in a native child window
 //! that follows its tab (see `webview2.rs`). Links from the terminal, the
-//! Markdown preview and the timeline go through [`zed_actions::browser::OpenUrl`],
+//! Markdown preview and the timeline go through [`solo_actions::browser::OpenUrl`],
 //! which picks Solo's browser or the system browser per the "open links" setting.
 
 pub mod address;
@@ -17,8 +17,8 @@ mod webview2;
 
 use gpui::{App, AppContext as _, Context, WeakEntity, Window};
 use settings::{RegisterSetting, Settings};
+use solo_actions::browser::{OpenBrowser, OpenUrl};
 use workspace::Workspace;
-use zed_actions::browser::{OpenBrowser, OpenUrl};
 
 pub use address::{LinkTarget, OpenLinksIn, link_target};
 pub use browser_view::{BrowserEvent, BrowserView, Viewport};

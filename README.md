@@ -205,7 +205,7 @@ Solo 目前只有 Windows x64 版。
 ```powershell
 git clone https://github.com/lucas9801/solo
 cd solo
-cargo run -p zed        # 调试版，生成并运行 target\debug\solo.exe
+cargo run -p solo        # 调试版，生成并运行 target\debug\solo.exe
 ```
 
 这样只编译 `solo.exe`。agent hooks 用的 `solo-agent-hook.exe`、让终端在 Solo 关掉后继续跑的 `solo-terminal-host.exe` 和 `solo-cli.exe` 要另外编译，见[从源码构建](docs/development.md#notes-for-local-builds)；没有它们 Solo 也能用，只是这几项退回到慢一些或不保留的做法。
@@ -220,7 +220,7 @@ script\package-solo.ps1   # 优化构建，把要打包的文件放到 dist\Solo
 
 **注意**：
 
-- 第一次构建要下载依赖、编译一千多个 crate，时间较长（几十分钟到几个小时，看机器）。编译时会同时跑很多个 rustc，每个可能占到 1 GB 以上；内存紧张时用 `cargo run -j 4 -p zed` 或环境变量 `CARGO_BUILD_JOBS` 限制并发。
+- 第一次构建要下载依赖、编译一千多个 crate，时间较长（几十分钟到几个小时，看机器）。编译时会同时跑很多个 rustc，每个可能占到 1 GB 以上；内存紧张时用 `cargo run -j 4 -p solo` 或环境变量 `CARGO_BUILD_JOBS` 限制并发。
 - 正式版本由 GitHub Actions 构建和打包（[Solo package](.github/workflows/solo-package.yml)），本地构建只用来开发和测试。
 
 ## 现在的状态

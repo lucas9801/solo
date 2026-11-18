@@ -22,7 +22,7 @@ rope = { opt-level = 3 }
 scheduler = { opt-level = 3 }
 sum_tree = { opt-level = 3 }
 text = { opt-level = 3 }
-zed = { codegen-units = 1 }
+solo = { codegen-units = 1 }
 
 [target.'cfg(target_os = "linux")']
 rustflags = ["-C", "link-args=-Wl,--disable-new-dtags,-rpath,$ORIGIN/../lib"]

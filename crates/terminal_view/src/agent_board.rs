@@ -19,6 +19,7 @@ use gpui::{
     Action, App, AsyncWindowContext, Context, Entity, EntityId, EventEmitter, FocusHandle,
     Focusable, Pixels, Render, Subscription, Task, WeakEntity, Window, actions, px,
 };
+use solo_actions::agent_task::ManageAgentTasks;
 use ui::{Tab, Tooltip, prelude::*};
 use util::i18n::{is_chinese, tr};
 use workspace::{
@@ -27,7 +28,6 @@ use workspace::{
     dock::{DockPosition, Panel, PanelEvent},
     item::ItemEvent,
 };
-use zed_actions::agent_task::ManageAgentTasks;
 
 use crate::{
     TerminalView,

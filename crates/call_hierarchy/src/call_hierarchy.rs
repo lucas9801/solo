@@ -20,13 +20,13 @@ use language::{
 use picker::{Picker, PickerDelegate};
 use project::{CallHierarchyItem, LspStoreEvent, Project};
 use settings::Settings;
+pub use solo_actions::{ShowIncomingCalls, ShowOutgoingCalls, ToggleDirection};
 use theme_settings::ThemeSettings;
 use ui::{
     KeyBinding, ListItem, ListItemSpacing, prelude::*, tooltip_container, utils::buffer_text_style,
 };
 use util::{ResultExt, paths::PathExt};
 use workspace::{DismissDecision, ModalView, Workspace};
-pub use zed_actions::{ShowIncomingCalls, ShowOutgoingCalls, ToggleDirection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum CallHierarchyMode {

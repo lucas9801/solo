@@ -20,8 +20,8 @@ mod wsl_picker;
 use remote::RemoteConnectionOptions;
 pub use remote_connection::{RemoteConnectionModal, connect, connect_with_modal};
 pub use remote_connections::{
-    navigate_to_positions, open_remote_project,
-    remote_development, show_remote_development_unavailable,
+    navigate_to_positions, open_remote_project, remote_development,
+    show_remote_development_unavailable,
 };
 
 use disconnected_overlay::DisconnectedOverlay;
@@ -42,6 +42,7 @@ use settings::{DefaultOpenBehavior, Settings, WorktreeId};
 use workspace::ProjectGroupKey;
 
 use dev_container::{DevContainerContext, find_devcontainer_configs};
+use solo_actions::{OpenDevContainer, OpenRecent, OpenRemote};
 use ui::{
     ButtonLike, ContextMenu, Divider, HighlightedLabel, KeyBinding, ListItem, ListItemSpacing,
     ListSubHeader, PopoverMenu, PopoverMenuHandle, TintColor, Tooltip, prelude::*,
@@ -52,7 +53,6 @@ use workspace::{
     SerializedWorkspaceLocation, Workspace, WorkspaceDb, WorkspaceId,
     notifications::DetachAndPromptErr, with_active_or_new_workspace,
 };
-use zed_actions::{OpenDevContainer, OpenRecent, OpenRemote};
 
 actions!(
     recent_projects,
@@ -288,7 +288,7 @@ pub(crate) fn default_open_in_new_window(cx: &App) -> bool {
 
 pub fn init(cx: &mut App) {
     #[cfg(target_os = "windows")]
-    cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenFolderInWsl, cx| {
+    cx.on_action(|open_wsl: &solo_actions::wsl_actions::OpenFolderInWsl, cx| {
         let create_new_window = open_wsl
             .create_new_window
             .unwrap_or_else(|| default_open_in_new_window(cx));
@@ -374,7 +374,7 @@ pub fn init(cx: &mut App) {
     });
 
     #[cfg(target_os = "windows")]
-    cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenWsl, cx| {
+    cx.on_action(|open_wsl: &solo_actions::wsl_actions::OpenWsl, cx| {
         let create_new_window = open_wsl
             .create_new_window
             .unwrap_or_else(|| default_open_in_new_window(cx));
@@ -1742,36 +1742,38 @@ impl PickerDelegate for RecentProjectsDelegate {
                             })
                     })
                     // SOLO: see `remote_development`.
-                    .when(remote_development(), |this| this.child(
-                        ButtonLike::new("open_remote_folder")
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .gap_1()
-                                    .justify_between()
-                                    .child(Label::new("Open Remote Folder"))
-                                    .child(KeyBinding::for_action(
-                                        &OpenRemote {
-                                            from_existing_connection: false,
-                                            create_new_window: Some(self.create_new_window),
-                                        },
-                                        cx,
-                                    )),
-                            )
-                            .on_click({
-                                let create_new_window = self.create_new_window;
-                                move |_, window, cx| {
-                                    window.dispatch_action(
-                                        OpenRemote {
-                                            from_existing_connection: false,
-                                            create_new_window: Some(create_new_window),
-                                        }
-                                        .boxed_clone(),
-                                        cx,
-                                    )
-                                }
-                            }),
-                    ))
+                    .when(remote_development(), |this| {
+                        this.child(
+                            ButtonLike::new("open_remote_folder")
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .gap_1()
+                                        .justify_between()
+                                        .child(Label::new("Open Remote Folder"))
+                                        .child(KeyBinding::for_action(
+                                            &OpenRemote {
+                                                from_existing_connection: false,
+                                                create_new_window: Some(self.create_new_window),
+                                            },
+                                            cx,
+                                        )),
+                                )
+                                .on_click({
+                                    let create_new_window = self.create_new_window;
+                                    move |_, window, cx| {
+                                        window.dispatch_action(
+                                            OpenRemote {
+                                                from_existing_connection: false,
+                                                create_new_window: Some(create_new_window),
+                                            }
+                                            .boxed_clone(),
+                                            cx,
+                                        )
+                                    }
+                                }),
+                        )
+                    })
                     .into_any(),
             );
         }

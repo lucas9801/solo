@@ -10,9 +10,9 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, Focusable as _, Hsla, WeakEntity, Window,
 };
 use language::{Buffer, BufferSnapshot, Point, ToOffset as _, ToPoint as _};
+use solo_actions::agent_terminal::{DocumentComment, SendDocumentCommentsToAgent};
 use ui::{IconButton, IconName, Tooltip, prelude::*};
 use util::i18n::{is_chinese, tr};
-use zed_actions::agent_terminal::{DocumentComment, SendDocumentCommentsToAgent};
 
 use super::MarkdownPreviewView;
 

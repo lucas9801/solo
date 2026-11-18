@@ -34,7 +34,7 @@ ui.workspace = true
 url.workspace = true
 util.workspace = true
 workspace.workspace = true
-zed_actions.workspace = true
+solo_actions.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle.workspace = true

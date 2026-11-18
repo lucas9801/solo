@@ -52,9 +52,9 @@ try {
     Invoke-Git config user.name test | Out-Null
     Invoke-Git config user.email test@example.com | Out-Null
     Invoke-Git config core.autocrlf false | Out-Null
-    New-Item -ItemType Directory -Force "crates\zed", "script" | Out-Null
-    [IO.File]::WriteAllText("$repo\crates\zed\Cargo.toml", "[package]`nname = `"zed`"`nversion = `"2.4.1`"`n")
-    [IO.File]::WriteAllText("$repo\Cargo.lock", "[[package]]`nname = `"zed`"`nversion = `"2.4.1`"`n")
+    New-Item -ItemType Directory -Force "crates\solo", "script" | Out-Null
+    [IO.File]::WriteAllText("$repo\crates\solo\Cargo.toml", "[package]`nname = `"solo`"`nversion = `"2.4.1`"`n")
+    [IO.File]::WriteAllText("$repo\Cargo.lock", "[[package]]`nname = `"solo`"`nversion = `"2.4.1`"`n")
     Copy-Item "$scriptDir\release-solo.ps1", "$scriptDir\check-solo-release-notes.ps1" "$repo\script"
     Invoke-Git add -A | Out-Null
     Invoke-Git commit -q -m "Solo 2.4.1" | Out-Null

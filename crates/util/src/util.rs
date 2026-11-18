@@ -8,6 +8,10 @@ pub mod command;
 #[cfg(not(target_family = "wasm"))]
 pub mod fs;
 #[cfg(not(target_family = "wasm"))]
+pub mod i18n;
+#[cfg(not(target_family = "wasm"))]
+pub mod packaged;
+#[cfg(not(target_family = "wasm"))]
 pub mod process;
 #[cfg(not(target_family = "wasm"))]
 pub mod shell;
@@ -15,10 +19,6 @@ pub mod shell;
 pub mod shell_builder;
 #[cfg(not(target_family = "wasm"))]
 pub mod shell_env;
-#[cfg(not(target_family = "wasm"))]
-pub mod i18n;
-#[cfg(not(target_family = "wasm"))]
-pub mod packaged;
 
 pub mod disambiguate;
 pub mod markdown;
@@ -222,11 +222,11 @@ where
 ///
 /// This function checks if the current process is running with root privileges
 /// and terminates the program with an error message unless explicitly allowed via the
-/// `ZED_ALLOW_ROOT` environment variable.
+/// `SOLO_ALLOW_ROOT` environment variable.
 #[cfg(unix)]
 pub fn prevent_root_execution() {
     let is_root = nix::unistd::geteuid().is_root();
-    let allow_root = std::env::var("ZED_ALLOW_ROOT").is_ok_and(|val| val == "true");
+    let allow_root = std::env::var("SOLO_ALLOW_ROOT").is_ok_and(|val| val == "true");
 
     if is_root && !allow_root {
         eprintln!(
@@ -234,7 +234,7 @@ pub fn prevent_root_execution() {
 Error: Running Solo as root or via sudo is unsupported.
        Doing so (even once) may subtly break things for all subsequent non-root usage of Solo.
        It is untested and not recommended, don't complain when things break.
-       If you wish to proceed anyways, set `ZED_ALLOW_ROOT=true` in your environment."
+       If you wish to proceed anyways, set `SOLO_ALLOW_ROOT=true` in your environment."
         );
         std::process::exit(1);
     }

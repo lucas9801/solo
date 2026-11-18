@@ -18,14 +18,14 @@ use gpui::{
 use language::{DiagnosticSeverity, Point};
 use picker::{Picker, PickerDelegate};
 use settings::Settings as _;
+use solo_actions::agent_terminal::{
+    DocumentComment, PageComment, SendDiagnosticsToAgent, SendDocumentCommentsToAgent,
+    SendPageCommentsToAgent, SendPositionToAgent, SendSelectionToAgent,
+};
 use task::RevealStrategy;
 use terminal::terminal_settings::TerminalSettings;
 use ui::{ListItem, ListItemSpacing, prelude::*};
 use workspace::{ModalView, Toast, Workspace, item::Item as _, notifications::NotificationId};
-use zed_actions::agent_terminal::{
-    DocumentComment, PageComment, SendDiagnosticsToAgent, SendDocumentCommentsToAgent,
-    SendPageCommentsToAgent, SendPositionToAgent, SendSelectionToAgent,
-};
 
 use crate::{
     TerminalView, agent_status::AgentStatus, agent_turns::AgentTurns, command_blocks,

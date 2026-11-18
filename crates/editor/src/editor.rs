@@ -242,6 +242,8 @@ use settings::{
 };
 use smallvec::{SmallVec, smallvec};
 use snippet::Snippet;
+pub use solo_actions::editor::RevealInFileManager;
+use solo_actions::editor::{MoveDown, MoveUp};
 use std::{
     any::{Any, TypeId},
     borrow::Cow,
@@ -280,8 +282,6 @@ use workspace::{
     notifications::{DetachAndPromptErr, NotificationId, NotifyResultExt, NotifyTaskExt},
     searchable::{SearchEvent, SelectSearchOptions},
 };
-pub use zed_actions::editor::RevealInFileManager;
-use zed_actions::editor::{MoveDown, MoveUp};
 
 use crate::{
     bookmarks::BookmarksTabState,
@@ -9101,7 +9101,7 @@ impl Editor {
 
     fn copy_path(
         &mut self,
-        _: &zed_actions::workspace::CopyPath,
+        _: &solo_actions::workspace::CopyPath,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -9116,7 +9116,7 @@ impl Editor {
 
     fn copy_relative_path(
         &mut self,
-        _: &zed_actions::workspace::CopyRelativePath,
+        _: &solo_actions::workspace::CopyRelativePath,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
