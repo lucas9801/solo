@@ -113,7 +113,10 @@ if ($Store) {
 }
 
 $files = @("solo.exe", "solo-cli.exe", "solo-agent-hook.exe", "solo-terminal-host.exe", "solo-update-helper.exe")
-$optional = @("conpty.dll", "OpenConsole.exe", "LICENSE-GPL", "licenses.md", "THIRD-PARTY-VENDORED.md", "LICENSE-command-signatures.md")
+# The ConPTY runtime Solo's terminals use (else Windows' older ConPTY): the
+# Store package has to have it; a test package goes without it, with a warning.
+$conpty = @("conpty.dll", "OpenConsole.exe")
+$optional = @("LICENSE-GPL", "licenses.md", "THIRD-PARTY-VENDORED.md", "LICENSE-command-signatures.md")
 $contextMenuDll = "solo-explorer-command.dll"
 
 # The text and code files Solo offers to open (Explorer's "Open with").
@@ -146,6 +149,11 @@ function Find-SdkTool([string]$name) {
 
 foreach ($file in $files) {
     if (-not (Test-Path (Join-Path $SourceDir $file))) { throw "$file isn't in $SourceDir; stage Solo first (script\package-solo.ps1 -Step Stage)" }
+}
+foreach ($file in $conpty) {
+    if (Test-Path (Join-Path $SourceDir $file)) { continue }
+    if ($Store) { throw "$file isn't in $SourceDir; the Store package needs the ConPTY runtime (script\package-solo.ps1 -Step Stage puts it there)" }
+    Write-Warning "$file isn't in $SourceDir, so the package's terminals use Windows' ConPTY"
 }
 
 # A release build only. Solo's exes carry VS_FF_DEBUG when they're built with
@@ -193,7 +201,7 @@ $msix = Join-Path $OutDir "$PackageName.msix"
 if (Test-Path $layout) { Remove-Item -Recurse -Force $layout }
 New-Item -ItemType Directory -Force (Join-Path $layout "Assets") | Out-Null
 
-foreach ($file in $files + $optional) {
+foreach ($file in $files + $conpty + $optional) {
     $path = Join-Path $SourceDir $file
     if (Test-Path $path) { Copy-Item $path $layout }
 }
