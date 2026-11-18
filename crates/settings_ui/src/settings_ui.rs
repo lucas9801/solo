@@ -2289,7 +2289,7 @@ impl SettingsWindow {
                             query_words.iter().all(|query_word| {
                                 doc.words
                                     .iter()
-                                    .any(|doc_word| doc_word.starts_with(query_word))
+                                    .any(|doc_word| word_matches(doc_word, query_word))
                             })
                         })
                         .map(|doc| doc.id)
@@ -2337,30 +2337,37 @@ impl SettingsWindow {
     }
 
     fn build_search_index(&mut self) {
-        fn split_into_words(parts: &[&str]) -> Vec<String> {
+        self.build_search_index_with(util::i18n::translate);
+    }
+
+    /// SOLO: indexes the English text and, through `translate`, the text as
+    /// shown, so a search finds a setting by either.
+    fn build_search_index_with(&mut self, translate: fn(&str) -> Option<&'static str>) {
+        let split_into_words = |parts: &[&str]| -> Vec<String> {
             parts
                 .iter()
+                .flat_map(|part| std::iter::once(*part).chain(translate(part)))
                 .flat_map(|s| {
                     s.split(|c: char| !c.is_alphanumeric())
                         .filter(|w| !w.is_empty())
                         .map(|w| w.to_lowercase())
                 })
-                .collect()
-        }
+                .collect::<Vec<String>>()
+        };
 
         let mut key_lut: Vec<SearchKeyLUTEntry> = vec![];
         let mut documents: Vec<SearchDocument> = Vec::default();
         let mut fuzzy_match_candidates = Vec::default();
 
-        fn push_candidates(
-            fuzzy_match_candidates: &mut Vec<StringMatchCandidate>,
-            key_index: usize,
-            input: &str,
-        ) {
-            for word in input.split_ascii_whitespace() {
-                fuzzy_match_candidates.push(StringMatchCandidate::new(key_index, word));
+        let push_candidates = |fuzzy_match_candidates: &mut Vec<StringMatchCandidate>,
+                               key_index: usize,
+                               input: &str| {
+            for text in std::iter::once(input).chain(translate(input)) {
+                for word in text.split_ascii_whitespace() {
+                    fuzzy_match_candidates.push(StringMatchCandidate::new(key_index, word));
+                }
             }
-        }
+        };
 
         // PERF: We are currently searching all items even in project files
         // where many settings are filtered out, using the logic in filter_matches_to_file
@@ -2621,14 +2628,9 @@ impl SettingsWindow {
             .enumerate()
             .filter(|(_, (_, entry))| !entry.is_root)
             .map(|(logical_index, (index, entry))| {
-                let title_lower = entry.title.to_lowercase();
                 let matching_words = query_words
                     .iter()
-                    .filter(|query_word| {
-                        title_lower
-                            .split_whitespace()
-                            .any(|title_word| title_word.starts_with(*query_word))
-                    })
+                    .filter(|query_word| title_has_word(&entry.title, query_word))
                     .count();
                 (logical_index, index, matching_words)
             })
@@ -2647,14 +2649,9 @@ impl SettingsWindow {
             .visible_page_items()
             .enumerate()
             .find(|(_, (_, item))| match item {
-                SettingsPageItem::SectionHeader(title) => {
-                    let title_lower = title.to_lowercase();
-                    query_words.iter().all(|query_word| {
-                        title_lower
-                            .split_whitespace()
-                            .any(|title_word| title_word.starts_with(query_word))
-                    })
-                }
+                SettingsPageItem::SectionHeader(title) => query_words
+                    .iter()
+                    .all(|query_word| title_has_word(title, query_word)),
                 _ => false,
             })
             .map(|(position, _)| position);
@@ -5299,6 +5296,26 @@ fn render_analysis_mode(
     .into_any_element()
 }
 
+/// SOLO: whether a word of the search matches a word of a setting's text.
+/// English words match from their start. Chinese runs its words together,
+/// so a Chinese search word matches anywhere in the text.
+fn word_matches(text_word: &str, query_word: &str) -> bool {
+    text_word.starts_with(query_word) || (!query_word.is_ascii() && text_word.contains(query_word))
+}
+
+/// SOLO: whether a word of the search matches the title, in English or as
+/// shown.
+fn title_has_word(title: &str, query_word: &str) -> bool {
+    std::iter::once(title)
+        .chain(util::i18n::translate(title))
+        .any(|title| {
+            title
+                .to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|title_word| word_matches(title_word, query_word))
+        })
+}
+
 /// SOLO: "Alert when memory exceeds [4] GB", with a switch.
 fn render_memory_alert(
     _settings_window: &SettingsWindow,
@@ -6260,6 +6277,57 @@ pub mod test {
                 assert_eq!(editor.text(cx), "unsaved-branch-name");
             });
         }
+    }
+
+    #[gpui::test]
+    fn search_finds_settings_by_their_chinese_text(cx: &mut gpui::TestAppContext) {
+        let (settings_window, cx) = cx.add_window_view(|window, cx| {
+            register_settings(cx);
+            let mut settings_window = parse(
+                "v Network*\n- Network\nv Language Services\n- Language Services",
+                window,
+                cx,
+            );
+            settings_window.pages[0].items = vec![
+                SettingsPageItem::SectionHeader("Network"),
+                test_action_link("Proxy", None),
+            ]
+            .into_boxed_slice();
+            settings_window.pages[1].items = vec![
+                SettingsPageItem::SectionHeader("Language Services"),
+                test_action_link("Ask Before Large Projects", None),
+                test_action_link("Memory Alert", None),
+            ]
+            .into_boxed_slice();
+            settings_window.build_filter_table();
+            settings_window.build_navbar(cx);
+            settings_window.build_content_handles(window, cx);
+            settings_window.build_search_index_with(util::i18n::chinese);
+            settings_window.reset_list_state();
+            settings_window
+        });
+        let mut search = |query: &'static str| {
+            settings_window.update_in(cx, |settings_window, window, cx| {
+                settings_window
+                    .search_bar
+                    .update(cx, |editor, cx| editor.set_text(query, window, cx));
+                settings_window.update_matches(cx);
+            });
+            cx.run_until_parked();
+            settings_window.read_with(cx, |settings_window, _| {
+                settings_window.filter_table.clone()
+            })
+        };
+
+        // 网络 › 代理
+        assert_eq!(search("代理")[0], vec![true, true]);
+        assert!(!search("代理")[1].iter().any(|shown| *shown));
+        // The English still finds it.
+        assert_eq!(search("proxy")[0], vec![true, true]);
+        // 语言服务 is the page; 内存提醒 one of its settings.
+        assert!(search("语言服务")[1].iter().all(|shown| *shown));
+        assert_eq!(search("内存")[1], vec![true, false, true]);
+        assert!(!search("内存")[0].iter().any(|shown| *shown));
     }
 
     #[gpui::test]
