@@ -159,7 +159,10 @@ The turn's time is for every agent: from when it starts working until it
 stops, less the time it waits for you. The session's is the sum of its
 turns since Solo saw the agent start; a session resumed from earlier shows
 none. Solo leaves Codex's and Copilot's telemetry alone when you set up
-telemetry of your own.
+telemetry of your own. Codex's telemetry stays on this machine (Solo keeps
+only these numbers and the files its patches edited, in memory); in those
+terminals `OTEL_BLRP_SCHEDULE_DELAY` is 200 unless you set it, so Codex sends
+it every 200 ms rather than every second.
 
 ### Per-turn review
 Solo takes a snapshot of the working directory when each agent turn starts
@@ -189,10 +192,11 @@ file open, the page says so and keeps **Undo Rollback**: close that program
 and click it to put every file back as it was.
 
 A turn is only the files the agent reported editing, when it reports them
-(Claude Code does, through Solo's hook for its Edit and Write tools; Codex
-does for its `apply_patch` edits when `"terminal": {"codex_edit_hooks": true}`
-is set, which is off by default because Codex waits for the hook after every
-patch, and on Windows starting it through PowerShell adds about a second): files
+(Claude Code does, through Solo's hook for its Edit and Write tools; Codex's
+`apply_patch` edits come from the telemetry Solo has Codex send it, for that
+session only; with `[otel]` in your own Codex config, which replaces Solo's,
+`"terminal": {"codex_edit_hooks": true}` reports them through a hook instead,
+which adds about a second per patch on Windows): files
 you or another agent in the same repository changed meanwhile aren't in it,
 and **Reject All**, which says how many files it puts back, leaves them alone.
 The page lists the other files that changed during the turn, including what
@@ -835,7 +839,7 @@ Solo's own settings, under `"terminal"`:
 | `shell_integration` | `true` | load the shell integration (command blocks, input editor and hooks need it) |
 | `claude_code_hooks` | `true` | add status hooks to Claude Code with `--settings` |
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
-| `codex_edit_hooks` | `false` | also have Codex report the files each `apply_patch` edits, so its turns are only its edits (about a second more per patch on Windows) |
+| `codex_edit_hooks` | `false` | also have Codex's hooks report the files each `apply_patch` edits; only needed when your own Codex config sets up `[otel]` (about a second more per patch on Windows) |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
 | `opencode_hooks` | `true` | load a status plugin into OpenCode for each session |
 | `ide_tools` | `true` | give Claude Code and Codex Solo's read-only IDE tools (symbols, definitions, references, diagnostics) as an MCP server |

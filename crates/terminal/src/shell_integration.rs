@@ -501,7 +501,8 @@ pub fn integrate_codex(is_windows: bool, report_edits: bool, env: &mut HashMap<S
     };
     match codex_hook_args(is_windows, &hook, report_edits) {
         Some(mut args) => {
-            // SOLO: and its log events, for how fast its model answers.
+            // SOLO: and its log events, for how fast its model answers and
+            // which files its patches edit.
             if !codex_has_own_telemetry(env)
                 && let Some(receiver) = agent_sessions::codex_otel::receiver()
             {
@@ -509,6 +510,7 @@ pub fn integrate_codex(is_windows: bool, report_edits: bool, env: &mut HashMap<S
                 // SOLO: the receiver is on 127.0.0.1, which Codex would
                 // send through the system proxy.
                 crate::ide_tools::bypass_proxy_for_loopback(env);
+                shorten_codex_log_batches(env, |name| std::env::var(name).ok());
             }
             env.insert("SOLO_CODEX_ARGS".to_string(), args.join("\n"));
         }
@@ -516,6 +518,27 @@ pub fn integrate_codex(is_windows: bool, report_edits: bool, env: &mut HashMap<S
             log::warn!("Codex can't be given a hook command for {hook}: it won't report its status")
         }
     }
+}
+
+/// SOLO: How often Codex sends its log events, in ms, unless the user chose:
+/// its OpenTelemetry SDK batches them for 1 s by default
+/// (`OTEL_BLRP_SCHEDULE_DELAY`), which a turn's end waits for, to know which
+/// files the turn's patches edited.
+const CODEX_LOG_BATCH_MS: &str = "200";
+
+/// SOLO: Makes Codex send its log events every [`CODEX_LOG_BATCH_MS`],
+/// unless the terminal or Solo has `OTEL_BLRP_SCHEDULE_DELAY` already. It's
+/// the OpenTelemetry SDKs' variable, so other programs in the terminal that
+/// send log events batch them as often.
+fn shorten_codex_log_batches(
+    env: &mut HashMap<String, String>,
+    process_env: impl Fn(&str) -> Option<String>,
+) {
+    const NAME: &str = "OTEL_BLRP_SCHEDULE_DELAY";
+    if env.contains_key(NAME) || process_env(NAME).is_some() {
+        return;
+    }
+    env.insert(NAME.to_string(), CODEX_LOG_BATCH_MS.to_string());
 }
 
 /// SOLO: Whether the user (or an administrator) set up Codex's telemetry
@@ -2420,6 +2443,21 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    /// SOLO: Codex's log events come every 200 ms, unless chosen otherwise.
+    #[test]
+    fn codex_log_batches_are_short() {
+        let mut env = HashMap::default();
+        shorten_codex_log_batches(&mut env, |_| None);
+        assert_eq!(env["OTEL_BLRP_SCHEDULE_DELAY"], "200");
+        let mut env = HashMap::default();
+        env.insert("OTEL_BLRP_SCHEDULE_DELAY".to_string(), "5000".to_string());
+        shorten_codex_log_batches(&mut env, |_| None);
+        assert_eq!(env["OTEL_BLRP_SCHEDULE_DELAY"], "5000");
+        let mut env = HashMap::default();
+        shorten_codex_log_batches(&mut env, |_| Some("50".to_string()));
+        assert!(env.is_empty());
     }
 
     #[test]

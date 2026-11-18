@@ -334,10 +334,11 @@ pub struct TerminalSettingsContent {
     /// Default: true
     pub codex_hooks: Option<bool>,
     /// SOLO: Whether Codex's hooks (`codex_hooks`) also report the files each
-    /// `apply_patch` edits, so a turn's review lists only Codex's edits and
-    /// shows other changes made meanwhile apart. Codex waits for the hook
-    /// after every patch; on Windows it starts PowerShell for it, which adds
-    /// about a second to each. Takes effect in new terminals.
+    /// `apply_patch` edits. Solo already knows them from the telemetry it has
+    /// Codex send it, so this is only needed when that telemetry doesn't
+    /// come to Solo: when your own Codex config sets up `[otel]`. Codex waits
+    /// for the hook after every patch; on Windows it starts PowerShell for
+    /// it, which adds about a second to each. Takes effect in new terminals.
     ///
     /// Default: false
     pub codex_edit_hooks: Option<bool>,
