@@ -525,9 +525,10 @@ if it isn't running yet.
 - **Other agents** that support MCP can be pointed at it: the terminal has the
   server's address in `SOLO_IDE_MCP_URL` (streamable HTTP) and the token to
   send as `Authorization: Bearer` in `SOLO_IDE_TOKEN`.
-- **With a proxy** (`HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` set), Solo adds
-  `127.0.0.1` and `localhost` to the terminal's `NO_PROXY`: a proxy can't
-  reach the server on this machine.
+- **Proxies.** Solo adds `127.0.0.1` and `localhost` to the terminal's
+  `NO_PROXY`: a proxy can't reach the server on this machine, and Codex sends
+  requests through the Windows system proxy (Internet Options) even to
+  `127.0.0.1`, ignoring its bypass list, unless `NO_PROXY` says otherwise.
 - **Only this workspace.** The server listens on 127.0.0.1 only. Each
   workspace has its own random token, which only its terminals get, and the
   tools only take and show files of that workspace (not files outside it, not

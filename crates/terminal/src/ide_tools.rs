@@ -61,7 +61,7 @@ pub fn integrate(project: AnyWeakEntity, env: &mut HashMap<String, String>, cx: 
 fn add_endpoint(endpoint: &Endpoint, env: &mut HashMap<String, String>) {
     env.insert(URL_ENV.to_string(), endpoint.url.clone());
     env.insert(TOKEN_ENV.to_string(), endpoint.token.clone());
-    bypass_proxy(env, |name| std::env::var(name).ok());
+    bypass_proxy_for_loopback(env);
     // Only the wrapper Claude Code's hooks set up passes the file.
     if env.contains_key("SOLO_CLAUDE_SETTINGS") {
         let existing = env
@@ -82,12 +82,22 @@ fn add_endpoint(endpoint: &Endpoint, env: &mut HashMap<String, String>) {
     args.push_str(&codex_override(&endpoint.url));
 }
 
-/// Agents send HTTP through the proxy in `HTTP_PROXY` and the like when one
-/// is set, and a proxy can't reach this machine's loopback interface (the
-/// request fails, e.g. with a 503): so with a proxy, the loopback addresses
-/// are added to `NO_PROXY`, which they all honor.
+/// SOLO: Adds the loopback addresses to a terminal's `NO_PROXY`, for agents
+/// that reach Solo on this machine (its IDE tools, Codex's telemetry
+/// receiver).
+///
+/// A proxy can't reach this machine's loopback interface: the request fails,
+/// e.g. with a 503. Agents send HTTP through the proxy in `HTTP_PROXY` and the
+/// like, and Codex also through the system proxy (Windows' Internet Options),
+/// whose bypass list it ignores, so even `127.0.0.1` goes to the proxy. They
+/// all honor `NO_PROXY`, so the loopback addresses are always added to it,
+/// with or without a proxy in the environment: a system proxy can also be
+/// turned on while the terminal runs.
+pub(crate) fn bypass_proxy_for_loopback(env: &mut HashMap<String, String>) {
+    bypass_proxy(env, |name| std::env::var(name).ok());
+}
+
 fn bypass_proxy(env: &mut HashMap<String, String>, process_env: impl Fn(&str) -> Option<String>) {
-    const PROXIES: [&str; 3] = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"];
     // Windows' variables have one value whatever their case.
     let lookup = |env: &HashMap<String, String>, name: &str| -> Option<(String, String)> {
         let found = if cfg!(windows) {
@@ -99,13 +109,6 @@ fn bypass_proxy(env: &mut HashMap<String, String>, process_env: impl Fn(&str) ->
             .map(|(key, value)| (key.clone(), value.clone()))
             .or_else(|| process_env(name).map(|value| (name.to_string(), value)))
     };
-    let has_proxy = PROXIES
-        .iter()
-        .flat_map(|name| [name.to_string(), name.to_ascii_lowercase()])
-        .any(|name| lookup(env, &name).is_some_and(|(_, value)| !value.trim().is_empty()));
-    if !has_proxy {
-        return;
-    }
     // Tools elsewhere read either spelling.
     let names: &[&str] = if cfg!(windows) {
         &["NO_PROXY"]
@@ -222,14 +225,24 @@ mod tests {
         assert!(!env.contains_key(CLAUDE_MCP_CONFIG_ENV));
         assert!(env["SOLO_CODEX_ARGS"].starts_with("-c\nmcp_servers.solo-ide="));
         assert_eq!(env[TOKEN_ENV], "abc123");
+        // Without a proxy set too: Codex would use the system proxy.
+        let no_proxy = env
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("NO_PROXY"));
+        assert!(
+            no_proxy.is_some_and(|(_, hosts)| hosts.split(',').any(|host| host == "127.0.0.1")),
+            "{no_proxy:?}"
+        );
     }
 
     #[test]
     fn loopback_bypasses_a_proxy() {
         let none = |_: &str| None;
+        // Without a proxy in the environment too: Codex uses the system
+        // proxy, ignoring its bypass list.
         let mut env = HashMap::default();
         bypass_proxy(&mut env, none);
-        assert!(env.is_empty());
+        assert_eq!(env["NO_PROXY"], "127.0.0.1,localhost");
 
         env.insert(
             "HTTPS_PROXY".to_string(),
@@ -242,12 +255,12 @@ mod tests {
         bypass_proxy(&mut env, none);
         assert_eq!(env["NO_PROXY"], "corp.example,127.0.0.1,localhost");
 
-        // A proxy only in Solo's own environment counts too.
+        // Solo's own `NO_PROXY` is kept.
         let mut env = HashMap::default();
         bypass_proxy(&mut env, |name| {
-            (name == "HTTP_PROXY").then(|| "http://proxy:8080".to_string())
+            (name == "NO_PROXY").then(|| "corp.example".to_string())
         });
-        assert_eq!(env["NO_PROXY"], "127.0.0.1,localhost");
+        assert_eq!(env["NO_PROXY"], "corp.example,127.0.0.1,localhost");
     }
 
     #[test]
