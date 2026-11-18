@@ -12,9 +12,9 @@ use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
 use nbformat::v4::{CellId, CellMetadata, CellType};
 use runtimelib::{JupyterMessage, JupyterMessageContent};
 use settings::Settings as _;
+use solo_actions::notebook::InterruptKernel;
 use ui::{CommonAnimationExt, IconButtonShape, prelude::*};
 use util::ResultExt;
-use zed_actions::notebook::InterruptKernel;
 
 use crate::{
     notebook::{CODE_BLOCK_INSET, GUTTER_WIDTH},

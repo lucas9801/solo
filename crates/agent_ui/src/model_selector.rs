@@ -15,9 +15,9 @@ use gpui::{
 use itertools::Itertools;
 use picker::{Picker, PickerDelegate};
 use settings::SettingsStore;
+use solo_actions::agent::OpenSettings;
 use ui::{DocumentationAside, IntoElement, prelude::*};
 use util::ResultExt;
-use zed_actions::agent::OpenSettings;
 
 use crate::model_search;
 use crate::ui::{

@@ -164,7 +164,7 @@ if ($Store -and $soloInfo.Comments -notmatch '^[^+]+\+stable(\.|$)') {
 if (-not $Version) {
     $soloVersion = $soloInfo.ProductVersion
     if (-not $soloVersion) {
-        $soloVersion = (Select-String -Path "crates\zed\Cargo.toml" -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+        $soloVersion = (Select-String -Path "crates\solo\Cargo.toml" -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
     }
     $Version = ConvertTo-MsixVersion $soloVersion -AllowPrerelease:(-not $Store)
 }
@@ -202,7 +202,7 @@ if (-not $NoContextMenu) { Copy-Item $ExplorerCommandDll (Join-Path $layout $con
 # The tiles, scaled from Solo's icon. The targetsize ones (unplated) are the
 # icons the taskbar, Start's list and Explorer show at those sizes.
 Add-Type -AssemblyName System.Drawing
-$icon = [System.Drawing.Image]::FromFile((Resolve-Path "crates\zed\resources\app-icon@2x.png").Path)
+$icon = [System.Drawing.Image]::FromFile((Resolve-Path "crates\solo\resources\app-icon@2x.png").Path)
 try {
     $tiles = @(@("Square44x44Logo.png", 44), @("Square150x150Logo.png", 150), @("StoreLogo.png", 50))
     foreach ($size in 16, 24, 32, 48, 256) {

@@ -15,8 +15,8 @@ use settings::{
     CenteredPaddingSettings, CodeFade, DelayMs, FontSize, FontWeightContent, InactiveOpacity,
     MinimumContrast, PixelSetting,
 };
+use solo_actions::editor::{MoveDown, MoveUp};
 use ui::prelude::*;
-use zed_actions::editor::{MoveDown, MoveUp};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NumberFieldMode {

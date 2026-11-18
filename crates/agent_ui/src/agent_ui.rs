@@ -90,12 +90,12 @@ pub use external_source_prompt::ExternalSourcePrompt;
 pub(crate) use mode_selector::ModeSelector;
 pub(crate) use model_selector::ModelSelector;
 pub(crate) use model_selector_popover::ModelSelectorPopover;
+use solo_actions;
+pub use solo_actions::{CreateWorktree, NewWorktreeBranchTarget, SwitchWorktree};
 pub use thread_import::{
     AcpThreadImportOnboarding, CrossChannelImportOnboarding, ThreadImportModal,
     channels_with_threads, import_threads_from_other_channels,
 };
-use zed_actions;
-pub use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, SwitchWorktree};
 
 pub(crate) fn resolve_agent_image(
     dest_url: &str,
@@ -720,7 +720,7 @@ pub fn init(
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         workspace.register_action(
             move |workspace: &mut Workspace,
-                  _: &zed_actions::AcpRegistry,
+                  _: &solo_actions::AcpRegistry,
                   window: &mut Window,
                   cx: &mut Context<Workspace>| {
                 let existing = workspace
@@ -908,11 +908,11 @@ fn update_command_palette_filter(cx: &mut App) {
             TypeId::of::<ToggleEditPrediction>(),
         ];
 
-        let manage_skills_action = [TypeId::of::<zed_actions::assistant::ManageSkills>()];
+        let manage_skills_action = [TypeId::of::<solo_actions::assistant::ManageSkills>()];
         // SOLO: opening AGENTS.md doesn't need the agent panel.
         let agents_md_actions = [
-            TypeId::of::<zed_actions::assistant::OpenGlobalAgentsMdRules>(),
-            TypeId::of::<zed_actions::assistant::OpenProjectAgentsMdRules>(),
+            TypeId::of::<solo_actions::assistant::OpenGlobalAgentsMdRules>(),
+            TypeId::of::<solo_actions::assistant::OpenProjectAgentsMdRules>(),
         ];
         // SOLO: Zed's threads sidebar holds the agent panel.
         let threads_sidebar_actions = [
@@ -924,8 +924,8 @@ fn update_command_palette_filter(cx: &mut App) {
             TypeId::of::<workspace::NewThread>(),
         ];
         let skill_creator_actions = [
-            TypeId::of::<zed_actions::assistant::OpenSkillCreator>(),
-            TypeId::of::<zed_actions::assistant::CreateSkillFromUrl>(),
+            TypeId::of::<solo_actions::assistant::OpenSkillCreator>(),
+            TypeId::of::<solo_actions::assistant::CreateSkillFromUrl>(),
         ];
 
         if disable_ai {
@@ -937,7 +937,7 @@ fn update_command_palette_filter(cx: &mut App) {
             filter.hide_namespace("edit_prediction");
 
             filter.hide_action_types(&edit_prediction_actions);
-            filter.hide_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
+            filter.hide_action_types(&[TypeId::of::<solo_actions::OpenZedPredictOnboarding>()]);
             filter.hide_action_types(&agents_md_actions);
         } else {
             if agent_enabled {
@@ -983,7 +983,7 @@ fn update_command_palette_filter(cx: &mut App) {
             // SOLO: Zed's edit predictions need a Zed account, so their
             // onboarding isn't offered.
             filter.hide_namespace("zed_predict_onboarding");
-            filter.hide_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
+            filter.hide_action_types(&[TypeId::of::<solo_actions::OpenZedPredictOnboarding>()]);
 
             filter.show_namespace("multi_workspace");
         }
@@ -1102,9 +1102,9 @@ mod tests {
             let filter = CommandPaletteFilter::try_global(cx).unwrap();
             assert!(AgentSettings::get_global(cx).enabled(cx));
             for hidden in [
-                &zed_actions::assistant::ToggleFocus as &dyn gpui::Action,
-                &zed_actions::assistant::Toggle,
-                &zed_actions::assistant::FocusAgent,
+                &solo_actions::assistant::ToggleFocus as &dyn gpui::Action,
+                &solo_actions::assistant::Toggle,
+                &solo_actions::assistant::FocusAgent,
                 &NewThread,
                 &NewTerminalThread,
                 &workspace::ToggleWorkspaceSidebar,
@@ -1113,9 +1113,9 @@ mod tests {
                 assert!(filter.is_hidden(hidden), "{} is hidden", hidden.name());
             }
             for shown in [
-                &zed_actions::assistant::InlineAssist::default() as &dyn gpui::Action,
-                &zed_actions::assistant::OpenProjectAgentsMdRules,
-                &zed_actions::assistant::OpenGlobalAgentsMdRules,
+                &solo_actions::assistant::InlineAssist::default() as &dyn gpui::Action,
+                &solo_actions::assistant::OpenProjectAgentsMdRules,
+                &solo_actions::assistant::OpenGlobalAgentsMdRules,
             ] {
                 assert!(!filter.is_hidden(shown), "{} is shown", shown.name());
             }
@@ -1204,23 +1204,23 @@ mod tests {
                 "NewTerminalThread should be visible by default"
             );
             assert!(
-                !filter.is_hidden(&zed_actions::assistant::OpenSkillCreator),
+                !filter.is_hidden(&solo_actions::assistant::OpenSkillCreator),
                 "OpenSkillCreator should be visible by default"
             );
             assert!(
-                !filter.is_hidden(&zed_actions::assistant::CreateSkillFromUrl),
+                !filter.is_hidden(&solo_actions::assistant::CreateSkillFromUrl),
                 "CreateSkillFromUrl should be visible by default"
             );
             assert!(
-                !filter.is_hidden(&zed_actions::assistant::OpenGlobalAgentsMdRules),
+                !filter.is_hidden(&solo_actions::assistant::OpenGlobalAgentsMdRules),
                 "OpenGlobalAgentsMdRules should be visible by default"
             );
             assert!(
-                !filter.is_hidden(&zed_actions::assistant::OpenProjectAgentsMdRules),
+                !filter.is_hidden(&solo_actions::assistant::OpenProjectAgentsMdRules),
                 "OpenProjectAgentsMdRules should be visible by default"
             );
             assert!(
-                filter.is_hidden(&zed_actions::assistant::ManageSkills),
+                filter.is_hidden(&solo_actions::assistant::ManageSkills),
                 "ManageSkills should be hidden even when AI is enabled"
             );
         });
@@ -1247,11 +1247,11 @@ mod tests {
                 "NewTerminalThread should be hidden when agent is disabled"
             );
             assert!(
-                filter.is_hidden(&zed_actions::assistant::OpenGlobalAgentsMdRules),
+                filter.is_hidden(&solo_actions::assistant::OpenGlobalAgentsMdRules),
                 "OpenGlobalAgentsMdRules should be hidden when agent is disabled"
             );
             assert!(
-                filter.is_hidden(&zed_actions::assistant::OpenProjectAgentsMdRules),
+                filter.is_hidden(&solo_actions::assistant::OpenProjectAgentsMdRules),
                 "OpenProjectAgentsMdRules should be hidden when agent is disabled"
             );
         });
@@ -1311,11 +1311,11 @@ mod tests {
         cx.update(|cx| {
             let filter = CommandPaletteFilter::try_global(cx).unwrap();
             assert!(
-                filter.is_hidden(&zed_actions::assistant::ManageSkills),
+                filter.is_hidden(&solo_actions::assistant::ManageSkills),
                 "ManageSkills should be hidden when AI is disabled"
             );
             assert!(
-                filter.is_hidden(&zed_actions::assistant::OpenSkillCreator),
+                filter.is_hidden(&solo_actions::assistant::OpenSkillCreator),
                 "OpenSkillCreator should be hidden when AI is disabled"
             );
             assert!(

@@ -903,17 +903,17 @@ impl Render for MermaidViewer {
             // Zed's font size bindings (ctrl-= / ctrl-- / ctrl-0) zoom the
             // diagram instead while it's focused.
             .on_action(
-                cx.listener(|this, _: &zed_actions::IncreaseBufferFontSize, _, cx| {
+                cx.listener(|this, _: &solo_actions::IncreaseBufferFontSize, _, cx| {
                     this.zoom_by_steps(1., None, cx)
                 }),
             )
             .on_action(
-                cx.listener(|this, _: &zed_actions::DecreaseBufferFontSize, _, cx| {
+                cx.listener(|this, _: &solo_actions::DecreaseBufferFontSize, _, cx| {
                     this.zoom_by_steps(-1., None, cx)
                 }),
             )
             .on_action(
-                cx.listener(|this, _: &zed_actions::ResetBufferFontSize, _, cx| {
+                cx.listener(|this, _: &solo_actions::ResetBufferFontSize, _, cx| {
                     this.fit_to_window(cx)
                 }),
             )

@@ -14,6 +14,7 @@ use gpui::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
+use solo_actions::agent_task::{ManageAgentTasks, NewAgentTask};
 use ui::{ContextMenu, ContextMenuEntry, PopoverMenu, Tooltip, prelude::*, right_click_menu};
 use util::i18n::tr;
 use workspace::{
@@ -22,7 +23,6 @@ use workspace::{
         self, AgentCounts, AgentState, AgentStateIcon, WorkspaceTask, WorkspaceTerminal,
     },
 };
-use zed_actions::agent_task::{ManageAgentTasks, NewAgentTask};
 
 use crate::TitleBar;
 

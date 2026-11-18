@@ -9,16 +9,16 @@ use crate::{
 use gpui::prelude::FluentBuilder;
 use gpui::{Context, DismissEvent, Entity, Focusable as _, Pixels, Point, Subscription, Window};
 use project::DisableAiSettings;
+use solo_actions::agent::AddSelectionToThread;
+use solo_actions::agent_terminal::{
+    SendDiagnosticsToAgent, SendPositionToAgent, SendSelectionToAgent,
+};
+use solo_actions::preview::{
+    markdown::OpenPreview as OpenMarkdownPreview, svg::OpenPreview as OpenSvgPreview,
+};
 use std::ops::Range;
 use text::PointUtf16;
 use workspace::OpenInTerminal;
-use zed_actions::agent::AddSelectionToThread;
-use zed_actions::agent_terminal::{
-    SendDiagnosticsToAgent, SendPositionToAgent, SendSelectionToAgent,
-};
-use zed_actions::preview::{
-    markdown::OpenPreview as OpenMarkdownPreview, svg::OpenPreview as OpenSvgPreview,
-};
 
 #[derive(Debug)]
 pub enum MenuPosition {
@@ -280,11 +280,11 @@ pub fn deploy_context_menu(
                 )
                 .action(
                     "Show Incoming Calls",
-                    Box::new(zed_actions::ShowIncomingCalls),
+                    Box::new(solo_actions::ShowIncomingCalls),
                 )
                 .action(
                     "Show Outgoing Calls",
-                    Box::new(zed_actions::ShowOutgoingCalls),
+                    Box::new(solo_actions::ShowOutgoingCalls),
                 )
                 .separator()
                 .action("Rename Symbol", Box::new(Rename))

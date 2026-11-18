@@ -16,7 +16,7 @@
 //! `script/test-wsl-sandbox.ps1`). Like the Linux helper, it **skips** (rather
 //! than fails) the enforcement assertions when the environment can't actually
 //! enforce a sandbox, so a misconfigured WSL doesn't masquerade as a sandbox
-//! regression. Set `ZED_TEST_SANDBOX_REQUIRE_ENFORCED=1` to turn that skip into
+//! regression. Set `SOLO_TEST_SANDBOX_REQUIRE_ENFORCED=1` to turn that skip into
 //! a failure once you've provisioned an environment that *should* enforce.
 //!
 //! Run it with `cargo xtask wsl-sandbox-tests` or `script/test-wsl-sandbox.ps1`.
@@ -86,7 +86,7 @@ mod imp {
     }
 
     fn run() -> Result<()> {
-        let require_enforced = env_flag("ZED_TEST_SANDBOX_REQUIRE_ENFORCED");
+        let require_enforced = env_flag("SOLO_TEST_SANDBOX_REQUIRE_ENFORCED");
         let wsl = Wsl::detect();
         println!("{RESULT_TAG} starting (require_enforced={require_enforced})");
 
@@ -114,12 +114,12 @@ mod imp {
     }
 
     /// The environment can't enforce a sandbox. Skip the enforcement checks
-    /// unless the caller asserted (via `ZED_TEST_SANDBOX_REQUIRE_ENFORCED`) that
+    /// unless the caller asserted (via `SOLO_TEST_SANDBOX_REQUIRE_ENFORCED`) that
     /// it should be able to, in which case this is a real failure.
     fn not_enforced(require_enforced: bool, reason: &str) -> Result<()> {
         if require_enforced {
             bail!(
-                "ZED_TEST_SANDBOX_REQUIRE_ENFORCED is set, but the WSL sandbox could not be \
+                "SOLO_TEST_SANDBOX_REQUIRE_ENFORCED is set, but the WSL sandbox could not be \
                  enforced: {reason}"
             );
         }
@@ -562,12 +562,12 @@ mod imp {
     }
 
     /// Find a TCP peer reachable from inside WSL so the network checks have a
-    /// real endpoint. Honors `ZED_TEST_ECHO_ADDR` (a `host:port`) if set;
+    /// real endpoint. Honors `SOLO_TEST_ECHO_ADDR` (a `host:port`) if set;
     /// otherwise binds a local listener on the Windows side and finds an address
     /// WSL can use to reach the Windows host. Returns `None` (so the caller
     /// skips, rather than fails, the network checks) when nothing is reachable.
     fn discover_peer(wsl: &Wsl) -> Result<Option<String>> {
-        if let Some(address) = std::env::var("ZED_TEST_ECHO_ADDR")
+        if let Some(address) = std::env::var("SOLO_TEST_ECHO_ADDR")
             .ok()
             .filter(|address| !address.is_empty())
         {
@@ -630,10 +630,10 @@ mod imp {
     fn ensure_host_port(address: &str) -> Result<()> {
         let (host, port) = address
             .rsplit_once(':')
-            .with_context(|| format!("ZED_TEST_ECHO_ADDR must be host:port, got {address:?}"))?;
+            .with_context(|| format!("SOLO_TEST_ECHO_ADDR must be host:port, got {address:?}"))?;
         ensure!(
             !host.is_empty() && port.parse::<u16>().is_ok(),
-            "ZED_TEST_ECHO_ADDR must be host:port, got {address:?}"
+            "SOLO_TEST_ECHO_ADDR must be host:port, got {address:?}"
         );
         Ok(())
     }

@@ -7,7 +7,7 @@
 use std::process::Command;
 
 fn git_sha() -> Option<String> {
-    if let Ok(sha) = std::env::var("ZED_COMMIT_SHA") {
+    if let Ok(sha) = std::env::var("SOLO_COMMIT_SHA") {
         return Some(sha);
     }
 
@@ -20,12 +20,12 @@ fn git_sha() -> Option<String> {
 }
 
 // SOLO: every exe Solo ships carries Solo's version, the version of the zed
-// crate (crates/zed/Cargo.toml, which script/release-solo.ps1 sets), not the
+// crate (crates/solo/Cargo.toml, which script/release-solo.ps1 sets), not the
 // version of the crate it's built from (the CLI and the helpers are 0.1.0),
 // so every exe of a release has the same product name and product version.
-const SOLO_CARGO_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../zed/Cargo.toml");
+const SOLO_CARGO_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../solo/Cargo.toml");
 
-/// The `version` of the `[package]` in crates/zed/Cargo.toml.
+/// The `version` of the `[package]` in crates/solo/Cargo.toml.
 fn solo_version() -> String {
     println!("cargo:rerun-if-changed={SOLO_CARGO_TOML}");
     let manifest = std::fs::read_to_string(SOLO_CARGO_TOML)
@@ -67,7 +67,7 @@ fn build_metadata(pkg_version: &str) -> String {
 const COMPANY_NAME: &str = "lucas9801";
 const LEGAL_COPYRIGHT: &str = "Copyright lucas9801 and Solo contributors. Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0-or-later";
 
-const ICON_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../zed/resources/windows");
+const ICON_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../solo/resources/windows");
 const MANIFEST_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/manifest.xml");
 
 pub fn compile(manifest: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -165,7 +165,7 @@ END
     let rc_path = out_dir.join("zed_resources.rc");
     std::fs::write(&rc_path, rc_content)?;
 
-    if let Ok(toolkit_path) = std::env::var("ZED_RC_TOOLKIT_PATH") {
+    if let Ok(toolkit_path) = std::env::var("SOLO_RC_TOOLKIT_PATH") {
         let rc_exe = std::path::Path::new(&toolkit_path).join("rc.exe");
         unsafe {
             std::env::set_var("RC", rc_exe);

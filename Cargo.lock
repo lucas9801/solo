@@ -304,6 +304,7 @@ dependencies = [
  "settings",
  "shell_command_parser",
  "smallvec",
+ "solo_env_vars",
  "sqlez",
  "streaming_diff",
  "strsim",
@@ -321,7 +322,6 @@ dependencies = [
  "uuid",
  "watch",
  "web_search",
- "zed_env_vars",
  "zlog",
  "zstd",
 ]
@@ -409,6 +409,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "solo_credentials_provider",
  "task",
  "tempfile",
  "terminal",
@@ -417,7 +418,6 @@ dependencies = [
  "util",
  "uuid",
  "watch",
- "zed_credentials_provider",
 ]
 
 [[package]]
@@ -562,6 +562,7 @@ dependencies = [
  "serde_json_lenient",
  "settings",
  "shlex 2.0.1",
+ "solo_actions",
  "streaming_diff",
  "task",
  "telemetry",
@@ -580,7 +581,6 @@ dependencies = [
  "vim",
  "watch",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -630,10 +630,10 @@ dependencies = [
  "gpui",
  "language_model",
  "smallvec",
+ "solo_actions",
  "telemetry",
  "ui",
  "util",
- "zed_actions",
 ]
 
 [[package]]
@@ -1424,11 +1424,11 @@ dependencies = [
  "release_channel",
  "semver",
  "settings",
+ "solo_actions",
  "telemetry",
  "ui",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -1986,12 +1986,12 @@ dependencies = [
  "rpc",
  "serde_json",
  "settings",
+ "solo_actions",
  "text",
  "theme",
  "theme_settings",
  "ui",
  "util",
- "zed_actions",
 ]
 
 [[package]]
@@ -2207,6 +2207,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "solo_actions",
  "tempfile",
  "terminal",
  "ui",
@@ -2217,7 +2218,6 @@ dependencies = [
  "windows-core 0.62.2",
  "windows-registry 0.6.1",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -2428,13 +2428,13 @@ dependencies = [
  "proto",
  "serde_json",
  "settings",
+ "solo_actions",
  "theme",
  "theme_settings",
  "tree-sitter-rust",
  "ui",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -2746,6 +2746,7 @@ dependencies = [
  "serde_urlencoded",
  "settings",
  "smol",
+ "solo_credentials_provider",
  "text",
  "thiserror 2.0.17",
  "time",
@@ -2757,7 +2758,6 @@ dependencies = [
  "util",
  "windows 0.62.2",
  "worktree",
- "zed_credentials_provider",
 ]
 
 [[package]]
@@ -2862,8 +2862,8 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "solo_credentials_provider",
  "text",
- "zed_credentials_provider",
  "zeta_prompt",
 ]
 
@@ -2928,6 +2928,7 @@ dependencies = [
  "project",
  "serde",
  "settings",
+ "solo_actions",
  "telemetry",
  "theme",
  "theme_settings",
@@ -2935,7 +2936,6 @@ dependencies = [
  "ui",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -3926,12 +3926,12 @@ dependencies = [
  "log",
  "paths",
  "release_channel",
+ "solo_env_vars",
  "sqlez",
  "sqlez_macros",
  "tempfile",
  "util",
  "uuid",
- "zed_env_vars",
 ]
 
 [[package]]
@@ -4015,6 +4015,7 @@ dependencies = [
  "serde_json",
  "serde_json_lenient",
  "settings",
+ "solo_actions",
  "sysinfo 0.39.6",
  "task",
  "tasks_ui",
@@ -4029,7 +4030,6 @@ dependencies = [
  "unindent",
  "util",
  "workspace",
- "zed_actions",
  "zlog",
 ]
 
@@ -4167,6 +4167,7 @@ dependencies = [
  "rand 0.9.4",
  "serde_json",
  "settings",
+ "solo_actions",
  "text",
  "theme",
  "theme_settings",
@@ -4174,7 +4175,6 @@ dependencies = [
  "unindent",
  "util",
  "workspace",
- "zed_actions",
  "zlog",
 ]
 
@@ -4513,6 +4513,8 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "solo_actions",
+ "solo_credentials_provider",
  "strum",
  "telemetry",
  "text",
@@ -4523,8 +4525,6 @@ dependencies = [
  "uuid",
  "workspace",
  "worktree",
- "zed_actions",
- "zed_credentials_provider",
  "zeta_prompt",
  "zlog",
  "zstd",
@@ -4610,14 +4610,14 @@ dependencies = [
  "paths",
  "project",
  "settings",
+ "solo_actions",
+ "solo_credentials_provider",
  "telemetry",
  "text",
  "theme_settings",
  "ui",
  "util",
  "workspace",
- "zed_actions",
- "zed_credentials_provider",
  "zeta_prompt",
 ]
 
@@ -4677,6 +4677,7 @@ dependencies = [
  "settings",
  "smallvec",
  "snippet",
+ "solo_actions",
  "sum_tree",
  "task",
  "telemetry",
@@ -4704,7 +4705,6 @@ dependencies = [
  "uuid",
  "vim_mode_setting",
  "workspace",
- "zed_actions",
  "zlog",
  "ztracing",
 ]
@@ -5289,6 +5289,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "solo_actions",
  "strum",
  "telemetry",
  "theme_settings",
@@ -5296,7 +5297,6 @@ dependencies = [
  "util",
  "vim_mode_setting",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -5402,11 +5402,11 @@ dependencies = [
  "client",
  "extension_host",
  "gpui",
+ "solo_actions",
  "system_specs",
  "urlencoding",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -5445,12 +5445,12 @@ dependencies = [
  "remote_server",
  "serde_json",
  "settings",
+ "solo_actions",
  "theme",
  "theme_settings",
  "ui",
  "util",
  "workspace",
- "zed_actions",
  "zlog",
 ]
 
@@ -6136,6 +6136,7 @@ dependencies = [
  "serde_json",
  "settings",
  "smallvec",
+ "solo_actions",
  "strum",
  "sysinfo 0.39.6",
  "task",
@@ -6153,7 +6154,6 @@ dependencies = [
  "util",
  "watch",
  "workspace",
- "zed_actions",
  "zlog",
  "ztracing",
 ]
@@ -6186,6 +6186,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "solo_actions",
  "task",
  "terminal",
  "theme",
@@ -6195,7 +6196,6 @@ dependencies = [
  "util",
  "watch",
  "workspace",
- "zed_actions",
  "zeroize",
  "zlog",
  "ztracing",
@@ -7630,12 +7630,12 @@ dependencies = [
  "serde_json_lenient",
  "settings",
  "snippet_provider",
+ "solo_actions",
  "theme",
  "theme_settings",
  "ui",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -8099,6 +8099,7 @@ dependencies = [
  "search",
  "serde_json",
  "settings",
+ "solo_actions",
  "telemetry",
  "tempfile",
  "theme",
@@ -8109,7 +8110,6 @@ dependencies = [
  "ui_input",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -8461,6 +8461,7 @@ dependencies = [
  "semver",
  "serde_json",
  "settings",
+ "solo_actions",
  "sysinfo 0.39.6",
  "telemetry",
  "theme",
@@ -8469,7 +8470,6 @@ dependencies = [
  "ui",
  "util",
  "workspace",
- "zed_actions",
  "zlog",
 ]
 
@@ -9156,13 +9156,13 @@ dependencies = [
  "serde_json",
  "settings",
  "similar",
+ "solo_actions",
  "theme",
  "theme_settings",
  "ui",
  "urlencoding",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -9519,10 +9519,10 @@ dependencies = [
  "serde_json",
  "settings",
  "smol",
+ "solo_actions",
  "theme_settings",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -9776,10 +9776,10 @@ dependencies = [
  "gpui",
  "net_guard",
  "settings",
+ "solo_actions",
  "ui",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -9876,9 +9876,9 @@ version = "0.1.0"
 dependencies = [
  "component",
  "gpui",
+ "solo_actions",
  "ui",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -10568,6 +10568,7 @@ dependencies = [
  "schemars 1.0.4",
  "serde",
  "settings",
+ "solo_actions",
  "telemetry",
  "theme",
  "theme_settings",
@@ -10576,7 +10577,6 @@ dependencies = [
  "vim_mode_setting",
  "which",
  "workspace",
- "zed_actions",
  "zlog",
 ]
 
@@ -10849,11 +10849,11 @@ dependencies = [
  "rope",
  "serde_json",
  "settings",
+ "solo_actions",
  "theme",
  "ui",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -10883,13 +10883,13 @@ dependencies = [
  "serde_json",
  "settings",
  "smallvec",
+ "solo_actions",
  "theme",
  "theme_settings",
  "ui",
  "util",
  "workspace",
  "worktree",
- "zed_actions",
 ]
 
 [[package]]
@@ -11723,13 +11723,13 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "solo_actions",
  "theme",
  "theme_settings",
  "ui",
  "ui_input",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -11838,12 +11838,12 @@ dependencies = [
  "project",
  "settings",
  "smallvec",
+ "solo_actions",
  "theme",
  "theme_settings",
  "ui",
  "windows 0.62.2",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -12234,6 +12234,7 @@ dependencies = [
  "smol",
  "snippet",
  "snippet_provider",
+ "solo_credentials_provider",
  "sum_tree",
  "task",
  "tempfile",
@@ -12248,7 +12249,6 @@ dependencies = [
  "wax",
  "which",
  "worktree",
- "zed_credentials_provider",
  "zeroize",
  "zlog",
  "ztracing",
@@ -12308,6 +12308,7 @@ dependencies = [
  "serde_json",
  "settings",
  "smallvec",
+ "solo_actions",
  "svg_preview",
  "telemetry",
  "tempfile",
@@ -12317,7 +12318,6 @@ dependencies = [
  "util",
  "workspace",
  "worktree",
- "zed_actions",
 ]
 
 [[package]]
@@ -13000,13 +13000,13 @@ dependencies = [
  "semver",
  "serde_json",
  "settings",
+ "solo_actions",
  "telemetry",
  "ui",
  "util",
  "windows-registry 0.6.1",
  "workspace",
  "worktree",
- "zed_actions",
 ]
 
 [[package]]
@@ -13314,6 +13314,7 @@ dependencies = [
  "settings",
  "shlex 2.0.1",
  "smol",
+ "solo_actions",
  "task",
  "telemetry",
  "terminal",
@@ -13327,7 +13328,6 @@ dependencies = [
  "util",
  "uuid",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -13995,6 +13995,7 @@ dependencies = [
  "serde_json",
  "settings",
  "smol",
+ "solo_actions",
  "text",
  "theme",
  "theme_settings",
@@ -14004,7 +14005,6 @@ dependencies = [
  "util",
  "util_macros",
  "workspace",
- "zed_actions",
  "ztracing",
 ]
 
@@ -14372,11 +14372,11 @@ dependencies = [
  "project",
  "serde_json",
  "settings",
+ "solo_actions",
  "theme",
  "theme_settings",
  "ui",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -14429,6 +14429,8 @@ dependencies = [
  "serde_yaml_ng",
  "settings",
  "shell_command_parser",
+ "solo_actions",
+ "solo_credentials_provider",
  "strum",
  "telemetry",
  "theme",
@@ -14438,8 +14440,6 @@ dependencies = [
  "url",
  "util",
  "workspace",
- "zed_actions",
- "zed_credentials_provider",
 ]
 
 [[package]]
@@ -14557,6 +14557,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "solo_actions",
  "telemetry",
  "theme",
  "theme_settings",
@@ -14564,7 +14565,6 @@ dependencies = [
  "unicode-segmentation",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -14798,11 +14798,218 @@ dependencies = [
 ]
 
 [[package]]
+name = "solo"
+version = "2.5.1"
+dependencies = [
+ "acp_thread",
+ "acp_tools",
+ "action_log",
+ "activity_indicator",
+ "agent",
+ "agent-client-protocol",
+ "agent_servers",
+ "agent_settings",
+ "agent_skills",
+ "agent_ui",
+ "anyhow",
+ "ashpd",
+ "askpass",
+ "assets",
+ "audio",
+ "auto_update",
+ "auto_update_ui",
+ "breadcrumbs",
+ "browser",
+ "call_hierarchy",
+ "chrono",
+ "clap",
+ "cli",
+ "client",
+ "clock",
+ "codestral",
+ "collections",
+ "command_palette",
+ "component_preview",
+ "copilot",
+ "copilot_chat",
+ "copilot_ui",
+ "crashes",
+ "dap_adapters",
+ "db",
+ "debug_adapter_extension",
+ "debugger_tools",
+ "debugger_ui",
+ "dev_container",
+ "diagnostics",
+ "edit_prediction",
+ "edit_prediction_ui",
+ "editor",
+ "encoding_selector",
+ "env_logger 0.11.8",
+ "etw_tracing",
+ "extension",
+ "extension_host",
+ "extensions_ui",
+ "feature_flags",
+ "feedback",
+ "file_finder",
+ "fs",
+ "futures 0.3.34",
+ "git",
+ "git_hosting_providers",
+ "git_ui",
+ "git_ui_core",
+ "go_to_line",
+ "gpui",
+ "gpui_platform",
+ "gpui_tokio",
+ "http_client",
+ "image",
+ "image_viewer",
+ "input_latency_ui",
+ "inspector_ui",
+ "install_cli",
+ "itertools 0.14.0",
+ "journal",
+ "json_schema_store",
+ "keymap_editor",
+ "language",
+ "language_extension",
+ "language_model",
+ "language_models",
+ "language_onboarding",
+ "language_selector",
+ "language_tools",
+ "languages",
+ "line_ending_selector",
+ "log",
+ "lsp_command_selector",
+ "lsp_locations",
+ "markdown",
+ "markdown_preview",
+ "menu",
+ "migrator",
+ "mimalloc",
+ "miniprofiler_ui",
+ "net_guard",
+ "net_guard_ui",
+ "nix",
+ "node_runtime",
+ "notifications",
+ "onboarding",
+ "outline",
+ "outline_panel",
+ "parking_lot",
+ "paths",
+ "picker",
+ "pkg-config",
+ "pretty_assertions",
+ "profiling",
+ "project",
+ "project_panel",
+ "project_symbols",
+ "prompt_store",
+ "proto",
+ "pulldown-cmark 0.13.4",
+ "rayon",
+ "recent_projects",
+ "release_channel",
+ "remote",
+ "remote_server",
+ "repl",
+ "reqwest_client",
+ "rope",
+ "sandbox",
+ "search",
+ "semver",
+ "serde",
+ "serde_json",
+ "session",
+ "settings",
+ "settings_profile_selector",
+ "settings_ui",
+ "shellexpand",
+ "sidebar",
+ "smol",
+ "snippet_provider",
+ "snippets_ui",
+ "solo_actions",
+ "solo_credentials_provider",
+ "solo_env_vars",
+ "svg_preview",
+ "sysinfo 0.39.6",
+ "system_specs",
+ "tab_switcher",
+ "tabular_data_preview",
+ "tasks_ui",
+ "telemetry",
+ "tempfile",
+ "terminal_view",
+ "theme",
+ "theme_extension",
+ "theme_selector",
+ "theme_settings",
+ "time",
+ "time_format",
+ "title_bar",
+ "toolchain_selector",
+ "tracing",
+ "ui",
+ "ui_prompt",
+ "url",
+ "urlencoding",
+ "util",
+ "uuid",
+ "vim",
+ "vim_mode_setting",
+ "watch",
+ "web_search",
+ "which_key",
+ "windows 0.62.2",
+ "windows_resources",
+ "workspace",
+ "zed-reqwest",
+ "zlog",
+ "zlog_settings",
+ "ztracing",
+]
+
+[[package]]
+name = "solo_actions"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "schemars 1.0.4",
+ "serde",
+ "util",
+]
+
+[[package]]
 name = "solo_agent_hook"
 version = "0.1.0"
 dependencies = [
  "serde_json",
  "windows_resources",
+]
+
+[[package]]
+name = "solo_credentials_provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "credentials_provider",
+ "futures 0.3.34",
+ "gpui",
+ "paths",
+ "release_channel",
+ "serde_json",
+]
+
+[[package]]
+name = "solo_env_vars"
+version = "0.1.0"
+dependencies = [
+ "env_var",
 ]
 
 [[package]]
@@ -15203,9 +15410,9 @@ dependencies = [
  "language",
  "multi_buffer",
  "project",
+ "solo_actions",
  "ui",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -15520,8 +15727,8 @@ dependencies = [
  "serde_json_lenient",
  "sha2",
  "shellexpand",
+ "solo_actions",
  "util",
- "zed_actions",
 ]
 
 [[package]]
@@ -15540,6 +15747,7 @@ dependencies = [
  "picker",
  "project",
  "serde_json",
+ "solo_actions",
  "task",
  "tree-sitter",
  "tree-sitter-json",
@@ -15548,7 +15756,6 @@ dependencies = [
  "ui",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -15691,6 +15898,7 @@ dependencies = [
  "settings",
  "shellexpand",
  "shlex 2.0.1",
+ "solo_actions",
  "solo_ide_tools",
  "task",
  "tasks_ui",
@@ -15706,7 +15914,6 @@ dependencies = [
  "which",
  "windows 0.62.2",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -15797,13 +16004,13 @@ dependencies = [
  "project",
  "serde_json",
  "settings",
+ "solo_actions",
  "telemetry",
  "theme",
  "theme_settings",
  "ui",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -16044,13 +16251,13 @@ dependencies = [
  "serde",
  "settings",
  "smallvec",
+ "solo_actions",
  "telemetry",
  "theme",
  "theme_settings",
  "ui",
  "util",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -17163,6 +17370,7 @@ dependencies = [
  "serde_json",
  "settings",
  "settings_ui",
+ "solo_actions",
  "task",
  "text",
  "theme",
@@ -17173,7 +17381,6 @@ dependencies = [
  "util_macros",
  "vim_mode_setting",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -18217,13 +18424,13 @@ dependencies = [
  "command_palette",
  "gpui",
  "settings",
+ "solo_actions",
  "theme",
  "theme_settings",
  "ui",
  "util",
  "vim_mode_setting",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -19185,6 +19392,7 @@ dependencies = [
  "session",
  "settings",
  "smallvec",
+ "solo_actions",
  "sqlez",
  "strum",
  "task",
@@ -19197,7 +19405,6 @@ dependencies = [
  "url",
  "util",
  "uuid",
- "zed_actions",
  "zlog",
 ]
 
@@ -19635,183 +19842,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zed"
-version = "2.5.1"
-dependencies = [
- "acp_thread",
- "acp_tools",
- "action_log",
- "activity_indicator",
- "agent",
- "agent-client-protocol",
- "agent_servers",
- "agent_settings",
- "agent_skills",
- "agent_ui",
- "anyhow",
- "ashpd",
- "askpass",
- "assets",
- "audio",
- "auto_update",
- "auto_update_ui",
- "breadcrumbs",
- "browser",
- "call_hierarchy",
- "chrono",
- "clap",
- "cli",
- "client",
- "clock",
- "codestral",
- "collections",
- "command_palette",
- "component_preview",
- "copilot",
- "copilot_chat",
- "copilot_ui",
- "crashes",
- "dap_adapters",
- "db",
- "debug_adapter_extension",
- "debugger_tools",
- "debugger_ui",
- "dev_container",
- "diagnostics",
- "edit_prediction",
- "edit_prediction_ui",
- "editor",
- "encoding_selector",
- "env_logger 0.11.8",
- "etw_tracing",
- "extension",
- "extension_host",
- "extensions_ui",
- "feature_flags",
- "feedback",
- "file_finder",
- "fs",
- "futures 0.3.34",
- "git",
- "git_hosting_providers",
- "git_ui",
- "git_ui_core",
- "go_to_line",
- "gpui",
- "gpui_platform",
- "gpui_tokio",
- "http_client",
- "image",
- "image_viewer",
- "input_latency_ui",
- "inspector_ui",
- "install_cli",
- "itertools 0.14.0",
- "journal",
- "json_schema_store",
- "keymap_editor",
- "language",
- "language_extension",
- "language_model",
- "language_models",
- "language_onboarding",
- "language_selector",
- "language_tools",
- "languages",
- "line_ending_selector",
- "log",
- "lsp_command_selector",
- "lsp_locations",
- "markdown",
- "markdown_preview",
- "menu",
- "migrator",
- "mimalloc",
- "miniprofiler_ui",
- "net_guard",
- "net_guard_ui",
- "nix",
- "node_runtime",
- "notifications",
- "onboarding",
- "outline",
- "outline_panel",
- "parking_lot",
- "paths",
- "picker",
- "pkg-config",
- "pretty_assertions",
- "profiling",
- "project",
- "project_panel",
- "project_symbols",
- "prompt_store",
- "proto",
- "pulldown-cmark 0.13.4",
- "rayon",
- "recent_projects",
- "release_channel",
- "remote",
- "remote_server",
- "repl",
- "reqwest_client",
- "rope",
- "sandbox",
- "search",
- "semver",
- "serde",
- "serde_json",
- "session",
- "settings",
- "settings_profile_selector",
- "settings_ui",
- "shellexpand",
- "sidebar",
- "smol",
- "snippet_provider",
- "snippets_ui",
- "svg_preview",
- "sysinfo 0.39.6",
- "system_specs",
- "tab_switcher",
- "tabular_data_preview",
- "tasks_ui",
- "telemetry",
- "tempfile",
- "terminal_view",
- "theme",
- "theme_extension",
- "theme_selector",
- "theme_settings",
- "time",
- "time_format",
- "title_bar",
- "toolchain_selector",
- "tracing",
- "ui",
- "ui_prompt",
- "url",
- "urlencoding",
- "util",
- "uuid",
- "vim",
- "vim_mode_setting",
- "watch",
- "web_search",
- "which_key",
- "windows 0.62.2",
- "windows_resources",
- "workspace",
- "zed-reqwest",
- "zed_actions",
- "zed_credentials_provider",
- "zed_env_vars",
- "zlog",
- "zlog_settings",
- "ztracing",
-]
-
-[[package]]
 name = "zed-font-kit"
 version = "0.14.1-zed"
 source = "git+https://github.com/zed-industries/font-kit?rev=94b0f28166665e8fd2f53ff6d268a14955c82269#94b0f28166665e8fd2f53ff6d268a14955c82269"
@@ -19909,36 +19939,6 @@ dependencies = [
  "x11rb",
  "xim-ctext",
  "xim-parser",
-]
-
-[[package]]
-name = "zed_actions"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "schemars 1.0.4",
- "serde",
- "util",
-]
-
-[[package]]
-name = "zed_credentials_provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "credentials_provider",
- "futures 0.3.34",
- "gpui",
- "paths",
- "release_channel",
- "serde_json",
-]
-
-[[package]]
-name = "zed_env_vars"
-version = "0.1.0"
-dependencies = [
- "env_var",
 ]
 
 [[package]]

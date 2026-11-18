@@ -28,6 +28,7 @@ use project::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use settings::GitDiffBaseSetting;
+use solo_actions::git as git_actions;
 use std::any::{Any, TypeId};
 use std::sync::Arc;
 use ui::{DiffStat, Divider, Tooltip, prelude::*};
@@ -37,7 +38,6 @@ use workspace::{
     item::{Item, ItemEvent, ItemHandle, SaveOptions},
     searchable::SearchableItemHandle,
 };
-use zed_actions::git as git_actions;
 
 actions!(
     git,
@@ -1030,7 +1030,7 @@ mod tests {
         });
     }
 
-    use zed_actions::git as git_actions;
+    use solo_actions::git as git_actions;
 
     use crate::branch_diff::BranchDiff;
     use crate::project_diff::{self, ProjectDiff};

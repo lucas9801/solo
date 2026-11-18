@@ -23,6 +23,7 @@ use project::{
 };
 
 use settings::{ModalWidthContent, SeedQuerySetting, Settings, SettingsStore};
+use solo_actions::search::ToggleIncludeIgnored;
 use std::{
     borrow::Cow,
     cmp, mem,
@@ -45,7 +46,6 @@ use workspace::{
     MAX_RECENT_SELECTIONS, ModalView, OpenOptions, OpenVisible, SplitDirection, Workspace,
     item::PreviewTabsSettings, notifications::NotifyResultExt, pane,
 };
-use zed_actions::search::ToggleIncludeIgnored;
 
 actions!(
     file_finder,

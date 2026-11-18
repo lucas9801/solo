@@ -236,7 +236,7 @@ about 1 %; what ran then wasn't sampled.
 | Zed | 1.28.1 stable (`1.28.1+stable.390.e8bc16ac`) | `winget install ZedIndustries.Zed` |
 | VS Code | 1.146.0 | The official zip (`update.code.visualstudio.com/latest/win32-x64-archive/stable`), run in portable mode |
 
-Solo is based on Zed's `main` of 2026-10-28, which `crates/zed/Cargo.toml`
+Solo is based on Zed's `main` of 2026-10-28, which its `crates/zed/Cargo.toml`
 calls 1.28.0 (see [UPSTREAM.md](../UPSTREAM.md)). The Zed measured here is
 the stable 1.28.1 release, built from Zed's stable branch: close to Solo's
 base, but not the same code, so a difference between Solo and Zed can come
