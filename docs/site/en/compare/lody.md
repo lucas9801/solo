@@ -10,7 +10,7 @@
 
 - **Teamwork.** Workspaces are shared, so several people watch and review together. Solo is a single-user tool and doesn't do teams.
 - **A phone app**, with Live Activities on iPhone.
-- **Review** per turn or per session, with line comments, and page elements can be annotated and sent to the agent.
+- **Review** per turn or per session, with line comments.
 - Several platforms.
 
 ## Where Solo differs
@@ -19,6 +19,7 @@
 - **The editor.** Lody mostly browses files and leaves editing to an external editor; Solo includes the full Zed editor, with language servers, navigation and a debugger.
 - **Diagnostics per turn:** after a turn, how many errors and warnings it added.
 - **Agents run in your own terminal**, with your own CLIs and subscriptions.
+- **A built-in browser.** Both let you annotate page elements and send them to the agent; Solo can also let Claude Code and Codex drive the browser (off by default).
 
 ## Which to pick
 

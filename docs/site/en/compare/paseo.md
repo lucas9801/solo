@@ -18,6 +18,7 @@
 - **A full editor and per-turn review.** Paseo has a changes view; Solo records each turn of an agent, so you can keep or reject hunks, roll back, and see the errors a turn added, with go to definition and find references while reviewing.
 - **Agents run as their own CLIs.** According to Paseo's issue #1029 it drives Claude through the Agent SDK; Solo runs your own `claude` and other CLIs in the terminal, without the SDK.
 - **Document review:** comment on documents agents write in their preview and send the comments back at once.
+- **Page comments:** pick elements in the built-in browser, comment on them and send the comments to the agent.
 
 ## Which to pick
 

@@ -12,7 +12,7 @@ Plenty of tools help you run several AI agents at once. Here Solo is set beside 
 - **Paseo**: a background daemon with many clients (desktop, phone, web, CLI), kept by one developer, very open (CLI, SDK, MCP).
 - **Lody**: for teams sharing one workspace; needs an account.
 - **Herdr**: a terminal multiplexer, one Rust program, light and fast, no editor.
-- **Solo**: a full code editor (Zed) around a terminal-first layout, focused on **reading and reviewing** what agents change.
+- **Solo**: a full code editor (Zed) around a terminal-first layout, with a built-in browser, focused on **reading and reviewing** what agents change.
 
 ## Side by side
 
@@ -26,9 +26,9 @@ Plenty of tools help you run several AI agents at once. Here Solo is set beside 
 | Reviewing changes | per-turn snapshots, keep or reject hunks, roll back, diagnostics per turn, document comments | line comments, PRs | changes view | per turn or per session, line comments | third-party plugins |
 | When the window closes or updates | a background process per terminal keeps them (Windows) | a daemon keeps them | a daemon keeps them | a daemon keeps them | a background service keeps them |
 | Interface for agents | `solo-cli agent` | CLI | CLI, SDK, MCP, skills | CLI, session tools | CLI, socket API |
-| Phone | through Claude's Remote Control | yes | full app | yes | over SSH |
-| Built-in browser | no | yes, pick page elements | yes | annotate elements | no |
-| Platforms | **Windows only**, unsigned | several; signed on Windows | several | several | several; unsigned on Windows |
+| Phone | in development; for now through Claude's Remote Control | yes | full app | yes | over SSH |
+| Built-in browser | yes: pick page elements and send comments to the agent; Claude Code and Codex can drive it (off by default) | yes, pick page elements | yes | annotate elements | no |
+| Platforms | **Windows only**, installed from the Microsoft Store (Store-signed) | several; signed on Windows | several | several | several; unsigned on Windows |
 | Account | none | none | none | required | none |
 
 ## When Solo fits
@@ -44,3 +44,4 @@ Plenty of tools help you run several AI agents at once. Here Solo is set beside 
 - A team sharing one workspace: Lody.
 - Just a light terminal multiplexer, no editor: Herdr.
 - macOS or Linux: Solo is Windows only for now.
+- No Microsoft Store: Solo installs only from the Store.
