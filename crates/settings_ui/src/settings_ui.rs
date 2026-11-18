@@ -5377,14 +5377,18 @@ fn render_memory_alert(
         .id(item.title)
         .min_w_0()
         .justify_between()
+        .gap_2()
         .child(
+            // The stepper keeps its own width, as in other rows; squeezed
+            // into a narrower box it ran over the unit after it.
             h_flex()
+                .min_w_0()
                 .gap_2()
                 .child(Label::new(util::i18n::tr(
                     "Alert when memory exceeds",
                     "内存超过",
                 )))
-                .child(div().w(rems_from_px(96_f32)).child(threshold))
+                .child(threshold)
                 .child(Label::new(util::i18n::tr("GB", "GB 时提醒"))),
         )
         .child(switch)
