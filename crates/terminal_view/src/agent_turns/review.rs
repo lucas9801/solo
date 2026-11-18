@@ -2585,7 +2585,9 @@ mod tests {
         std::fs::write(repository.join("a.txt"), "after\n").unwrap();
         std::fs::write(repository.join("held/h.txt"), "after\n").unwrap();
         std::fs::write(repository.join("new.txt"), "new\n").unwrap();
-        turns.update(cx, |turns, cx| turns.end_turn(terminal_view.clone(), cx));
+        turns.update(cx, |turns, cx| {
+            turns.end_turn(terminal_view.clone(), None, cx)
+        });
         cx.run_until_parked();
 
         let review = cx.new_window_entity(|window, cx| {
@@ -2764,7 +2766,7 @@ mod tests {
         }
         turns.update(cx, |turns, cx| {
             for terminal in terminals {
-                turns.end_turn(terminal.clone(), cx);
+                turns.end_turn(terminal.clone(), None, cx);
             }
         });
         cx.run_until_parked();
@@ -2796,6 +2798,18 @@ mod tests {
                 vec!["a.txt".to_string(), "b.txt".to_string()],
                 vec![]
             )
+        );
+
+        // SOLO: a Codex patch's event that came after the turn ended: the
+        // file it edited is the turn's after all (R3 M5).
+        turns.update(cx, |turns, _| {
+            assert!(!turns.late_edits(second.entity_id(), 1, &[repository.join("c.txt")]));
+            assert!(turns.late_edits(second.entity_id(), 1, &[repository.join("a.txt")]));
+            assert!(!turns.late_edits(second.entity_id(), 1, &[repository.join("a.txt")]));
+        });
+        assert_eq!(
+            recorded(&second, cx),
+            (true, vec!["a.txt".to_string(), "b.txt".to_string()], vec![])
         );
 
         // Rejecting everything in the first agent's turn.

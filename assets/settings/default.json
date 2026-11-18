@@ -2338,11 +2338,12 @@
     // to trust them. Your own config and hooks still apply. Takes effect in
     // new terminals.
     "codex_hooks": true,
-    // Let Codex's hooks also report the files each `apply_patch` edits, so a
-    // turn's review lists only Codex's edits and shows other changes made
-    // meanwhile apart. Codex waits for the hook after every patch; on Windows
-    // it starts PowerShell for it, which adds about a second to each. Takes
-    // effect in new terminals.
+    // Let Codex's hooks also report the files each `apply_patch` edits. Solo
+    // already knows them from the telemetry it has Codex send it, so this is
+    // only needed when your own Codex config sets up `[otel]`, which replaces
+    // Solo's. Codex waits for the hook after every patch; on Windows it starts
+    // PowerShell for it, which adds about a second to each. Takes effect in
+    // new terminals.
     "codex_edit_hooks": false,
     // Let GitHub Copilot CLI started in a terminal with shell integration
     // report what it's doing through hooks in a plugin Solo loads for that
