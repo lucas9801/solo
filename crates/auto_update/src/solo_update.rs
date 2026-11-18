@@ -16,12 +16,23 @@
 //!   and the installer starts it again; "install when Solo quits" waits for
 //!   the user to quit, so agents running in terminals carry on meanwhile.
 //!
-//! Releases no longer carry a Windows download (neither the installer
-//! `Solo-Setup-<version>.exe` nor a zip): Solo is installed from the
-//! Microsoft Store, which updates it. For a release without an installer,
-//! the button still says a newer version is out, but its menu only offers
-//! Solo Code's page in the Microsoft Store ([`STORE_PAGE_URL`]) and skipping
-//! the version: nothing is downloaded and nothing fails.
+//! It's for Solo installed with the installer from a GitHub release (and
+//! builds from source). Each release has that installer,
+//! `Solo-Setup-<version>.exe` (`INSTALLER_PREFIX`, made by
+//! `.github/workflows/solo-package.yml` from `script/solo.iss`, unsigned),
+//! next to the Linux remote servers (`solo-remote-server-linux-<arch>.gz`,
+//! [`crate::solo_remote_server`]), which aren't installers. The installer has
+//! the same AppId as every earlier one, so it updates Solo in its folder,
+//! wherever the user installed it.
+//!
+//! Solo Code from the Microsoft Store doesn't use this updater at all
+//! ([`init`] returns at once for a packaged Solo): the Store updates it
+//! ([`crate::store_update`]), whatever the GitHub release holds.
+//!
+//! For a release without an installer (2.5.0 was published without one), the
+//! button still says a newer version is out, but its menu only offers Solo
+//! Code's page in the Microsoft Store ([`STORE_PAGE_URL`]) and skipping the
+//! version: nothing is downloaded and nothing fails.
 //!
 //! Only stable builds check. Automatic checks follow the `auto_update`
 //! setting; the "check for updates" command always checks.
@@ -1589,6 +1600,49 @@ mod tests {
             prerelease: false,
             installer: None,
         }
+    }
+
+    #[test]
+    fn release_with_installer_and_remote_servers_picks_the_installer() {
+        // A release as solo-package.yml makes it: the installer next to the
+        // Linux remote servers, which aren't installers whatever their order.
+        let assets = r#"
+            {"name": "solo-remote-server-linux-aarch64.gz", "size": 30, "browser_download_url": "https://example.com/aarch64.gz"},
+            {"name": "solo-remote-server-linux-x86_64.gz", "size": 40, "browser_download_url": "https://example.com/x86_64.gz"},
+            {"name": "Solo-Setup-2.5.1.exe", "size": 1234, "browser_download_url": "https://example.com/Solo-Setup-2.5.1.exe",
+             "digest": "sha256:2C26B46B68FFC68FF99B453C1D30413413422D706483BFA0F98A5E886266E7AE"}
+        "#;
+        let release = parse_release(release_json("v2.5.1", false, assets).as_bytes()).unwrap();
+        let installer = release.installer.clone().unwrap();
+        assert_eq!(installer.name, "Solo-Setup-2.5.1.exe");
+        assert_eq!(installer.url, "https://example.com/Solo-Setup-2.5.1.exe");
+        assert_eq!(installer.size, 1234);
+        assert!(installer.sha256.is_some());
+        assert_eq!(
+            evaluate_release(
+                &version("2.4.2"),
+                release.clone(),
+                None,
+                UpdateCheckType::Automatic
+            ),
+            CheckOutcome::UpdateAvailable(release.clone())
+        );
+        if cfg!(target_os = "windows") {
+            let offer = offer_for(&release);
+            assert!(offer.can_install);
+            assert_eq!(offer.notes_url.as_deref(), Some(release.html_url.as_str()));
+        }
+
+        // Only the remote servers (2.5.0): nothing to install, the Store page.
+        let assets = r#"
+            {"name": "solo-remote-server-linux-aarch64.gz", "size": 30, "browser_download_url": "https://example.com/aarch64.gz"},
+            {"name": "solo-remote-server-linux-x86_64.gz", "size": 40, "browser_download_url": "https://example.com/x86_64.gz"}
+        "#;
+        let release = parse_release(release_json("v2.5.0", false, assets).as_bytes()).unwrap();
+        assert_eq!(release.installer, None);
+        let offer = offer_for(&release);
+        assert!(!offer.can_install);
+        assert_eq!(offer.notes_url.as_deref(), Some(STORE_PAGE_URL));
     }
 
     #[test]

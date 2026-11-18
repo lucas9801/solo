@@ -15,18 +15,25 @@
 #            which submits the artifact to Partner Center once the repository
 #            variable SOLO_STORE_SUBMIT_ENABLED is "true"; until then it's
 #            uploaded to Partner Center by hand.
+#   installer: makes Solo-Setup-<version>.exe from the built files with
+#            Inno Setup (script/package-solo.ps1 -Step Installer,
+#            script/solo.iss), unsigned, and uploads it. Solo installed with
+#            it updates itself from the next release's installer
+#            (crates/auto_update/src/solo_update.rs).
 #   remote-server: builds the remote server for SSH, WSL and dev container
 #            projects (crates/remote_server) for Linux x86_64 and aarch64 as
 #            static musl binaries and uploads them gzipped
 #            (solo-remote-server-linux-<arch>.gz, the names
 #            crates/auto_update/src/solo_remote_server.rs downloads).
-#   release: on a tag, once the Store package is made, creates the draft
-#            release with the remote servers and the notes from
-#            docs/release-notes/<version>.md. It's published by hand.
+#   release: on a tag, once the Store package and the installer are made,
+#            creates the draft release with the installer, the remote
+#            servers and the notes from docs/release-notes/<version>.md.
+#            It's published by hand.
 #
-# Releases have no Windows download (no installer, no zip): Solo is
-# installed and updated from the Microsoft Store, which signs its package, so
-# nothing here is signed.
+# Solo is installed from the Microsoft Store (Solo Code, which the Store
+# signs) or with the installer from the GitHub release. Nothing here is
+# signed: the installer and Solo's exes in it are unsigned. Releases have no
+# zip.
 
 name: Solo package
 
@@ -132,7 +139,7 @@ jobs:
         if: always()
         run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}
 
-      # The files as built; the msix job packages them.
+      # The files as built; the msix and installer jobs package them.
       - name: Upload the built files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -202,6 +209,69 @@ jobs:
           path: |
             dist/msix/*.msixupload
             dist/msix/*.msix
+          if-no-files-found: error
+
+  # The installer for the GitHub release, from the built files, unsigned. Its
+  # name is the one Solo's updater looks for (INSTALLER_PREFIX in
+  # crates/auto_update/src/solo_update.rs).
+  installer:
+    name: Package the Solo installer (Windows x64)
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the built files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: solo-windows-x64-files
+          path: dist/Solo
+
+      # The same files as the Store package, but its context menu's DLL (the
+      # installer adds its menu to the registry), and nothing else.
+      - name: Check the built files
+        run: |
+          # conpty.dll and OpenConsole.exe too: script/package-solo.ps1 doesn't stage without them.
+          $expected = @("solo.exe", "solo-cli.exe", "solo-agent-hook.exe", "solo-terminal-host.exe", "solo-update-helper.exe",
+            "conpty.dll", "OpenConsole.exe", "LICENSE-GPL", "licenses.md", "THIRD-PARTY-VENDORED.md", "LICENSE-command-signatures.md")
+          $dir = (Resolve-Path dist/Solo).Path
+          $actual = @(Get-ChildItem -Recurse -File $dir | ForEach-Object { $_.FullName.Substring($dir.Length + 1) })
+          $missing = @($expected | Where-Object { $actual -notcontains $_ })
+          $extra = @($actual | Where-Object { $expected -notcontains $_ })
+          if ($missing) { throw "Missing from the built files: $($missing -join ', ')" }
+          if ($extra) { throw "Not expected in the built files (add them here, and to script/package-solo-msix.ps1 if the Store package needs them too): $($extra -join ', ')" }
+
+      - name: Install Inno Setup
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "Installing Inno Setup failed" }
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          "ISCC_PATH=$iscc" >> $env:GITHUB_ENV
+
+      - name: Package the installer
+        run: |
+          ./script/package-solo.ps1 -OutDir dist -Step Installer -Iscc $env:ISCC_PATH
+          $version = (Select-String -Path crates/solo/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $setup = Get-Item "dist/Solo-Setup-$version.exe"
+          Write-Host "$($setup.Name): $($setup.Length) bytes, SHA-256 $((Get-FileHash $setup.FullName -Algorithm SHA256).Hash)"
+          "SOLO_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solo-windows-x64-setup
+          path: dist/Solo-Setup-${{ env.SOLO_VERSION }}.exe
           if-no-files-found: error
 
   # Like Zed's script/bundle-linux did (Solo removed it): remote_server is
@@ -303,17 +373,18 @@ jobs:
           path: dist/${{ env.ASSET }}
           if-no-files-found: error
 
-  # Waits for the remote servers too, but doesn't need them: the Store
-  # package doesn't depend on the Linux build. A remote server that failed to
+  # Waits for the remote servers too, but doesn't need them: the Windows
+  # packages don't depend on the Linux build. A remote server that failed to
   # build is missing from the release (with a warning), and remote
   # development to Linux on that arch then says the release has none;
   # rerunning the failed job and then this one adds it to the draft. Without
-  # the Store package (msix) there's no release: publishing it submits that
-  # package to the Store (solo-store.yml).
+  # the Store package (msix) or the installer there's no release: publishing
+  # it submits the Store package to the Store (solo-store.yml), and Solo
+  # installed with the installer updates itself with the release's one.
   release:
     name: Create the draft release
-    needs: [msix, remote-server]
-    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.msix.result == 'success'
+    needs: [msix, installer, remote-server]
+    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.msix.result == 'success' && needs.installer.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -323,6 +394,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Download the installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: solo-windows-x64-setup
+          path: dist
 
       - name: Download the remote servers
         continue-on-error: true
@@ -347,7 +424,9 @@ jobs:
           [ -f "$notes" ] || { echo "::error::$notes is missing"; exit 1; }
           mkdir -p dist
           tr -d '\r' < "$notes" > dist/release-notes.md
-          files=()
+          installer="dist/Solo-Setup-$version.exe"
+          [ -f "$installer" ] || { echo "::error::$installer is missing"; exit 1; }
+          files=("$installer")
           for arch in x86_64 aarch64; do
             server="dist/solo-remote-server-linux-$arch.gz"
             if [ -f "$server" ]; then
@@ -361,9 +440,7 @@ jobs:
               echo "::error::Release $TAG is already published; it isn't changed"
               exit 1
             fi
-            if [ "${#files[@]}" -gt 0 ]; then
-              gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
-            fi
+            gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file dist/release-notes.md
           else
             gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \

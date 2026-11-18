@@ -4,11 +4,21 @@
 
 ## English
 
-Solo is installed and updated only from the Microsoft Store, where it's
-listed as Solo Code. Microsoft signs the Store package when it's published;
-the files in it aren't signed separately. Releases on GitHub have no Windows
-download any more (no installer, no zip), and nothing is signed through
-SignPath.
+Solo is installed from the Microsoft Store, where it's listed as Solo Code,
+or with the installer attached to each GitHub release
+(`Solo-Setup-<version>.exe`).
+
+- **The Store package is signed by Microsoft** when it's published; the files
+  in it aren't signed separately.
+- **The GitHub installer is currently unsigned**, and so are the programs it
+  installs (Solo's own exes; `conpty.dll` and `OpenConsole.exe` keep
+  Microsoft's signature). Windows' SmartScreen warns about it when it's run
+  after downloading it with a browser ("More info", then "Run anyway"). Solo
+  installed with it updates itself with the next release's installer, which
+  it checks against the SHA-256 GitHub reports for the file, not against a
+  signature.
+
+Nothing is signed through SignPath, and releases have no zip.
 
 ### Version information
 
@@ -26,8 +36,8 @@ building:
 | Copyright | `Copyright lucas9801 and Solo contributors. Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0-or-later` |
 | Comments | the build, `<version>+stable.<run>.<commit>` |
 
-Every file in the package, with its source and license, is listed in
-[package-contents.md](package-contents.md).
+Every file in the Store package and the installer, with its source and
+license, is listed in [package-contents.md](package-contents.md).
 
 ### Privacy
 
@@ -44,7 +54,7 @@ code at version 2.2.0):
 
 | What | Where | When | How to turn it off |
 |---|---|---|---|
-| Update check | Solo Code from the Microsoft Store asks the Store (Windows' `StoreContext`); other builds (from source, or earlier releases' installer or zip) ask `api.github.com` (this repository's releases) | 30 s after start, then every 6 hours | `"auto_update": false` |
+| Update check | Solo Code from the Microsoft Store asks the Store (Windows' `StoreContext`); other builds (installed with the GitHub installer, or from source) ask `api.github.com` (this repository's releases) | 30 s after start, then every 6 hours | `"auto_update": false` |
 | Language servers and Node.js | GitHub releases, the npm registry, `nodejs.org` | When a file of a language is opened whose language server isn't installed yet (and checks for newer versions) | `"enable_language_server": false`, per language `"language_servers"`, or a language server's `binary.path` in `"lsp"` |
 | Extension updates | Zed's extension API (`api.zed.dev`) | Only when extensions are installed | Don't install extensions, or `"auto_update_extensions": { "<id>": false }` |
 | Git avatars | `avatars.githubusercontent.com` / GitHub API | When commit details of a GitHub repository are shown | `"git": { "blame": { "show_avatar": false } }` |
@@ -59,13 +69,18 @@ stopped being signed.
 
 ## 中文
 
-Solo 只从 Microsoft Store 安装和更新，在 Store 上名为 Solo Code。Store 安装包在上架时由微软签名，里面的文件不单独签名。GitHub 上的发布不再有 Windows 下载（没有安装程序，也没有 zip），也不再通过 SignPath 签名。
+Solo 可以从 Microsoft Store 安装（在 Store 上名为 Solo Code），也可以用每个 GitHub 发布里附带的安装程序（`Solo-Setup-<版本>.exe`）安装。
+
+- **Store 安装包由微软签名**（上架时），里面的文件不单独签名。
+- **GitHub 安装程序目前没有签名**，它装的程序也没有（Solo 自己的 exe；`conpty.dll` 和 `OpenConsole.exe` 保留微软的签名）。用浏览器下载后运行时，Windows 的 SmartScreen 会提示（点“更多信息”，再点“仍要运行”）。用它装的 Solo 用下一个发布的安装程序更新自己，校验的是 GitHub 给出的文件 SHA-256，不是签名。
+
+不通过 SignPath 签名，发布里也没有 zip。
 
 ### 版本信息
 
 Solo 自己的每个程序（`solo.exe`、`solo-cli.exe`、`solo-agent-hook.exe`、`solo-update-helper.exe`、`solo-terminal-host.exe`）都带同样的版本信息（`crates/windows_resources`），[`solo-package.yml`](../.github/workflows/solo-package.yml) 构建后会核对：产品名 `Solo`；产品版本和文件版本都是 Solo 的版本（如 `2.3.0`）；公司 `lucas9801`（仓库所有者）；版权 `Copyright lucas9801 and Solo contributors. Based on Zed, Copyright 2022 - 2025 Zed Industries, Inc. GPL-3.0-or-later`；备注（Comments）是构建号 `<版本>+stable.<运行号>.<提交>`。
 
-安装包里每个文件的来源和许可证见 [package-contents.md](package-contents.md)。
+Store 安装包和安装程序里每个文件的来源和许可证见 [package-contents.md](package-contents.md)。
 
 ### 隐私
 
@@ -75,7 +90,7 @@ Solo 是代码编辑器，它的联网大多是用户要求的：用户自己配
 
 | 做什么 | 访问哪里 | 什么时候 | 怎么关 |
 |---|---|---|---|
-| 检查更新 | 从 Microsoft Store 装的 Solo Code 问 Store（Windows 的 `StoreContext`）；其他版本（从源码构建，或以前的安装程序、zip 装的）问 `api.github.com`（本仓库的 releases） | 启动 30 秒后，之后每 6 小时 | `"auto_update": false` |
+| 检查更新 | 从 Microsoft Store 装的 Solo Code 问 Store（Windows 的 `StoreContext`）；其他版本（GitHub 安装程序装的，或从源码构建的）问 `api.github.com`（本仓库的 releases） | 启动 30 秒后，之后每 6 小时 | `"auto_update": false` |
 | 语言服务器和 Node.js | GitHub releases、npm 仓库、`nodejs.org` | 打开某种语言的文件而它的语言服务器还没装时（也会检查新版本） | `"enable_language_server": false`、按语言设置 `"language_servers"`，或在 `"lsp"` 里给语言服务器指定 `binary.path` |
 | 扩展更新 | Zed 的扩展 API（`api.zed.dev`） | 只在装了扩展时 | 不装扩展，或设置 `"auto_update_extensions": { "<扩展 id>": false }` |
 | Git 头像 | `avatars.githubusercontent.com` / GitHub API | 显示 GitHub 仓库的提交详情时 | `"git": { "blame": { "show_avatar": false } }` |

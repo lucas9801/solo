@@ -12,12 +12,15 @@ for the toolchain (the README's "从源码编译" section lists what Solo needs)
 ```powershell
 cargo run -p solo              # debug build, runs target\debug\solo.exe
 script\package-solo.ps1       # optimized build, staged in dist\Solo
+script\package-solo.ps1 -Step Installer   # dist\Solo-Setup-<version>.exe from dist\Solo (Inno Setup 6)
 ```
 
-`dist\Solo` is what the Microsoft Store package is made from (see below);
-`solo.exe` also runs straight from there. Releases have no other Windows
-download: the installer (`Solo-Setup-<version>.exe`) and the portable zip
-are no longer made, and Solo is installed from the Microsoft Store.
+`dist\Solo` is what the Microsoft Store package and the installer are made
+from (see below); `solo.exe` also runs straight from there. The installer
+(`script\solo.iss`) needs Inno Setup 6 (`ISCC.exe` on `PATH`, in Inno Setup's
+usual folders, or given with `-Iscc`); it's unsigned. Don't run a locally
+built installer on a machine with Solo installed from GitHub: it has the same
+AppId and updates that Solo in its folder. Releases have no zip.
 
 ### Notes for local builds
 
@@ -59,24 +62,36 @@ are no longer made, and Solo is installed from the Microsoft Store.
 Solo checks for a newer version 30 seconds after it starts and every 6 hours
 after that (turn this off with `"auto_update": false`; **Check for Updates**
 in the command palette always checks). The Store package asks the Store,
-which installs the update. Other builds (built from source, or installed
-with the installer or zip of earlier releases) ask
-[Solo's GitHub releases](https://github.com/lucas9801/solo/releases); as
-releases have no Windows download any more, a newer one is offered with
-"Get It from the Microsoft Store", which opens Solo Code's Store page
-(`crates/auto_update/src/solo_update.rs`). Builds from before installed
-`Solo-Setup-<version>.exe` themselves, and so find nothing to install.
+which installs the update. Other builds (installed with the GitHub
+installer, or built from source) ask
+[Solo's GitHub releases](https://github.com/lucas9801/solo/releases), download
+the release's `Solo-Setup-<version>.exe` and have `solo-update-helper.exe` run
+it silently into Solo's folder once Solo quits
+(`crates/auto_update/src/solo_update.rs`). A release without an installer is
+offered with "Get It from the Microsoft Store", which opens Solo Code's Store
+page.
 
 Releases are built by GitHub Actions, not locally (local builds are for
 testing). A version tag starts the
 [Solo package workflow](../.github/workflows/solo-package.yml), which builds
 Solo, checks the version information of its exes (product name Solo, Solo's
-version, built from the tagged commit), makes the Store package, builds the
-Linux remote servers, and creates a draft GitHub release with the remote
-servers and the notes in `docs/release-notes/<version>.md`. Running copies
-of Solo only update to published releases.
+version, built from the tagged commit), makes the Store package and the
+installer, builds the Linux remote servers, and creates a draft GitHub
+release with the installer, the remote servers and the notes in
+`docs/release-notes/<version>.md`. Running copies of Solo only update to
+published releases.
 
-Nothing is signed by the workflow any more: the Store signs its package.
+The notes start with the two summary lines the update button shows (one
+sentence in Chinese, then English; `script/check-solo-release-notes.ps1`
+checks them), then the link line: both downloads, the user guide, and what
+the `.gz` files are, for example:
+
+```markdown
+下载 / Download: [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面 / Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)） · [GitHub 安装程序 / installer `Solo-Setup-<version>.exe`](https://github.com/lucas9801/solo/releases/download/v<version>/Solo-Setup-<version>.exe)（未签名 / unsigned） · [用户指南](https://github.com/lucas9801/solo/blob/main/docs/guide/zh-CN.md) · [User guide](https://github.com/lucas9801/solo/blob/main/docs/guide/en.md) · `solo-remote-server-linux-*.gz` 是远程开发用的 Linux 服务端，不是安装程序 / are the Linux server for remote development, not installers.
+```
+
+Nothing is signed by the workflow: the Store signs its package, and the
+installer is unsigned.
 The repository settings used for SignPath signing are no longer read and can
 be deleted: the variables `SOLO_SIGNPATH_ENABLED`, `SIGNPATH_ORGANIZATION_ID`,
 `SIGNPATH_PROJECT_SLUG` and `SIGNPATH_SIGNING_POLICY_SLUG`, and the secret

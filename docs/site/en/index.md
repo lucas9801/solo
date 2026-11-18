@@ -6,7 +6,7 @@ Solo is an editor for working with AI agents, built on [Zed](https://github.com/
 
 It's made for people who still read the code and the documents themselves: after each turn of an agent, you see what it changed and whether it broke anything, keep or undo it, and send it your comments.
 
-[Download (Windows, Microsoft Store)](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct) · [User guide](../../guide/en.md) · [Compared with other tools](compare/index.md) · [中文](../zh/index.md)
+[Download (Windows, Microsoft Store)](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)) · [User guide](../../guide/en.md) · [Compared with other tools](compare/index.md) · [中文](../zh/index.md)
 
 https://github.com/user-attachments/assets/85627f07-1bb5-4f68-8199-c3afbdc9fa3b
 
@@ -45,7 +45,7 @@ For the full feature list, see the [feature reference](../../reference.md).
 
 ## Where it stands
 
-- **Windows only**, installed from the [Microsoft Store](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct) and updated inside Solo.
+- **Windows only**, installed from the [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)) or with the [installer on GitHub](https://github.com/lucas9801/solo/releases/latest) (unsigned), and updated inside Solo.
 - **Agents keep running when Solo closes.** Each terminal's shell runs in a small background process; quitting Solo, an update's restart or even a crash of Solo leaves terminals that are running something (an agent, a build) running, and Solo connects to them again when it opens, screen and all. Idle shells end with Solo as usual.
 - No account, no telemetry. By default Solo only checks for updates (which can be turned off); everything else happens when you use a feature. See [privacy](../../guide/en.md#9-privacy-and-network).
 - Open source, GPL-3.0.
