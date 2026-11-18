@@ -133,7 +133,16 @@ fn main() {
                 nupkg_path.display()
             );
 
+            // SOLO: Windows PowerShell without the inherited PSModulePath.
+            // Started from PowerShell 7 (pwsh, as on GitHub's runners), it
+            // inherits pwsh's module folders, finds PowerShell 7's
+            // Microsoft.PowerShell.Utility and Microsoft.PowerShell.Archive
+            // first, can't load them, and so has no Get-FileHash or
+            // Expand-Archive: the download "failed" with only a warning and
+            // releases shipped without conpty.dll and OpenConsole.exe.
+            // Without the variable it uses its own default module folders.
             let download_result = Command::new("powershell")
+                .env_remove("PSModulePath")
                 .args([
                     "-NoProfile",
                     "-NonInteractive",
@@ -163,6 +172,7 @@ fn main() {
                     );
 
                     let extract_result = Command::new("powershell")
+                        .env_remove("PSModulePath")
                         .args(["-NoProfile", "-NonInteractive", "-Command", &extract_script])
                         .output();
 

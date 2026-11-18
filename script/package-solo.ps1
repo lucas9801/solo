@@ -47,9 +47,15 @@ Copy-Item (Join-Path $built "solo-update-helper.exe") $stage
 Copy-Item (Join-Path $built "solo-terminal-host.exe") $stage
 # The command line, which agents in Solo's terminals use (solo-cli agent ...).
 Copy-Item (Join-Path $built "cli.exe") (Join-Path $stage "solo-cli.exe")
+# The ConPTY runtime (MIT, signed by Microsoft), which crates\solo\build.rs
+# downloads into the target folder. Without it terminals fall back to
+# Windows' older ConPTY, so the stage can't go without it. The build script
+# reruns when the commit changes; to rerun it after a failed download, touch
+# crates\solo\build.rs.
 foreach ($runtime in "conpty.dll", "OpenConsole.exe") {
     $path = Join-Path $built $runtime
-    if (Test-Path $path) { Copy-Item $path $stage } else { Write-Warning "$runtime not found; terminals fall back to the system ConPTY" }
+    if (-not (Test-Path $path)) { throw "$runtime isn't in ${built}: the ConPTY package wasn't downloaded (see the solo build script's warning in cargo's output)" }
+    Copy-Item $path $stage
 }
 Copy-Item "LICENSE-GPL" $stage -ErrorAction SilentlyContinue
 Copy-Item "assets\licenses.md" $stage
