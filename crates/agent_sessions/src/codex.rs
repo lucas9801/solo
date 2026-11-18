@@ -27,8 +27,16 @@
 //! - `response_item` / `function_call` (`name`, `arguments`, a JSON string),
 //!   `custom_tool_call` (`name`, `input`) and `local_shell_call`, with their
 //!   `*_output`s, by `call_id`.
+//! - SOLO: a `custom_tool_call` named `exec` is a cell of code that runs
+//!   commands and changes files. What it did is recorded after it, with no id
+//!   naming the cell: `event_msg` / `item_completed` items `CommandExecution`
+//!   (`command`, `exit_code`, `status`) and `FileChange` (`changes` by path,
+//!   `status`), each with `payload.started_at_ms`. A step belongs to the
+//!   latest cell of its turn called before it started (a long command can
+//!   finish after the next cell is called); the cell shows its code until a
+//!   step takes its place.
 //! - `event_msg` / `patch_apply_end`: a patch applied, `payload.changes` by
-//!   path.
+//!   path; in sessions with `exec` cells, a step of one.
 //! - `event_msg` / `token_count`: `payload.info.last_token_usage` (the last
 //!   request: `input_tokens`, cached ones included, `cached_input_tokens`,
 //!   `cache_write_input_tokens`, `output_tokens`),
@@ -49,7 +57,7 @@ use serde_json::Value;
 use crate::{
     AgentAdapter, AgentKind, MatchedBy, Message, Role, SessionLocation, TerminalProbe, TokenUsage,
     ToolCall, ToolKind, ToolOutcome, TranscriptEntry, prompt_with_images,
-    response_timing::effort_level,
+    response_timing::{effort_level, parse_timestamp_ms},
 };
 
 /// A session written to this long before the agent started (file times and
@@ -319,13 +327,61 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
         }
         // SOLO: newer Codex records a prompt as a completed `UserMessage`
         // item instead of a `user_message` event.
+        // SOLO: newer Codex records a prompt, a command run and a change to
+        // files as a completed item.
         (Some("event_msg"), Some("item_completed")) => {
-            let Some(item) = payload
-                .get("item")
-                .filter(|item| item.get("type").and_then(Value::as_str) == Some("UserMessage"))
-            else {
+            let Some(item) = payload.get("item") else {
                 return Vec::new();
             };
+            let item_field = |name: &str| item.get(name).and_then(Value::as_str);
+            let started_at_ms = payload.get("started_at_ms").and_then(Value::as_i64);
+            let status_outcome = match item_field("status") {
+                Some("completed") => Some(ToolOutcome::Succeeded),
+                Some("failed" | "declined") => Some(ToolOutcome::Failed),
+                _ => None,
+            };
+            match item_field("type") {
+                Some("UserMessage") => {}
+                Some("CommandExecution") => {
+                    let Some(id) = item_field("id") else {
+                        return Vec::new();
+                    };
+                    let command = item
+                        .get("command")
+                        .and_then(|command| command_of(&serde_json::json!({ "command": command })));
+                    let outcome = match item.get("exit_code").and_then(Value::as_i64) {
+                        Some(code) => Some(outcome_of(code == 0)),
+                        None => status_outcome,
+                    };
+                    return exec_step(
+                        vec![ToolCall {
+                            id: id.to_string(),
+                            name: "exec_command".to_string(),
+                            kind: ToolKind::Execute,
+                            file_path: None,
+                            command,
+                            description: None,
+                            input: Value::Null,
+                            timestamp,
+                            sidechain: false,
+                            outcome,
+                        }],
+                        started_at_ms,
+                    );
+                }
+                Some("FileChange") => {
+                    return exec_step(
+                        file_changes(
+                            item_field("id").unwrap_or_default(),
+                            item.get("changes"),
+                            status_outcome,
+                            &timestamp,
+                        ),
+                        started_at_ms,
+                    );
+                }
+                _ => return Vec::new(),
+            }
             let mut texts = Vec::new();
             let mut images = 0;
             for content in item
@@ -389,8 +445,15 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
                 }
                 _ => payload.get("action").cloned().unwrap_or(Value::Null),
             };
-            let command = command_of(&input);
-            vec![TranscriptEntry::ToolCall(ToolCall {
+            // SOLO: newer Codex runs commands and changes files from code
+            // (`exec`); what the code did is recorded as items after it.
+            let exec_cell = kind == "custom_tool_call" && name == "exec";
+            let command = if exec_cell {
+                input.as_str().and_then(code_summary)
+            } else {
+                command_of(&input)
+            };
+            let call = ToolCall {
                 id: id.to_string(),
                 name: name.to_string(),
                 kind: tool_kind(name, command.is_some()),
@@ -401,7 +464,12 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
                 timestamp,
                 sidechain: false,
                 outcome: None,
-            })]
+            };
+            if exec_cell {
+                vec![TranscriptEntry::ExecCell(call)]
+            } else {
+                vec![TranscriptEntry::ToolCall(call)]
+            }
         }
         (
             Some("response_item"),
@@ -415,38 +483,15 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
         },
         (Some("event_msg"), Some("patch_apply_end")) => {
             let call_id = str_field("call_id").unwrap_or_default();
-            let success = payload.get("success").and_then(Value::as_bool);
-            payload
-                .get("changes")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flatten()
-                .map(|(path, change)| {
-                    let added = change.get("type").and_then(Value::as_str) == Some("add");
-                    TranscriptEntry::ToolCall(ToolCall {
-                        id: format!("{call_id}:{path}"),
-                        name: "apply_patch".to_string(),
-                        kind: if added {
-                            ToolKind::Write
-                        } else {
-                            ToolKind::Edit
-                        },
-                        file_path: Some(PathBuf::from(path)),
-                        command: None,
-                        description: None,
-                        input: Value::Null,
-                        timestamp: timestamp.clone(),
-                        sidechain: false,
-                        outcome: success.map(|success| {
-                            if success {
-                                ToolOutcome::Succeeded
-                            } else {
-                                ToolOutcome::Failed
-                            }
-                        }),
-                    })
-                })
-                .collect()
+            let outcome = payload
+                .get("success")
+                .and_then(Value::as_bool)
+                .map(outcome_of);
+            let started_at_ms = timestamp.as_deref().and_then(parse_timestamp_ms);
+            exec_step(
+                file_changes(call_id, payload.get("changes"), outcome, &timestamp),
+                started_at_ms,
+            )
         }
         (Some("event_msg"), Some("token_count")) => {
             let Some(info) = payload.get("info").filter(|info| !info.is_null()) else {
@@ -488,6 +533,76 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
         }
         _ => Vec::new(),
     }
+}
+
+/// SOLO: how long a command shows when it's an `exec` cell's code.
+const MAX_CODE_SUMMARY_CHARS: usize = 200;
+
+/// SOLO: an `exec` cell's code on one line, shortened, to show as the
+/// command it ran when no item tells the commands themselves.
+fn code_summary(code: &str) -> Option<String> {
+    let line = code.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() {
+        return None;
+    }
+    if line.chars().count() <= MAX_CODE_SUMMARY_CHARS {
+        return Some(line);
+    }
+    let mut short: String = line.chars().take(MAX_CODE_SUMMARY_CHARS).collect();
+    short.push('…');
+    Some(short)
+}
+
+fn outcome_of(success: bool) -> ToolOutcome {
+    if success {
+        ToolOutcome::Succeeded
+    } else {
+        ToolOutcome::Failed
+    }
+}
+
+/// SOLO: what an `exec` cell did, unless nothing.
+fn exec_step(calls: Vec<ToolCall>, started_at_ms: Option<i64>) -> Vec<TranscriptEntry> {
+    if calls.is_empty() {
+        return Vec::new();
+    }
+    vec![TranscriptEntry::ExecStep {
+        calls,
+        started_at_ms,
+    }]
+}
+
+/// The files a patch changed (`changes`, by path), one call each.
+fn file_changes(
+    id: &str,
+    changes: Option<&Value>,
+    outcome: Option<ToolOutcome>,
+    timestamp: &Option<String>,
+) -> Vec<ToolCall> {
+    changes
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .map(|(path, change)| {
+            let added = change.get("type").and_then(Value::as_str) == Some("add");
+            ToolCall {
+                id: format!("{id}:{path}"),
+                name: "apply_patch".to_string(),
+                kind: if added {
+                    ToolKind::Write
+                } else {
+                    ToolKind::Edit
+                },
+                file_path: Some(PathBuf::from(path)),
+                command: None,
+                description: None,
+                input: Value::Null,
+                timestamp: timestamp.clone(),
+                sidechain: false,
+                outcome,
+            }
+        })
+        .collect()
 }
 
 /// SOLO: a prompt the user sent, unless it's empty. Its id is the turn it
@@ -823,6 +938,135 @@ mod tests {
         // A request's input with its turn, then the event without one.
         let mixed = format!("{}\n{}", input("t1"), older.lines().next().unwrap());
         assert_eq!(state_of(&mixed).turn_starts.len(), 1);
+    }
+
+    /// SOLO: a turn of a newer session whose `exec` cells run commands and
+    /// change files, recorded as items. The fourth cell's command finishes
+    /// after the fifth cell is called; the third and fifth record nothing.
+    const EXEC_TURN: &str = r#"{"timestamp":"2026-11-10T10:00:00.500Z","type":"response_item","payload":{"type":"message","id":"msg_u1","role":"user","content":[{"type":"input_text","text":"Fix it"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t1","content_item_kinds":["user.text"]}}}
+{"timestamp":"2026-11-10T10:00:02.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_a","status":"completed","call_id":"call_a","name":"exec","input":"const r = await tools.exec_command({cmd:\"git status\"});\ntext(r.output);"}}
+{"timestamp":"2026-11-10T10:00:02.400Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"CommandExecution","id":"exec-1","process_id":"100","command":["C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe","-Command","git status"],"cwd":"file:///G:/Work/game","parsed_cmd":[{"type":"unknown","cmd":"git status"}],"source":"unified_exec_startup","status":"completed","aggregated_output":"clean","exit_code":0,"duration":{"secs":0,"nanos":100}},"started_at_ms":1794304802300,"completed_at_ms":1794304802400}}
+{"timestamp":"2026-11-10T10:00:02.500Z","type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_a","call_id":"call_a","output":[]}}
+{"timestamp":"2026-11-10T10:00:03.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_b","status":"completed","call_id":"call_b","name":"exec","input":"const patch = \"*** Begin Patch\";\nawait tools.apply_patch(patch);"}}
+{"timestamp":"2026-11-10T10:00:03.300Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"FileChange","id":"exec-2","changes":{"G:\\Work\\game\\save.rs":{"type":"update","unified_diff":"@@","move_path":null},"G:\\Work\\game\\load.rs":{"type":"add","unified_diff":"@@","move_path":null}},"status":"completed","stdout":"Success.","stderr":""},"started_at_ms":1794304803200,"completed_at_ms":1794304803300}}
+{"timestamp":"2026-11-10T10:00:03.400Z","type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_b","call_id":"call_b","output":[]}}
+{"timestamp":"2026-11-10T10:00:04.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_c","status":"completed","call_id":"call_c","name":"exec","input":"const notes = [];\n    // CODE\nnotes.push(1);"}}
+{"timestamp":"2026-11-10T10:00:04.100Z","type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_c","call_id":"call_c","output":[]}}
+{"timestamp":"2026-11-10T10:00:05.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_d","status":"completed","call_id":"call_d","name":"exec","input":"await tools.exec_command({cmd:\"cargo test\"});"}}
+{"timestamp":"2026-11-10T10:00:05.200Z","type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_d","call_id":"call_d","output":[]}}
+{"timestamp":"2026-11-10T10:00:06.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_e","status":"completed","call_id":"call_e","name":"exec","input":"await tools.write_stdin({session_id:1,chars:\"\"});"}}
+{"timestamp":"2026-11-10T10:00:09.000Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"CommandExecution","id":"exec-4","command":["powershell.exe","-Command","cargo test"],"status":"failed","exit_code":101},"started_at_ms":1794304805100,"completed_at_ms":1794304809000}}
+{"timestamp":"2026-11-10T10:00:09.100Z","type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_e","call_id":"call_e","output":[]}}
+{"timestamp":"2026-11-10T10:00:10.000Z","type":"response_item","payload":{"type":"message","status":"completed","id":"msg_a1","role":"assistant","content":[{"type":"output_text","text":"Done."}],"phase":"final_answer"}}
+"#;
+
+    /// SOLO: each command and file change of an `exec` cell shows once, in
+    /// the cell's place; a cell that recorded nothing shows its code.
+    #[test]
+    fn test_exec_cells() {
+        let state = state_of(EXEC_TURN);
+        let calls: Vec<(String, ToolKind, Option<String>, Option<ToolOutcome>)> = state
+            .tool_calls
+            .iter()
+            .map(|call| {
+                (
+                    call.id.clone(),
+                    call.kind,
+                    call.command.clone().or_else(|| {
+                        call.file_path
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                    }),
+                    call.outcome,
+                )
+            })
+            .collect();
+        let expected = [
+            (
+                "exec-1",
+                ToolKind::Execute,
+                "git status",
+                Some(ToolOutcome::Succeeded),
+            ),
+            (
+                "exec-2:G:\\Work\\game\\save.rs",
+                ToolKind::Edit,
+                "G:\\Work\\game\\save.rs",
+                Some(ToolOutcome::Succeeded),
+            ),
+            (
+                "exec-2:G:\\Work\\game\\load.rs",
+                ToolKind::Write,
+                "G:\\Work\\game\\load.rs",
+                Some(ToolOutcome::Succeeded),
+            ),
+            (
+                "call_c",
+                ToolKind::Execute,
+                "const notes = []; // CODE notes.push(1);",
+                Some(ToolOutcome::Succeeded),
+            ),
+            (
+                "exec-4",
+                ToolKind::Execute,
+                "cargo test",
+                Some(ToolOutcome::Failed),
+            ),
+            (
+                "call_e",
+                ToolKind::Execute,
+                "await tools.write_stdin({session_id:1,chars:\"\"});",
+                Some(ToolOutcome::Succeeded),
+            ),
+        ];
+        assert_eq!(
+            calls,
+            expected
+                .iter()
+                .map(|(id, kind, label, outcome)| (
+                    id.to_string(),
+                    *kind,
+                    Some(label.to_string()),
+                    *outcome
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(state.file_changes.len(), 2);
+        assert_eq!(state.turn_starts.len(), 1);
+    }
+
+    /// SOLO: a long `exec` cell shows shortened; an older session's patch
+    /// applied by a cell takes the cell's place; a patch with no cell before
+    /// it in its turn is added.
+    #[test]
+    fn test_exec_cell_code_and_patches() {
+        let long = "x".repeat(MAX_CODE_SUMMARY_CHARS + 50);
+        let summary = code_summary(&long).unwrap();
+        assert_eq!(summary.chars().count(), MAX_CODE_SUMMARY_CHARS + 1);
+        assert!(summary.ends_with('…'));
+        assert_eq!(code_summary(" \n "), None);
+
+        let older = r#"{"timestamp":"2026-08-10T10:00:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"Fix it","images":[]}}
+{"timestamp":"2026-08-10T10:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_a","name":"exec","input":"await tools.apply_patch(p);"}}
+{"timestamp":"2026-08-10T10:00:01.500Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"exec-1","success":true,"changes":{"G:\\Work\\a.rs":{"type":"update","unified_diff":"@@"}}}}
+{"timestamp":"2026-08-10T10:00:02.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_a","output":[]}}
+{"timestamp":"2026-08-10T10:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"And b","images":[]}}
+{"timestamp":"2026-08-10T10:01:01.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"exec-2","success":false,"changes":{"G:\\Work\\b.rs":{"type":"update","unified_diff":"@@"}}}}
+"#;
+        let state = state_of(older);
+        let calls: Vec<(&str, Option<ToolOutcome>)> = state
+            .tool_calls
+            .iter()
+            .map(|call| (call.id.as_str(), call.outcome))
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                ("exec-1:G:\\Work\\a.rs", Some(ToolOutcome::Succeeded)),
+                ("exec-2:G:\\Work\\b.rs", Some(ToolOutcome::Failed)),
+            ]
+        );
+        assert_eq!(state.turn_starts[1].tool_call_ix, 1);
     }
 
     /// SOLO: an older `user_message` with an image and no text is still a
