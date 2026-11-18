@@ -308,6 +308,69 @@ async fn test_remote_buffer_path_swap(cx: &mut TestAppContext, server_cx: &mut T
     }
 }
 
+async fn do_search_and_assert(
+    project: &Entity<Project>,
+    query: &str,
+    files_to_include: PathMatcher,
+    match_full_paths: bool,
+    expected_paths: &[&str],
+    mut cx: TestAppContext,
+) -> Vec<Entity<Buffer>> {
+    let query = query.to_string();
+    let receiver = project.update(&mut cx, |project, cx| {
+        project.search(
+            SearchQuery::text(
+                query,
+                false,
+                true,
+                false,
+                files_to_include,
+                Default::default(),
+                match_full_paths,
+                None,
+            )
+            .unwrap(),
+            cx,
+        )
+    });
+
+    let mut buffers = Vec::new();
+    for expected_path in expected_paths {
+        let buffer = loop {
+            let response = receiver.rx.recv().await.unwrap();
+            match response {
+                SearchResult::Buffer { buffer, .. } => break buffer,
+                SearchResult::LimitReached => panic!("incorrect result"),
+                SearchResult::WaitingForScan | SearchResult::Searching => continue,
+            }
+        };
+        buffer.update(&mut cx, |buffer, cx| {
+            assert_eq!(
+                buffer.file().unwrap().full_path(cx).to_string_lossy(),
+                *expected_path
+            )
+        });
+        buffers.push(buffer);
+    }
+
+    assert!(receiver.rx.recv().await.is_err());
+    buffers
+}
+
+struct RemoteImageTestView {
+    source: ImageSource,
+}
+
+impl gpui::Render for RemoteImageTestView {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        img(self.source.clone())
+    }
+}
+
 #[gpui::test]
 async fn test_remote_project_image_source(cx: &mut TestAppContext, server_cx: &mut TestAppContext) {
     let fs = FakeFs::new(server_cx.executor());
