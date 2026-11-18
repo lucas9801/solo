@@ -501,6 +501,9 @@ pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
                 && let Some(receiver) = agent_sessions::codex_otel::receiver()
             {
                 args.extend(receiver.codex_config_overrides());
+                // SOLO: the receiver is on 127.0.0.1, which Codex would
+                // send through the system proxy.
+                crate::ide_tools::bypass_proxy_for_loopback(env);
             }
             env.insert("SOLO_CODEX_ARGS".to_string(), args.join("\n"));
         }
