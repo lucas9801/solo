@@ -9,9 +9,19 @@
 //!   hooks report) and `payload.cwd`, where it started.
 //! - `turn_context`: each turn's `payload.model`, `payload.cwd` and
 //!   `payload.effort` (its reasoning effort).
-//! - `event_msg` / `user_message`: a prompt the user sent, `payload.message`.
-//!   (`response_item` user messages also carry context Codex adds, so they're
-//!   skipped.)
+//! - `event_msg` / `user_message`: a prompt the user sent, `payload.message`,
+//!   with `payload.images` and `payload.local_images`.
+//! - SOLO: newer versions write no `user_message`; a prompt is an
+//!   `event_msg` / `item_completed` whose `payload.item.type` is
+//!   `UserMessage` (`content`: `text`, `local_image`, `image`), and a
+//!   `response_item` user message whose
+//!   `internal_chat_message_metadata_passthrough.content_item_kinds` marks
+//!   its parts `user.text` or `user.image` (a resumed or forked session
+//!   repeats its earlier prompts only this way). User messages without those
+//!   kinds carry context Codex adds, so they're skipped. Both carry the
+//!   turn's id (`payload.turn_id`,
+//!   `internal_chat_message_metadata_passthrough.turn_id`); the same prompt
+//!   recorded twice in a row for one turn counts once.
 //! - `response_item` / `message` with `role` `assistant`: the agent's text, in
 //!   `output_text` content.
 //! - `response_item` / `function_call` (`name`, `arguments`, a JSON string),
@@ -38,7 +48,8 @@ use serde_json::Value;
 
 use crate::{
     AgentAdapter, AgentKind, MatchedBy, Message, Role, SessionLocation, TerminalProbe, TokenUsage,
-    ToolCall, ToolKind, ToolOutcome, TranscriptEntry, response_timing::effort_level,
+    ToolCall, ToolKind, ToolOutcome, TranscriptEntry, prompt_with_images,
+    response_timing::effort_level,
 };
 
 /// A session written to this long before the agent started (file times and
@@ -293,19 +304,47 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
             }
             entries
         }
-        (Some("event_msg"), Some("user_message")) => match str_field("message") {
-            Some(text) if !text.trim().is_empty() => {
-                vec![TranscriptEntry::Message(Message {
-                    role: Role::User,
-                    text: text.to_string(),
-                    id: None,
-                    api_message_id: None,
-                    timestamp,
-                    sidechain: false,
-                })]
+        (Some("event_msg"), Some("user_message")) => {
+            let images = ["images", "local_images"]
+                .iter()
+                .filter_map(|name| payload.get(*name).and_then(Value::as_array))
+                .map(Vec::len)
+                .sum();
+            prompt(
+                str_field("message").unwrap_or_default(),
+                images,
+                None,
+                timestamp,
+            )
+        }
+        // SOLO: newer Codex records a prompt as a completed `UserMessage`
+        // item instead of a `user_message` event.
+        (Some("event_msg"), Some("item_completed")) => {
+            let Some(item) = payload
+                .get("item")
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("UserMessage"))
+            else {
+                return Vec::new();
+            };
+            let mut texts = Vec::new();
+            let mut images = 0;
+            for content in item
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                match content.get("type").and_then(Value::as_str) {
+                    Some("text") => texts.extend(content.get("text").and_then(Value::as_str)),
+                    Some("image" | "local_image") => images += 1,
+                    _ => {}
+                }
             }
-            _ => Vec::new(),
-        },
+            prompt(&texts.join("\n"), images, str_field("turn_id"), timestamp)
+        }
+        (Some("response_item"), Some("message")) if str_field("role") == Some("user") => {
+            user_input(payload, timestamp)
+        }
         (Some("response_item"), Some("message")) if str_field("role") == Some("assistant") => {
             let text = payload
                 .get("content")
@@ -451,6 +490,82 @@ fn parse_line(line: &str) -> Vec<TranscriptEntry> {
     }
 }
 
+/// SOLO: a prompt the user sent, unless it's empty. Its id is the turn it
+/// starts, when the record tells, so the same prompt recorded twice for one
+/// turn counts once (see `SessionState::apply`).
+fn prompt(
+    text: &str,
+    images: usize,
+    turn_id: Option<&str>,
+    timestamp: Option<String>,
+) -> Vec<TranscriptEntry> {
+    let text = prompt_with_images(text, images);
+    if text.is_empty() {
+        return Vec::new();
+    }
+    vec![TranscriptEntry::Message(Message {
+        role: Role::User,
+        text,
+        id: turn_id.map(str::to_string),
+        api_message_id: None,
+        timestamp,
+        sidechain: false,
+    })]
+}
+
+/// SOLO: the prompt in a request's user input, when Codex marks its parts as
+/// the user's (`content_item_kinds` `user.text`, `user.image`); context Codex
+/// adds in the user's name has other kinds. Older versions don't mark them,
+/// and their prompts are read from the events instead. A resumed or forked
+/// session repeats its earlier prompts only this way.
+fn user_input(payload: &Value, timestamp: Option<String>) -> Vec<TranscriptEntry> {
+    let Some(kinds) = payload
+        .pointer("/internal_chat_message_metadata_passthrough/content_item_kinds")
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let contents = payload
+        .get("content")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut texts = Vec::new();
+    let mut images = 0;
+    let mut from_user = false;
+    for (content, kind) in contents.iter().zip(kinds) {
+        match kind.as_str() {
+            Some("user.text") => {
+                from_user = true;
+                // A pasted image comes between `<image name=…>` and
+                // `</image>` texts.
+                let text = content
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let tag = text.trim();
+                if !((tag.starts_with("<image") || tag.starts_with("</image"))
+                    && tag.ends_with('>'))
+                {
+                    texts.push(text);
+                }
+            }
+            Some("user.image") => {
+                from_user = true;
+                images += 1;
+            }
+            _ => {}
+        }
+    }
+    if !from_user {
+        return Vec::new();
+    }
+    let turn_id = payload
+        .pointer("/internal_chat_message_metadata_passthrough/turn_id")
+        .and_then(Value::as_str);
+    prompt(&texts.join("\n"), images, turn_id, timestamp)
+}
+
 /// The command a tool call runs, for the shell tools of Codex's versions:
 /// `shell` (`command`, a list), `shell_command` (`command`), `exec_command`
 /// (`cmd`), `local_shell_call` (`command`, a list).
@@ -571,6 +686,173 @@ mod tests {
         let state = state();
         assert_eq!(state.effort.as_deref(), Some("xhigh"));
         assert!(state.responses.is_empty());
+    }
+
+    /// SOLO: a made-up session in the shape of newer Codex ones, which write
+    /// no `user_message` events. The second prompt pastes an image, the
+    /// third is only an image.
+    const NEWER_SESSION: &str = r#"{"timestamp":"2026-11-10T10:00:00.000Z","ordinal":0,"type":"session_meta","payload":{"id":"01a1ec8e-4f9a-7f51-9110-0e5aa040eecc","cwd":"G:\\Work\\game","originator":"codex-tui","cli_version":"0.165.0"}}
+{"timestamp":"2026-11-10T10:00:00.100Z","ordinal":1,"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-11-10T10:00:00.200Z","ordinal":2,"type":"response_item","payload":{"type":"message","id":"msg_d","role":"developer","content":[{"type":"input_text","text":"Instructions"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t1","content_item_kinds":["model.base_instructions"]}}}
+{"timestamp":"2026-11-10T10:00:00.300Z","ordinal":3,"type":"response_item","payload":{"type":"message","id":"msg_e","role":"user","content":[{"type":"input_text","text":"<environment_context>cwd</environment_context>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t1","content_item_kinds":["environments.environment_context"]}}}
+{"timestamp":"2026-11-10T10:00:00.400Z","ordinal":4,"type":"turn_context","payload":{"turn_id":"t1","cwd":"G:\\Work\\game","model":"gpt-5.6","effort":"high"}}
+{"timestamp":"2026-11-10T10:00:00.500Z","ordinal":5,"type":"response_item","payload":{"type":"message","id":"msg_u1","role":"user","content":[{"type":"input_text","text":"What is the build date?"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t1","content_item_kinds":["user.text"]}}}
+{"timestamp":"2026-11-10T10:00:00.510Z","ordinal":6,"type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"What is the build date?","text_elements":[]}]}}}
+{"timestamp":"2026-11-10T10:00:01.000Z","ordinal":7,"type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"AgentMessage","id":"msg_a1","content":[{"type":"Text","text":"Checking."}],"phase":"commentary"}}}
+{"timestamp":"2026-11-10T10:00:01.010Z","ordinal":8,"type":"response_item","payload":{"type":"message","status":"completed","id":"msg_a1","role":"assistant","content":[{"type":"output_text","text":"Checking."}],"phase":"commentary"}}
+{"timestamp":"2026-11-10T10:00:02.000Z","ordinal":9,"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_1","status":"completed","call_id":"call_1","name":"exec","input":"run()"}}
+{"timestamp":"2026-11-10T10:00:03.000Z","ordinal":10,"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_1","output":[]}}
+{"timestamp":"2026-11-10T10:00:04.000Z","ordinal":11,"type":"response_item","payload":{"type":"message","status":"completed","id":"msg_a2","role":"assistant","content":[{"type":"output_text","text":"First answer."}],"phase":"final_answer"}}
+{"timestamp":"2026-11-10T10:00:04.100Z","ordinal":12,"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}
+{"timestamp":"2026-11-10T10:01:00.000Z","ordinal":13,"type":"response_item","payload":{"type":"message","id":"msg_u2","role":"user","content":[{"type":"input_text","text":"<image name=[Image #1] path=\"C:\\\\shot.png\">"},{"type":"input_image","image_url":"data:image/png;base64,AAAA","detail":"high"},{"type":"input_text","text":"</image>"},{"type":"input_text","text":"[Image #1] What does this mean?"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t2","content_item_kinds":["user.text","user.image","user.text","user.text"]}}}
+{"timestamp":"2026-11-10T10:01:00.010Z","ordinal":14,"type":"event_msg","payload":{"type":"item_completed","turn_id":"t2","item":{"type":"UserMessage","id":"u2","content":[{"type":"local_image","path":"C:\\shot.png"},{"type":"text","text":"[Image #1] What does this mean?","text_elements":[{"byte_range":{"start":0,"end":10},"placeholder":"[Image #1]"}]}]}}}
+{"timestamp":"2026-11-10T10:01:05.000Z","ordinal":15,"type":"response_item","payload":{"type":"message","status":"completed","id":"msg_a3","role":"assistant","content":[{"type":"output_text","text":"Second answer."}],"phase":"final_answer"}}
+{"timestamp":"2026-11-10T10:02:00.000Z","ordinal":16,"type":"response_item","payload":{"type":"message","id":"msg_u3","role":"user","content":[{"type":"input_text","text":"<image name=x>"},{"type":"input_image","image_url":"data:image/png;base64,AAAA","detail":"high"},{"type":"input_text","text":"</image>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t3","content_item_kinds":["user.text","user.image","user.text"]}}}
+{"timestamp":"2026-11-10T10:02:00.010Z","ordinal":17,"type":"event_msg","payload":{"type":"item_completed","turn_id":"t3","item":{"type":"UserMessage","id":"u3","content":[{"type":"local_image","path":"C:\\shot.png"}]}}}
+{"timestamp":"2026-11-10T10:02:05.000Z","ordinal":18,"type":"response_item","payload":{"type":"message","status":"completed","id":"msg_a4","role":"assistant","content":[{"type":"output_text","text":"Third answer."}],"phase":"final_answer"}}
+{"timestamp":"2026-11-10T10:03:00.000Z","ordinal":19,"type":"response_item","payload":{"type":"message","id":"msg_u4","role":"user","content":[{"type":"input_text","text":"And the tests?"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t4","content_item_kinds":["user.text"]}}}
+{"timestamp":"2026-11-10T10:03:00.010Z","ordinal":20,"type":"event_msg","payload":{"type":"item_completed","turn_id":"t4","item":{"type":"UserMessage","id":"u4","content":[{"type":"text","text":"And the tests?","text_elements":[]}]}}}
+{"timestamp":"2026-11-10T10:03:05.000Z","ordinal":21,"type":"response_item","payload":{"type":"message","status":"completed","id":"msg_a5","role":"assistant","content":[{"type":"output_text","text":"Fourth answer."}],"phase":"final_answer"}}
+"#;
+
+    fn state_of(session: &str) -> SessionState {
+        let mut state = SessionState::new(AgentKind::Codex);
+        for line in session.lines() {
+            state.apply_all(parse_line(line));
+        }
+        state
+    }
+
+    /// Each turn's prompt and the agent's last text in it.
+    fn turns(state: &SessionState) -> Vec<(String, Option<String>)> {
+        (0..state.turn_starts.len())
+            .map(|ix| {
+                let start = state.turn_starts[ix].message_ix;
+                let end = state
+                    .turn_starts
+                    .get(ix + 1)
+                    .map_or(state.messages.len(), |next| next.message_ix);
+                let answer = state.messages[start..end]
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == Role::Assistant)
+                    .map(|message| message.text.clone());
+                (state.messages[start].text.clone(), answer)
+            })
+            .collect()
+    }
+
+    /// SOLO: every prompt of a newer session starts a turn, once, with its
+    /// images marked, and each answer is under its prompt.
+    #[test]
+    fn test_newer_session_prompts() {
+        let state = state_of(NEWER_SESSION);
+        let expected = [
+            ("What is the build date?", "First answer."),
+            ("[Image #1] What does this mean?", "Second answer."),
+            ("[image]", "Third answer."),
+            ("And the tests?", "Fourth answer."),
+        ];
+        assert_eq!(
+            turns(&state),
+            expected
+                .iter()
+                .map(|(prompt, answer)| (prompt.to_string(), Some(answer.to_string())))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(state.turn_starts[0].message_ix, 0);
+        assert_eq!(state.turn_starts[0].tool_call_ix, 0);
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.title.as_deref(), Some("What is the build date?"));
+        assert_eq!(
+            state.messages[0].timestamp.as_deref(),
+            Some("2026-11-10T10:00:00.500Z")
+        );
+    }
+
+    /// SOLO: a resumed session repeats its earlier prompts only as request
+    /// input, without the events; they still count, once each.
+    #[test]
+    fn test_resumed_session_prompts() {
+        let resumed: String = NEWER_SESSION
+            .lines()
+            .filter(|line| !line.contains(r#""type":"UserMessage""#))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let state = state_of(&resumed);
+        assert_eq!(state_of(NEWER_SESSION).turn_starts, state.turn_starts);
+        // And a session with only the events counts each prompt once too.
+        let events_only: String = NEWER_SESSION
+            .lines()
+            .filter(|line| !line.contains(r#""content_item_kinds":["user."#))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert_eq!(
+            turns(&state_of(&events_only))
+                .into_iter()
+                .map(|(prompt, _)| prompt)
+                .collect::<Vec<_>>(),
+            [
+                "What is the build date?",
+                "[Image #1] What does this mean?",
+                "[image]",
+                "And the tests?"
+            ]
+        );
+    }
+
+    /// SOLO: the same text sent again, before any answer, is a turn of its
+    /// own; only a prompt recorded twice for one turn counts once.
+    #[test]
+    fn test_prompt_sent_again() {
+        let input = |turn: &str| {
+            format!(
+                r#"{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Go on"}}],"internal_chat_message_metadata_passthrough":{{"turn_id":"{turn}","content_item_kinds":["user.text"]}}}}}}"#
+            )
+        };
+        let event = |turn: &str| {
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"item_completed","turn_id":"{turn}","item":{{"type":"UserMessage","content":[{{"type":"text","text":"Go on"}}]}}}}}}"#
+            )
+        };
+        let newer = [input("t1"), event("t1"), input("t2"), event("t2")].join("\n");
+        assert_eq!(state_of(&newer).turn_starts.len(), 2);
+        let older = r#"{"type":"event_msg","payload":{"type":"user_message","message":"Go on","images":[]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Go on","images":[]}}"#;
+        assert_eq!(state_of(older).turn_starts.len(), 2);
+        // A request's input with its turn, then the event without one.
+        let mixed = format!("{}\n{}", input("t1"), older.lines().next().unwrap());
+        assert_eq!(state_of(&mixed).turn_starts.len(), 1);
+    }
+
+    /// SOLO: an older `user_message` with an image and no text is still a
+    /// prompt; one that names its image keeps its own placeholder.
+    #[test]
+    fn test_user_message_images() {
+        let prompt_of = |line: &str| match parse_line(line).as_slice() {
+            [TranscriptEntry::Message(message)] => Some(message.text.clone()),
+            _ => None,
+        };
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"","images":[],"local_images":["C:\\a.png"]}}"#
+            )
+            .as_deref(),
+            Some("[image]")
+        );
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"[Image #1] what?","images":[],"local_images":["C:\\a.png"]}}"#
+            )
+            .as_deref(),
+            Some("[Image #1] what?")
+        );
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":" ","images":[]}}"#
+            ),
+            None
+        );
     }
 
     #[test]

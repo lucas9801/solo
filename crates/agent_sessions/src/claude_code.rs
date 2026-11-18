@@ -48,6 +48,7 @@ use serde_json::Value;
 use crate::{
     AgentAdapter, AgentKind, MatchedBy, Message, ReportedUsage, ResponseBlock, Role,
     SessionLocation, TerminalProbe, TokenUsage, ToolCall, ToolKind, ToolOutcome, TranscriptEntry,
+    prompt_with_images,
     response_timing::{effort_level, parse_timestamp_ms},
 };
 
@@ -421,12 +422,15 @@ fn is_typed_prompt(text: &str) -> bool {
 fn parse_user(entry: &Value, sidechain: bool) -> Vec<TranscriptEntry> {
     let mut entries = Vec::new();
     let mut prompt = Vec::new();
+    let mut images = 0;
     match entry.pointer("/message/content") {
         Some(Value::String(text)) => prompt.push(text.as_str()),
         Some(Value::Array(blocks)) => {
             for block in blocks {
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") => prompt.extend(block.get("text").and_then(Value::as_str)),
+                    // SOLO: an image the user pasted.
+                    Some("image") => images += 1,
                     Some("tool_result") => {
                         let Some(tool_call_id) = string_field(block, "tool_use_id") else {
                             continue;
@@ -450,8 +454,14 @@ fn parse_user(entry: &Value, sidechain: bool) -> Vec<TranscriptEntry> {
         }
         _ => {}
     }
-    let prompt = prompt.join("\n");
-    if is_typed_prompt(&prompt) {
+    let mut prompt = prompt.join("\n");
+    // SOLO: a prompt of only images is one too; images in a tool's result
+    // aren't the user's.
+    let only_images = prompt.trim().is_empty() && images > 0 && entries.is_empty();
+    if is_typed_prompt(&prompt) || only_images {
+        if images > 0 {
+            prompt = prompt_with_images(&prompt, images);
+        }
         entries.insert(
             0,
             TranscriptEntry::Message(Message {
@@ -729,6 +739,41 @@ mod tests {
             state.apply_all(parse_line(line));
         }
         state
+    }
+
+    /// SOLO: prompts with pasted images, in the shape Claude Code records
+    /// them: a text naming each image, then the images; or only an image.
+    /// Images in a tool's result aren't a prompt.
+    #[test]
+    fn test_image_prompts() {
+        let prompt_of = |line: &str| {
+            parse_line(line).into_iter().find_map(|entry| match entry {
+                TranscriptEntry::Message(message) if message.role == Role::User => {
+                    Some(message.text)
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Image #1] What is this?"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]},"uuid":"u1"}"#
+            )
+            .as_deref(),
+            Some("[Image #1] What is this?")
+        );
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]},"uuid":"u2"}"#
+            )
+            .as_deref(),
+            Some("[image]")
+        );
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]},"uuid":"u3"}"#
+            ),
+            None
+        );
     }
 
     #[test]

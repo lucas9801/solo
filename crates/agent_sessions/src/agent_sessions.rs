@@ -74,6 +74,23 @@ fn program_name(command: &str) -> Option<String> {
     Some(name.to_lowercase())
 }
 
+/// SOLO: a prompt's text with an `[image]` marker for each of its `images`
+/// that the text doesn't already name. Agents put an `[Image #1]` placeholder
+/// in the text where the user pasted an image; an image sent without one (or
+/// with no text at all) still shows.
+pub(crate) fn prompt_with_images(text: &str, images: usize) -> String {
+    let text = text.trim();
+    if images == 0 || text.contains("[Image #") {
+        return text.to_string();
+    }
+    let markers = vec!["[image]"; images].join(" ");
+    if text.is_empty() {
+        markers
+    } else {
+        format!("{markers} {text}")
+    }
+}
+
 /// What is known about a terminal to find the session of the agent it runs.
 #[derive(Clone, Debug, Default)]
 pub struct TerminalProbe {
@@ -477,6 +494,16 @@ impl SessionState {
     pub fn apply(&mut self, entry: TranscriptEntry) {
         match entry {
             TranscriptEntry::Message(message) => {
+                // SOLO: Codex records a prompt twice in a row (as the
+                // request's input and as an event); the second is the same
+                // prompt, not a turn of its own. The same text sent again,
+                // for a turn of its own, is one.
+                if self.agent == AgentKind::Codex
+                    && message.role == Role::User
+                    && self.is_repeated_prompt(&message)
+                {
+                    return;
+                }
                 // SOLO: Codex records no title: its first prompt is one.
                 if self.agent == AgentKind::Codex
                     && self.title.is_none()
@@ -589,6 +616,30 @@ impl SessionState {
             }
             TranscriptEntry::Effort(effort) => self.effort = Some(effort),
         }
+    }
+
+    /// SOLO: whether `prompt` records the last prompt again, with nothing
+    /// recorded since: the same text for the same turn. Codex's prompts carry
+    /// their turn's id when the record tells; two without one are two turns
+    /// (the user sent the same text again), and one without one is the event
+    /// recorded next to the request's input.
+    fn is_repeated_prompt(&self, prompt: &Message) -> bool {
+        let Some(start) = self.turn_starts.last() else {
+            return false;
+        };
+        let Some(last) = self.messages.get(start.message_ix) else {
+            return false;
+        };
+        let same_turn = match (&last.id, &prompt.id) {
+            (Some(last), Some(this)) => last == this,
+            (None, None) => false,
+            _ => true,
+        };
+        same_turn
+            && start.message_ix + 1 == self.messages.len()
+            && start.tool_call_ix == self.tool_calls.len()
+            && last.text == prompt.text
+            && last.sidechain == prompt.sidechain
     }
 
     fn apply_usage(
