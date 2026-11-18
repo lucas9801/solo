@@ -59,6 +59,18 @@ const MAX_WATCHED_FILES: usize = 10_000;
 const WATCH_AFTER_TURN: Duration = Duration::from_secs(1);
 /// Files listed in the menu of a turn without a snapshot.
 const MAX_LISTED_FILES: usize = 50;
+/// SOLO: How long a Codex turn's end waits for the log events Codex sent
+/// last: it sends them every 200 ms in Solo's terminals
+/// (`OTEL_BLRP_SCHEDULE_DELAY`), every second by default.
+const CODEX_EDITS_WAIT: Duration = Duration::from_millis(1200);
+/// SOLO: How long after that a Codex turn's patches that come late still
+/// count, and how often they're looked for.
+const CODEX_LATE_EDITS: Duration = Duration::from_secs(30);
+const CODEX_LATE_EDITS_INTERVAL: Duration = Duration::from_secs(1);
+/// SOLO: Slack around a turn's start and end for Codex's patches, whose
+/// times are Codex's and the turn's Solo's (on the same clock, but the hooks
+/// that start and end the turn take a moment).
+const CODEX_EDITS_SLACK_MS: i64 = 2_000;
 
 pub(crate) fn init(cx: &mut App) {
     cx.observe_new(|_: &mut TerminalView, _, cx: &mut Context<TerminalView>| {
@@ -92,8 +104,11 @@ pub(crate) fn init(cx: &mut App) {
                     cx.emit(ItemEvent::UpdateTab);
                 }
                 AgentTurnEvent::Ended => {
-                    AgentTurns::global(cx)
-                        .update(cx, |turns, cx| turns.end_turn(terminal_view, cx));
+                    // SOLO: whose telemetry says which files its patches edited.
+                    let codex_session = view.reported_codex_session();
+                    AgentTurns::global(cx).update(cx, |turns, cx| {
+                        turns.end_turn(terminal_view, codex_session, cx)
+                    });
                 }
             }
         })
@@ -473,7 +488,14 @@ impl AgentTurns {
         }
     }
 
-    fn end_turn(&mut self, terminal_view: Entity<TerminalView>, cx: &mut Context<Self>) {
+    /// Ends the terminal's turn. `codex_session` is the Codex session the
+    /// turn was, whose log events say which files its patches edited.
+    fn end_turn(
+        &mut self,
+        terminal_view: Entity<TerminalView>,
+        codex_session: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let terminal_id = terminal_view.entity_id();
         let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
             return;
@@ -481,7 +503,14 @@ impl AgentTurns {
         let Some(mut pending) = terminal.pending.take() else {
             return;
         };
-        let attributed = terminal.reports_edits;
+        let reports_edits = terminal.reports_edits;
+        // SOLO: the turn's time, for Codex's patches (R3 M5).
+        let window = CodexWindow {
+            from_ms: unix_ms(pending.started_at) - CODEX_EDITS_SLACK_MS,
+            to_ms: unix_ms(now()) + CODEX_EDITS_SLACK_MS,
+        };
+        let codex_session =
+            codex_session.filter(|_| agent_sessions::codex_otel::running_receiver().is_some());
         // Earlier turns' watches belong to end tasks this one replaces.
         terminal
             .watches
@@ -515,13 +544,41 @@ impl AgentTurns {
             let started_at = pending.started_at;
             let project = pending.project;
             let diagnostics_before = pending.diagnostics_before;
-            let edited = std::mem::take(&mut pending.edited);
-            let changes = cx
+            let mut edited = std::mem::take(&mut pending.edited);
+            let directory = pending.directory.clone();
+            let after = cx
                 .background_spawn({
                     let started = started.clone();
                     async move {
                         let after = started.store.snapshot()?;
                         let changed = started.store.changed_files(&started.before, &after)?;
+                        anyhow::Ok((after, changed))
+                    }
+                })
+                .await
+                .log_err();
+            let Some((after, changed)) = after else {
+                return;
+            };
+            // SOLO: the files Codex's patches edited, from its log events,
+            // which come in batches: the last ones a moment after the turn.
+            let mut codex_attributed = false;
+            if let Some(session) = &codex_session {
+                cx.background_executor().timer(CODEX_EDITS_WAIT).await;
+                if let Some(codex_edited) = codex_edits(session, window, &directory) {
+                    codex_attributed = true;
+                    for path in codex_edited {
+                        if !edited.contains(&path) {
+                            edited.push(path);
+                        }
+                    }
+                }
+            }
+            let attributed = reports_edits || codex_attributed;
+            let changes = cx
+                .background_spawn({
+                    let started = started.clone();
+                    async move {
                         // SOLO: an agent that reports its edits changed only
                         // those files; the rest are someone else's, or its
                         // commands' (R3 M5).
@@ -545,12 +602,12 @@ impl AgentTurns {
                         };
                         let prompt = prompt_source
                             .and_then(|directory| last_claude_prompt(&directory, started_at));
-                        anyhow::Ok((after, changed, others, prompt))
+                        anyhow::Ok((changed, others, prompt))
                     }
                 })
                 .await
                 .log_err();
-            let Some((after, changed, others, prompt)) = changes else {
+            let Some((changed, others, prompt)) = changes else {
                 return;
             };
             // The files to have the language servers check: those still there.
@@ -592,6 +649,34 @@ impl AgentTurns {
             if !matches!(recorded, Ok(true)) {
                 return;
             }
+            // SOLO: Codex's patches whose events come later still count.
+            if codex_attributed && let Some(session) = codex_session {
+                let terminal_view = terminal_view.clone();
+                let directory = directory.clone();
+                let this = this.clone();
+                cx.spawn(async move |cx| {
+                    let started = std::time::Instant::now();
+                    while started.elapsed() < CODEX_LATE_EDITS {
+                        cx.background_executor()
+                            .timer(CODEX_LATE_EDITS_INTERVAL)
+                            .await;
+                        let Some(edited) = codex_edits(&session, window, &directory) else {
+                            continue;
+                        };
+                        let moved = this.update(cx, |this, cx| {
+                            let moved = this.late_edits(terminal_id, number, &edited);
+                            if moved {
+                                cx.notify();
+                                update_tab(&terminal_view, cx);
+                            }
+                        });
+                        if moved.is_err() {
+                            return;
+                        }
+                    }
+                })
+                .detach();
+            }
             // Checked apart: the next turn's end mustn't cancel it.
             cx.spawn(async move |cx| {
                 let result =
@@ -610,6 +695,47 @@ impl AgentTurns {
             })
             .detach();
         }));
+    }
+
+    /// SOLO: Codex's patches of turn `number` that came after it ended:
+    /// the files they edited are the turn's rather than someone else's.
+    /// Whether any moved.
+    fn late_edits(&mut self, terminal_id: EntityId, number: usize, edited: &[PathBuf]) -> bool {
+        let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+            return false;
+        };
+        let is_last = terminal
+            .turns
+            .back()
+            .is_some_and(|turn| turn.number == number);
+        let Some(turn) = terminal.turns.iter_mut().find(|turn| turn.number == number) else {
+            return false;
+        };
+        if turn.others.is_empty() || edited.is_empty() {
+            return false;
+        }
+        let edited: Vec<PathBuf> = edited.iter().map(|path| comparable_path(path)).collect();
+        let store = turn.store.clone();
+        let (late, others): (Vec<_>, Vec<_>) = std::mem::take(&mut turn.others)
+            .into_iter()
+            .partition(|file| {
+                let abs_path = comparable_path(&store.abs_path(&file.path));
+                edited.iter().any(|edited| is_same_path(edited, &abs_path))
+            });
+        turn.others = others;
+        if late.is_empty() {
+            return false;
+        }
+        log::debug!(
+            "{} of a Codex turn's files turned out to be its own",
+            late.len()
+        );
+        turn.changed.extend(late);
+        turn.changed.sort_by(|a, b| a.path.cmp(&b.path));
+        if is_last && terminal.pending.is_none() {
+            terminal.offer_last_turn = true;
+        }
+        true
     }
 
     fn stop_watching(&mut self, terminal: EntityId, number: usize) -> Option<TurnWatch> {
@@ -683,6 +809,41 @@ fn is_same_path(left: &Path, right: &Path) -> bool {
     } else {
         left == right
     }
+}
+
+/// SOLO: The time a Codex turn's patches count in, in ms since the epoch.
+#[derive(Clone, Copy, Debug)]
+struct CodexWindow {
+    from_ms: i64,
+    to_ms: i64,
+}
+
+fn unix_ms(time: time::OffsetDateTime) -> i64 {
+    (time.unix_timestamp_nanos() / 1_000_000) as i64
+}
+
+/// SOLO: The files Codex session `session`'s patches edited in `window`, as
+/// its log events said, absolute (against `directory`, where it works);
+/// `None` if its events don't come to Solo (say, the user's own telemetry
+/// replaced Solo's), so they can't tell.
+fn codex_edits(session: &str, window: CodexWindow, directory: &Path) -> Option<Vec<PathBuf>> {
+    let receiver = agent_sessions::codex_otel::running_receiver()?;
+    if !receiver.knows(session) {
+        return None;
+    }
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for edit in receiver.edits(session, window.from_ms, window.to_ms) {
+        let path = Path::new(&edit.path);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            directory.join(path)
+        };
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    Some(paths)
 }
 
 fn update_tab(terminal_view: &WeakEntity<TerminalView>, cx: &mut App) {
@@ -1204,7 +1365,9 @@ mod tests {
             });
             cx.run_until_parked();
             edit();
-            turns.update(cx, |turns, cx| turns.end_turn(terminal_view.clone(), cx));
+            turns.update(cx, |turns, cx| {
+                turns.end_turn(terminal_view.clone(), None, cx)
+            });
             cx.run_until_parked();
         };
 

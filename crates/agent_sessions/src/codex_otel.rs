@@ -14,8 +14,16 @@
 //! from Codex's source (`codex-rs/otel/src/events/session_telemetry.rs`,
 //! `codex-rs/core/src/client.rs`), not from Codex running.
 //!
-//! Only these numbers are kept, in memory; everything else an event has
-//! (the account, the prompt's length, tool output) is dropped as it comes.
+//! SOLO: Its `codex.tool_result` event for `apply_patch` has the patch in
+//! `arguments` (not shortened, unlike `output`, as of Codex 0.162) and the
+//! files it changed in `output`: the files each patch edits are kept, so a
+//! Codex turn's review can list only Codex's edits without a hook (R3 M5).
+//! The event's time is when Codex logged it (`observedTimeUnixNano`; its
+//! `timeUnixNano` is 0).
+//!
+//! Only these numbers and file names are kept, in memory; everything else an
+//! event has (the account, the prompt's length, tool output) is dropped as
+//! it comes.
 
 use std::{
     io::{BufRead as _, BufReader, Read as _, Write as _},
@@ -48,6 +56,19 @@ const MAX_CONNECTIONS: usize = 16;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// How many sessions are kept; the least recently heard from go first.
 const MAX_CONVERSATIONS: usize = 64;
+/// How many of a session's edits are kept; the oldest go first.
+const MAX_EDITS: usize = 1024;
+/// Codex's tool that edits files.
+const EDIT_TOOL: &str = "apply_patch";
+
+/// SOLO: A file a Codex session's `apply_patch` edited, as the patch names
+/// it (relative to the session's working directory, or absolute).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexEdit {
+    /// When Codex logged the patch's result (ms since the epoch).
+    pub at_ms: Option<i64>,
+    pub path: String,
+}
 
 /// What Codex's events said about each session.
 #[derive(Debug, Default)]
@@ -66,6 +87,8 @@ struct Conversation {
     requests: u64,
     effort: Option<String>,
     heard_at: u64,
+    /// The files its patches edited, oldest first.
+    edits: std::collections::VecDeque<CodexEdit>,
 }
 
 /// One log event, as far as it's read.
@@ -79,6 +102,8 @@ struct Event {
     output_tokens: Option<u64>,
     duration_ms: Option<u64>,
     effort: Option<String>,
+    /// The files an `apply_patch` edited.
+    edited: Vec<String>,
 }
 
 impl CodexTelemetry {
@@ -108,6 +133,15 @@ impl CodexTelemetry {
             .entry(event.conversation.clone())
             .or_default();
         conversation.heard_at = self.clock;
+        for path in &event.edited {
+            if conversation.edits.len() >= MAX_EDITS {
+                conversation.edits.pop_front();
+            }
+            conversation.edits.push_back(CodexEdit {
+                at_ms: event.at_ms,
+                path: path.clone(),
+            });
+        }
         match event.name.as_str() {
             "codex.websocket_request" => {
                 conversation.sent = event.at_ms.map(|at_ms| (at_ms, 0));
@@ -157,6 +191,73 @@ impl CodexTelemetry {
     pub fn effort(&self, conversation_id: &str) -> Option<String> {
         self.conversations.get(conversation_id)?.effort.clone()
     }
+
+    /// SOLO: Whether session `conversation_id` sent events here, so its
+    /// edits are known.
+    pub fn knows(&self, conversation_id: &str) -> bool {
+        self.conversations.contains_key(conversation_id)
+    }
+
+    /// SOLO: The files session `conversation_id`'s patches edited between
+    /// `from_ms` and `to_ms` (ms since the epoch), oldest first.
+    pub fn edits(&self, conversation_id: &str, from_ms: i64, to_ms: i64) -> Vec<CodexEdit> {
+        let Some(conversation) = self.conversations.get(conversation_id) else {
+            return Vec::new();
+        };
+        conversation
+            .edits
+            .iter()
+            .filter(|edit| {
+                edit.at_ms
+                    .is_some_and(|at_ms| (from_ms..=to_ms).contains(&at_ms))
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+/// SOLO: The files an `apply_patch` names in its patch (`*** Add File:`,
+/// `*** Update File:`, `*** Delete File:`, `*** Move to:`) and in its output
+/// (`Success. Updated the following files:` then `A`, `M` or `D` lines).
+fn patch_files(arguments: Option<&str>, output: Option<&str>) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    let mut add = |path: &str| {
+        let path = path.trim();
+        if !path.is_empty() && !files.iter().any(|file| file == path) {
+            files.push(path.to_string());
+        }
+    };
+    if let Some(patch) = arguments.filter(|patch| patch.contains("*** Begin Patch")) {
+        for line in patch.lines() {
+            let line = line.trim_end_matches('\r');
+            if let Some(path) = [
+                "*** Add File: ",
+                "*** Update File: ",
+                "*** Delete File: ",
+                "*** Move to: ",
+            ]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
+            {
+                add(path);
+            }
+        }
+    }
+    if let Some(output) = output {
+        let mut listed = false;
+        for line in output.lines() {
+            let line = line.trim_end_matches('\r');
+            if line.starts_with("Success. Updated the following files") {
+                listed = true;
+            } else if listed {
+                match line.split_once(' ') {
+                    Some(("A" | "M" | "D", path)) => add(path),
+                    _ => listed = false,
+                }
+            }
+        }
+    }
+    files
 }
 
 fn events_of(export: &Value) -> Vec<Event> {
@@ -203,6 +304,14 @@ fn event_of(record: &Value) -> Option<Event> {
     if !name.starts_with("codex.") {
         return None;
     }
+    let edited = if name == "codex.tool_result" && text("tool_name").as_deref() == Some(EDIT_TOOL) {
+        patch_files(
+            attribute("arguments").and_then(Value::as_str),
+            attribute("output").and_then(Value::as_str),
+        )
+    } else {
+        Vec::new()
+    };
     let conversation = text("conversation.id").filter(|id| {
         (1..=128).contains(&id.len())
             && id
@@ -228,6 +337,7 @@ fn event_of(record: &Value) -> Option<Event> {
         effort: text("model_reasoning_effort")
             .as_deref()
             .and_then(effort_level),
+        edited,
     })
 }
 
@@ -291,8 +401,12 @@ impl Receiver {
     /// The `-c` arguments that make a Codex session send its log events
     /// here: as TOML with literal (single-quoted) strings, which Windows
     /// PowerShell passes on as they are. Only the log exporter is set
-    /// (`trace_exporter` and `metrics_exporter` stay the user's), and not
-    /// every streamed delta is sent.
+    /// (`trace_exporter` and `metrics_exporter` stay the user's).
+    ///
+    /// Not `otel.log_sse_deltas=false`: no released Codex knows it (up to
+    /// 0.165; it came to Codex's main branch in October 2026), and the ones
+    /// that don't print a warning about it at every start. Without it the
+    /// streamed deltas come too, as they always did, and are dropped here.
     pub fn codex_config_overrides(&self) -> Vec<String> {
         vec![
             "-c".to_string(),
@@ -301,8 +415,6 @@ impl Receiver {
                 self.endpoint(),
                 self.token
             ),
-            "-c".to_string(),
-            "otel.log_sse_deltas=false".to_string(),
         ]
     }
 
@@ -312,6 +424,19 @@ impl Receiver {
 
     pub fn effort(&self, conversation_id: &str) -> Option<String> {
         self.telemetry.lock().ok()?.effort(conversation_id)
+    }
+
+    pub fn knows(&self, conversation_id: &str) -> bool {
+        self.telemetry
+            .lock()
+            .is_ok_and(|telemetry| telemetry.knows(conversation_id))
+    }
+
+    pub fn edits(&self, conversation_id: &str, from_ms: i64, to_ms: i64) -> Vec<CodexEdit> {
+        self.telemetry
+            .lock()
+            .map(|telemetry| telemetry.edits(conversation_id, from_ms, to_ms))
+            .unwrap_or_default()
     }
 }
 
@@ -608,6 +733,73 @@ mod tests {
         assert!(!kept.contains("example.com"), "{kept}");
     }
 
+    /// SOLO: A `codex.tool_result` record as Codex 0.162 sends it: its time
+    /// in `observedTimeUnixNano`, `timeUnixNano` 0.
+    fn tool_result(observed_ms: i64, tool: &str, arguments: &str, output: &str) -> Value {
+        serde_json::json!({
+            "timeUnixNano": "0",
+            "observedTimeUnixNano": (observed_ms * 1_000_000).to_string(),
+            "severityNumber": 9,
+            "attributes": [
+                {"key": "event.name", "value": text("codex.tool_result")},
+                {"key": "tool_name", "value": text(tool)},
+                {"key": "success", "value": text("true")},
+                {"key": "arguments", "value": text(arguments)},
+                {"key": "output", "value": text(output)},
+                {"key": "conversation.id", "value": text(CONVERSATION)},
+                {"key": "user.email", "value": text("someone@example.com")},
+            ],
+        })
+    }
+
+    /// SOLO: The files `apply_patch` edited are kept, from its patch and its
+    /// output; the code-mode cell that ran it, with the same patch in its
+    /// script, isn't an edit (R3 M5).
+    #[test]
+    fn test_edits_from_tool_results() {
+        let patch = "*** Begin Patch\n*** Add File: hello.txt\n+hi\n*** Update File: a.py\n@@\n+def b(): return 2\n*** Update File: old.rs\n*** Move to: src/new.rs\n*** End Patch";
+        let mut telemetry = CodexTelemetry::default();
+        telemetry.ingest(&export(vec![
+            tool_result(
+                1_000,
+                "exec",
+                &format!("const r = await tools.apply_patch({patch:?});"),
+                "Script completed",
+            ),
+            tool_result(
+                2_000,
+                "apply_patch",
+                patch,
+                "Exit code: 0\nWall time: 1.1 seconds\nOutput:\nSuccess. Updated the following files:\nA hello.txt\nM a.py\nM src/new.rs\nD gone.txt\n",
+            ),
+            tool_result(9_000, "apply_patch", "*** Begin Patch\n*** Delete File: later.txt\n*** End Patch", "Exit code: 1"),
+        ]));
+        assert!(telemetry.knows(CONVERSATION));
+        assert!(!telemetry.knows("another"));
+        let paths = |from, to| -> Vec<String> {
+            telemetry
+                .edits(CONVERSATION, from, to)
+                .into_iter()
+                .map(|edit| edit.path)
+                .collect()
+        };
+        assert_eq!(
+            paths(0, 5_000),
+            ["hello.txt", "a.py", "old.rs", "src/new.rs", "gone.txt"]
+        );
+        assert_eq!(paths(5_000, 10_000), ["later.txt"]);
+        assert_eq!(
+            telemetry.edits(CONVERSATION, 0, 5_000)[0].at_ms,
+            Some(2_000)
+        );
+        assert!(paths(10_001, 20_000).is_empty());
+        let kept = format!("{:?}", telemetry);
+        assert!(
+            !kept.contains("example.com") && !kept.contains("def b"),
+            "{kept}"
+        );
+    }
+
     #[test]
     fn test_bad_exports_are_skipped() {
         let mut telemetry = CodexTelemetry::default();
@@ -644,11 +836,15 @@ mod tests {
     fn test_overrides_are_valid_toml() {
         let receiver = Receiver::start().unwrap();
         let args = receiver.codex_config_overrides();
+        assert_eq!(args.len(), 2);
         assert_eq!(args[0], "-c");
-        assert_eq!(args[2], "-c");
-        for arg in [&args[1], &args[3]] {
-            assert!(!arg.contains('"') && !arg.contains(' '), "{arg}");
-        }
+        assert!(
+            !args[1].contains('"') && !args[1].contains(' '),
+            "{}",
+            args[1]
+        );
+        // Codex up to 0.165 warns about it at every start.
+        assert!(!args.iter().any(|arg| arg.contains("log_sse_deltas")));
         let (key, value) = args[1].split_once('=').unwrap();
         assert_eq!(key, "otel.exporter");
         let parsed: toml::Table = toml::from_str(&format!("value = {value}")).unwrap();

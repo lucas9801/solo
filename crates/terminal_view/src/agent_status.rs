@@ -106,6 +106,9 @@ pub(crate) struct AgentActivity {
     in_turn: bool,
     /// The name the agent gave in its reports.
     reported_agent: Option<String>,
+    /// SOLO: The session id the agent gave in its reports, as it gave it
+    /// (Codex's is its telemetry's `conversation.id`).
+    reported_session: Option<String>,
     /// Where the agent said it works, in its reports.
     reported_directory: Option<PathBuf>,
     /// Whether the agent finished a turn you haven't looked at since.
@@ -486,6 +489,9 @@ impl TerminalView {
         if hook.agent.is_some() {
             activity.reported_agent = hook.agent.clone();
         }
+        if hook.raw_session_id.is_some() {
+            activity.reported_session = hook.raw_session_id.clone();
+        }
         if hook.working_directory.is_some() {
             activity.reported_directory = hook.working_directory.clone();
         }
@@ -507,6 +513,18 @@ impl TerminalView {
         {
             self.notify_agent_needs_input(window, cx);
         }
+    }
+
+    /// SOLO: The Codex session running in the terminal, as its hooks
+    /// reported it: its id is its telemetry's `conversation.id`.
+    pub(crate) fn reported_codex_session(&self) -> Option<String> {
+        let activity = &self.agent_activity;
+        activity
+            .reported_agent
+            .as_deref()
+            .is_some_and(|agent| agent.eq_ignore_ascii_case("codex"))
+            .then(|| activity.reported_session.clone())
+            .flatten()
     }
 
     /// The terminal's title changed, which agents use to say what they're
@@ -535,6 +553,7 @@ impl TerminalView {
             // Reports are about the agent that sent them; the next one starts afresh.
             self.agent_activity.hook = None;
             self.agent_activity.reported_agent = None;
+            self.agent_activity.reported_session = None;
             self.agent_activity.reported_directory = None;
         }
         let previous = self
@@ -760,6 +779,7 @@ impl TerminalView {
                         {
                             activity.hook = None;
                             activity.reported_agent = None;
+                            activity.reported_session = None;
                             activity.reported_directory = None;
                         }
                         activity.screen = ScreenReading::default();
