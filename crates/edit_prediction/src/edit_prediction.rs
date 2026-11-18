@@ -1041,7 +1041,7 @@ impl EditPredictionStore {
             }
         });
 
-        let credentials_provider = zed_credentials_provider::global(cx);
+        let credentials_provider = solo_credentials_provider::global(cx);
 
         let this = Self {
             projects: HashMap::default(),
@@ -1073,10 +1073,10 @@ impl EditPredictionStore {
     }
 
     fn zeta2_raw_config_from_env() -> Option<Zeta2RawConfig> {
-        let version_str = env::var("ZED_ZETA_FORMAT").ok()?;
+        let version_str = env::var("SOLO_ZETA_FORMAT").ok()?;
         let format = ZetaFormat::parse(&version_str).ok()?;
-        let model_id = env::var("ZED_ZETA_MODEL").ok();
-        let environment = env::var("ZED_ZETA_ENVIRONMENT").ok();
+        let model_id = env::var("SOLO_ZETA_MODEL").ok();
+        let environment = env::var("SOLO_ZETA_ENVIRONMENT").ok();
         Some(Zeta2RawConfig {
             model_id,
             environment,
@@ -3649,7 +3649,7 @@ fn show_free_plan_edit_predictions_ended_notice_once(user_store: &Entity<UserSto
 pub fn init(cx: &mut App) {
     cx.observe_new(move |workspace: &mut Workspace, _, _cx| {
         workspace.register_action(
-            move |workspace, _: &zed_actions::OpenZedPredictOnboarding, window, cx| {
+            move |workspace, _: &solo_actions::OpenZedPredictOnboarding, window, cx| {
                 ZedPredictModal::toggle(
                     workspace,
                     workspace.user_store().clone(),

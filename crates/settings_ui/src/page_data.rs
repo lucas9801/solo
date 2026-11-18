@@ -1,7 +1,7 @@
 use gpui::{Action as _, App};
 use itertools::Itertools as _;
 use settings::{
-    EditPredictionDataCollectionChoice, LanguageSettingsContent, SemanticTokens, SettingsContent,
+    LanguageSettingsContent, SemanticTokens, SettingsContent,
 };
 use std::sync::{Arc, OnceLock};
 use strum::{EnumMessage, IntoDiscriminant as _, VariantArray};
@@ -1691,7 +1691,7 @@ fn keymap_page() -> SettingsPage {
                     original_window
                         .update(cx, |_workspace, original_window, cx| {
                             original_window
-                                .dispatch_action(zed_actions::OpenKeymap.boxed_clone(), cx);
+                                .dispatch_action(solo_actions::OpenKeymap.boxed_clone(), cx);
                             original_window.activate_window();
                         })
                         .ok();
@@ -8914,7 +8914,7 @@ fn ai_page(cx: &App) -> SettingsPage {
             SettingsPageItem::SubPageLink(SubPageLink {
                 title: "Skills".into(),
                 r#type: Default::default(),
-                json_path: Some(zed_actions::AGENT_SKILLS_SETTINGS_PATH),
+                json_path: Some(solo_actions::AGENT_SKILLS_SETTINGS_PATH),
                 description: Some("View and manage agent skills installed globally or in project worktrees.".into()),
                 search_aliases: &["agent skill", "agent skills", "custom instructions", "skill", "skills"],
                 in_json: false,
@@ -8924,7 +8924,7 @@ fn ai_page(cx: &App) -> SettingsPage {
             SettingsPageItem::SubPageLink(SubPageLink {
                 title: "Sandbox".into(),
                 r#type: Default::default(),
-                json_path: Some(zed_actions::AGENT_SANDBOX_SETTINGS_PATH),
+                json_path: Some(solo_actions::AGENT_SANDBOX_SETTINGS_PATH),
                 description: Some(
                     "Review and change the elevated terminal sandbox permissions that are always allowed without prompting."
                         .into(),
@@ -11361,42 +11361,6 @@ fn edit_prediction_language_settings_section() -> Vec<SettingsPageItem> {
             in_json: false,
             files: USER,
             render: render_edit_prediction_setup_page,
-        }),
-        SettingsPageItem::SettingItem(SettingItem {
-            title: "Data Collection",
-            description: "Controls whether Zed may collect training data when using Zed's Edit Predictions. Data is only collected for files in projects detected as open source. The default value uses the preference previously set via the status-bar toggle, or false if no preference has been stored.",
-            field: Box::new(SettingField {
-                organization_override: Some(|org_settings| {
-                    const DATA_COLLECTION_DISABLED: EditPredictionDataCollectionChoice =
-                        EditPredictionDataCollectionChoice::No;
-
-                    if !org_settings.edit_prediction.is_feedback_enabled {
-                        Some(&DATA_COLLECTION_DISABLED)
-                    } else {
-                        None
-                    }
-                }),
-                json_path: Some("edit_predictions.allow_data_collection"),
-                pick: |settings_content| {
-                    settings_content
-                        .project
-                        .all_languages
-                        .edit_predictions
-                        .as_ref()?
-                        .allow_data_collection
-                        .as_ref()
-                },
-                write: |settings_content, value, _app| {
-                    settings_content
-                        .project
-                        .all_languages
-                        .edit_predictions
-                        .get_or_insert_default()
-                        .allow_data_collection = value;
-                },
-            }),
-            metadata: None,
-            files: USER,
         }),
         SettingsPageItem::SettingItem(SettingItem {
             title: "Show Edit Predictions",

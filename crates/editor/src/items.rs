@@ -35,6 +35,9 @@ use project::{
 use rope::TextSummary;
 use rpc::proto::{self, update_view};
 use settings::Settings;
+use solo_actions::preview::{
+    markdown::OpenPreview as OpenMarkdownPreview, svg::OpenPreview as OpenSvgPreview,
+};
 use std::{
     any::{Any, TypeId},
     borrow::Cow,
@@ -66,9 +69,6 @@ use workspace::{
     Pane, TabBarSettings, WorkspaceSettings,
     item::{FollowEvent, ProjectItemKind},
     searchable::SearchOptions,
-};
-use zed_actions::preview::{
-    markdown::OpenPreview as OpenMarkdownPreview, svg::OpenPreview as OpenSvgPreview,
 };
 
 pub const MAX_TAB_TITLE_LEN: usize = 24;

@@ -24,7 +24,7 @@
 #ifndef OutputDir
   #define OutputDir "..\dist"
 #endif
-#define ResourcesDir "..\crates\zed\resources\windows"
+#define ResourcesDir "..\crates\solo\resources\windows"
 
 [Setup]
 AppId={{7712B0F9-D2CA-4827-9E8F-08B7B0D99EEC}

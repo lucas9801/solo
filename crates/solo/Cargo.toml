@@ -1,11 +1,11 @@
 [package]
-description = "The fast, collaborative code editor."
+description = "A code editor for AI coding agents: they work in real terminals, and the editor opens beside them."
 edition.workspace = true
-name = "zed"
+name = "solo"
 version = "2.5.1"
 publish.workspace = true
 license = "GPL-3.0-or-later"
-authors = ["Zed Team <hi@zed.dev>"]
+authors = ["lucas9801"]
 default-run = "solo"
 
 [lints]
@@ -13,7 +13,7 @@ workspace = true
 
 [features]
 tracy = ["ztracing/tracy"]
-# LEAK_BACKTRACE=1 cargo run --features zed/track-project-leak --profile release-fast
+# LEAK_BACKTRACE=1 cargo run --features solo/track-project-leak --profile release-fast
 track-project-leak = ["gpui/leak-detection"]
 test-support = [
     "gpui/test-support",
@@ -59,7 +59,7 @@ name = "solo"
 path = "src/main.rs"
 
 [[bin]]
-name = "zed_visual_test_runner"
+name = "solo_visual_test_runner"
 path = "src/visual_test_runner.rs"
 required-features = ["visual-tests"]
 
@@ -226,9 +226,9 @@ watch.workspace = true
 web_search.workspace = true
 which_key.workspace = true
 workspace.workspace = true
-zed_actions.workspace = true
-zed_credentials_provider.workspace = true
-zed_env_vars.workspace = true
+solo_actions.workspace = true
+solo_credentials_provider.workspace = true
+solo_env_vars.workspace = true
 zlog.workspace = true
 zlog_settings.workspace = true
 ztracing.workspace = true

@@ -4,13 +4,13 @@ use gpui::{
     ClipboardItem, CursorStyle, EventEmitter, FocusHandle, Focusable, HighlightStyle, MouseButton,
     MouseDownEvent, MouseMoveEvent, Pixels, Point, StyledText, TextLayout, actions,
 };
+use solo_actions::workspace::OpenWithSystem;
 use theme::ActiveTheme as _;
 use ui::{
     App, Button, ButtonCommon, ButtonStyle, Clickable, Context, FluentBuilder, InteractiveElement,
     KeyBinding, Label, LabelCommon, LabelSize, ParentElement, Render, SharedString, Styled as _,
     StyledTypography as _, TintColor, Window, div, h_flex, v_flex,
 };
-use zed_actions::workspace::OpenWithSystem;
 
 use crate::Item;
 

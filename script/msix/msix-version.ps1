@@ -3,7 +3,7 @@
 #
 # An MSIX version has four parts, each 0-65535, and the Microsoft Store wants
 # the last one to be 0 (it's reserved for the Store). Solo's version x.y.z
-# (crates/zed/Cargo.toml, also each exe's product version) becomes x.y.z.0.
+# (crates/solo/Cargo.toml, also each exe's product version) becomes x.y.z.0.
 
 # Solo's version as an MSIX version: "2.3.0" -> "2.3.0.0". Build metadata
 # ("+stable.12") is dropped. A prerelease ("2.4.0-beta.1") has no MSIX

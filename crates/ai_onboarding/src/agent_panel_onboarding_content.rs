@@ -89,7 +89,7 @@ impl AgentPanelOnboarding {
                     .full_width()
                     .style(ButtonStyle::Tinted(ui::TintColor::Accent))
                     .on_click(move |_, window, cx| {
-                        window.dispatch_action(zed_actions::agent::OpenSettings.boxed_clone(), cx);
+                        window.dispatch_action(solo_actions::agent::OpenSettings.boxed_clone(), cx);
                     }),
             )
             .child(

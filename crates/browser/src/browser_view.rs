@@ -24,7 +24,7 @@ use workspace::{
     item::{Item, ItemEvent, SerializableItem, TabContentParams},
 };
 
-use zed_actions::agent_terminal::{PageComment, SendPageCommentsToAgent};
+use solo_actions::agent_terminal::{PageComment, SendPageCommentsToAgent};
 
 use crate::{
     address::{display_address, normalize_address},

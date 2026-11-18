@@ -7,7 +7,7 @@ fn main() {
     {
         println!("cargo:rerun-if-env-changed=RELEASE_CHANNEL");
         println!("cargo:rerun-if-env-changed=GITHUB_RUN_NUMBER");
-        println!("cargo:rerun-if-env-changed=ZED_COMMIT_SHA");
+        println!("cargo:rerun-if-env-changed=SOLO_COMMIT_SHA");
 
         windows_resources::compile_with_description(false, Some("Solo terminal host"))
             .expect("failed to compile Windows resources");

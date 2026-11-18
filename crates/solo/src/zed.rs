@@ -97,17 +97,17 @@ use uuid::Uuid;
 use vim_mode_setting::VimModeSetting;
 use workspace::notifications::{NotificationId, dismiss_app_notification, show_app_notification};
 
+use solo_actions::{
+    About, OpenBrowser, OpenDocs, OpenProjectTasks, OpenServerSettings, OpenSettingsFile,
+    OpenZedUrl, Quit,
+};
+use workspace::Pane;
 use workspace::{
-    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Panel, Toast, Workspace,
-    WorkspaceSettings, create_and_open_local_file,
-    notifications::simple_message_notification::MessageNotification, open_new,
+    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Panel, Workspace, WorkspaceSettings,
+    create_and_open_local_file, notifications::simple_message_notification::MessageNotification,
+    open_new,
 };
 use workspace::{CloseProject, CloseWindow, RestoreBanner, with_active_or_new_workspace};
-use workspace::{Pane, notifications::DetachAndPromptErr};
-use zed_actions::{
-    About, OpenBrowser, OpenDocs, OpenProjectTasks, OpenServerSettings,
-    OpenSettingsFile, OpenZedUrl, Quit,
-};
 
 pub struct CrashHandler(pub Arc<crashes::Client>);
 
@@ -230,7 +230,7 @@ pub fn init(cx: &mut App) {
         });
     }
 
-    cx.on_action(|_: &zed_actions::OpenLicenses, cx| {
+    cx.on_action(|_: &solo_actions::OpenLicenses, cx| {
         with_active_or_new_workspace(cx, |workspace, window, cx| {
             open_bundled_file(
                 workspace,
@@ -242,7 +242,7 @@ pub fn init(cx: &mut App) {
             );
         });
     })
-    .on_action(|&zed_actions::OpenKeymapFile, cx| {
+    .on_action(|&solo_actions::OpenKeymapFile, cx| {
         with_active_or_new_workspace(cx, |_, window, cx| {
             open_settings_file(
                 paths::keymap_file(),
@@ -306,7 +306,7 @@ pub fn init(cx: &mut App) {
             );
         });
     })
-    .on_action(|_: &zed_actions::OpenDefaultKeymap, cx| {
+    .on_action(|_: &solo_actions::OpenDefaultKeymap, cx| {
         with_active_or_new_workspace(cx, |workspace, window, cx| {
             open_bundled_file(
                 workspace,
@@ -354,7 +354,7 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
             .find(|display| display.uuid().ok() == Some(uuid))
     });
     let app_id = ReleaseChannel::global(cx).app_id();
-    let window_decorations = match std::env::var("ZED_WINDOW_DECORATIONS") {
+    let window_decorations = match std::env::var("SOLO_WINDOW_DECORATIONS") {
         Ok(val) if val == "server" => gpui::WindowDecorations::Server,
         Ok(val) if val == "client" => gpui::WindowDecorations::Client,
         _ => match WorkspaceSettings::get_global(cx).window_decorations {
@@ -712,7 +712,7 @@ fn show_software_emulation_warning_if_needed(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    if specs.is_software_emulated && std::env::var("ZED_ALLOW_EMULATED_GPU").is_err() {
+    if specs.is_software_emulated && std::env::var("SOLO_ALLOW_EMULATED_GPU").is_err() {
         let graphics_api = if cfg!(target_os = "windows") {
             "DirectX"
         } else {
@@ -727,7 +727,7 @@ fn show_software_emulation_warning_if_needed(
             will result in awful performance.
 
             For troubleshooting see: {}
-            Set ZED_ALLOW_EMULATED_GPU=1 env var to permanently override.
+            Set SOLO_ALLOW_EMULATED_GPU=1 env var to permanently override.
             "#},
             graphics_api, specs.device_name, docs_url
         );
@@ -1018,11 +1018,11 @@ fn register_actions(
                 window.toggle_fullscreen();
             }
         })
-        .register_action(|_, _: &zed_actions::dev::ToggleFpsOverlay, window, _| {
+        .register_action(|_, _: &solo_actions::dev::ToggleFpsOverlay, window, _| {
             window.cycle_debug_frame_overlay_mode();
         })
         .register_action(
-            |_, _: &zed_actions::dev::ResetFrameOverlayStats, window, _| {
+            |_, _: &solo_actions::dev::ResetFrameOverlayStats, window, _| {
                 window.reset_debug_frame_overlay_stats();
             },
         )
@@ -1092,7 +1092,7 @@ fn register_actions(
                 cx,
             );
         })
-        .register_action(|workspace, action: &zed_actions::OpenRemote, window, cx| {
+        .register_action(|workspace, action: &solo_actions::OpenRemote, window, cx| {
             if !action.from_existing_connection {
                 cx.propagate();
                 return;
@@ -1142,7 +1142,7 @@ fn register_actions(
         })
         .register_action({
             let fs = app_state.fs.clone();
-            move |_, action: &zed_actions::IncreaseUiFontSize, _window, cx| {
+            move |_, action: &solo_actions::IncreaseUiFontSize, _window, cx| {
                 if action.persist {
                     update_settings_file(fs.clone(), cx, move |settings, cx| {
                         let ui_font_size = ThemeSettings::get_global(cx).ui_font_size(cx) + px(1.0);
@@ -1158,7 +1158,7 @@ fn register_actions(
         })
         .register_action({
             let fs = app_state.fs.clone();
-            move |_, action: &zed_actions::DecreaseUiFontSize, _window, cx| {
+            move |_, action: &solo_actions::DecreaseUiFontSize, _window, cx| {
                 if action.persist {
                     update_settings_file(fs.clone(), cx, move |settings, cx| {
                         let ui_font_size = ThemeSettings::get_global(cx).ui_font_size(cx) - px(1.0);
@@ -1174,7 +1174,7 @@ fn register_actions(
         })
         .register_action({
             let fs = app_state.fs.clone();
-            move |_, action: &zed_actions::ResetUiFontSize, _window, cx| {
+            move |_, action: &solo_actions::ResetUiFontSize, _window, cx| {
                 if action.persist {
                     update_settings_file(fs.clone(), cx, move |settings, _| {
                         settings.theme.ui_font_size = None;
@@ -1186,7 +1186,7 @@ fn register_actions(
         })
         .register_action({
             let fs = app_state.fs.clone();
-            move |_, action: &zed_actions::IncreaseBufferFontSize, _window, cx| {
+            move |_, action: &solo_actions::IncreaseBufferFontSize, _window, cx| {
                 if action.persist {
                     update_settings_file(fs.clone(), cx, move |settings, cx| {
                         let buffer_font_size =
@@ -1203,7 +1203,7 @@ fn register_actions(
         })
         .register_action({
             let fs = app_state.fs.clone();
-            move |_, action: &zed_actions::DecreaseBufferFontSize, _window, cx| {
+            move |_, action: &solo_actions::DecreaseBufferFontSize, _window, cx| {
                 if action.persist {
                     update_settings_file(fs.clone(), cx, move |settings, cx| {
                         let buffer_font_size =
@@ -1220,7 +1220,7 @@ fn register_actions(
         })
         .register_action({
             let fs = app_state.fs.clone();
-            move |_, action: &zed_actions::ResetBufferFontSize, _window, cx| {
+            move |_, action: &solo_actions::ResetBufferFontSize, _window, cx| {
                 if action.persist {
                     update_settings_file(fs.clone(), cx, move |settings, _| {
                         settings.theme.buffer_font_size = None;
@@ -1232,7 +1232,7 @@ fn register_actions(
         })
         .register_action({
             let fs = app_state.fs.clone();
-            move |_, action: &zed_actions::ResetAllZoom, _window, cx| {
+            move |_, action: &solo_actions::ResetAllZoom, _window, cx| {
                 if action.persist {
                     update_settings_file(fs.clone(), cx, move |settings, _| {
                         settings.theme.ui_font_size = None;
@@ -1248,39 +1248,15 @@ fn register_actions(
                 }
             }
         })
-        .register_action(|_, _: &install_cli::RegisterZedScheme, window, cx| {
-            cx.spawn_in(window, async move |workspace, cx| {
-                install_cli::register_zed_scheme(cx).await?;
-                workspace.update_in(cx, |workspace, _, cx| {
-                    struct RegisterZedScheme;
-
-                    workspace.show_toast(
-                        Toast::new(
-                            NotificationId::unique::<RegisterZedScheme>(),
-                            format!(
-                                "zed:// links will now open in {}.",
-                                ReleaseChannel::global(cx).display_name()
-                            ),
-                        ),
-                        cx,
-                    )
-                })?;
-                Ok(())
-            })
-            .detach_and_prompt_err(
-                "Error registering zed:// scheme",
-                window,
-                cx,
-                |_, _, _| None,
-            );
-        })
+        // SOLO: no command to register the upstream URL scheme; Solo leaves
+        // it to the upstream app (see the user guide).
         .register_action(open_project_settings_file)
         .register_action(open_project_tasks_file)
         .register_action(open_worktree_setup_tasks_file)
         .register_action(open_project_debug_tasks_file)
         .register_action(
             |workspace: &mut Workspace,
-             _: &zed_actions::project_panel::ToggleFocus,
+             _: &solo_actions::project_panel::ToggleFocus,
              window: &mut Window,
              cx: &mut Context<Workspace>| {
                 workspace.toggle_panel_focus::<ProjectPanel>(window, cx);
@@ -2096,7 +2072,7 @@ fn notify_settings_errors(result: settings::SettingsParseResult, is_user: bool, 
                             .primary_icon(IconName::Settings)
                             .primary_on_click(|window, cx| {
                                 window.dispatch_action(
-                                    zed_actions::OpenSettingsFile.boxed_clone(),
+                                    solo_actions::OpenSettingsFile.boxed_clone(),
                                     cx,
                                 );
                                 cx.emit(DismissEvent);
@@ -2131,7 +2107,8 @@ fn notify_settings_errors(result: settings::SettingsParseResult, is_user: bool, 
                         .primary_message("Open Settings File")
                         .primary_icon(IconName::Settings)
                         .primary_on_click(|window, cx| {
-                            window.dispatch_action(zed_actions::OpenSettingsFile.boxed_clone(), cx);
+                            window
+                                .dispatch_action(solo_actions::OpenSettingsFile.boxed_clone(), cx);
                             cx.emit(DismissEvent);
                         })
                     })
@@ -2418,7 +2395,7 @@ fn show_keymap_file_json_error(
                 .primary_message("Open Keymap File")
                 .primary_icon(IconName::Settings)
                 .primary_on_click(|window, cx| {
-                    window.dispatch_action(zed_actions::OpenKeymapFile.boxed_clone(), cx);
+                    window.dispatch_action(solo_actions::OpenKeymapFile.boxed_clone(), cx);
                     cx.emit(DismissEvent);
                 })
         })
@@ -2435,7 +2412,7 @@ fn show_keymap_file_load_error(
         error_message,
         "Open Keymap File".into(),
         |window, cx| {
-            window.dispatch_action(zed_actions::OpenKeymapFile.boxed_clone(), cx);
+            window.dispatch_action(solo_actions::OpenKeymapFile.boxed_clone(), cx);
             cx.emit(DismissEvent);
         },
         cx,
@@ -2668,7 +2645,7 @@ fn open_project_tasks_file(
 
 fn open_worktree_setup_tasks_file(
     workspace: &mut Workspace,
-    _: &zed_actions::OpenWorktreeSetupTasks,
+    _: &solo_actions::OpenWorktreeSetupTasks,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
@@ -2717,7 +2694,7 @@ fn open_worktree_setup_tasks_file(
 
 fn open_project_debug_tasks_file(
     workspace: &mut Workspace,
-    _: &zed_actions::OpenProjectDebugTasks,
+    _: &solo_actions::OpenProjectDebugTasks,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
@@ -3353,7 +3330,7 @@ mod tests {
                     }));
                 });
                 window.dispatch_action(
-                    Box::new(zed_actions::OpenRemote {
+                    Box::new(solo_actions::OpenRemote {
                         from_existing_connection: true,
                         create_new_window: Some(false),
                     }),
@@ -6410,7 +6387,7 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(actions_without_namespace, Vec::<&str>::new());
 
-            let expected_namespaces = vec![
+            let mut expected_namespaces = vec![
                 "action",
                 "activity_indicator",
                 "agent",
@@ -6427,7 +6404,6 @@ mod tests {
                 "browser",
                 "buffer_search",
                 "call_hierarchy",
-                "cli",
                 "collab",
                 "command_palette",
                 "console",
@@ -6465,6 +6441,7 @@ mod tests {
                 "markdown",
                 "menu",
                 "multi_workspace",
+                "network",
                 "new_process_modal",
                 "notebook",
                 "onboarding",
@@ -6509,6 +6486,11 @@ mod tests {
                 "zed_predict_onboarding",
                 "zeta",
             ];
+            // SOLO: on Windows nothing registers a `cli` action any more (the
+            // CLI install action is for macOS and Linux).
+            if cfg!(not(target_os = "windows")) {
+                expected_namespaces.push("cli");
+            }
             assert_eq!(
                 all_namespaces,
                 expected_namespaces
@@ -6696,7 +6678,7 @@ mod tests {
             project_panel::init(cx);
             outline_panel::init(cx);
             terminal_view::init(cx);
-            let credentials_provider = zed_credentials_provider::global(cx);
+            let credentials_provider = solo_credentials_provider::global(cx);
             copilot_chat::init(
                 app_state.client.http_client(),
                 credentials_provider,
@@ -7045,7 +7027,7 @@ mod tests {
         // User-defined bindings to AI actions should also be filtered.
         let user_binding = KeyBinding::new(
             "ctrl-enter",
-            zed_actions::assistant::InlineAssist { prompt: None },
+            solo_actions::assistant::InlineAssist { prompt: None },
             None,
         );
         cx.update(|cx| reload_keymaps(cx, vec![user_binding]));

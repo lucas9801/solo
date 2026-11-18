@@ -61,7 +61,7 @@ util.workspace = true
 warp-command-signatures.workspace = true
 which.workspace = true
 workspace.workspace = true
-zed_actions.workspace = true
+solo_actions.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true

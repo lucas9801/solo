@@ -73,14 +73,14 @@ jobs:
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
-          $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
-          if ("v$version" -ne $env:REF_NAME) { throw "Tag $env:REF_NAME doesn't match crates/zed version $version" }
+          $version = (Select-String -Path crates/solo/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:REF_NAME) { throw "Tag $env:REF_NAME doesn't match crates/solo version $version" }
 
       # Before building, so a release doesn't fail on them hours later.
       - name: Check the release notes
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $version = (Select-String -Path crates/solo/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           $notes = "docs/release-notes/$version.md"
           if (-not (Test-Path $notes)) { throw "$notes is missing; script/release-solo.ps1 writes it" }
           ./script/check-solo-release-notes.ps1 -Path $notes
@@ -117,7 +117,7 @@ jobs:
       # comments (crates/windows_resources).
       - name: Check the exes' version information
         run: |
-          $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $version = (Select-String -Path crates/solo/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           $failed = $false
           foreach ($exe in "solo.exe", "solo-agent-hook.exe", "solo-update-helper.exe", "solo-terminal-host.exe", "solo-cli.exe") {
             $info = (Get-Item "dist/Solo/$exe").VersionInfo
@@ -238,15 +238,13 @@ jobs:
       # installer adds its menu to the registry), and nothing else.
       - name: Check the built files
         run: |
+          # conpty.dll and OpenConsole.exe too: script/package-solo.ps1 doesn't stage without them.
           $expected = @("solo.exe", "solo-cli.exe", "solo-agent-hook.exe", "solo-terminal-host.exe", "solo-update-helper.exe",
-            "LICENSE-GPL", "licenses.md", "THIRD-PARTY-VENDORED.md", "LICENSE-command-signatures.md")
-          # Optional, as in script/package-solo-msix.ps1: without them terminals use the system's ConPTY.
-          $optional = @("conpty.dll", "OpenConsole.exe")
+            "conpty.dll", "OpenConsole.exe", "LICENSE-GPL", "licenses.md", "THIRD-PARTY-VENDORED.md", "LICENSE-command-signatures.md")
           $dir = (Resolve-Path dist/Solo).Path
           $actual = @(Get-ChildItem -Recurse -File $dir | ForEach-Object { $_.FullName.Substring($dir.Length + 1) })
           $missing = @($expected | Where-Object { $actual -notcontains $_ })
-          $extra = @($actual | Where-Object { $expected -notcontains $_ -and $optional -notcontains $_ })
-          foreach ($file in $optional) { if ($actual -notcontains $file) { Write-Warning "$file isn't in the built files; terminals use the system's ConPTY" } }
+          $extra = @($actual | Where-Object { $expected -notcontains $_ })
           if ($missing) { throw "Missing from the built files: $($missing -join ', ')" }
           if ($extra) { throw "Not expected in the built files (add them here, and to script/package-solo-msix.ps1 if the Store package needs them too): $($extra -join ', ')" }
 
@@ -264,7 +262,7 @@ jobs:
       - name: Package the installer
         run: |
           ./script/package-solo.ps1 -OutDir dist -Step Installer -Iscc $env:ISCC_PATH
-          $version = (Select-String -Path crates/zed/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $version = (Select-String -Path crates/solo/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           $setup = Get-Item "dist/Solo-Setup-$version.exe"
           Write-Host "$($setup.Name): $($setup.Length) bytes, SHA-256 $((Get-FileHash $setup.FullName -Algorithm SHA256).Hash)"
           "SOLO_VERSION=$version" >> $env:GITHUB_ENV
@@ -347,12 +345,12 @@ jobs:
             *static*) ;;
             *) echo "::error::remote_server isn't statically linked"; exit 1 ;;
           esac
-          version=$(tr -d '\r' < crates/zed/Cargo.toml | sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1)
-          channel=$(cat crates/zed/RELEASE_CHANNEL)
+          version=$(tr -d '\r' < crates/solo/Cargo.toml | sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1)
+          channel=$(cat crates/solo/RELEASE_CHANNEL)
           reported=$("$binary" version)
           echo "remote_server version: $reported (Solo $version, $channel)"
           if [ -z "$version" ]; then
-            echo "::error::Couldn't read Solo's version from crates/zed/Cargo.toml"
+            echo "::error::Couldn't read Solo's version from crates/solo/Cargo.toml"
             exit 1
           fi
           if [ "$channel" = "stable" ] && [ "$reported" != "$version" ]; then

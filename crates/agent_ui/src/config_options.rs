@@ -13,13 +13,13 @@ use gpui::{
 use picker::popover_menu::PickerPopoverMenu;
 use picker::{Picker, PickerDelegate};
 use settings::{AgentConfigOptionValue, SettingsStore};
+use solo_actions::agent::ToggleModelSelector;
 use ui::{
     ElevationIndex, IconButton, KeyBinding, ListItem, ListItemSpacing, PopoverMenuHandle, Switch,
     SwitchLabelPosition, ToggleState, Tooltip, prelude::*,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use util::ResultExt as _;
-use zed_actions::agent::ToggleModelSelector;
 
 use crate::model_search;
 use crate::ui::documentation_aside_side;

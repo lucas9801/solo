@@ -83,7 +83,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn build_application() -> Application {
     let platform = gpui_platform::current_platform(false);
-    if std::env::var("ZED_EXPERIMENTAL_A11Y").as_deref() == Ok("1") {
+    if std::env::var("SOLO_EXPERIMENTAL_A11Y").as_deref() == Ok("1") {
         Application::with_platform(platform)
     } else {
         Application::new_inaccessible(platform)
@@ -269,7 +269,7 @@ fn main() {
         Ok(path) => askpass::set_askpass_program(path),
         Err(err) => {
             eprintln!("Error: {}", err);
-            if std::option_env!("ZED_BUNDLE").is_some() {
+            if std::option_env!("SOLO_BUNDLE").is_some() {
                 process::exit(1);
             }
         }
@@ -302,9 +302,9 @@ fn main() {
     #[cfg(unix)]
     util::increase_open_file_limit().log_err();
 
-    let version = option_env!("ZED_BUILD_ID");
+    let version = option_env!("SOLO_BUILD_ID");
     let app_commit_sha =
-        option_env!("ZED_COMMIT_SHA").map(|commit_sha| AppCommitSha::new(commit_sha.to_string()));
+        option_env!("SOLO_COMMIT_SHA").map(|commit_sha| AppCommitSha::new(commit_sha.to_string()));
     let app_version = AppVersion::load(env!("CARGO_PKG_VERSION"), version, app_commit_sha.clone());
 
     if args.system_specs {
@@ -355,7 +355,7 @@ fn main() {
 
     let (open_listener, mut open_rx) = OpenListener::new();
 
-    let failed_single_instance_check = if *zed_env_vars::ZED_STATELESS
+    let failed_single_instance_check = if *solo_env_vars::SOLO_STATELESS
         || *release_channel::RELEASE_CHANNEL == ReleaseChannel::Dev
     {
         false
@@ -406,7 +406,7 @@ fn main() {
                         app_version.patch,
                     )
                     .to_string(),
-                    binary: "zed".to_string(),
+                    binary: "solo".to_string(),
                     release_channel: release_channel::RELEASE_CHANNEL_NAME.clone(),
                     commit_sha: app_commit_sha
                         .as_ref()
@@ -430,7 +430,7 @@ fn main() {
 
     let git_hosting_provider_registry = Arc::new(GitHostingProviderRegistry::new());
     let git_binary_path =
-        if cfg!(target_os = "macos") && option_env!("ZED_BUNDLE").as_deref() == Some("true") {
+        if cfg!(target_os = "macos") && option_env!("SOLO_BUNDLE").as_deref() == Some("true") {
             app.path_for_auxiliary_executable("git")
                 .context("could not find git binary path")
                 .log_err()
@@ -498,7 +498,7 @@ fn main() {
         };
         trusted_worktrees::init(db_trusted_paths, cx);
         menu::init();
-        zed_actions::init();
+        solo_actions::init();
 
         release_channel::init(app_version, cx);
         // SOLO: system notifications (finished commands, agents) need an app
@@ -706,7 +706,7 @@ fn main() {
                 .enterprise_uri
                 .clone(),
         };
-        let credentials_provider = zed_credentials_provider::global(cx);
+        let credentials_provider = solo_credentials_provider::global(cx);
         copilot_chat::init(
             app_state.client.http_client(),
             credentials_provider,
@@ -1101,7 +1101,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                         workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
                     workspace.update(cx, |_, window, cx| {
                         window.dispatch_action(
-                            Box::new(zed_actions::Extensions {
+                            Box::new(solo_actions::Extensions {
                                 category_filter: None,
                                 id: Some(extension_id),
                             }),
@@ -1234,9 +1234,9 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                         workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
 
                     workspace.update(cx, |_, window, cx| match setting_path {
-                        None => window.dispatch_action(Box::new(zed_actions::OpenSettings), cx),
+                        None => window.dispatch_action(Box::new(solo_actions::OpenSettings), cx),
                         Some(setting_path) => window.dispatch_action(
-                            Box::new(zed_actions::OpenSettingsAt {
+                            Box::new(solo_actions::OpenSettingsAt {
                                 path: setting_path,
                                 target: None,
                             }),
@@ -1711,7 +1711,7 @@ fn stdout_is_a_pty() -> bool {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "zed", disable_version_flag = true, max_term_width = 100)]
+#[command(name = "solo", disable_version_flag = true, max_term_width = 100)]
 struct Args {
     /// A sequence of space-separated paths or urls that you want to open.
     ///
