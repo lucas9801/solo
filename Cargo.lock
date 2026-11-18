@@ -1374,6 +1374,7 @@ dependencies = [
  "gpui",
  "http_client",
  "log",
+ "net_guard",
  "parking_lot",
  "paths",
  "raw-window-handle",
@@ -3154,6 +3155,7 @@ dependencies = [
  "language",
  "log",
  "lsp",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "paths",
@@ -3768,6 +3770,7 @@ dependencies = [
  "http_client",
  "language",
  "log",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "paths",
@@ -3809,6 +3812,7 @@ dependencies = [
  "http_client",
  "language",
  "log",
+ "net_guard",
  "node_runtime",
  "paths",
  "serde_json",
@@ -5217,6 +5221,7 @@ dependencies = [
  "log",
  "lsp",
  "moka",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "paths",
@@ -6116,6 +6121,7 @@ dependencies = [
  "markdown",
  "menu",
  "multi_buffer",
+ "net_guard",
  "notifications",
  "picker",
  "pretty_assertions",
@@ -8197,6 +8203,7 @@ dependencies = [
  "language_core",
  "log",
  "lsp",
+ "net_guard",
  "parking_lot",
  "postage",
  "pretty_assertions",
@@ -8488,6 +8495,7 @@ dependencies = [
  "language",
  "log",
  "lsp",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "pet",
@@ -9747,6 +9755,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "net_guard"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures 0.3.34",
+ "http_client",
+ "log",
+ "parking_lot",
+ "util",
+]
+
+[[package]]
+name = "net_guard_ui"
+version = "0.1.0"
+dependencies = [
+ "collections",
+ "fs",
+ "futures 0.3.34",
+ "gpui",
+ "net_guard",
+ "settings",
+ "ui",
+ "util",
+ "workspace",
+ "zed_actions",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9787,6 +9823,7 @@ dependencies = [
  "futures 0.3.34",
  "http_client",
  "log",
+ "net_guard",
  "paths",
  "semver",
  "serde",
@@ -12171,6 +12208,7 @@ dependencies = [
  "log",
  "lsp",
  "markdown",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "path",
@@ -14768,6 +14806,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "solo_ide_tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collections",
+ "futures 0.3.34",
+ "gpui",
+ "language",
+ "log",
+ "lsp",
+ "project",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "settings",
+ "terminal",
+ "text",
+ "tiny_http",
+ "util",
+]
+
+[[package]]
 name = "solo_terminal_host"
 version = "0.1.0"
 dependencies = [
@@ -15631,6 +15691,7 @@ dependencies = [
  "settings",
  "shellexpand",
  "shlex 2.0.1",
+ "solo_ide_tools",
  "task",
  "tasks_ui",
  "tempfile",
@@ -19108,6 +19169,7 @@ dependencies = [
  "log",
  "markdown",
  "menu",
+ "net_guard",
  "node_runtime",
  "parking_lot",
  "postage",
@@ -19574,7 +19636,7 @@ dependencies = [
 
 [[package]]
 name = "zed"
-version = "2.4.1"
+version = "2.5.0"
 dependencies = [
  "acp_thread",
  "acp_tools",
@@ -19666,6 +19728,8 @@ dependencies = [
  "migrator",
  "mimalloc",
  "miniprofiler_ui",
+ "net_guard",
+ "net_guard_ui",
  "nix",
  "node_runtime",
  "notifications",

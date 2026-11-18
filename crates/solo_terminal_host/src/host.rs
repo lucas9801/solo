@@ -370,18 +370,22 @@ fn make_pipe(name: &str, outbound: bool, first: bool) -> io::Result<HANDLE> {
 
 /// Waits for the client of a pipe instance (which may have opened it
 /// already).
-fn connect_pipe(handle: HANDLE) -> io::Result<File> {
+fn connect_pipe(handle: HANDLE) -> io::Result<()> {
     unsafe {
         if ConnectNamedPipe(handle, null_mut()) == 0 && GetLastError() != ERROR_PIPE_CONNECTED {
-            let error = io::Error::last_os_error();
-            CloseHandle(handle);
-            return Err(error);
+            return Err(io::Error::last_os_error());
         }
-        Ok(file(handle))
     }
+    Ok(())
 }
 
-/// One instance of each of the three pipes, made but not yet connected.
+/// One instance of each of the three pipes, for one client at a time.
+///
+/// SOLO: the host keeps these instances for as long as it runs, disconnecting
+/// a client that went and connecting the next to the same ones, so the pipes'
+/// names are never free for another program to take in between (R3 M9).
+/// Disconnecting also ends whatever the host was still reading or writing for
+/// the client that went (R3 L-H3).
 struct Pipes {
     out: HANDLE,
     input: HANDLE,
@@ -409,39 +413,68 @@ impl Pipes {
         })
     }
 
-    /// Waits for the client to open all three, in the order Solo opens them.
-    fn connect(self) -> Option<(File, File, File)> {
-        let close = |handles: &[HANDLE]| {
-            for handle in handles {
-                unsafe { CloseHandle(*handle) };
+    /// Waits for the client to open all three, in the order Solo opens them,
+    /// and returns files for them (of their own, to be closed as wanted).
+    fn connect(&self) -> Option<(File, File, File)> {
+        for handle in [self.out, self.input, self.control] {
+            if connect_pipe(handle).is_err() {
+                self.disconnect();
+                return None;
             }
-        };
-        let Ok(out) = connect_pipe(self.out) else {
-            close(&[self.input, self.control]);
-            return None;
-        };
-        let Ok(input) = connect_pipe(self.input) else {
-            close(&[self.control]);
-            return None;
-        };
-        let control = connect_pipe(self.control).ok()?;
-        Some((out, input, control))
+        }
+        let files = (
+            duplicate(self.out).ok()?,
+            duplicate(self.input).ok()?,
+            duplicate(self.control).ok()?,
+        );
+        Some(files)
     }
 
     /// [`Pipes::connect`], giving up after `timeout`. The connecting thread
     /// is left waiting then, so only for a host about to end.
-    fn connect_within(self, timeout: Duration) -> Option<(File, File, File)> {
+    fn connect_within(self: &Arc<Self>, timeout: Duration) -> Option<(File, File, File)> {
         let (sender, receiver) = mpsc::channel();
+        let pipes = self.clone();
         thread::spawn(move || {
-            sender.send(self.connect()).ok();
+            sender.send(pipes.connect()).ok();
         });
         receiver.recv_timeout(timeout).ok().flatten()
     }
+
+    /// Disconnects the client, if any, for the next one to connect: its ends
+    /// close, and so reading or writing them fails.
+    fn disconnect(&self) {
+        for handle in [self.out, self.input, self.control] {
+            unsafe { DisconnectNamedPipe(handle) };
+        }
+    }
 }
 
-// The handles are only pipe instances this process made, used by one thread
-// at a time.
+/// A file of its own for the pipe instance `handle`.
+fn duplicate(handle: HANDLE) -> io::Result<File> {
+    unsafe {
+        let process = GetCurrentProcess();
+        let mut duplicate: HANDLE = null_mut();
+        if DuplicateHandle(
+            process,
+            handle,
+            process,
+            &mut duplicate,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(file(duplicate))
+    }
+}
+
+// The handles are only pipe instances this process made, kept open for as
+// long as it runs.
 unsafe impl Send for Pipes {}
+unsafe impl Sync for Pipes {}
 
 /// How long the host waits for its first client: Solo connects right after
 /// starting it, so a host nobody connects to (Solo crashed or was ended in
@@ -453,7 +486,83 @@ const FIRST_CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
 /// is either in the screen a client gets or sent to it after.
 struct Shared {
     screen: Screen,
-    client: Option<File>,
+    /// SOLO: what's sent to the client goes through a queue to a thread of
+    /// its own, so a client that doesn't read holds up neither the program
+    /// nor the host (R3 L-H3).
+    client: Option<mpsc::SyncSender<Vec<u8>>>,
+}
+
+/// How many pieces of output (up to 64 KB each) wait for a client that
+/// doesn't read before the host disconnects it.
+const CLIENT_QUEUE: usize = 256;
+
+/// Writes what's queued for the client to it, until either goes.
+fn write_to_client(mut out: File, queue: mpsc::Receiver<Vec<u8>>) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        for bytes in queue {
+            if out.write_all(&bytes).is_err() {
+                break;
+            }
+        }
+    })
+}
+
+/// Cancels what `thread` waits for reading or writing (a pipe's other end may
+/// never read or write), again until it ends. A pipe's handles share one file
+/// object, which does one thing at a time: disconnecting the pipe would wait
+/// for that otherwise.
+fn cancel_until_finished<T>(thread: &thread::JoinHandle<T>) {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::System::IO::CancelSynchronousIo;
+    while !thread.is_finished() {
+        unsafe { CancelSynchronousIo(thread.as_raw_handle() as HANDLE) };
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The thread reading the client's control pipe, for the output thread to
+/// stop it reading when the client doesn't read what it's sent.
+struct ControlReader {
+    thread: HANDLE,
+    /// Set while the client is to be let go: the reading is cancelled until
+    /// cleared.
+    stalled: std::sync::atomic::AtomicBool,
+}
+
+// The thread handle is only used to cancel what it reads.
+unsafe impl Send for ControlReader {}
+unsafe impl Sync for ControlReader {}
+
+impl ControlReader {
+    fn current() -> Arc<Self> {
+        let thread = unsafe { OpenThread(THREAD_TERMINATE, 0, GetCurrentThreadId()) };
+        Arc::new(Self {
+            thread,
+            stalled: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// Stops the control thread reading until [`Self::resume`].
+    fn stall(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        use windows_sys::Win32::System::IO::CancelSynchronousIo;
+        if self.thread.is_null() || self.stalled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let this = self.clone();
+        thread::spawn(move || {
+            while this.stalled.load(Ordering::SeqCst) {
+                unsafe { CancelSynchronousIo(this.thread) };
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+    }
+
+    /// Whether it was stalled; it isn't any more.
+    fn resume(&self) -> bool {
+        self.stalled
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// [`make_pipe`], trying again for a few seconds if the pipe can't be made.
@@ -476,7 +585,9 @@ fn exit(log: &Log, code: i32, why: &str) -> ! {
     std::process::exit(code);
 }
 
-fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
+fn serve(spec: Spec, console: Arc<Console>, pipes: Pipes, log: Arc<Log>) {
+    let pipes = Arc::new(pipes);
+    let control_reader = ControlReader::current();
     let shared = Arc::new(Mutex::new(Shared {
         screen: Screen::new(spec.columns, spec.rows),
         client: None,
@@ -485,23 +596,39 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
     // Output, kept and passed on. Reading it never stops, or the program
     // would block on a full console.
     {
-        let (console, shared) = (console.clone(), shared.clone());
+        let (console, shared, control_reader, log) = (
+            console.clone(),
+            shared.clone(),
+            control_reader.clone(),
+            log.clone(),
+        );
         thread::spawn(move || {
             let mut buffer = vec![0u8; 64 * 1024];
             loop {
                 let read = match (&console.output).read(&mut buffer) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
+                    Err(error) => {
+                        log.write(&format!("reading the console's output failed: {error}"));
+                        break;
+                    }
                     Ok(read) => read,
                 };
                 let bytes = &buffer[..read];
                 let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
                 shared.screen.feed(bytes);
-                let failed = shared
+                let sent = shared
                     .client
-                    .as_mut()
-                    .is_some_and(|client| client.write_all(bytes).is_err());
-                if failed {
-                    shared.client = None;
+                    .as_ref()
+                    .map(|client| client.try_send(bytes.to_vec()));
+                match sent {
+                    None | Some(Ok(())) => {}
+                    Some(Err(mpsc::TrySendError::Disconnected(_))) => shared.client = None,
+                    // It stopped reading: it's let go as if it went, and gets
+                    // the screen anew when it connects again.
+                    Some(Err(mpsc::TrySendError::Full(_))) => {
+                        shared.client = None;
+                        control_reader.stall();
+                    }
                 }
             }
         });
@@ -535,22 +662,22 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
             spec.terminal_id.as_deref().unwrap_or("-"),
         )
     };
-    let mut pipes = Some(first);
     // Whether a client said to keep running: then the host waits for the
     // next client, even past one that opened the pipes and went.
     let mut kept = false;
     let mut clients = 0u32;
-    while let Some(next) = pipes.take().or_else(|| Pipes::make(&spec.pipe, false)) {
+    loop {
         // Only the first client is waited for at most so long; after a
         // client said to keep running, the next may come any time.
         let connected = if kept {
-            next.connect()
+            pipes.connect()
         } else {
-            next.connect_within(FIRST_CLIENT_TIMEOUT)
+            pipes.connect_within(FIRST_CLIENT_TIMEOUT)
         };
-        let Some((mut out, input, control)) = connected else {
+        let Some((out, input, control)) = connected else {
             if kept {
                 log.write("a client failed to connect; waiting for the next");
+                thread::sleep(Duration::from_millis(100));
                 continue;
             }
             console.kill();
@@ -567,7 +694,7 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
         // and goes without a word (Solo crashing right away, say) doesn't end
         // what was to keep running.
         let mut keep = kept;
-        let size = {
+        let (size, writer) = {
             let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
             let (columns, rows) = (shared.screen.columns(), shared.screen.rows());
             let screen = shared.screen.snapshot();
@@ -575,13 +702,16 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
                 "client {clients} connected; sending the {columns}x{rows} screen ({} bytes)",
                 screen.len()
             ));
-            if out.write_all(header(columns, rows).as_bytes()).is_ok()
-                && out.write_all(&screen).is_ok()
-                && out.write_all(REPLAY_END).is_ok()
-            {
-                shared.client = Some(out);
+            let (sender, queue) = mpsc::sync_channel(CLIENT_QUEUE);
+            for bytes in [
+                header(columns, rows).into_bytes(),
+                screen,
+                REPLAY_END.to_vec(),
+            ] {
+                sender.try_send(bytes).ok();
             }
-            (columns, rows)
+            shared.client = Some(sender);
+            ((columns, rows), write_to_client(out, queue))
         };
         // Windows' own console repaints the whole screen when resized, also
         // to the size it has, so the client also gets the console's idea of
@@ -645,6 +775,11 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
                 other => break format!("it sent an unknown control byte {other:#04x}"),
             }
         };
+        let gone = if control_reader.resume() {
+            "it stopped reading what it was sent".to_string()
+        } else {
+            gone
+        };
         log.write(&format!(
             "client {clients} gone: {gone}; keep running: {keep}"
         ));
@@ -663,12 +798,14 @@ fn serve(spec: Spec, console: Arc<Console>, first: Pipes, log: Arc<Log>) {
         drop(control);
         shared.lock().unwrap_or_else(|e| e.into_inner()).client = None;
         running::update(|entry| entry.connected = false);
-        forward_input.join().ok();
+        // Writing to it and forwarding its input end even if it neither
+        // reads nor closes its input (R3 L-H3), then the pipe instances are
+        // free for the next client.
+        cancel_until_finished(&writer);
+        cancel_until_finished(&forward_input);
+        pipes.disconnect();
+        log.write("waiting for the next client");
     }
-    // The pipes can't be made (someone else holds the name): end rather than
-    // run on unreachable.
-    console.kill();
-    exit(&log, 4, "couldn't make the pipes for the next client");
 }
 
 #[cfg(test)]
@@ -688,7 +825,7 @@ mod tests {
     #[test]
     fn test_first_client_times_out() {
         let name = unique_pipe_name();
-        let pipes = Pipes::make(&name, true).expect("pipes");
+        let pipes = Arc::new(Pipes::make(&name, true).expect("pipes"));
         let started = std::time::Instant::now();
         assert!(pipes.connect_within(Duration::from_millis(300)).is_none());
         let waited = started.elapsed();
@@ -699,7 +836,7 @@ mod tests {
     #[test]
     fn test_first_client_connects_in_time() {
         let name = unique_pipe_name();
-        let pipes = Pipes::make(&name, true).expect("pipes");
+        let pipes = Arc::new(Pipes::make(&name, true).expect("pipes"));
         let client = thread::spawn(move || {
             let out = std::fs::OpenOptions::new()
                 .read(true)

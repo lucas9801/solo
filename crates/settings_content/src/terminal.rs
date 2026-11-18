@@ -333,6 +333,14 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub codex_hooks: Option<bool>,
+    /// SOLO: Whether Codex's hooks (`codex_hooks`) also report the files each
+    /// `apply_patch` edits, so a turn's review lists only Codex's edits and
+    /// shows other changes made meanwhile apart. Codex waits for the hook
+    /// after every patch; on Windows it starts PowerShell for it, which adds
+    /// about a second to each. Takes effect in new terminals.
+    ///
+    /// Default: false
+    pub codex_edit_hooks: Option<bool>,
     /// Whether GitHub Copilot CLI started in a terminal with shell
     /// integration reports what it's doing through hooks in a plugin Solo
     /// loads for that session with `copilot --plugin-dir`, so its turns can be
@@ -348,6 +356,16 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub opencode_hooks: Option<bool>,
+    /// SOLO: Whether agents started in a terminal with shell integration can
+    /// ask Solo's language servers about the terminal's workspace (find
+    /// symbols, go to definitions, find references, read diagnostics),
+    /// through a read-only MCP server Solo adds for that session: to Claude
+    /// Code with `claude --mcp-config`, to Codex with `codex -c
+    /// mcp_servers...`. Your own config still applies. Takes effect in new
+    /// terminals.
+    ///
+    /// Default: true
+    pub ide_tools: Option<bool>,
     /// Whether Pi, oh-my-pi, Kilo Code CLI, Gemini CLI and Qwen Code started
     /// in a terminal with shell integration report what they're doing, for
     /// that session only: Pi and oh-my-pi through an extension Solo loads
@@ -423,7 +441,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         open_links_on_click,
         notify_long_commands_after_seconds, program_notifications, agent_input_notifications,
         agent_stopped_notifications, restore_contents,
-        agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, opencode_hooks, more_agent_hooks, global_agent_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
+        agent_commands, claude_code_hooks, codex_hooks, codex_edit_hooks, copilot_hooks, opencode_hooks, ide_tools, more_agent_hooks, global_agent_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
         agent_task_command, agent_control, agent_usage_display,
     },
     defaults: {},

@@ -164,6 +164,8 @@ pub fn init(cx: &mut App) {
     agent_board::init(cx);
     workspace_terminals::init(cx);
     workspace_grouping::init(cx);
+    // SOLO: Solo's IDE tools for agents in its terminals.
+    solo_ide_tools::init(cx);
     sync_global_agent_hooks(cx);
 
     register_serializable_item::<TerminalView>(cx);

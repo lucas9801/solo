@@ -1741,6 +1741,31 @@
   // (github.com/lucas9801/solo) shortly after startup and then every 6 hours,
   // and asks before installing anything. Stable builds only.
   "auto_update": true,
+  // Offline mode. Solo then only connects to this computer and the local
+  // network (local models such as Ollama, LAN servers, SSH keep working),
+  // downloads nothing, and doesn't check for updates. Also a button in the
+  // status bar.
+  "network": {
+    "offline": false,
+  },
+  // What Solo does when it needs to download a component by itself: a
+  // language server, Node.js, Prettier, a debug adapter, GitHub Copilot, or
+  // extension updates.
+  "downloads": {
+    // "ask": ask once per component (default)
+    // "auto": download without asking
+    // "never": never download; use only what's installed (and the paths in
+    //          `node.path`, `lsp.<server>.binary.path`)
+    "mode": "ask",
+    // Components that may (true) or may not (false) be downloaded, by id: a
+    // language server's name ("rust-analyzer", "vtsls"), "node", "prettier",
+    // "copilot", "extension-updates", or a debug adapter ("codelldb",
+    // "js-debug", "delve", "debugpy"). Solo adds the ones you allow.
+    // Components already downloaded count as allowed.
+    "allowed": {},
+    // Whether allowed components check for and download their updates.
+    "check_updates": true,
+  },
   // How to render LSP `textDocument/documentColor` colors in the editor.
   //
   // Possible values:
@@ -2313,6 +2338,12 @@
     // to trust them. Your own config and hooks still apply. Takes effect in
     // new terminals.
     "codex_hooks": true,
+    // Let Codex's hooks also report the files each `apply_patch` edits, so a
+    // turn's review lists only Codex's edits and shows other changes made
+    // meanwhile apart. Codex waits for the hook after every patch; on Windows
+    // it starts PowerShell for it, which adds about a second to each. Takes
+    // effect in new terminals.
+    "codex_edit_hooks": false,
     // Let GitHub Copilot CLI started in a terminal with shell integration
     // report what it's doing through hooks in a plugin Solo loads for that
     // session with `copilot --plugin-dir`, so its turns can be reviewed like
@@ -2324,6 +2355,13 @@
     // OpenCode 1), so its turns can be reviewed like Claude Code's. Nothing is
     // written to OpenCode's own config. Takes effect in new terminals.
     "opencode_hooks": true,
+    // Let agents started in a terminal with shell integration ask Solo's
+    // language servers about the terminal's workspace (find symbols, go to
+    // definitions, find references, read diagnostics), through a read-only
+    // MCP server Solo adds for that session: to Claude Code with
+    // `claude --mcp-config`, to Codex with `codex -c mcp_servers...`. Your own
+    // config still applies. Takes effect in new terminals.
+    "ide_tools": true,
     // Let Pi, oh-my-pi, Kilo Code CLI, Gemini CLI and Qwen Code started in a
     // terminal with shell integration report what they're doing, for that
     // session only (an extension loaded with `pi -e` / `omp -e`, a plugin

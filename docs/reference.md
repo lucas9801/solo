@@ -154,7 +154,7 @@ terminal settings, under `"terminal"`: `shell_integration`, `input_editor`,
 `notify_long_commands_after_seconds`,
 `program_notifications`, `agent_input_notifications`,
 `agent_stopped_notifications`, `restore_contents`, `agent_commands`,
-`claude_code_hooks`, `codex_hooks`, `copilot_hooks`, `opencode_hooks`, `keep_running_on_quit`,
+`claude_code_hooks`, `codex_hooks`, `codex_edit_hooks`, `copilot_hooks`, `opencode_hooks`, `keep_running_on_quit`,
 `follow_working_directory`, `confirm_close`, `agent_task_command`,
 `agent_control`, `ai_command_agent`, `ai_command_include_last_failure`.
 

@@ -8,7 +8,7 @@ import { join, dirname } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { test } from "node:test"
 
-import { createReporter, createResponseTimer, hookSender, isBusy, reportArguments, sessionOf, stateOf } from "./solo-opencode.js"
+import { createEditReporter, createReporter, createResponseTimer, hookSender, isBusy, patchFiles, reportArguments, sessionOf, stateOf } from "./solo-opencode.js"
 
 const here = dirname(fileURLToPath(import.meta.url))
 // The hook processes the plugins start can still be running in the folder
@@ -168,6 +168,31 @@ test("times the model's answers (synthetic events: unverified against OpenCode)"
   ])
   // Nothing that could break the escape sequence.
   assert.deepEqual(reportArguments({ state: "response", firstTokenMs: 1.5, outputTokens: -1, effort: "a;b" }, 5).slice(7), [])
+})
+
+test("reports the files OpenCode's tools edit (synthetic events: unverified against OpenCode)", () => {
+  const edits = createEditReporter({ accept: (session) => session === "ses_a", directory: "/work" })
+  const part = (properties) => ({ type: "message.part.updated", properties: { part: { type: "tool", ...properties } } })
+  // Running: not yet; completed: once.
+  const running = part({ tool: "edit", callID: "c1", sessionID: "ses_a", state: { status: "running", input: { filePath: "/work/a.rs" } } })
+  assert.deepEqual(edits.handle(running), [])
+  const done = part({ tool: "edit", callID: "c1", sessionID: "ses_a", state: { status: "completed", input: { filePath: "/work/a.rs" } } })
+  assert.deepEqual(edits.handle(done), [{ state: "edit", session: "ses_a", file: "/work/a.rs" }])
+  assert.deepEqual(edits.handle(done), [])
+  // A patch: each file it names, from where OpenCode works.
+  const patch = "*** Begin Patch\n*** Update File: src/b.rs\n@@\n-x\n+y\n*** Add File: /work/c.rs\n+c\n*** End Patch"
+  assert.deepEqual(
+    edits.handle(part({ tool: "patch", callID: "c2", sessionID: "ses_a", state: { status: "completed", input: { patchText: patch } } })).map((report) => report.file),
+    ["/work/src/b.rs", "/work/c.rs"],
+  )
+  // Another terminal's session, a tool that only reads, a relative path without a directory.
+  assert.deepEqual(edits.handle(part({ tool: "write", callID: "c3", sessionID: "ses_b", state: { status: "completed", input: { filePath: "/x" } } })), [])
+  assert.deepEqual(edits.handle(part({ tool: "read", callID: "c4", sessionID: "ses_a", state: { status: "completed", input: { filePath: "/x" } } })), [])
+  assert.deepEqual(createEditReporter().handle(part({ tool: "write", callID: "c5", state: { status: "completed", input: { filePath: "a.rs" } } })), [])
+  assert.deepEqual(patchFiles("*** Update File: x"), [])
+  assert.deepEqual(reportArguments({ state: "edit", session: "ses_a", file: "/work/a.rs" }, 9), [
+    "report", "--state", "edit", "--agent", "opencode", "--seq", "9", "--session", "ses_a", "--file", "/work/a.rs",
+  ])
 })
 
 test("hook arguments", () => {

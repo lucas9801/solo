@@ -445,6 +445,60 @@ fn general_page(cx: &App) -> SettingsPage {
         ]
     }
 
+    /// SOLO: offline mode and asking before downloads.
+    fn network_section() -> [SettingsPageItem; 4] {
+        [
+            SettingsPageItem::SectionHeader("Network and Downloads"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Offline Mode",
+                description: "Only connect to this computer and the local network, and download nothing.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("network.offline"),
+                    pick: |settings_content| settings_content.network.as_ref()?.offline.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.network.get_or_insert_default().offline = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Downloads",
+                description: "Before downloading a language server, Node.js, Prettier, a debug adapter or Copilot: ask once, download without asking, or never download.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("downloads.mode"),
+                    pick: |settings_content| settings_content.downloads.as_ref()?.mode.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.downloads.get_or_insert_default().mode = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Check for Component Updates",
+                description: "Whether allowed components check for and download their updates.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("downloads.check_updates"),
+                    pick: |settings_content| {
+                        settings_content.downloads.as_ref()?.check_updates.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .downloads
+                            .get_or_insert_default()
+                            .check_updates = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
     fn extensions_section() -> [SettingsPageItem; 2] {
         [
             SettingsPageItem::SectionHeader("Extensions"),
@@ -476,6 +530,7 @@ fn general_page(cx: &App) -> SettingsPage {
             scoped_settings_section(),
             // SOLO: telemetry would go to Zed; Solo sends none.
             auto_update_section(),
+            network_section(),
             extensions_section(),
         )
         .into(),
@@ -7773,7 +7828,7 @@ fn terminal_page() -> SettingsPage {
         ]
     }
 
-    fn behavior_settings_section() -> [SettingsPageItem; 6] {
+    fn behavior_settings_section() -> [SettingsPageItem; 7] {
         [
             SettingsPageItem::SectionHeader("Behavior Settings"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -7869,6 +7924,21 @@ fn terminal_page() -> SettingsPage {
                     pick: |settings_content| settings_content.terminal.as_ref()?.bell.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.terminal.get_or_insert_default().bell = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            // SOLO: Solo's IDE tools for agents in its terminals.
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "IDE Tools For Agents",
+                description: "Let Claude Code and Codex started in a terminal ask Solo's language servers about its workspace (symbols, definitions, references, diagnostics) through a read-only MCP server. Takes effect in new terminals.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("terminal.ide_tools"),
+                    pick: |settings_content| settings_content.terminal.as_ref()?.ide_tools.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.terminal.get_or_insert_default().ide_tools = value;
                     },
                 }),
                 metadata: None,

@@ -97,7 +97,7 @@ agent 每开始和结束一轮，Solo 都会给工作目录拍一个快照（支
 
 快照存在 Solo 自己的目录里，不会改动你的分支、HEAD、暂存区、stash，也不会往你的 git 对象库里写东西。被 `.gitignore` 忽略的文件不在快照里。网络驱动器上的文件夹不拍快照。回滚时不动链接文件夹（目录联接、符号链接）里的文件，因为它们可能在项目之外；确认页显示之后如果又有文件改动，回滚会停下来让你重新确认。回滚（或撤销回滚）中途失败时（例如文件被别的程序打开着），页面会说明，并保留 **撤销回滚**：关掉那个程序后点它，所有文件会恢复到回滚之前的样子。
 
-agent 报告自己改了哪些文件时（Claude Code 会，通过 Solo 给它的 Edit、Write 等工具加的 hook），一轮只算它报告的文件：这期间你自己或同一仓库里别的 agent 改的文件不算进来，**全部拒绝**（按钮上写着要撤回几个文件）也不会动它们。页面会列出这一轮期间改动过的其他文件，包括 agent 自己运行的命令改的。不报告改动的 agent，一轮算文件夹里所有改动过的文件，页面会说明其中可能有不是它改的。
+agent 报告自己改了哪些文件时（Claude Code 会，通过 Solo 给它的 Edit、Write 等工具加的 hook；Codex 在设置了 `"terminal": {"codex_edit_hooks": true}` 时会报告它用 `apply_patch` 做的修改，这个设置默认关闭，因为每次打补丁后 Codex 都要等这个 hook 跑完，在 Windows 上通过 PowerShell 启动它大约要多花一秒），一轮只算它报告的文件：这期间你自己或同一仓库里别的 agent 改的文件不算进来，**全部拒绝**（按钮上写着要撤回几个文件）也不会动它们。页面会列出这一轮期间改动过的其他文件，包括 agent 自己运行的命令改的。不报告改动的 agent，一轮算文件夹里所有改动过的文件，页面会说明其中可能有不是它改的。
 
 拍不了快照时（例如不是 git 仓库、文件又超过 20000 个），Solo 会记下这一轮里项目中被改动的文件（只算 agent 工作目录下、没被忽略的文件），标签上照样显示 **“N 个文件已修改”**；点开是一个文件列表，点文件在编辑器里打开，列表上方写明为什么这一轮没有差异和回滚。这种情况下只能看到项目里打开的文件夹里的改动，别的程序同时改的文件也会算进去。
 
@@ -193,6 +193,15 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - **按轮审阅和暂停。** 一轮结束时，即使暂停了后台分析，Solo 仍会让 rust-analyzer 对改过的文件跑一次 `cargo check`，这一轮的诊断仍然完整；关掉以后就不比较 Rust 的诊断了。
 - **语言服务起不来时**，如果 Solo 认得原因（例如 roslyn 缺 .NET 运行时、下载失败），状态栏会直接写出原因；点一下可以看到解决办法和下载链接。
 
+### 给 agent 用的 IDE 工具
+在 Solo 终端里启动的 agent 可以直接问 Solo 的语言服务，不用靠搜文本。范围是这个终端所属的工作区，一共四个只读工具：`workspace_symbols`（按名字找函数、类型）、`go_to_definition`（跳到定义）、`find_references`（找调用和引用，不会把同名的文本也算进来）、`diagnostics`（某个文件的错误和警告，或者整个工作区各文件的数量）。它们用的是 Solo 已经在跑的语言服务，agent 不会再起一份 rust-analyzer；问到某个文件时，如果它的语言服务还没启动，会顺便启动。
+- **Claude Code** 通过 `claude` 包装函数（`--mcp-config`）拿到这些工具，**Codex** 通过 `codex` 包装函数（`-c mcp_servers.solo-ide...`），服务名都叫 `solo-ide`，只对这次会话有效，不会改你自己的配置。前提是终端开着 shell 集成；Claude Code 还需要开着 `claude_code_hooks`。
+- **其他支持 MCP 的 agent** 可以自己配置：终端里 `SOLO_IDE_MCP_URL` 是服务地址（streamable HTTP），`SOLO_IDE_TOKEN` 是要放进 `Authorization: Bearer` 的 token。
+- **代理。** Solo 会把 `127.0.0.1` 和 `localhost` 加进终端的 `NO_PROXY`：代理访问不到本机上的这个服务；而 Codex 即使访问 `127.0.0.1` 也会走 Windows 的系统代理（Internet 选项），不管系统代理的例外列表，只认 `NO_PROXY`。
+- **只限本工作区。** 服务只监听 127.0.0.1。每个工作区有自己的随机 token，只有这个工作区的终端拿得到；工具只接受、只显示这个工作区里的文件（工作区外的文件、`.env` 这类私密文件都不行），也不会改任何东西。
+- **局限。** agent 在磁盘上改了文件后，诊断可能还没更新（比如 rust-analyzer 的 `cargo check` 要等 Solo 保存文件时才跑），所以最后还是要让 agent 编译或跑测试确认。Solo 重启后保留下来的终端拿的还是旧地址，新开一个终端就能再用。
+- 关闭方法：`"terminal": {"ide_tools": false}`（新开的终端不再带这些工具，已经开着的终端发来的请求也会被拒绝）。
+
 ## 7. 支持哪些 agent、支持到什么程度
 
 | 功能 | Claude Code | Codex、Copilot CLI、OpenCode | gemini、qwen、amp、cursor-agent 等 | aider、`agent_commands` 里加的程序 |
@@ -243,13 +252,31 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 **只在你用到某个功能时才访问：**
 
 - 下载更新：Microsoft Store（Solo Code）；
-- 打开某种语言的文件时自动下载语言服务器：GitHub Releases、npm 源；系统里没有合适的 Node.js 时还会访问 `nodejs.org`；
+- Solo 自己下载的组件，先问过你（见下面的“下载前先询问”）：受信任项目的语言服务器（GitHub Releases、npm 源、`proxy.golang.org`、PyPI），系统里没有合适的 Node.js 时访问 `nodejs.org`，文件第一次格式化时装 Prettier，第一次调试时下载调试适配器，GitHub Copilot 的服务端；
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
 - 浏览、安装扩展，以及检查已装扩展的更新（没装扩展时不检查）：`api.zed.dev`，也就是 Zed 的扩展服务；
 - Solo 不会访问 Zed 的其他服务：帮助链接打开的是这份指南（Solo 自带一份，写到它的数据目录里，没网也能打开）；连接需要 OAuth 登录的 MCP 服务器时，Solo 只用动态注册，不借用 Zed 的客户端身份（只支持客户端元数据文档的服务器因此无法登录）；Solo 去掉了 agent 面板（Zed 自己的 agent 界面），它的下载（比如 WSL 沙箱要用的 Linux 版 Zed）也就不会发生。
 - 打开 ACP agent 注册表，或使用从注册表配置的 agent：`cdn.agentclientprotocol.com` 和注册表里列出的图标地址；
 - 在终端里运行的 agent（Claude Code、Codex 等）自己的网络访问，不经过 Solo。
+
+**下载前先询问。** Solo 自己要下载某个组件（语言服务器、Node.js、Prettier、调试适配器、GitHub Copilot、扩展更新）之前，会按组件问一次，并写明从哪里下载：
+
+- **允许（记住）**：下载，以后它的更新不再询问；
+- **暂不**：这次不下载，直到 Solo 重启；
+- **使用本地路径…**：打开设置文件，改用你自己装好的（`"node": { "path": ... }`、`"lsp": { "<服务器>": { "binary": { "path": ... } } }`）。
+
+同时来的几个请求合成一条通知，可以 **全部允许并记住**，也可以 **逐个选择…**。新项目的信任对话框会列出信任后 Solo 要下载的语言服务器，“允许这些下载”默认勾上，点一次就行。回答记在设置文件的 `downloads.allowed` 里，随时可以改。已经下载过的组件算作允许。Prettier 在文件第一次格式化时才安装，不在打开文件时安装；对未信任的项目，即使是 `"auto"` 模式也会先问。npm 安装 Solo 的包时加 `--ignore-scripts`（ESLint 服务端和扩展的包需要安装脚本，保留不加）。
+
+```json
+"downloads": {
+  "mode": "ask",         // "ask"、"auto"（不问直接下载）或 "never"
+  "allowed": { "rust-analyzer": true, "prettier": false },
+  "check_updates": true  // 允许的组件是否检查并下载更新
+}
+```
+
+**离线模式。** 点状态栏右侧的地球图标（或运行 `network: toggle offline mode`，或设置 `"network": { "offline": true }`）。之后 Solo 只连接本机和局域网（`localhost`、私有和链路本地地址、不带点的主机名、`.local`、`.lan`），所以本地模型（Ollama、LM Studio）、局域网里的服务和 SSH 照常可用。离线时什么都不下载，也不查版本：已经下载的语言服务器、Node.js、Prettier、调试适配器照常使用，缺的会提示“离线：未下载 X”。Copilot、云端 AI 服务、ACP agent 注册表、扩展商店和扩展更新、Solo 的自动检查更新和头像都会关闭。远程开发能用已经下载的远程服务端，但不会下载新的。终端里运行的 agent 不受影响。
 
 **远程开发暂时关闭：** SSH、WSL、Docker（开发容器）远程开发要在远端运行一个服务端。Solo 的 release 现在带有自己构建的 Linux 版（x86_64 和 aarch64），但还在测试中，所以这些入口仍然隐藏，触发时会提示暂不可用。在终端里用 `ssh`、`wsl` 照常可以。想试用的话，设置环境变量 `SOLO_REMOTE_DEVELOPMENT=1` 后重新启动 Solo：连接时会从 Solo 的 GitHub release 下载与当前版本对应的远程服务端（`github.com`，按 GitHub 提供的 SHA-256 校验），上传到远端，从 `~/.solo_server` 运行，数据放在 `~/.local/share/solo`，与 Zed 的分开。不会访问 Zed 的服务器。暂不支持 macOS 和 Windows 远端。
 
@@ -295,8 +322,10 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `shell_integration` | `true` | 加载 shell 集成（命令块、输入编辑器、hooks 都依赖它） |
 | `claude_code_hooks` | `true` | 通过 `--settings` 给 Claude Code 加状态 hooks |
 | `codex_hooks` | `true` | 通过 `-c hooks...` 给 Codex 加状态 hooks |
+| `codex_edit_hooks` | `false` | 让 Codex 同时报告每次 `apply_patch` 改了哪些文件，一轮只算它自己的修改（在 Windows 上每次补丁大约多花一秒） |
 | `copilot_hooks` | `true` | 通过 `--plugin-dir` 给 Copilot CLI 加状态 hooks |
 | `opencode_hooks` | `true` | 每次会话给 OpenCode 加载一个状态插件 |
+| `ide_tools` | `true` | 以 MCP 服务的形式给 Claude Code 和 Codex 提供 Solo 的只读 IDE 工具（符号、定义、引用、诊断） |
 | `more_agent_hooks` | `true` | 每次会话给 Pi、oh-my-pi、Kilo Code CLI、Gemini CLI、Qwen Code 加上状态上报 |
 | `global_agent_hooks` | `[]` | 允许 Solo 往自己配置里加状态 hooks 的 agent（`"kimi"`、`"mastracode"`） |
 | `keep_running_on_quit` | `true` | Solo 退出、更新或崩溃时，正在运行东西的终端继续运行，之后自动连回去 |
@@ -319,4 +348,4 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 
 这些通知只在 Solo 处于后台时出现。四项也都可以在 设置 > 终端 > 通知 里改。
 
-不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`。`"disable_ai"`（以及 `"agent": { "enabled": false }`）只关闭 Zed 自己的 AI 功能（内联助手、编辑预测、提交信息生成），不影响工作区标签、终端和其中运行的 agent、按轮审阅。
+不在 `"terminal"` 下的：`"ui_language"`（`"system"` / `"en"` / `"zh"`，也可以用环境变量 `SOLO_LANGUAGE` 覆盖）、`"auto_update"`、`"disable_ai"`、`"network": { "offline": false }`（离线模式）、`"downloads"`（`"mode": "ask"` / `"auto"` / `"never"`，`"allowed": {}`，`"check_updates": true`；见第 9 节）。`"disable_ai"`（以及 `"agent": { "enabled": false }`）只关闭 Zed 自己的 AI 功能（内联助手、编辑预测、提交信息生成），不影响工作区标签、终端和其中运行的 agent、按轮审阅。

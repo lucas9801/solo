@@ -65,6 +65,9 @@ const MAX_FILES_OUTSIDE_REPOSITORY: usize = 20_000;
 /// A store nobody snapshotted with for this long is emptied the first time a
 /// process opens it.
 const MAX_STORE_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// SOLO: A store holding more than this is emptied the first time a process
+/// opens it too: snapshots aren't collected while in use (R3 L-G9).
+const MAX_STORE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Touched by every snapshot: when the store was last used, by any Solo.
 const LAST_USED_FILE: &str = "last-used";
 /// Locked around git commands on a store, which Solos running side by side
@@ -237,7 +240,10 @@ impl SnapshotStore {
             .map_err(|_| anyhow!("snapshot stores lock poisoned"))?
             .insert(store_dir.clone());
         std::fs::create_dir_all(&store_dir).with_context(|| format!("creating {store_dir:?}"))?;
-        if first_open && is_older_than(&store_dir.join(LAST_USED_FILE), MAX_STORE_AGE) {
+        if first_open
+            && (is_older_than(&store_dir.join(LAST_USED_FILE), MAX_STORE_AGE)
+                || holds_more_than(&store_dir.join("objects"), MAX_STORE_BYTES))
+        {
             empty_unused_store(&store_dir)?;
         }
         std::fs::create_dir_all(store_dir.join("objects"))
@@ -369,7 +375,102 @@ impl SnapshotStore {
             );
         }
         let tree = run(self.command(&index).arg("write-tree"))?;
-        Ok(String::from_utf8_lossy(&tree).trim().to_string())
+        let tree = String::from_utf8_lossy(&tree).trim().to_string();
+        self.with_linked_worktrees(tree)
+    }
+
+    /// SOLO: `tree` with the linked worktrees in this folder snapshotted in
+    /// place of the nested repositories they'd be otherwise: an agent task
+    /// across repositories works in a folder with one worktree of each, and
+    /// what the agent changes in them is the turn's (R3 M3). Each worktree
+    /// has its own store; this store reads their objects through
+    /// `objects/info/alternates`. Repositories cloned into a folder (with a
+    /// `.git` folder, not file) stay nested repositories, left alone.
+    fn with_linked_worktrees(&self, tree: TreeId) -> Result<TreeId> {
+        if self.is_repository() {
+            return Ok(tree);
+        }
+        let listing = run(self
+            .command(&self.index_path())
+            .args(["ls-tree", "-r", "-z", &tree]))?;
+        let worktrees: Vec<String> = listing
+            .split(|byte| *byte == 0)
+            .filter_map(|entry| {
+                let (meta, path) = std::str::from_utf8(entry).ok()?.split_once('\t')?;
+                meta.starts_with("160000 ").then(|| path.to_string())
+            })
+            .filter(|path| self.work_tree.join(path).join(".git").is_file())
+            .collect();
+        if worktrees.is_empty() {
+            return Ok(tree);
+        }
+        let storage_root = self
+            .store_dir
+            .parent()
+            .context("the snapshot store has no parent folder")?;
+        let index = self.store_dir.join("worktrees-index");
+        std::fs::remove_file(&index).ok();
+        run(self.command(&index).args(["read-tree", &tree]))?;
+        for path in &worktrees {
+            let directory = self.work_tree.join(path);
+            let snapshot = SnapshotStore::open(&directory, storage_root).and_then(|store| {
+                anyhow::ensure!(store.is_repository(), "{directory:?} isn't a repository");
+                let _lock = store.lock_store()?;
+                let tree = store.snapshot_locked()?;
+                Ok((store, tree))
+            });
+            let (store, subtree) = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    log::warn!("not snapshotting the worktree {directory:?}: {error:#}");
+                    continue;
+                }
+            };
+            self.add_alternates(
+                [store.store_dir.join("objects")]
+                    .into_iter()
+                    .chain(store.alternate_objects.clone()),
+            )?;
+            run(self
+                .command(&index)
+                .args(["update-index", "--force-remove", "--"])
+                .arg(path))?;
+            run(self
+                .command(&index)
+                .args(["read-tree", &format!("--prefix={path}/"), &subtree]))?;
+        }
+        let combined = run(self.command(&index).arg("write-tree"));
+        std::fs::remove_file(&index).ok();
+        Ok(String::from_utf8_lossy(&combined?).trim().to_string())
+    }
+
+    /// Adds `directories` to the object directories this store reads from.
+    fn add_alternates(&self, directories: impl IntoIterator<Item = PathBuf>) -> Result<()> {
+        let file = self
+            .store_dir
+            .join("objects")
+            .join("info")
+            .join("alternates");
+        let mut lines: Vec<String> = std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let before = lines.len();
+        for directory in directories {
+            let line = directory.to_string_lossy().replace('\\', "/");
+            if !lines.contains(&line) {
+                lines.push(line);
+            }
+        }
+        if lines.len() != before {
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&file, lines.join("\n") + "\n")
+                .with_context(|| format!("writing {file:?}"))?;
+        }
+        Ok(())
     }
 
     /// Files that differ between two snapshots. Repositories nested in the
@@ -379,7 +480,8 @@ impl SnapshotStore {
     }
 
     /// The files that differ between two snapshots, and the nested
-    /// repositories (gitlinks) that do.
+    /// repositories (gitlinks) that do, with the files whose names aren't
+    /// UTF-8 (see [`parse_raw_diff`]).
     fn changes(&self, from: &str, to: &str) -> Result<(Vec<ChangedFile>, Vec<String>)> {
         if from == to {
             return Ok((Vec::new(), Vec::new()));
@@ -402,6 +504,68 @@ impl SnapshotStore {
             .command(&self.index_path())
             .args(["cat-file", "--filters"])
             .arg(format!("{tree}:{path}")))
+    }
+
+    /// SOLO: the contents of each `(tree, path)` as stored, for showing, with
+    /// one git process for all of them rather than one each (R3 L-G9). `None`
+    /// for one that can't be read. Unlike [`Self::file_contents`], line
+    /// endings and other filters aren't applied: with `--filters`, git (2.37
+    /// at least) reports the stored size for the filtered contents. The
+    /// review compares them without line endings anyway.
+    pub(crate) fn files_contents(
+        &self,
+        files: &[(String, String)],
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let mut child = self
+            .command(&self.index_path())
+            .args(["cat-file", "--batch"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("running git cat-file --batch")?;
+        // A path with a line break can't be asked for on a line.
+        let asked: Vec<bool> = files
+            .iter()
+            .map(|(_, path)| !path.contains(['\n', '\r']))
+            .collect();
+        let mut input = String::new();
+        for ((tree, path), asked) in files.iter().zip(&asked) {
+            if *asked {
+                input.push_str(&format!("{tree}:{path}\n"));
+            }
+        }
+        let mut stdin = child.stdin.take().context("no stdin")?;
+        let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+        let mut stdout = std::io::BufReader::new(child.stdout.take().context("no stdout")?);
+        let mut contents = Vec::with_capacity(files.len());
+        for asked in asked {
+            if !asked {
+                contents.push(None);
+                continue;
+            }
+            let mut header = String::new();
+            stdout.read_line(&mut header)?;
+            // `<object> <type> <size>`, or `<name> missing`.
+            let size = header
+                .trim_end()
+                .rsplit(' ')
+                .next()
+                .and_then(|size| size.parse::<usize>().ok())
+                .filter(|_| !header.trim_end().ends_with(" missing"));
+            let Some(size) = size else {
+                contents.push(None);
+                continue;
+            };
+            let mut bytes = vec![0; size + 1];
+            stdout.read_exact(&mut bytes)?;
+            bytes.pop();
+            contents.push(Some(bytes));
+        }
+        writer.join().ok();
+        child.wait().ok();
+        Ok(contents)
     }
 
     /// Puts the work tree back as it was in `target`: changed files get their
@@ -611,8 +775,10 @@ fn check(output: Output, name: &str) -> Result<Vec<u8>> {
 const GITLINK_MODE: &[u8] = b"160000";
 
 /// Parses `git diff-tree -z --raw` output (`:<mode> <mode> <id> <id>
-/// <status>`, then the path) into the changed files and, apart, the paths of
-/// nested repositories (gitlinks) that changed.
+/// <status>`, then the path) into the changed files and, apart, the paths to
+/// leave alone: nested repositories (gitlinks) that changed, and (SOLO, R3
+/// L-G6) files whose names aren't UTF-8, which Unix allows: written back as
+/// lossy text, they'd name another file. Those are shown lossily.
 fn parse_raw_diff(output: &[u8]) -> (Vec<ChangedFile>, Vec<String>) {
     let mut fields = output
         .split(|byte| *byte == 0)
@@ -625,7 +791,10 @@ fn parse_raw_diff(output: &[u8]) -> (Vec<ChangedFile>, Vec<String>) {
             .unwrap_or(meta)
             .split(|byte| *byte == b' ')
             .collect();
-        let path = String::from_utf8_lossy(path).into_owned();
+        let Ok(path) = String::from_utf8(path.to_vec()) else {
+            gitlinks.push(String::from_utf8_lossy(path).into_owned());
+            continue;
+        };
         if meta.iter().take(2).any(|mode| *mode == GITLINK_MODE) {
             gitlinks.push(path);
             continue;
@@ -691,6 +860,32 @@ fn empty_unused_store(store_dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// SOLO: whether the files under `directory` take more than `bytes`, counted
+/// until they do (R3 L-G9).
+fn holds_more_than(directory: &Path, bytes: u64) -> bool {
+    let mut total = 0u64;
+    let mut directories = vec![directory.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                directories.push(entry.path());
+            } else if file_type.is_file() {
+                total += entry.metadata().map_or(0, |metadata| metadata.len());
+                if total > bytes {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn is_older_than(path: &Path, age: Duration) -> bool {
@@ -936,6 +1131,38 @@ mod tests {
         );
         assert_eq!(store.file_contents(&after, "new/c.txt").unwrap(), b"c\n");
         assert!(store.file_contents(&before, "new/c.txt").is_err());
+        // All at once, with one git (R3 L-G9).
+        assert_eq!(
+            store
+                .files_contents(&[
+                    (before.clone(), "a.txt".to_string()),
+                    (before.clone(), "new/c.txt".to_string()),
+                    (after.clone(), "new/c.txt".to_string()),
+                    (after, "x\ny".to_string()),
+                    (before, "untracked.txt".to_string()),
+                ])
+                .unwrap(),
+            vec![
+                Some(b"one\ntwo\nthree\n".to_vec()),
+                None,
+                Some(b"c\n".to_vec()),
+                None,
+                Some(b"before\n".to_vec()),
+            ]
+        );
+    }
+
+    /// Stores are emptied when they hold too much (R3 L-G9).
+    #[test]
+    fn test_holds_more_than() {
+        let temp = tempfile::tempdir().unwrap();
+        let objects = temp.path().join("objects");
+        std::fs::create_dir_all(objects.join("ab")).unwrap();
+        std::fs::write(objects.join("ab").join("cd"), vec![0u8; 100]).unwrap();
+        std::fs::write(objects.join("ef"), vec![0u8; 50]).unwrap();
+        assert!(holds_more_than(&objects, 120));
+        assert!(!holds_more_than(&objects, 150));
+        assert!(!holds_more_than(&temp.path().join("missing"), 0));
     }
 
     #[test]
@@ -1058,6 +1285,61 @@ mod tests {
         assert_eq!(read("vendor/lib/lib.txt").as_deref(), Some("lib\n"));
         store.restore(&restored.undo).unwrap();
         assert_eq!(read("a.txt").as_deref(), Some("changed\n"));
+    }
+
+    /// An agent task across repositories works in a folder of linked
+    /// worktrees: what it changes in them is snapshotted, shown and rolled
+    /// back like any file (R3 M3).
+    #[test]
+    fn test_linked_worktrees_in_a_folder_are_snapshotted() {
+        let (temp, repository, storage) = repository();
+        let group = temp.path().join("task");
+        fs::create_dir_all(&group).unwrap();
+        let worktree = group.join("repo");
+        git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "task",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        fs::write(group.join("notes.txt"), "notes\n").unwrap();
+        let store = SnapshotStore::open(&group, &storage).unwrap();
+        assert!(!store.is_repository());
+        let read = |path: &str| fs::read_to_string(group.join(path)).ok();
+        let before = store.snapshot().unwrap();
+
+        fs::write(worktree.join("a.txt"), "changed\n").unwrap();
+        fs::write(worktree.join("src/new.txt"), "new\n").unwrap();
+        fs::write(group.join("notes.txt"), "more notes\n").unwrap();
+        let after = store.snapshot().unwrap();
+        assert_eq!(
+            sorted(store.changed_files(&before, &after).unwrap()),
+            vec![
+                ("notes.txt".to_string(), FileChange::Modified),
+                ("repo/a.txt".to_string(), FileChange::Modified),
+                ("repo/src/new.txt".to_string(), FileChange::Added),
+            ]
+        );
+        assert_eq!(
+            store.file_contents(&before, "repo/a.txt").unwrap(),
+            b"one\ntwo\nthree\n"
+        );
+
+        let restored = store.restore(&before).unwrap();
+        assert!(restored.skipped.is_empty(), "{:?}", restored.skipped);
+        assert_eq!(read("repo/a.txt").as_deref(), Some("one\ntwo\nthree\n"));
+        assert_eq!(read("repo/src/new.txt"), None);
+        assert_eq!(read("notes.txt").as_deref(), Some("notes\n"));
+        // The worktree's own repository doesn't see the rollback as changes.
+        assert_eq!(git(&worktree, &["status", "--porcelain"]), "");
+        store.restore(&restored.undo).unwrap();
+        assert_eq!(read("repo/a.txt").as_deref(), Some("changed\n"));
+        assert_eq!(read("repo/src/new.txt").as_deref(), Some("new\n"));
     }
 
     /// The private index names a blob staged by the user, then unstaged and
@@ -1420,8 +1702,15 @@ mod tests {
              :100644 120000 {id} {id} T\0link\0\
              :000000 160000 {zero} {id} A\0nested\0"
         );
-        let (changed, gitlinks) = parse_raw_diff(output.as_bytes());
-        assert_eq!(gitlinks, vec!["nested".to_string()]);
+        let mut output = output.into_bytes();
+        // A name that isn't UTF-8 is left alone (R3 L-G6).
+        output.extend(format!(":100644 100644 {id} {id} M\0").as_bytes());
+        output.extend(b"caf\xe9.txt\0");
+        let (changed, gitlinks) = parse_raw_diff(&output);
+        assert_eq!(
+            gitlinks,
+            vec!["nested".to_string(), "caf\u{fffd}.txt".to_string()]
+        );
         assert_eq!(
             changed,
             vec![

@@ -143,6 +143,8 @@ members = [
     "crates/mistral",
     "crates/multi_buffer",
     "crates/net",
+    "crates/net_guard",
+    "crates/net_guard_ui",
     "crates/node_runtime",
     "crates/notifications",
     "crates/oauth_callback_server",
@@ -197,6 +199,7 @@ members = [
     "crates/snippets_ui",
     "crates/agent_detection",
     "crates/solo_agent_hook",
+    "crates/solo_ide_tools",
     "crates/solo_terminal_host",
     "crates/solo_terminal_snapshot",
     "crates/solo_update_helper",
@@ -286,6 +289,7 @@ agent_servers = { path = "crates/agent_servers" }
 agent_settings = { path = "crates/agent_settings" }
 agent_detection = { path = "crates/agent_detection" }
 solo_terminal_snapshot = { path = "crates/solo_terminal_snapshot" }
+solo_ide_tools = { path = "crates/solo_ide_tools" }
 agent_sessions = { path = "crates/agent_sessions" }
 agent_skills = { path = "crates/agent_skills" }
 agent_ui = { path = "crates/agent_ui" }
@@ -412,6 +416,8 @@ miniprofiler_ui = { path = "crates/miniprofiler_ui" }
 mistral = { path = "crates/mistral" }
 multi_buffer = { path = "crates/multi_buffer" }
 net = { path = "crates/net" }
+net_guard = { path = "crates/net_guard" }
+net_guard_ui = { path = "crates/net_guard_ui" }
 node_runtime = { path = "crates/node_runtime" }
 notifications = { path = "crates/notifications" }
 oauth_callback_server = { path = "crates/oauth_callback_server" }

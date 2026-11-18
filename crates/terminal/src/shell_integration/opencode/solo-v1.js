@@ -4,7 +4,7 @@
 // or done with the turn. OpenCode 1 runs its server in the TUI's process, so
 // every event is this terminal's. See https://docs.opencode.ai/docs/plugins/.
 
-import { createReporter, createResponseTimer, hookSender } from "../../opencode-plugin/solo-opencode.js"
+import { createEditReporter, createReporter, createResponseTimer, hookSender } from "../../opencode-plugin/solo-opencode.js"
 
 export const SoloStatus = async ({ directory }) => {
   // Set in Solo's terminals only.
@@ -14,7 +14,9 @@ export const SoloStatus = async ({ directory }) => {
   const reporter = createReporter({ directory })
   // Subagents' sessions have a parent; the timer leaves them out.
   const parents = new Map()
-  const timer = createResponseTimer({ rootOf: (id) => (parents.has(id) ? parents.get(id) : id) })
+  const rootOf = (id) => (parents.has(id) ? parents.get(id) : id)
+  const timer = createResponseTimer({ rootOf })
+  const edits = createEditReporter({ rootOf, directory })
   return {
     event: async ({ event }) => {
       const info = event?.properties?.info
@@ -23,6 +25,7 @@ export const SoloStatus = async ({ directory }) => {
       }
       send(reporter.handle(event))
       send(timer.handle(event))
+      for (const report of edits.handle(event)) send(report)
     },
   }
 }

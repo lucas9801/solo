@@ -74,7 +74,13 @@ impl GoDebugAdapter {
 
         let adapter_dir = paths::debug_adapters_dir().join("delve-shim-dap");
 
-        match Self::fetch_latest_adapter_version(delegate).await {
+        // SOLO: as Solo's download rules say.
+        let latest = dap::adapters::check_for_update(
+            &"delve-shim-dap".into(),
+            Self::fetch_latest_adapter_version(delegate),
+        )
+        .await?;
+        match latest {
             Ok(asset) => {
                 let ty = if consts::OS == "windows" {
                     DownloadedFileType::Zip
@@ -456,6 +462,12 @@ impl DebugAdapter for GoDebugAdapter {
         } else {
             // Refresh managed Delve for each debug session so Go upgrades aren't blocked by a stale binary.
             let install_result = async {
+                // SOLO: ask before `go install`; not in offline mode.
+                net_guard::request(
+                    net_guard::Component::debug_adapter("Delve"),
+                    delegate.fs().is_file(&dlv_path).await,
+                )
+                .await?;
                 let go = delegate
                     .which(OsStr::new("go"))
                     .await

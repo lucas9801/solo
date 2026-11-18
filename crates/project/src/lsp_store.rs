@@ -577,6 +577,24 @@ impl LocalLspStore {
                 }
             });
         let update_binary_status = wait_until_worktree_trust.is_none();
+        // SOLO: the trust dialog lists the language servers Solo will ask to
+        // download once the project is trusted.
+        if wait_until_worktree_trust.is_some()
+            && !adapter.adapter.is_extension()
+            && settings
+                .binary
+                .as_ref()
+                .and_then(|binary| binary.path.as_ref())
+                .is_none()
+            && self
+                .languages
+                .language_server_download_dir(&adapter.name)
+                .is_none_or(|dir| {
+                    std::fs::read_dir(dir).map_or(true, |mut entries| entries.next().is_none())
+                })
+        {
+            net_guard::note_before_trust(net_guard::Component::language_server(&adapter.name.0));
+        }
 
         let binary = self.get_language_server_binary(
             worktree_abs_path.clone(),
@@ -1959,6 +1977,10 @@ impl LocalLspStore {
                     _ => (None, None),
                 };
 
+                // SOLO: the default Prettier is installed on the first format.
+                lsp_store.update(cx, |lsp_store, cx| {
+                    lsp_store.install_default_prettier_for_format(&buffer.handle, settings, cx)
+                })?;
                 let prettier = lsp_store.read_with(cx, |lsp_store, _cx| {
                     lsp_store.prettier_store().unwrap().downgrade()
                 })?;
@@ -5273,19 +5295,25 @@ impl LspStore {
         }
     }
 
-    fn on_buffer_settings_changed(&mut self, buffer: &Entity<Buffer>, cx: &mut Context<Self>) {
+    // SOLO: Prettier is installed on the first format (see
+    // `install_default_prettier_for_format`), not when a file opens or its
+    // settings change.
+    fn on_buffer_settings_changed(&mut self, _: &Entity<Buffer>, _: &mut Context<Self>) {}
+
+    /// SOLO: installs the default Prettier, if the buffer's language formats
+    /// with it, before its first format.
+    fn install_default_prettier_for_format(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        settings: &LanguageSettings,
+        cx: &mut Context<Self>,
+    ) {
         let Some(prettier_store) = self.as_local().map(|s| s.prettier_store.clone()) else {
             return;
         };
-        let buffer = buffer.read(cx);
-        if buffer.language().is_none() {
-            return;
-        }
-        let settings = LanguageSettings::for_buffer(buffer, cx);
-        if settings.prettier.allowed
-            && let Some(prettier_plugins) = prettier_store::prettier_plugins_for_language(&settings)
-        {
-            let worktree_id = File::from_dyn(buffer.file()).map(|file| file.worktree_id(cx));
+        if let Some(prettier_plugins) = prettier_store::prettier_plugins_for_language(settings) {
+            let worktree_id =
+                File::from_dyn(buffer.read(cx).file()).map(|file| file.worktree_id(cx));
             let prettier_plugins = prettier_plugins
                 .iter()
                 .map(|plugin| Arc::from(plugin.as_str()))
@@ -5741,14 +5769,11 @@ impl LspStore {
             }
         });
 
-        let settings = LanguageSettings::resolve(
-            Some(&buffer_entity.read(cx)),
-            Some(&new_language.name()),
-            cx,
-        );
         let buffer_file = File::from_dyn(buffer_file.as_ref());
 
-        let worktree_id = if let Some(file) = buffer_file {
+        // SOLO: the language's settings and the worktree are unused since
+        // Prettier isn't installed here any more.
+        let _worktree_id = if let Some(file) = buffer_file {
             let worktree = file.worktree.clone();
 
             if let Some(local) = self.as_local_mut()
@@ -5801,20 +5826,8 @@ impl LspStore {
             );
         }
 
-        if settings.prettier.allowed
-            && let Some(prettier_plugins) = prettier_store::prettier_plugins_for_language(&settings)
-        {
-            let prettier_store = self.as_local().map(|s| s.prettier_store.clone());
-            if let Some(prettier_store) = prettier_store {
-                prettier_store.update(cx, |prettier_store, cx| {
-                    prettier_store.install_default_prettier(
-                        worktree_id,
-                        prettier_plugins.iter().map(|s| Arc::from(s.as_str())),
-                        cx,
-                    )
-                })
-            }
-        }
+        // SOLO: Prettier isn't installed when a file opens, only on its
+        // first format (see `install_default_prettier_for_format`).
 
         cx.emit(LspStoreEvent::LanguageDetected {
             buffer: buffer_entity.clone(),

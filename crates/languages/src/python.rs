@@ -2002,6 +2002,8 @@ impl LspInstaller for PyLspAdapter {
         let delegate = delegate.clone();
 
         async move {
+            // SOLO: no pip in offline mode.
+            net_guard::ensure_online("pylsp")?;
             let venv = Self::ensure_venv(delegate.as_ref()).await?;
             let pip_path = venv.join(BINARY_DIR).join("pip3");
             ensure!(

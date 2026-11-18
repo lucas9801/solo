@@ -533,7 +533,12 @@ fn main() {
             ReqwestClient::proxy_and_user_agent(proxy_url, &user_agent)
                 .expect("could not start HTTP client")
         };
-        cx.set_http_client(Arc::new(http));
+        // SOLO: offline mode and asking before downloads (`network`,
+        // `downloads`), set up before anything uses the network. In offline
+        // mode the HTTP client only reaches this computer and the local
+        // network.
+        net_guard_ui::init(cx);
+        cx.set_http_client(Arc::new(net_guard::OfflineHttpClient::new(Arc::new(http))));
 
         <dyn Fs>::set_global(fs.clone(), cx);
 

@@ -64,13 +64,19 @@ fn main() {
     let agent = agent.filter(|agent| is_agent_name(agent));
     // SOLO: the file the agent edited, in place of the working directory.
     if kind == "edit" {
-        let Some(file) = edited_file_of(&input) else {
+        // SOLO: and each of the files one patch edited (R3 M5).
+        let sequence: String = edited_files_of(&input)
+            .iter()
+            .map(|file| {
+                format!(
+                    "\x1b]6973;agent;nonce={nonce};edit;{sent_at_ms};{session_id};{};{file}\x07",
+                    agent.unwrap_or_default()
+                )
+            })
+            .collect();
+        if sequence.is_empty() {
             return;
-        };
-        let sequence = format!(
-            "\x1b]6973;agent;nonce={nonce};edit;{sent_at_ms};{session_id};{};{file}\x07",
-            agent.unwrap_or_default()
-        );
+        }
         if let Err(error) = write_to_terminal(sequence.as_bytes()) {
             eprintln!("solo-agent-hook: failed to write to the terminal: {error}");
         }
@@ -103,6 +109,7 @@ fn main() {
 
 const REPORT_USAGE: &str = "usage: solo-agent-hook report --state <working|blocked|idle> \
 [--agent <name>] [--session <id>] [--seq <n>] [--directory <path>]
+       solo-agent-hook report --state edit --file <absolute path> [--agent <name>] [--session <id>] [--seq <n>]
        solo-agent-hook report --state response [--agent <name>] [--session <id>] [--seq <n>] [--first-token-ms <ms>] [--output-tokens <n>] [--generation-ms <ms>] [--effort <level>]";
 
 /// The terminal's agent key (`SOLO_AGENT_TOKEN`), which tells the terminal a
@@ -137,6 +144,8 @@ fn report_sequence(args: &[String], sent_at_ms: &str, nonce: &str) -> Result<Str
     let mut session = String::new();
     let mut order = sent_at_ms.to_string();
     let mut directory = None;
+    // SOLO: the file the agent edited, for `--state edit` (R3 M5).
+    let mut file = None;
     // SOLO: how fast the model answered, for `--state response`.
     let mut measurements = Vec::new();
     let mut args = args.iter();
@@ -152,6 +161,7 @@ fn report_sequence(args: &[String], sent_at_ms: &str, nonce: &str) -> Result<Str
             "--session" => session = value()?,
             "--seq" => order = value()?,
             "--directory" => directory = Some(value()?),
+            "--file" => file = Some(value()?),
             "--first-token-ms" | "--output-tokens" | "--generation-ms" => {
                 let number = value()?;
                 if number.parse::<u64>().is_err() {
@@ -182,6 +192,7 @@ fn report_sequence(args: &[String], sent_at_ms: &str, nonce: &str) -> Result<Str
         Some("idle" | "stop") => "stop",
         Some("start") => "start",
         Some("response") => "response",
+        Some("edit") => "edit",
         Some(other) => return Err(format!("unknown state {other:?}")),
         None => return Err("--state is required".to_string()),
     };
@@ -210,6 +221,19 @@ fn report_sequence(args: &[String], sent_at_ms: &str, nonce: &str) -> Result<Str
     }
     if !measurements.is_empty() {
         return Err("measurements go with --state response only".to_string());
+    }
+    let file = file.map(|file| file.trim().to_string());
+    if kind == "edit" {
+        let Some(file) = file.filter(|file| std::path::Path::new(file).is_absolute()) else {
+            return Err("--state edit needs the absolute path of the --file".to_string());
+        };
+        return Ok(format!(
+            "\x1b]6973;agent;nonce={nonce};edit;{order};{session};{agent};{}\x07",
+            percent_encode(&file)
+        ));
+    }
+    if file.is_some() {
+        return Err("--file goes with --state edit only".to_string());
     }
     let directory = directory
         .map(|directory| directory.trim().to_string())
@@ -286,6 +310,7 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
         "input" => Some("input"),
         "stop" => Some("stop"),
         "idle" => Some("idle"),
+        "edit" => Some("edit"),
         _ => None,
     };
     let Some(event_name) = field("hook_event_name") else {
@@ -311,12 +336,12 @@ fn kind_of(input: &str, argument: Option<&str>) -> Option<&'static str> {
         },
         // Codex's Interrupt: the user stopped the turn.
         "Stop" | "StopFailure" | "Interrupt" => Some("stop"),
-        // SOLO: Claude Code edited a file (R3 M5).
-        "PostToolUse" => matches!(
-            field("tool_name"),
-            Some("Edit" | "Write" | "MultiEdit" | "NotebookEdit")
-        )
-        .then_some("edit"),
+        // SOLO: the agent edited a file (R3 M5): Claude Code's tools, and
+        // the other agents' that write files.
+        "PostToolUse" => field("tool_name")
+            .or_else(|| field("toolName"))
+            .is_some_and(is_edit_tool)
+            .then_some("edit"),
         _ => None,
     };
     // An event this doesn't know, under a name another agent uses for it:
@@ -372,22 +397,111 @@ fn working_directory_of(input: &str, project_directory: Option<&str>) -> Option<
 /// SOLO: The file a Claude Code edit tool changed (`tool_input.file_path`,
 /// or `notebook_path`), absolute (against the hook's `cwd` if it isn't),
 /// percent-encoded for the escape sequence.
-fn edited_file_of(input: &str) -> Option<String> {
-    let event = serde_json::from_str::<serde_json::Value>(input).ok()?;
-    let tool_input = event.get("tool_input")?;
-    let path = ["file_path", "notebook_path"]
+fn edited_files_of(input: &str) -> Vec<String> {
+    let Ok(event) = serde_json::from_str::<serde_json::Value>(input) else {
+        return Vec::new();
+    };
+    // Claude Code's and Codex's `tool_input`; Copilot's `toolArgs`, which may
+    // be JSON in a string.
+    let tool_input = event
+        .get("tool_input")
+        .or_else(|| event.get("toolArgs"))
+        .map(|arguments| match arguments.as_str() {
+            Some(text) => serde_json::from_str(text).unwrap_or(arguments.clone()),
+            None => arguments.clone(),
+        })
+        .unwrap_or_default();
+    let mut paths: Vec<String> = ["file_path", "notebook_path", "filePath", "path"]
         .iter()
         .find_map(|field| tool_input.get(*field)?.as_str())
+        .map(|path| vec![path.to_string()])
+        .unwrap_or_default();
+    // Codex's `apply_patch`: the files the patch names, wherever its text is.
+    if paths.is_empty() {
+        let mut texts = Vec::new();
+        strings_in(&tool_input, &mut texts);
+        for text in texts {
+            paths.extend(patch_files(text).map(str::to_string));
+        }
+    }
+    let cwd = event.get("cwd").and_then(|cwd| cwd.as_str()).map(str::trim);
+    let mut files = Vec::new();
+    for path in &paths {
+        let path = path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        let path = std::path::Path::new(path);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(cwd) = cwd {
+            std::path::Path::new(cwd).join(path)
+        } else {
+            continue;
+        };
+        if path.is_absolute() {
+            let file = percent_encode(&path.to_string_lossy());
+            if !files.contains(&file) {
+                files.push(file);
+            }
+        }
+    }
+    files
+}
+
+/// SOLO: whether `tool` writes files: Claude Code's edits, and those of
+/// Codex (`apply_patch`), Copilot and the like (R3 M5). Not ones that only
+/// read, like `view`.
+fn is_edit_tool(tool: &str) -> bool {
+    matches!(
+        tool.to_ascii_lowercase().as_str(),
+        "edit"
+            | "write"
+            | "multiedit"
+            | "notebookedit"
+            | "create"
+            | "apply_patch"
+            | "str_replace"
+            | "edit_file"
+            | "write_file"
+            | "create_file"
+    )
+}
+
+/// The strings in `value`, however deep.
+fn strings_in<'a>(value: &'a serde_json::Value, strings: &mut Vec<&'a str>) {
+    match value {
+        serde_json::Value::String(text) => strings.push(text),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                strings_in(value, strings);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                strings_in(value, strings);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The files a patch in Codex's `apply_patch` format adds, updates, deletes
+/// or moves to (`*** Update File: <path>`, `*** Move to: <path>`).
+fn patch_files(text: &str) -> impl Iterator<Item = &str> {
+    let is_patch = text.contains("*** Begin Patch");
+    text.lines().filter(move |_| is_patch).filter_map(|line| {
+        let line = line.trim_end_matches('\r');
+        [
+            "*** Add File: ",
+            "*** Update File: ",
+            "*** Delete File: ",
+            "*** Move to: ",
+        ]
+        .iter()
+        .find_map(|prefix| line.strip_prefix(prefix))
         .map(str::trim)
-        .filter(|path| !path.is_empty())?;
-    let path = std::path::Path::new(path);
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::path::Path::new(event.get("cwd")?.as_str()?.trim()).join(path)
-    };
-    path.is_absolute()
-        .then(|| percent_encode(&path.to_string_lossy()))
+    })
 }
 
 /// Everything but printable ASCII, `;` and `%` as `%XX` bytes of UTF-8, so
@@ -534,6 +648,102 @@ mod tests {
     }
 
     /// SOLO: Claude Code's edits are reported with the file (R3 M5).
+    /// `report --state edit` says which file the agent edited (R3 M5).
+    #[test]
+    fn reports_say_which_file_was_edited() {
+        let args =
+            |args: &[&str]| -> Vec<String> { args.iter().map(|arg| arg.to_string()).collect() };
+        let file = if cfg!(windows) {
+            r"C:\repo\a;b.rs"
+        } else {
+            "/repo/a;b.rs"
+        };
+        let sequence = report_sequence(
+            &args(&["--state", "edit", "--agent", "opencode", "--file", file]),
+            "5",
+            "k",
+        )
+        .unwrap();
+        assert_eq!(
+            sequence,
+            format!(
+                "\x1b]6973;agent;nonce=k;edit;5;;opencode;{}\x07",
+                file.replace(';', "%3B")
+            )
+        );
+        assert!(report_sequence(&args(&["--state", "edit"]), "5", "k").is_err());
+        assert!(report_sequence(&args(&["--state", "edit", "--file", "a.rs"]), "5", "k").is_err());
+        assert!(report_sequence(&args(&["--state", "idle", "--file", file]), "5", "k").is_err());
+    }
+
+    #[test]
+    fn other_agents_edits_report_their_files() {
+        let cwd = if cfg!(windows) { r"C:\repo" } else { "/repo" };
+        // Codex's apply_patch: the files its patch names.
+        let patch = "*** Begin Patch\n*** Update File: src/a.rs\n@@\n-x\n+y\n*** Add File: b.rs\n+new\n*** End Patch\n";
+        let input = serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "apply_patch",
+            "cwd": cwd,
+            "tool_input": { "command": ["apply_patch", patch] },
+        })
+        .to_string();
+        assert_eq!(kind_of(&input, None), Some("edit"));
+        let files = edited_files_of(&input);
+        assert_eq!(files.len(), 2, "{files:?}");
+        assert!(
+            files[0].starts_with(cwd) && files[0].ends_with("a.rs"),
+            "{files:?}"
+        );
+        assert!(
+            files[1].starts_with(cwd) && files[1].ends_with("b.rs"),
+            "{files:?}"
+        );
+        // Copilot's arguments, as JSON in a string.
+        let input = serde_json::json!({
+            "toolName": "edit",
+            "cwd": cwd,
+            "toolArgs": serde_json::json!({ "path": "c.rs" }).to_string(),
+        })
+        .to_string();
+        assert_eq!(kind_of(&input, Some("edit")), Some("edit"));
+        assert_eq!(edited_files_of(&input).len(), 1);
+        // Reading isn't editing; text that isn't a patch names no files.
+        assert_eq!(
+            kind_of(
+                r#"{"hook_event_name":"PostToolUse","tool_name":"view"}"#,
+                Some("edit")
+            ),
+            None
+        );
+        assert_eq!(patch_files("*** Update File: x").count(), 0);
+    }
+
+    /// SOLO: The input Codex 0.162 gives its `PostToolUse` hook for
+    /// `apply_patch`, as a real session sent it: the patch is a string in
+    /// `tool_input.command`, its paths relative to `cwd`; its shell tool is
+    /// `Bash`, which isn't an edit (R3 M5).
+    #[test]
+    fn codex_apply_patch_input_reports_its_files() {
+        let input = r#"{"session_id":"01a1ec11-629b-7681-8029-a0f503e33373","turn_id":"01a1ec11-6dae-7432-afa5-5a3bb9df4c6d","transcript_path":"C:\\Users\\me\\.codex\\sessions\\2026\\11\\18\\rollout.jsonl","cwd":"C:\\Users\\me\\repo","hook_event_name":"PostToolUse","model":"gpt-5","permission_mode":"bypassPermissions","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Add File: hello.txt\n+hi\n*** Update File: a.py\n@@\n def a():\n     return 1\n+\n+\n+def b():\n+    return 2\n*** End Patch"},"tool_response":"Exit code: 0\nWall time: 14.8 seconds\nOutput:\nSuccess. Updated the following files:\nA hello.txt\nM a.py\n","tool_use_id":"exec-60496958-8682-4efd-9cec-b1163c1a04ae"}"#;
+        assert_eq!(kind_of(input, Some("edit")), Some("edit"));
+        assert_eq!(
+            session_id_of(input).as_deref(),
+            Some("01a1ec11-629b-7681-8029-a0f503e33373")
+        );
+        let files = edited_files_of(input);
+        if cfg!(windows) {
+            assert_eq!(
+                files,
+                [r"C:\Users\me\repo\hello.txt", r"C:\Users\me\repo\a.py"]
+            );
+        } else {
+            assert_eq!(files.len(), 2, "{files:?}");
+        }
+        let shell = r#"{"cwd":"C:\\Users\\me\\repo","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"Get-Content a.py"},"tool_response":"*** Begin Patch\n*** Add File: x\n"}"#;
+        assert_eq!(kind_of(shell, None), None);
+    }
+
     #[test]
     fn edits_report_the_file() {
         let (root, cwd) = if cfg!(windows) {
@@ -550,12 +760,12 @@ mod tests {
         } else {
             "/repo/a%3Bb.rs"
         };
-        assert_eq!(edited_file_of(&input).as_deref(), Some(expected));
+        assert_eq!(edited_files_of(&input), [expected]);
         // Relative to the hook's directory; notebooks by their own field.
         let input = format!(
             r#"{{"hook_event_name":"PostToolUse","tool_name":"NotebookEdit","cwd":"{cwd}","tool_input":{{"notebook_path":"n.ipynb"}}}}"#
         );
-        assert!(edited_file_of(&input).is_some_and(|file| file.ends_with("n.ipynb")));
+        assert!(edited_files_of(&input)[0].ends_with("n.ipynb"));
         // Other tools aren't edits.
         assert_eq!(
             kind_of(

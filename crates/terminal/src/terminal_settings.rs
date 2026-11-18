@@ -71,8 +71,12 @@ pub struct TerminalSettings {
     pub agent_commands: Vec<String>,
     pub claude_code_hooks: bool,
     pub codex_hooks: bool,
+    /// SOLO: Codex's `apply_patch` edits reported by a hook (`codex_edit_hooks`).
+    pub codex_edit_hooks: bool,
     pub copilot_hooks: bool,
     pub opencode_hooks: bool,
+    /// SOLO: Solo's IDE tools for agents (`ide_tools`).
+    pub ide_tools: bool,
     /// SOLO: status hooks for Pi, oh-my-pi, Kilo Code, Gemini CLI and Qwen Code.
     pub more_agent_hooks: bool,
     /// SOLO: agents whose status hooks go into the user's own config.
@@ -176,8 +180,10 @@ impl settings::Settings for TerminalSettings {
             agent_commands: user_content.agent_commands.unwrap(),
             claude_code_hooks: user_content.claude_code_hooks.unwrap(),
             codex_hooks: user_content.codex_hooks.unwrap(),
+            codex_edit_hooks: user_content.codex_edit_hooks.unwrap_or(false),
             copilot_hooks: user_content.copilot_hooks.unwrap(),
             opencode_hooks: user_content.opencode_hooks.unwrap(),
+            ide_tools: user_content.ide_tools.unwrap_or(true),
             // SOLO: defaults here too, for dev builds that read another
             // checkout's default.json.
             more_agent_hooks: user_content.more_agent_hooks.unwrap_or(true),

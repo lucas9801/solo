@@ -84,7 +84,7 @@ if set -q SOLO_CLAUDE_SETTINGS; and not functions -q claude
             or not test -r "$SOLO_CLAUDE_SETTINGS"
             command claude $argv
         else if set -q SOLO_CLAUDE_MCP_CONFIG; and test -r "$SOLO_CLAUDE_MCP_CONFIG"
-            # Solo's browser, when agents may control it (before --settings,
+            # Solo's MCP servers: its browser, its IDE tools (before --settings,
             # which ends --mcp-config's list of files).
             command claude --mcp-config "$SOLO_CLAUDE_MCP_CONFIG" --settings "$SOLO_CLAUDE_SETTINGS" $argv
         else

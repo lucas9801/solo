@@ -386,20 +386,30 @@ impl TerminalView {
         let Some(command) = self.terminal.read(cx).command_block_command(ix) else {
             return;
         };
-        let message = match crate::input::workflows::save(command.trim()) {
-            Ok(()) => util::i18n::tr("Saved as a workflow", "已存为工作流").to_string(),
-            Err(error) if util::i18n::is_chinese() => format!("无法保存工作流：{error:#}"),
-            Err(error) => format!("Couldn't save the workflow: {error:#}"),
-        };
-        if let Some(workspace) = self.workspace.upgrade() {
-            workspace.update(cx, |workspace, cx| {
-                struct WorkflowSavedToast;
-                workspace.show_toast(
-                    Toast::new(NotificationId::unique::<WorkflowSavedToast>(), message).autohide(),
-                    cx,
-                );
-            });
-        }
+        let workspace = self.workspace.clone();
+        // SOLO: the file is read and written in the background, not on the
+        // main thread (R3 L-G12).
+        let saved = cx
+            .background_executor()
+            .spawn(async move { crate::input::workflows::save(command.trim()) });
+        cx.spawn(async move |_, cx| {
+            let message = match saved.await {
+                Ok(()) => util::i18n::tr("Saved as a workflow", "已存为工作流").to_string(),
+                Err(error) if util::i18n::is_chinese() => format!("无法保存工作流：{error:#}"),
+                Err(error) => format!("Couldn't save the workflow: {error:#}"),
+            };
+            workspace
+                .update(cx, |workspace, cx| {
+                    struct WorkflowSavedToast;
+                    workspace.show_toast(
+                        Toast::new(NotificationId::unique::<WorkflowSavedToast>(), message)
+                            .autohide(),
+                        cx,
+                    );
+                })
+                .ok();
+        })
+        .detach();
     }
 
     /// SOLO: attaches the block to a `#` request in the input, like Warp

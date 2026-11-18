@@ -101,7 +101,16 @@ the file absolute and encoded like the directory. Once a terminal's agent has
 sent one, its turns are only the files it reported editing; the rest of what
 changed in the folder during a turn is listed apart, and rejecting the turn
 leaves it alone. Solo's hook sends one after each of Claude Code's Edit,
-Write, MultiEdit and NotebookEdit tools.
+Write, MultiEdit and NotebookEdit tools, and Solo's OpenCode plugin one for
+each file OpenCode's edit and write tools change. A script sends one with
+
+```sh
+"$SOLO_AGENT_HOOK" report --state edit --agent my-agent --file /abs/path/to/file
+```
+
+The hook also takes the input of another agent's `PostToolUse` hook for a
+tool that writes files: the file in its arguments (`file_path`, `path`,
+`filePath`), or each file a patch in Codex's `apply_patch` format names.
 
 Solo's own hook for Claude Code, Codex and Copilot CLI sends
 `ESC ] 6973 ; agent ; nonce=<nonce> ; <kind> ; <ms since the epoch> ; <session id> ; <agent> ; <directory> BEL`,
