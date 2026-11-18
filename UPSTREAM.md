@@ -30,7 +30,9 @@ $new  = git -C $zed rev-parse origin/main              # or a release tag, e.g. 
 # Zed's changes, without the files Solo removed from Zed, the files Zed
 # added under directories Solo removed entirely (such as crates/collab), and
 # Zed's own agent rules (.rules, CLAUDE.md, AGENTS.md). It lists what it
-# left out.
+# left out. Paths Solo renamed (crates/zed -> crates/solo, zed_actions ->
+# solo_actions, and the others in the script's RENAMED list) are written
+# under Solo's names.
 python script/zed-update-patch.py --zed $zed --base $base --new $new -o ..\zed.patch
 
 # The three-way merge needs Zed's version of each file at the base: the
