@@ -6450,6 +6450,7 @@ mod tests {
                 "icon_theme_selector",
                 "image_viewer",
                 "inline_assistant",
+                "invalid_item",
                 "journal",
                 "keymap_editor",
                 "keystroke_input",
