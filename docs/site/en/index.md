@@ -47,5 +47,5 @@ For the full feature list, see the [feature reference](../../reference.md).
 
 - **Windows only**, installed from the [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)) or with the [installer on GitHub](https://github.com/lucas9801/solo/releases/latest) (unsigned), and updated inside Solo.
 - **Agents keep running when Solo closes.** Each terminal's shell runs in a small background process; quitting Solo, an update's restart or even a crash of Solo leaves terminals that are running something (an agent, a build) running, and Solo connects to them again when it opens, screen and all. Idle shells end with Solo as usual.
-- No account, no telemetry. By default Solo only checks for updates (which can be turned off); everything else happens when you use a feature. See [privacy](../../guide/en.md#9-privacy-and-network).
+- No account, no telemetry. By default Solo only checks for updates (which can be turned off); everything else happens when you use a feature. See [privacy](../../guide/en.md#9-privacy-and-network). Solo asks before downloading a language server or other tool, and an offline mode keeps it to this computer and the local network.
 - Open source, GPL-3.0.
