@@ -954,9 +954,12 @@ impl TerminalView {
                 ))
             })
             .collect();
-        tabs.push((tr("New Tab…", "新标签…").into(), Box::new(MoveToNewTab)));
+        tabs.push((
+            tr("New Workspace…", "新工作区…").into(),
+            Box::new(MoveToNewTab),
+        ));
         entries.push(TabContextEntry::Submenu(
-            tr("Move to Tab", "移到标签").into(),
+            tr("Move to Workspace", "移到工作区").into(),
             tabs,
         ));
         entries

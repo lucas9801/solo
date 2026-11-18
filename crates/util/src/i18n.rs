@@ -118,6 +118,15 @@ pub fn translate(text: &str) -> Option<&'static str> {
     translate_text(text)
 }
 
+/// The Chinese of the English interface text `text`, whatever language the
+/// interface is shown in, e.g. for tests of what Chinese users see.
+pub fn chinese(text: &str) -> Option<&'static str> {
+    if text.is_empty() {
+        return None;
+    }
+    translate_text(text)
+}
+
 fn translate_text(text: &str) -> Option<&'static str> {
     let translations = translations();
     if let Some(translation) = translations.get(text) {

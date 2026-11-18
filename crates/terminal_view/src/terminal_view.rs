@@ -2475,6 +2475,11 @@ impl Item for TerminalView {
         self.move_menu_entries(cx)
     }
 
+    // SOLO: no "Close Clean" or "Make Tab Read-Only" for a terminal.
+    fn tab_menu_has_document_entries(&self, _cx: &App) -> bool {
+        false
+    }
+
     fn buffer_kind(&self, _: &App) -> workspace::item::ItemBufferKind {
         workspace::item::ItemBufferKind::Singleton
     }

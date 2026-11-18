@@ -317,8 +317,9 @@ an agent waiting in the background; its menu lists the terminals.
   in, and its hover card says so under its directory. Nothing moves on its
   own;
 - a terminal tab's right-click menu has **Move to a New *name* Tab** (or
-  **Move to the *tab* Tab**) and **Move to Tab ›**, to move it to any tab of
-  the window at any time, or to a new tab of a folder you pick;
+  **Move to the *tab* Tab**) and **Move to Workspace ›**, to move it to any
+  workspace tab of the window at any time, or to a new workspace of a folder
+  you pick;
 - a workspace holding unrelated projects gets a **Split Workspace** dialog
   listing the folders that stay and those that get a tab of their own; the
   terminals in none of them each get a choice of where to go (by default a
