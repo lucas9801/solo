@@ -1,7 +1,7 @@
 use crate::{
-    CloseWindow, NewCenterTerminal, NewFile, NewTerminal, OpenInTerminal, OpenOptions,
-    OpenTerminal, OpenVisible, SplitDirection, ToggleFileFinder, ToggleProjectSymbols, ToggleZoom,
-    Workspace, WorkspaceItemBuilder, ZoomIn, ZoomOut,
+    CloseWindow, NewFile, OpenInTerminal, OpenOptions, OpenTerminal, OpenVisible, SplitDirection,
+    ToggleFileFinder, ToggleProjectSymbols, ToggleZoom, Workspace, WorkspaceItemBuilder, ZoomIn,
+    ZoomOut,
     focus_follows_mouse::FocusFollowsMouse as _,
     invalid_item_view::InvalidItemView,
     item::{
@@ -4506,13 +4506,9 @@ fn default_render_tab_bar_buttons(
                             .action("Open File", ToggleFileFinder::default().boxed_clone())
                             .separator()
                             .action("Search Project", DeploySearch::default().boxed_clone())
+                            // SOLO: terminals open from the terminal panel
+                            // (and the command palette), not from here.
                             .action("Search Symbols", ToggleProjectSymbols.boxed_clone())
-                            .separator()
-                            .action("New Terminal", NewTerminal::default().boxed_clone())
-                            .action(
-                                "New Center Terminal",
-                                NewCenterTerminal::default().boxed_clone(),
-                            )
                     }))
                 }),
         )
