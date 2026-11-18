@@ -427,6 +427,13 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
         Vec::new()
     }
 
+    /// SOLO: whether the tab's context menu offers the entries about a
+    /// document's contents ("Close Clean", "Make Tab Read-Only"). Items
+    /// with no contents to save or edit, like terminals, leave them out.
+    fn tab_menu_has_document_entries(&self, _cx: &App) -> bool {
+        true
+    }
+
     /// SOLO: another group of entries for the tab's context menu, after
     /// [`Item::tab_extra_context_menu_actions`].
     fn tab_extra_context_menu_group(
@@ -632,6 +639,7 @@ pub trait ItemHandle: 'static + Send {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<TabContextEntry>;
+    fn tab_menu_has_document_entries(&self, cx: &App) -> bool;
     fn can_autosave(&self, cx: &App) -> bool {
         let is_deleted = self.project_entry_ids(cx).is_empty();
         self.is_dirty(cx) && !self.has_conflict(cx) && self.can_save(cx) && !is_deleted
@@ -1248,6 +1256,10 @@ impl<T: Item> ItemHandle for Entity<T> {
         cx: &mut App,
     ) -> Vec<TabContextEntry> {
         self.update(cx, |this, cx| this.tab_extra_context_menu_group(window, cx))
+    }
+
+    fn tab_menu_has_document_entries(&self, cx: &App) -> bool {
+        self.read(cx).tab_menu_has_document_entries(cx)
     }
 }
 
