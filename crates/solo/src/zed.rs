@@ -6466,6 +6466,7 @@ mod tests {
                 "markdown",
                 "menu",
                 "multi_workspace",
+                "network",
                 "new_process_modal",
                 "notebook",
                 "onboarding",
