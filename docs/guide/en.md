@@ -12,28 +12,50 @@ several agents in parallel in their own git worktrees.
 
 ## 2. Installing
 
-Install **Solo Code** from the
-[Microsoft Store](https://apps.microsoft.com/detail/9NBW452JVWN6?mode=direct):
-the link downloads a small installer that installs it for the current user
-without opening the Store app. It has a Start menu entry, the `solo` command
-in Windows' command line, and "Open with Solo Code" in Explorer's context menu
-(in Windows 11's own menu, not only under "Show more options").
+There are two ways to install Solo; one is enough.
 
-Releases on GitHub no longer have a Windows download: the installer
-(`Solo-Setup-<version>.exe`) and the portable zip
-(`Solo-<version>-windows-x64.zip`) are no longer made. A Solo installed from
-either keeps working but isn't updated any more; when a newer version is out
-its update button offers Solo Code's Store page. Install Solo Code from the
-Store, and uninstall the old Solo (section 4).
+**First choice: Solo Code from the Microsoft Store.**
+[Download Solo Code's installer](https://get.microsoft.com/installer/download/9NBW452JVWN6): it installs Solo Code for the
+current user without opening the Store app. If the link doesn't download,
+install it from [Solo Code's Store page](https://apps.microsoft.com/detail/9NBW452JVWN6). Microsoft signs the
+Store package. It has a Start menu entry, the `solo` command in Windows'
+command line, and "Open with Solo Code" in Explorer's context menu (in
+Windows 11's own menu, not only under "Show more options").
 
-**"Open with Solo Code"** is on files, folders, a folder's background and
+To put Solo Code on another drive, choose that drive under Settings > System >
+Storage > Advanced storage settings > Where new content is saved > New apps
+will save to before installing it, or move it later from Settings > Apps >
+Installed apps (Solo Code's "..." menu, Move). (These menu names are as
+Microsoft documents them, not tested.)
+
+**Second choice: the installer on GitHub.** Download
+`Solo-Setup-<version>.exe` from [GitHub Releases](https://github.com/lucas9801/solo/releases/latest) (the
+`solo-remote-server-linux-*.gz` files there are the Linux server for remote
+development, not installers).
+
+- The installer is **unsigned**, so Windows' SmartScreen says "Windows
+  protected your PC": click **More info**, then **Run anyway**.
+- You can **choose the install folder** (by default
+  `%LOCALAPPDATA%\Programs\Solo`; it installs for the current user, without
+  administrator rights, so pick a folder you can write to, such as
+  `D:\Apps\Solo`, not `C:\Program Files`).
+- It adds a Start menu entry, an optional desktop icon, "Open with Solo" in
+  Explorer's context menu (under "Show more options" on Windows 11; you can
+  turn it off while installing) and `solo://` links.
+- **Solo updates itself**: it downloads the next release's installer from
+  GitHub and runs it silently into the same folder (section 3).
+- A Solo installed with the installer of 2.4.2 or earlier is this kind: run
+  the new installer over it; settings and data stay. The portable zip is no
+  longer made.
+
+**"Open with Solo Code"** ("Open with Solo" for the GitHub installer) is on files, folders, a folder's background and
 drives. A folder opens in Solo, started if it isn't running; a running Solo adds a
 workspace tab for it to its window and switches to it, or switches to the
 folder's tab if it has one already. A file opens in the tab whose folder holds
 it, or else in the current tab, never in a new window. Uninstalling removes
 the menu.
 
-Solo Code holds `solo.exe`, `solo-cli.exe` (the command line agents use),
+Both hold `solo.exe`, `solo-cli.exe` (the command line agents use),
 `solo-agent-hook.exe` (which Claude Code runs to report its status),
 `solo-update-helper.exe`, `solo-terminal-host.exe` (which runs a terminal's
 shell, so it can outlive Solo), `OpenConsole.exe` and `conpty.dll` (the
@@ -43,8 +65,8 @@ terminal runtime), and license files.
 
 - Solo checks for a newer version 30 seconds after it starts and every 6
   hours after that (stable builds only): Solo Code asks the Microsoft Store;
-  other builds (from source, or an earlier release's installer or zip) ask
-  [its GitHub releases](https://github.com/lucas9801/solo/releases).
+  other builds (installed with the GitHub installer, or built from source)
+  ask [its GitHub releases](https://github.com/lucas9801/solo/releases).
 - A newer version shows an "↑ Update to <version>" button at the right end of
   the title bar, left of the window buttons; there's no notification. Its menu
   has a one-line summary and Update and Restart, Install When Solo Quits, View
@@ -64,23 +86,26 @@ terminal runtime), and license files.
   copy), whether Solo is up to date with a **Check for Updates** button, and
   links to this guide, the release notes, the repository and the license.
   **Copy** copies the version, commit and system details for a bug report.
-- Builds that aren't Solo Code don't update themselves: their button's menu
-  has Get It from the Microsoft Store, which opens Solo Code's Store page, and
-  Skip This Version.
+- Solo installed with the GitHub installer downloads the release's
+  `Solo-Setup-<version>.exe` (checked against the SHA-256 GitHub reports) and,
+  once Solo has quit, installs it silently into the same folder; Update and
+  Restart opens Solo again afterwards. For a release without an installer
+  the button's menu has only Get It from the Microsoft Store, which opens
+  Solo Code's Store page, and Skip This Version.
 - `"auto_update": false` turns off the automatic checks. **Check for Updates**
   in the command palette always checks.
 
 ## 4. Uninstalling and removing everything
 
 - Solo Code: uninstall it from Settings → Apps.
+- Solo installed with the GitHub installer: uninstall Solo from Settings →
+  Apps.
 - A Solo installed from an earlier release's zip:
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Solo\install.ps1" -Uninstall
   ```
 
-- A Solo installed with the installer of an earlier release: uninstall Solo
-  from Settings → Apps.
 
 **Uninstalling doesn't remove your settings and data**, except the files
 Windows kept in Solo Code's package folder (see section 5). To remove
@@ -111,7 +136,7 @@ nothing to clean up there.
 | `%LOCALAPPDATA%\Solo` | Data: `logs\`, `db\` (workspace and session state), `extensions\`, `languages\` (downloaded language servers), `node\`, `external_agents\`, `terminal_sessions\` (restored terminal contents, removed after 30 days), `agent_turns\` (agent turn snapshots), `terminal-host\` (the terminal host's copy), `hang_traces\` |
 | `%LOCALAPPDATA%\Solo\browser` | The built-in browser's cookies, site data and element screenshots (`picks\`, kept for a week) |
 | `%TEMP%\solo-shell-integration` | Shell integration scripts and Claude Code hook settings |
-| `%TEMP%\solo-update` | Update installers downloaded by earlier versions, and their logs |
+| `%TEMP%\solo-update` | Update installers downloaded by Solo installed with the GitHub installer, and their logs |
 | `.solo\` in a project | Project settings, tasks and debug scenarios (Zed's `.zed\` is read too) |
 
 These are separate from Zed's folders, so Solo and Zed can be installed side by side.
@@ -654,9 +679,12 @@ To treat another program as an agent:
   the task in its git config (`branch.<branch>.solotask` / `solobase`, and
   `sologroup` for a task spanning repositories). This
   only happens when you create a task.
-- **Updates** are installed only when you choose to, by the Microsoft Store
-  (Solo Code); other builds don't install updates.
-- **`solo://` links:** Solo Code's package registers it for `solo://` links,
+- **Updates** are installed only when you choose to: by the Microsoft Store
+  for Solo Code; for Solo installed with the GitHub installer,
+  `solo-update-helper.exe` runs the new version's installer silently once
+  Solo has quit.
+- **`solo://` links:** Solo Code's package (or the GitHub installer, in
+  `HKCU\Software\Classes\solo`) registers it for `solo://` links,
   for your user only, so links such as
   `solo://settings/terminal.font_size` (jumps to that setting) or a shared
   skill link open in Solo. Uninstalling removes it. Solo doesn't
@@ -691,7 +719,9 @@ collaboration and Zed's own auto-update are off or hidden.
 
 **Contacted only when you use a feature:**
 
-- downloading an update: the Microsoft Store (Solo Code);
+- downloading an update: the Microsoft Store (Solo Code), or GitHub
+  (`github.com` and its download servers) for Solo installed with the GitHub
+  installer;
 - components Solo downloads by itself, after asking (see "Asking before
   downloading" below): language servers for a trusted project (GitHub
   releases, the npm registry, `proxy.golang.org`, PyPI), `nodejs.org` if no
@@ -780,7 +810,8 @@ suspicious.
 **What to do**:
 
 1. Add these to your security software's trusted list:
-   the install folder (Solo Code's is under `C:\Program Files\WindowsApps`),
+   the install folder (Solo Code's is under `C:\Program Files\WindowsApps`;
+   the GitHub installer's is `%LOCALAPPDATA%\Programs\Solo` by default),
    with solo.exe,
    solo-agent-hook.exe, solo-terminal-host.exe, OpenConsole.exe and
    conpty.dll; `%LOCALAPPDATA%\Solo\terminal-host` (the terminal host's
