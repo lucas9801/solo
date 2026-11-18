@@ -825,7 +825,7 @@ suspicious.
   crash caused by an error in Solo (a panic) is logged there, with where it
   happened and the stack backtrace, under `panicked at`; include that part
   when reporting it. Solo writes no minidumps by default. To get one, start
-  Solo with the environment variable `ZED_GENERATE_MINIDUMPS=1`; it's written
+  Solo with the environment variable `SOLO_GENERATE_MINIDUMPS=1`; it's written
   to the logs folder (exact file name unverified).
 - Report problems at [github.com/lucas9801/solo/issues](https://github.com/lucas9801/solo/issues),
   with the log attached.

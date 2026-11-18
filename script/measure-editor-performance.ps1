@@ -543,7 +543,7 @@ function Save-File([string]$Path, [string]$Text) {
 $EditFiles = @(
     'crates/editor/src/editor.rs', 'crates/workspace/src/workspace.rs', 'crates/project/src/project.rs',
     'crates/gpui/src/window.rs', 'crates/terminal/src/terminal.rs', 'crates/language/src/buffer.rs',
-    'crates/zed/src/main.rs', 'crates/paths/src/paths.rs', 'crates/search/src/project_search.rs',
+    'crates/solo/src/main.rs', 'crates/paths/src/paths.rs', 'crates/search/src/project_search.rs',
     'crates/fs/src/fs.rs', 'crates/sum_tree/src/cursor.rs', 'crates/gpui/src/styled.rs',
     'crates/tab_switcher/src/tab_switcher.rs', 'crates/zlog/src/filter.rs', 'crates/path/src/path.rs',
     'crates/theme_settings/src/settings.rs', 'crates/util/src/paths.rs', 'Cargo.toml',

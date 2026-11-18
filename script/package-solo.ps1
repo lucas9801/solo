@@ -33,7 +33,7 @@ $env:CARGO_INCREMENTAL = "0"
 & (Join-Path $PSScriptRoot "generate-licenses.ps1") (Join-Path $root "assets\licenses.md")
 if (-not (Test-Path (Join-Path $root "assets\licenses.md"))) { throw "Generating the licenses failed" }
 
-cargo build --profile solo-dist -p zed -p solo_agent_hook -p solo_update_helper -p solo_terminal_host -p cli --bin solo --bin solo-agent-hook --bin solo-update-helper --bin solo-terminal-host --bin cli
+cargo build --profile solo-dist -p solo -p solo_agent_hook -p solo_update_helper -p solo_terminal_host -p cli --bin solo --bin solo-agent-hook --bin solo-update-helper --bin solo-terminal-host --bin cli
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 $built = Join-Path $TargetDir "solo-dist"

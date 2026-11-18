@@ -42,12 +42,12 @@ use settings::Settings;
 use terminal::{Modes, Terminal, terminal_settings::TerminalSettings};
 
 use crate::{TerminalMode, TerminalView};
+use solo_actions::editor::{MoveDown, MoveUp};
 use theme::ActiveTheme;
 use theme_settings::ThemeSettings;
 use ui::{
     Icon, IconButton, IconName, IconSize, Label, LabelSize, Tooltip, h_flex, prelude::*, v_flex,
 };
-use zed_actions::editor::{MoveDown, MoveUp};
 
 use completion::{
     CompletionDepth, CompletionKind, CompletionSet, ShellFlavor, complete,

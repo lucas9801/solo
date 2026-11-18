@@ -33,11 +33,11 @@ use ui::{
 };
 use util::ResultExt as _;
 
+use solo_actions::{OpenBrowser, OpenSettingsAt};
 use workspace::{
     HideStatusItem, StatusItemView, Toast, Workspace, create_and_open_local_file, item::ItemHandle,
     notifications::NotificationId,
 };
-use zed_actions::{OpenBrowser, OpenSettingsAt};
 
 use crate::{RatePredictions, rate_prediction_modal::PredictEditsRatePredictionsFeatureFlag};
 
@@ -412,7 +412,7 @@ impl Render for EditPredictionButton {
                                     source = "Edit Prediction Status Button"
                                 );
                                 window.dispatch_action(
-                                    zed_actions::OpenZedPredictOnboarding.boxed_clone(),
+                                    solo_actions::OpenZedPredictOnboarding.boxed_clone(),
                                     cx,
                                 );
                             })),
@@ -1788,8 +1788,8 @@ mod tests {
     use gpui::TestAppContext;
     use language_model::{ApiKeyState, EnvVar};
     use settings::RootUserSettings;
+    use solo_credentials_provider::ZedCredentialsProvider;
     use workspace::AppState;
-    use zed_credentials_provider::ZedCredentialsProvider;
 
     #[gpui::test]
     async fn test_credentials_survive_button_recreation(cx: &mut TestAppContext) {

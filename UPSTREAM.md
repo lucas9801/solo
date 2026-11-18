@@ -9,7 +9,7 @@ commit is Solo's.
 |---|---|
 | Zed commit | [`4d847859f5506471bd80ca78ee6ced161b19a4e8`](https://github.com/zed-industries/zed/commit/4d847859f5506471bd80ca78ee6ced161b19a4e8) |
 | Date | 2026-10-28 (Zed's `main`) |
-| Zed version | 1.28.0 (`crates/zed/Cargo.toml`) |
+| Zed version | 1.28.0 (Zed's `crates/zed/Cargo.toml`) |
 | Imported in | the first commit, "Import Zed 1.28.0" |
 
 When Zed is updated, change the table to the new commit.
@@ -46,7 +46,7 @@ Then:
 1. `git status` shows conflicts as `UU`. Resolve them keeping both Zed's
    change and Solo's (Solo's changes to Zed's code are marked `// SOLO:`).
    For `Cargo.lock`, take Zed's version and let cargo bring it up to date:
-   `git checkout --theirs Cargo.lock`, then `cargo check -p zed --bin solo`.
+   `git checkout --theirs Cargo.lock`, then `cargo check -p solo --bin solo`.
 2. New files (`A`) Zed added for things Solo removed but whose directory
    Solo still has (its own workflows in `.github/workflows`, bundling
    scripts in `script/`) can be removed with `git rm`.

@@ -26,6 +26,7 @@ use gpui::{
 };
 use project::project_settings::ProjectSettings;
 use settings::Settings as _;
+use solo_actions::agent_task::{ManageAgentTasks, NewAgentTask};
 use terminal::{Event as TerminalEvent, Terminal, terminal_settings::TerminalSettings};
 use ui::{ButtonStyle, Checkbox, TintColor, ToggleState, prelude::*};
 use util::{
@@ -36,7 +37,6 @@ use workspace::{
     ModalView, OpenOptions, OpenVisible, Pane, SaveIntent, Toast, Workspace,
     notifications::NotificationId,
 };
-use zed_actions::agent_task::{ManageAgentTasks, NewAgentTask};
 
 pub use git::{AgentTask, MergeOutcome};
 

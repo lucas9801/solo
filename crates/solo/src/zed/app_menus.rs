@@ -1,25 +1,25 @@
 use gpui::{App, Menu, MenuItem, OsAction};
 use release_channel::ReleaseChannel;
+use solo_actions::{Quit, debug_panel, dev, git_panel, project_panel};
 use terminal_view::terminal_panel;
-use zed_actions::{Quit, debug_panel, dev, git_panel, project_panel};
 
 pub fn app_menus(cx: &mut App) -> Vec<Menu> {
     let mut view_items = vec![
         MenuItem::action(
             "Zoom In",
-            zed_actions::IncreaseBufferFontSize { persist: false },
+            solo_actions::IncreaseBufferFontSize { persist: false },
         ),
         MenuItem::action(
             "Zoom Out",
-            zed_actions::DecreaseBufferFontSize { persist: false },
+            solo_actions::DecreaseBufferFontSize { persist: false },
         ),
         MenuItem::action(
             "Reset Zoom",
-            zed_actions::ResetBufferFontSize { persist: false },
+            solo_actions::ResetBufferFontSize { persist: false },
         ),
         MenuItem::action(
             "Reset All Zoom",
-            zed_actions::ResetAllZoom { persist: false },
+            solo_actions::ResetAllZoom { persist: false },
         ),
         MenuItem::separator(),
         MenuItem::action("Toggle Left Dock", workspace::ToggleLeftDock),
@@ -65,34 +65,34 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
             name: "Solo".into(),
             disabled: false,
             items: vec![
-                MenuItem::action("About Solo", zed_actions::About),
+                MenuItem::action("About Solo", solo_actions::About),
                 MenuItem::action("Check for Updates", auto_update::Check),
                 MenuItem::separator(),
                 MenuItem::submenu(Menu::new("Settings").items([
-                    MenuItem::action("Open Settings", zed_actions::OpenSettings),
+                    MenuItem::action("Open Settings", solo_actions::OpenSettings),
                     MenuItem::action("Open Settings File", super::OpenSettingsFile),
-                    MenuItem::action("Open Project Settings", zed_actions::OpenProjectSettings),
+                    MenuItem::action("Open Project Settings", solo_actions::OpenProjectSettings),
                     MenuItem::action("Open Project Settings File", super::OpenProjectSettingsFile),
                     MenuItem::action("Open Default Settings", super::OpenDefaultSettings),
                     MenuItem::separator(),
-                    MenuItem::action("Open Keymap", zed_actions::OpenKeymap),
-                    MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
-                    MenuItem::action("Open Default Key Bindings", zed_actions::OpenDefaultKeymap),
+                    MenuItem::action("Open Keymap", solo_actions::OpenKeymap),
+                    MenuItem::action("Open Keymap File", solo_actions::OpenKeymapFile),
+                    MenuItem::action("Open Default Key Bindings", solo_actions::OpenDefaultKeymap),
                     MenuItem::separator(),
                     MenuItem::action(
                         "Select Theme...",
-                        zed_actions::theme_selector::Toggle::default(),
+                        solo_actions::theme_selector::Toggle::default(),
                     ),
                     MenuItem::action(
                         "Select Icon Theme...",
-                        zed_actions::icon_theme_selector::Toggle::default(),
+                        solo_actions::icon_theme_selector::Toggle::default(),
                     ),
                 ])),
                 MenuItem::separator(),
                 #[cfg(target_os = "macos")]
                 MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
                 MenuItem::separator(),
-                MenuItem::action("Extensions", zed_actions::Extensions::default()),
+                MenuItem::action("Extensions", solo_actions::Extensions::default()),
                 #[cfg(not(target_os = "windows"))]
                 MenuItem::action("Install CLI", install_cli::InstallCliBinary),
                 MenuItem::separator(),
@@ -123,7 +123,7 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                     },
                     workspace::Open::default(),
                 ),
-                MenuItem::action("Open Recent…", zed_actions::OpenRecent::default()),
+                MenuItem::action("Open Recent…", solo_actions::OpenRecent::default()),
                 MenuItem::separator(),
                 MenuItem::action("Add Folder to Project…", workspace::AddFolderToProject),
                 MenuItem::separator(),
@@ -223,13 +223,13 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 MenuItem::action("Back", workspace::GoBack),
                 MenuItem::action("Forward", workspace::GoForward),
                 MenuItem::separator(),
-                MenuItem::action("Command Palette...", zed_actions::command_palette::Toggle),
+                MenuItem::action("Command Palette...", solo_actions::command_palette::Toggle),
                 MenuItem::separator(),
                 MenuItem::action("Go to File...", workspace::ToggleFileFinder::default()),
                 // MenuItem::action("Go to Symbol in Project", project_symbols::Toggle),
                 MenuItem::action(
                     "Go to Symbol in Editor...",
-                    zed_actions::outline::ToggleOutline,
+                    solo_actions::outline::ToggleOutline,
                 ),
                 MenuItem::action("Go to Line/Column...", editor::actions::ToggleGoToLine),
                 MenuItem::separator(),
@@ -265,14 +265,14 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
             items: vec![
                 MenuItem::action(
                     "Spawn Task",
-                    zed_actions::Spawn::ViaModal {
+                    solo_actions::Spawn::ViaModal {
                         reveal_target: None,
                     },
                 ),
                 MenuItem::action("Start Debugger", debugger_ui::Start),
                 MenuItem::separator(),
-                MenuItem::action("Edit tasks.json…", zed_actions::OpenProjectTasks),
-                MenuItem::action("Edit debug.json…", zed_actions::OpenProjectDebugTasks),
+                MenuItem::action("Edit tasks.json…", solo_actions::OpenProjectTasks),
+                MenuItem::action("Edit debug.json…", solo_actions::OpenProjectDebugTasks),
                 MenuItem::separator(),
                 MenuItem::action("Continue", debugger_ui::Continue),
                 MenuItem::action("Step Over", debugger_ui::StepOver),
@@ -304,16 +304,16 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 // SOLO: no "View Telemetry": Solo sends none (it would go to Zed),
                 // so the log is empty unless telemetry is turned on in settings;
                 // the command palette still has it.
-                MenuItem::action("View Dependency Licenses", zed_actions::OpenLicenses),
+                MenuItem::action("View Dependency Licenses", solo_actions::OpenLicenses),
                 MenuItem::action("Show Welcome", onboarding::ShowWelcome),
                 MenuItem::separator(),
-                MenuItem::action("File Bug Report...", zed_actions::feedback::FileBugReport),
-                MenuItem::action("Request Feature...", zed_actions::feedback::RequestFeature),
+                MenuItem::action("File Bug Report...", solo_actions::feedback::FileBugReport),
+                MenuItem::action("Request Feature...", solo_actions::feedback::RequestFeature),
                 MenuItem::separator(),
                 // SOLO: Solo's documentation (the user guide on this computer, in
                 // the interface's language) and repository; Zed's email,
                 // Twitter and jobs links aren't Solo's.
-                MenuItem::action("Documentation", zed_actions::OpenDocs),
+                MenuItem::action("Documentation", solo_actions::OpenDocs),
                 MenuItem::action("Solo Repository", feedback::OpenRepository),
             ],
         },

@@ -398,9 +398,9 @@ async fn test_dispatch_every_solo_action(cx: &mut TestAppContext) {
 
     // Registered with `no_register`, so it can't be built by name: a
     // Markdown preview builds it from the comments on a document.
-    let comments = zed_actions::agent_terminal::SendDocumentCommentsToAgent {
+    let comments = solo_actions::agent_terminal::SendDocumentCommentsToAgent {
         path: PathBuf::from(path!("/project/README.md")),
-        comments: vec![zed_actions::agent_terminal::DocumentComment {
+        comments: vec![solo_actions::agent_terminal::DocumentComment {
             start_line: 3,
             end_line: 3,
             quote: "Some text.".into(),

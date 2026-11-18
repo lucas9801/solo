@@ -209,7 +209,7 @@ fn ask_one(component: Component, cx: &mut App) {
                 .tertiary_message(tr("Use a local path…", "使用本地路径…"))
                 .tertiary_on_click(move |window, cx| {
                     net_guard::answer(&local_ids, Answer::NotNow);
-                    window.dispatch_action(zed_actions::OpenSettingsFile.boxed_clone(), cx);
+                    window.dispatch_action(solo_actions::OpenSettingsFile.boxed_clone(), cx);
                 })
         });
         not_now_on_dismiss(&notification, ids.clone(), cx);

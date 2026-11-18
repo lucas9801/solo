@@ -75,7 +75,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check the solo binary
-        run: cargo check --locked -p zed --bin solo
+        run: cargo check --locked -p solo --bin solo
 
       - name: Build the tests
         run: cargo test --locked --no-run -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_terminal_host -p solo_update_helper -p agent_sessions -p agent_detection -p client -p context_server -p title_bar -p onboarding -p markdown_preview

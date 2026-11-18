@@ -24,14 +24,17 @@ struct TelemetryState {
 }
 
 pub static MINIDUMP_ENDPOINT: LazyLock<Option<String>> = LazyLock::new(|| {
-    option_env!("ZED_MINIDUMP_ENDPOINT")
+    option_env!("SOLO_MINIDUMP_ENDPOINT")
         .map(str::to_string)
-        .or_else(|| env::var("ZED_MINIDUMP_ENDPOINT").ok())
+        .or_else(|| env::var("SOLO_MINIDUMP_ENDPOINT").ok())
 });
 
 pub fn should_install_crash_handler(channel: ReleaseChannel) -> bool {
     matches!(
-        env::var("ZED_GENERATE_MINIDUMPS").as_deref(),
+        // SOLO: also under its earlier name, which Solo's guide gave.
+        env::var("SOLO_GENERATE_MINIDUMPS")
+            .or_else(|_| env::var("ZED_GENERATE_MINIDUMPS"))
+            .as_deref(),
         Ok("true" | "1")
     ) || (channel != ReleaseChannel::Dev && MINIDUMP_ENDPOINT.is_some())
 }

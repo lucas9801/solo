@@ -19,6 +19,7 @@ use ui::{
     WithScrollbar as _, prelude::*, rems_from_px,
 };
 
+use solo_actions::OpenOnboarding;
 pub use workspace::welcome::ShowWelcome;
 use workspace::welcome::WelcomePage;
 use workspace::{
@@ -27,7 +28,6 @@ use workspace::{
     item::{Item, ItemEvent},
     open_new, register_serializable_item, with_active_or_new_workspace,
 };
-use zed_actions::OpenOnboarding;
 
 mod base_keymap_picker;
 mod basics_page;
@@ -345,7 +345,7 @@ impl Render for Onboarding {
                                     .child(
                                         h_flex()
                                             .gap_4()
-                                            .child(Vector::square(VectorName::ZedLogo, rems(2.5)))
+                                            .child(Vector::square(VectorName::SoloLogo, rems(2.5)))
                                             .child(
                                                 v_flex()
                                                     .child(

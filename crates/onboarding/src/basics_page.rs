@@ -500,7 +500,7 @@ fn render_registry_agent_button(
                 }
             });
             window.dispatch_action(
-                Box::new(zed_actions::agent::SelectAgent {
+                Box::new(solo_actions::agent::SelectAgent {
                     agent: agent_id.clone(),
                 }),
                 cx,
@@ -524,7 +524,7 @@ fn render_zed_agent_button() -> impl IntoElement {
                 .color(Color::Muted),
         )
         .on_click(|_, window, cx| {
-            window.dispatch_action(zed_actions::agent::OpenSettings.boxed_clone(), cx);
+            window.dispatch_action(solo_actions::agent::OpenSettings.boxed_clone(), cx);
         })
 }
 

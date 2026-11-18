@@ -8,6 +8,7 @@ use gpui::{
 use head::Head;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use solo_actions::editor::{MoveDown, MoveUp};
 use std::{
     cell::Cell, cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc, time::Duration,
 };
@@ -18,7 +19,6 @@ use ui::{
 use ui_input::ErasedEditorEvent;
 use util::ResultExt;
 use workspace::ModalView;
-use zed_actions::editor::{MoveDown, MoveUp};
 
 mod footer;
 mod head;

@@ -72,7 +72,7 @@ if (-not $branch) { throw "Check out main or a release/<x.y> branch; HEAD isn't 
 $upstreamBranch = git for-each-ref --format="%(upstream:short)" "refs/heads/$branch"
 if ($upstreamBranch -ne "origin/$branch") { throw "$branch has to track origin/$branch (it tracks '$upstreamBranch')." }
 
-$cargoToml = "crates\zed\Cargo.toml"
+$cargoToml = "crates\solo\Cargo.toml"
 $current = (Select-String -Path $cargoToml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
 
 if (git status --porcelain --untracked-files=no) { throw "Commit or stash your changes first." }
@@ -152,7 +152,7 @@ function Get-WithVersion([string]$path, [string]$pattern, [string]$replacement) 
     return $updated -replace "`r`n", "`n"
 }
 $newCargoToml = Get-WithVersion $cargoToml '^version = ".+"' "version = `"$Version`""
-$newCargoLock = Get-WithVersion "Cargo.lock" '(?<=^name = "zed"\r?\nversion = ")[^"]+' $Version
+$newCargoLock = Get-WithVersion "Cargo.lock" '(?<=^name = "solo"\r?\nversion = ")[^"]+' $Version
 # Stored with LF line endings, like the rest of the repository.
 $notesText = ($Notes -replace "\r\n", "`n").TrimEnd() + "`n"
 

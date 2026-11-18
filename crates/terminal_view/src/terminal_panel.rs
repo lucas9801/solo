@@ -38,7 +38,7 @@ use workspace::{
 };
 
 use anyhow::{Result, anyhow};
-use zed_actions::assistant::InlineAssist;
+use solo_actions::assistant::InlineAssist;
 
 // SOLO: what the terminal-first layout's terminal column shows with no terminals.
 pub(crate) mod empty_state;
@@ -179,7 +179,7 @@ impl TerminalPanel {
                                                 "New Terminal in New Worktree…",
                                                 "在新工作树中新建终端…",
                                             ),
-                                            zed_actions::agent_task::NewAgentTask.boxed_clone(),
+                                            solo_actions::agent_task::NewAgentTask.boxed_clone(),
                                         )
                                         .separator()
                                         .action(
@@ -1492,10 +1492,10 @@ impl Render for FailedToSpawnTerminal {
             .menu(move |window, cx| {
                 Some(ContextMenu::build(window, cx, |context_menu, _, _| {
                     context_menu
-                        .action("Open Settings", zed_actions::OpenSettings.boxed_clone())
+                        .action("Open Settings", solo_actions::OpenSettings.boxed_clone())
                         .action(
                             "Edit settings.json",
-                            zed_actions::OpenSettingsFile.boxed_clone(),
+                            solo_actions::OpenSettingsFile.boxed_clone(),
                         )
                 }))
             })
@@ -1529,7 +1529,8 @@ impl Render for FailedToSpawnTerminal {
                         ButtonLike::new("open-settings-ui")
                             .child(Label::new("Edit Settings").size(LabelSize::Small))
                             .on_click(|_, window, cx| {
-                                window.dispatch_action(zed_actions::OpenSettings.boxed_clone(), cx);
+                                window
+                                    .dispatch_action(solo_actions::OpenSettings.boxed_clone(), cx);
                             }),
                         popover_menu.into_any_element(),
                     )),
@@ -3676,7 +3677,7 @@ mod tests {
             cx.run_until_parked();
         };
 
-        choose(zed_actions::agent_task::NewAgentTask.boxed_clone(), cx);
+        choose(solo_actions::agent_task::NewAgentTask.boxed_clone(), cx);
         workspace.update_in(cx, |workspace, window, cx| {
             assert!(
                 workspace

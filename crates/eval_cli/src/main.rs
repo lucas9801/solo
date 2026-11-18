@@ -207,7 +207,7 @@ fn main() {
         // navigation tools behind `lsp-tool` / `rename-tool`) so experiments can
         // measure the agent with tools that aren't yet GA. Comma-separated flag
         // names; unset in production.
-        if let Ok(raw_flags) = std::env::var("ZED_EVAL_ENABLE_FLAGS") {
+        if let Ok(raw_flags) = std::env::var("SOLO_EVAL_ENABLE_FLAGS") {
             let flags: Vec<String> = raw_flags
                 .split(',')
                 .map(|flag| flag.trim().to_string())
@@ -657,7 +657,7 @@ async fn run_agent(
         // listed explicitly here. Keep WRITE_TOOLS in sync with the "write"
         // profile in assets/settings/default.json.
         let profile_field = {
-            let raw = std::env::var("ZED_EVAL_DISABLE_TOOLS").unwrap_or_default();
+            let raw = std::env::var("SOLO_EVAL_DISABLE_TOOLS").unwrap_or_default();
             let disabled = raw
                 .split(',')
                 .map(|name| name.trim().to_string())

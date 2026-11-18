@@ -10,7 +10,7 @@ See [Building Zed for Windows](https://github.com/zed-industries/zed/blob/main/d
 for the toolchain (the README's "从源码编译" section lists what Solo needs), then:
 
 ```powershell
-cargo run -p zed              # debug build, runs target\debug\solo.exe
+cargo run -p solo              # debug build, runs target\debug\solo.exe
 script\package-solo.ps1       # optimized build, staged in dist\Solo
 ```
 
@@ -28,7 +28,7 @@ are no longer made, and Solo is installed from the Microsoft Store.
   Windows page above for the component IDs. If `cmake` isn't on `PATH`, put
   Visual Studio's on it or set `CMAKE` to its path (for example
   `...\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`).
-- **Helper programs.** `cargo run -p zed` builds only `solo.exe`. Solo's other
+- **Helper programs.** `cargo run -p solo` builds only `solo.exe`. Solo's other
   programs are found next to it: `solo-agent-hook.exe` (Claude Code's hooks
   fall back to slower PowerShell scripts without it), `solo-terminal-host.exe`
   (without it terminals run inside Solo and end with it) and `solo-cli.exe`

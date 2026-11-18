@@ -914,7 +914,7 @@ impl LanguageServerState {
             None,
             |window, cx| {
                 window.dispatch_action(
-                    Box::new(zed_actions::OpenSettingsPage {
+                    Box::new(solo_actions::OpenSettingsPage {
                         page: LANGUAGE_SERVICES_SETTINGS_PAGE.to_string(),
                         target: None,
                     }),

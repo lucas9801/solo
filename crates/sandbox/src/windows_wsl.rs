@@ -763,13 +763,13 @@ async fn ensure_wsl_zed_helper(
     _version: &str,
 ) -> Result<String> {
     // TODO: Remove this development override once WSL canonical-path handling is released.
-    if let Some(helper) = std::env::var_os("ZED_WSL_SANDBOX_HELPER") {
+    if let Some(helper) = std::env::var_os("SOLO_WSL_SANDBOX_HELPER") {
         let helper = helper
             .into_string()
-            .map_err(|_| anyhow::anyhow!("ZED_WSL_SANDBOX_HELPER is not valid UTF-8"))?;
+            .map_err(|_| anyhow::anyhow!("SOLO_WSL_SANDBOX_HELPER is not valid UTF-8"))?;
         ensure!(
             helper.starts_with('/'),
-            "ZED_WSL_SANDBOX_HELPER must be an absolute path inside WSL"
+            "SOLO_WSL_SANDBOX_HELPER must be an absolute path inside WSL"
         );
         return Ok(helper);
     }

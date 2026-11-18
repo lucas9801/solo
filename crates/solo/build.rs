@@ -40,13 +40,13 @@ fn main() {
     // Populate git sha environment variable if git is available
     println!("cargo:rerun-if-changed=../../.git/logs/HEAD");
     // SOLO: script/release-solo.ps1 sets it to the commit it releases.
-    println!("cargo:rerun-if-env-changed=ZED_COMMIT_SHA");
+    println!("cargo:rerun-if-env-changed=SOLO_COMMIT_SHA");
     println!(
         "cargo:rustc-env=TARGET={}",
         std::env::var("TARGET").unwrap()
     );
 
-    let git_sha = match std::env::var("ZED_COMMIT_SHA").ok() {
+    let git_sha = match std::env::var("SOLO_COMMIT_SHA").ok() {
         Some(git_sha) => {
             // In deterministic build environments such as Nix, we inject the commit sha into the build script.
             Some(git_sha)
@@ -67,7 +67,7 @@ fn main() {
     };
 
     if let Some(git_sha) = git_sha {
-        println!("cargo:rustc-env=ZED_COMMIT_SHA={git_sha}");
+        println!("cargo:rustc-env=SOLO_COMMIT_SHA={git_sha}");
 
         // SOLO: the commit's date (YYYY-MM-DD), for the About window: a
         // release is built from the commit that sets its version.
@@ -85,7 +85,7 @@ fn main() {
         }
 
         if let Some(build_identifier) = option_env!("GITHUB_RUN_NUMBER") {
-            println!("cargo:rustc-env=ZED_BUILD_ID={build_identifier}");
+            println!("cargo:rustc-env=SOLO_BUILD_ID={build_identifier}");
         }
 
         if let Ok(build_profile) = std::env::var("PROFILE")
@@ -93,7 +93,7 @@ fn main() {
         {
             // This is currently the best way to make `cargo build ...`'s build script
             // to print something to stdout without extra verbosity.
-            println!("cargo::warning=Info: using '{git_sha}' hash for ZED_COMMIT_SHA env var");
+            println!("cargo::warning=Info: using '{git_sha}' hash for SOLO_COMMIT_SHA env var");
         }
     }
 

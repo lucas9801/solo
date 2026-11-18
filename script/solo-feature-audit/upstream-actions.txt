@@ -1537,11 +1537,11 @@ zed::ToggleBaseKeymapSelector
 zed::ToggleFullScreen
 zed::Unbind
 zed::Zoom
-zed_actions::OpenKeymap
-zed_actions::OpenKeymapEditor
-zed_actions::OpenProjectSettings
-zed_actions::OpenSettings
-zed_actions::OpenSettingsEditor
+solo_actions::OpenKeymap
+solo_actions::OpenKeymapEditor
+solo_actions::OpenProjectSettings
+solo_actions::OpenSettings
+solo_actions::OpenSettingsEditor
 zed_predict_onboarding::OpenZedPredictOnboarding
 zeta::FocusPredictions
 zeta::NextEdit

@@ -11,6 +11,7 @@ use indoc::indoc;
 use language_model::Speed;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use solo_env_vars::SOLO_STATELESS;
 use sqlez::{
     bindable::{Bind, Column},
     connection::Connection,
@@ -19,7 +20,6 @@ use sqlez::{
 use std::{io::ErrorKind, path::PathBuf, sync::Arc};
 use ui::{App, SharedString};
 use util::{ResultExt, path_list::PathList};
-use zed_env_vars::ZED_STATELESS;
 
 pub type DbMessage = crate::Message;
 pub type DbSummary = crate::legacy_thread::DetailedSummaryState;
@@ -431,7 +431,7 @@ impl ThreadsDatabase {
     }
 
     pub fn new(executor: BackgroundExecutor) -> Result<Self> {
-        let connection = if *ZED_STATELESS {
+        let connection = if *SOLO_STATELESS {
             Connection::open_memory(Some("THREAD_FALLBACK_DB"))
         } else if cfg!(any(feature = "test-support", test)) {
             // rust stores the name of the test on the current thread.

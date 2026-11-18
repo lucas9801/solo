@@ -120,6 +120,7 @@ use settings::{
     update_settings_file,
 };
 
+use solo_actions::{Spawn, feedback::FileBugReport, theme::ToggleMode};
 use sqlez::{
     bindable::{Bind, Column, StaticColumnCount},
     statement::Statement,
@@ -164,7 +165,6 @@ pub use workspace_settings::{
     RestoreOnStartupBehavior, StatusBarSettings, TabBarSettings, WorkspaceSettings,
     closing_last_window_quits_app, observe_accessible_mode,
 };
-use zed_actions::{Spawn, feedback::FileBugReport, theme::ToggleMode};
 
 use crate::{dock::PanelSizeState, item::ItemBufferKind, notifications::NotificationId};
 use crate::{
@@ -312,15 +312,15 @@ fn render_window_title_format(
     segments.join(separator)
 }
 
-static ZED_WINDOW_SIZE: LazyLock<Option<Size<Pixels>>> = LazyLock::new(|| {
-    env::var("ZED_WINDOW_SIZE")
+static SOLO_WINDOW_SIZE: LazyLock<Option<Size<Pixels>>> = LazyLock::new(|| {
+    env::var("SOLO_WINDOW_SIZE")
         .ok()
         .as_deref()
         .and_then(parse_pixel_size_env_var)
 });
 
-static ZED_WINDOW_POSITION: LazyLock<Option<Point<Pixels>>> = LazyLock::new(|| {
-    env::var("ZED_WINDOW_POSITION")
+static SOLO_WINDOW_POSITION: LazyLock<Option<Point<Pixels>>> = LazyLock::new(|| {
+    env::var("SOLO_WINDOW_POSITION")
         .ok()
         .as_deref()
         .and_then(parse_pixel_position_env_var)
@@ -5354,7 +5354,7 @@ impl Workspace {
     /// browser or the system browser. Ctrl+Shift opens it the other way.
     pub fn open_web_link(url: &str, window: &mut Window, cx: &mut App) {
         let modifiers = window.modifiers();
-        let action = zed_actions::browser::OpenUrl {
+        let action = solo_actions::browser::OpenUrl {
             url: url.to_string(),
             alternate: modifiers.control && modifiers.shift,
             in_background: false,
@@ -9982,8 +9982,8 @@ fn leader_border_for_pane(
 }
 
 fn window_bounds_env_override() -> Option<Bounds<Pixels>> {
-    ZED_WINDOW_POSITION
-        .zip(*ZED_WINDOW_SIZE)
+    SOLO_WINDOW_POSITION
+        .zip(*SOLO_WINDOW_SIZE)
         .map(|(position, size)| Bounds {
             origin: position,
             size,
@@ -20152,8 +20152,8 @@ mod tests {
     #[gpui::test]
     async fn test_toggle_theme_mode_persists_and_updates_active_theme(cx: &mut TestAppContext) {
         use settings::{ThemeName, ThemeSelection};
+        use solo_actions::theme::ToggleMode;
         use theme::SystemAppearance;
-        use zed_actions::theme::ToggleMode;
 
         init_test(cx);
 
