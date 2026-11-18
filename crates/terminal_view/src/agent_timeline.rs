@@ -1607,6 +1607,57 @@ mod tests {
         assert_eq!(turns[0].answer.as_deref(), Some("hello"));
     }
 
+    /// SOLO: a newer Codex session (no `user_message` events; prompts with
+    /// pasted images; commands and file changes recorded as items of `exec`
+    /// cells) shows each prompt with what was done for it and its answer.
+    #[test]
+    fn test_newer_codex_session() {
+        let lines = [
+            r#"{"timestamp":"2026-11-10T10:00:00.000Z","type":"session_meta","payload":{"id":"01a1ec8e-4f9a-7f51-9110-0e5aa040eecc","cwd":"G:\\Work","cli_version":"0.165.0"}}"#,
+            r#"{"timestamp":"2026-11-10T10:00:00.300Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>cwd</environment_context>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t1","content_item_kinds":["environments.environment_context"]}}}"#,
+            r#"{"timestamp":"2026-11-10T10:00:00.500Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"What is the date?"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t1","content_item_kinds":["user.text"]}}}"#,
+            r#"{"timestamp":"2026-11-10T10:00:00.510Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"UserMessage","content":[{"type":"text","text":"What is the date?"}]}}}"#,
+            r#"{"timestamp":"2026-11-10T10:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_a","name":"exec","input":"await tools.exec_command({cmd:\"date\"});"}}"#,
+            r#"{"timestamp":"2026-11-10T10:00:01.200Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"CommandExecution","id":"exec-1","command":["powershell.exe","-Command","date"],"status":"completed","exit_code":0},"started_at_ms":1794304801100}}"#,
+            r#"{"timestamp":"2026-11-10T10:00:01.300Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_a","output":[]}}"#,
+            r#"{"timestamp":"2026-11-10T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"First answer."}],"phase":"final_answer"}}"#,
+            r#"{"timestamp":"2026-11-10T10:01:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<image name=[Image #1]>"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"},{"type":"input_text","text":"</image>"},{"type":"input_text","text":"[Image #1] What is this?"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t2","content_item_kinds":["user.text","user.image","user.text","user.text"]}}}"#,
+            r#"{"timestamp":"2026-11-10T10:01:00.010Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t2","item":{"type":"UserMessage","content":[{"type":"local_image","path":"C:\\a.png"},{"type":"text","text":"[Image #1] What is this?"}]}}}"#,
+            r#"{"timestamp":"2026-11-10T10:01:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_b","name":"exec","input":"await tools.apply_patch(p);"}}"#,
+            r#"{"timestamp":"2026-11-10T10:01:01.200Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t2","item":{"type":"FileChange","id":"exec-2","changes":{"G:\\Work\\notes.md":{"type":"update","unified_diff":"@@"}},"status":"completed"},"started_at_ms":1794304861100}}"#,
+            r#"{"timestamp":"2026-11-10T10:01:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Second answer."}],"phase":"final_answer"}}"#,
+            r#"{"timestamp":"2026-11-10T10:02:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<image name=x>"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"},{"type":"input_text","text":"</image>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t3","content_item_kinds":["user.text","user.image","user.text"]}}}"#,
+            r#"{"timestamp":"2026-11-10T10:02:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Third answer."}],"phase":"final_answer"}}"#,
+        ];
+        let adapter = AgentKind::Codex.adapter();
+        let mut state = SessionState::new(AgentKind::Codex);
+        for line in lines {
+            state.apply_all(adapter.parse_line(line));
+        }
+        let turns = build_turns(&state, 0);
+        let summary: Vec<(usize, Option<&str>, Option<&str>)> = turns
+            .iter()
+            .map(|turn| (turn.number, turn.prompt.as_deref(), turn.answer.as_deref()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (1, Some("What is the date?"), Some("First answer.")),
+                (2, Some("[Image #1] What is this?"), Some("Second answer.")),
+                (3, Some("[image]"), Some("Third answer.")),
+            ]
+        );
+        let commands: Vec<&str> = turns[0]
+            .commands
+            .iter()
+            .map(|step| step.label.as_str())
+            .collect();
+        assert_eq!(commands, ["date"]);
+        assert!(turns[1].commands.is_empty());
+        assert_eq!(turns[1].changed.len(), 1);
+        assert_eq!(turns[1].changed[0].label, "G:\\Work\\notes.md");
+    }
+
     #[test]
     fn test_rows_and_collapsing() {
         let turns = build_turns(&session(), 0);
