@@ -97,7 +97,7 @@ agent 每开始和结束一轮，Solo 都会给工作目录拍一个快照（支
 
 快照存在 Solo 自己的目录里，不会改动你的分支、HEAD、暂存区、stash，也不会往你的 git 对象库里写东西。被 `.gitignore` 忽略的文件不在快照里。网络驱动器上的文件夹不拍快照。回滚时不动链接文件夹（目录联接、符号链接）里的文件，因为它们可能在项目之外；确认页显示之后如果又有文件改动，回滚会停下来让你重新确认。回滚（或撤销回滚）中途失败时（例如文件被别的程序打开着），页面会说明，并保留 **撤销回滚**：关掉那个程序后点它，所有文件会恢复到回滚之前的样子。
 
-agent 报告自己改了哪些文件时（Claude Code 会，通过 Solo 给它的 Edit、Write 等工具加的 hook），一轮只算它报告的文件：这期间你自己或同一仓库里别的 agent 改的文件不算进来，**全部拒绝**（按钮上写着要撤回几个文件）也不会动它们。页面会列出这一轮期间改动过的其他文件，包括 agent 自己运行的命令改的。不报告改动的 agent，一轮算文件夹里所有改动过的文件，页面会说明其中可能有不是它改的。
+agent 报告自己改了哪些文件时（Claude Code 会，通过 Solo 给它的 Edit、Write 等工具加的 hook；Codex 在设置了 `"terminal": {"codex_edit_hooks": true}` 时会报告它用 `apply_patch` 做的修改，这个设置默认关闭，因为每次打补丁后 Codex 都要等这个 hook 跑完，在 Windows 上通过 PowerShell 启动它大约要多花一秒），一轮只算它报告的文件：这期间你自己或同一仓库里别的 agent 改的文件不算进来，**全部拒绝**（按钮上写着要撤回几个文件）也不会动它们。页面会列出这一轮期间改动过的其他文件，包括 agent 自己运行的命令改的。不报告改动的 agent，一轮算文件夹里所有改动过的文件，页面会说明其中可能有不是它改的。
 
 拍不了快照时（例如不是 git 仓库、文件又超过 20000 个），Solo 会记下这一轮里项目中被改动的文件（只算 agent 工作目录下、没被忽略的文件），标签上照样显示 **“N 个文件已修改”**；点开是一个文件列表，点文件在编辑器里打开，列表上方写明为什么这一轮没有差异和回滚。这种情况下只能看到项目里打开的文件夹里的改动，别的程序同时改的文件也会算进去。
 
@@ -322,6 +322,7 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `shell_integration` | `true` | 加载 shell 集成（命令块、输入编辑器、hooks 都依赖它） |
 | `claude_code_hooks` | `true` | 通过 `--settings` 给 Claude Code 加状态 hooks |
 | `codex_hooks` | `true` | 通过 `-c hooks...` 给 Codex 加状态 hooks |
+| `codex_edit_hooks` | `false` | 让 Codex 同时报告每次 `apply_patch` 改了哪些文件，一轮只算它自己的修改（在 Windows 上每次补丁大约多花一秒） |
 | `copilot_hooks` | `true` | 通过 `--plugin-dir` 给 Copilot CLI 加状态 hooks |
 | `opencode_hooks` | `true` | 每次会话给 OpenCode 加载一个状态插件 |
 | `ide_tools` | `true` | 以 MCP 服务的形式给 Claude Code 和 Codex 提供 Solo 的只读 IDE 工具（符号、定义、引用、诊断） |

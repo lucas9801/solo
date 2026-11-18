@@ -485,7 +485,12 @@ pub fn integrate_browser(is_windows: bool, env: &mut HashMap<String, String>) {
 /// PowerShell. So on Windows the command names the program by its full path
 /// rather than through an environment variable: PowerShell doesn't expand
 /// `%VAR%`, and looking up the unknown command made it fail after seconds.
-pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
+///
+/// With `report_edits` (the `codex_edit_hooks` setting), a `PostToolUse` hook
+/// for Codex's `apply_patch` reports the files each patch edits, so a turn is
+/// only those (R3 M5). It's off by default: Codex waits for each hook, and on
+/// Windows starting PowerShell for it adds about a second to every patch.
+pub fn integrate_codex(is_windows: bool, report_edits: bool, env: &mut HashMap<String, String>) {
     let Some(hook) = agent_hook_executable() else {
         return;
     };
@@ -494,7 +499,7 @@ pub fn integrate_codex(is_windows: bool, env: &mut HashMap<String, String>) {
     } else {
         hook.to_string_lossy().into_owned()
     };
-    match codex_hook_args(is_windows, &hook) {
+    match codex_hook_args(is_windows, &hook, report_edits) {
         Some(mut args) => {
             // SOLO: and its log events, for how fast its model answers.
             if !codex_has_own_telemetry(env)
@@ -855,7 +860,11 @@ const CODEX_HOOK_EVENTS: [&str; 5] = [
 ///
 /// Codex trusts a hook by a hash of its command and timeout, so changing
 /// either (or Solo's folder, on Windows) makes it ask to trust them again.
-fn codex_hook_args(is_windows: bool, hook: &str) -> Option<Vec<String>> {
+///
+/// With `report_edits`, also a `PostToolUse` hook for `apply_patch` only (its
+/// matcher), Codex's tool for editing files, whose input is the patch. Codex
+/// runs it for no other tool, such as its shell, and waits for it.
+fn codex_hook_args(is_windows: bool, hook: &str, report_edits: bool) -> Option<Vec<String>> {
     let command = if is_windows {
         // SOLO: a short (8.3) path has a '~', which both shells take as it is.
         if is_bare_windows_path(hook) {
@@ -866,24 +875,33 @@ fn codex_hook_args(is_windows: bool, hook: &str) -> Option<Vec<String>> {
     } else {
         "'\"$SOLO_AGENT_HOOK\" --agent codex'".to_string()
     };
-    Some(
-        CODEX_HOOK_EVENTS
-            .iter()
-            .flat_map(|event| {
-                // Codex allows Interrupt hooks 3 seconds at most. The hook
-                // takes a few milliseconds, but on Windows it's started by
-                // PowerShell, which can take a second or more to start.
-                let timeout = if *event == "Interrupt" { 3 } else { 10 };
-                [
-                    "-c".to_string(),
-                    format!(
-                        "hooks.{event}=[{{hooks=[{{type='command',command={command},timeout={timeout}}}]}}]"
-                    ),
-                ]
-            })
-            .collect(),
-    )
+    let mut args: Vec<String> = CODEX_HOOK_EVENTS
+        .iter()
+        .flat_map(|event| {
+            // Codex allows Interrupt hooks 3 seconds at most. The hook
+            // takes a few milliseconds, but on Windows it's started by
+            // PowerShell, which can take a second or more to start.
+            let timeout = if *event == "Interrupt" { 3 } else { 10 };
+            [
+                "-c".to_string(),
+                format!(
+                    "hooks.{event}=[{{hooks=[{{type='command',command={command},timeout={timeout}}}]}}]"
+                ),
+            ]
+        })
+        .collect();
+    if report_edits {
+        args.push("-c".to_string());
+        args.push(format!(
+            "hooks.PostToolUse=[{{matcher='{CODEX_EDIT_TOOL}',hooks=[{{type='command',command={command},timeout=10}}]}}]"
+        ));
+    }
+    Some(args)
 }
+
+/// SOLO: Codex's tool that edits files, as `tool_name` in its hooks' input
+/// (`tool_input.command` is the patch, with paths relative to `cwd`).
+const CODEX_EDIT_TOOL: &str = "apply_patch";
 
 /// SOLO: `path` in a form both PowerShell and `cmd /C` run bare: as it is if
 /// it needs no quoting, else its short (8.3) form if that doesn't either, which
@@ -2446,7 +2464,7 @@ mod tests {
             ),
         ];
         for (is_windows, hook, expected) in cases {
-            let args = codex_hook_args(is_windows, hook).unwrap();
+            let args = codex_hook_args(is_windows, hook, false).unwrap();
             assert_eq!(args.len(), 2 * CODEX_HOOK_EVENTS.len());
             for (pair, event) in args.chunks(2).zip(CODEX_HOOK_EVENTS) {
                 assert_eq!(pair[0], "-c");
@@ -2468,14 +2486,51 @@ mod tests {
             }
         }
         // A path TOML can't hold in a literal string.
-        assert_eq!(codex_hook_args(true, r"C:\a''b\solo-agent-hook.exe"), None);
+        assert_eq!(
+            codex_hook_args(true, r"C:\a''b\solo-agent-hook.exe", false),
+            None
+        );
         // A short (8.3) path, which `cmd /C` runs too (R3 L-S4).
-        let args = codex_hook_args(true, r"C:\PROGRA~1\Solo\SOLO-A~1.EXE").unwrap();
+        let args = codex_hook_args(true, r"C:\PROGRA~1\Solo\SOLO-A~1.EXE", false).unwrap();
         assert!(
             args[1].contains(r"command='C:\PROGRA~1\Solo\SOLO-A~1.EXE --agent codex'"),
             "{}",
             args[1]
         );
+    }
+
+    /// SOLO: With `codex_edit_hooks`, Codex also gets a `PostToolUse` hook
+    /// that only its `apply_patch` runs, with the same command (R3 M5).
+    #[test]
+    fn codex_edit_hook_is_for_apply_patch_only() {
+        for (is_windows, hook) in [
+            (false, "/opt/solo/solo-agent-hook"),
+            (true, r"C:\Solo\solo-agent-hook.exe"),
+            (true, r"C:\Program Files\Solo\solo-agent-hook.exe"),
+        ] {
+            let without = codex_hook_args(is_windows, hook, false).unwrap();
+            assert!(!without.iter().any(|arg| arg.contains("PostToolUse")));
+            let with = codex_hook_args(is_windows, hook, true).unwrap();
+            assert_eq!(with[..without.len()], without[..]);
+            assert_eq!(with.len(), without.len() + 2);
+            assert_eq!(with[with.len() - 2], "-c");
+            let (key, value) = with[with.len() - 1].split_once('=').unwrap();
+            assert_eq!(key, "hooks.PostToolUse");
+            let parsed: toml::Table = toml::from_str(&format!("value = {value}")).unwrap();
+            let group = &parsed["value"][0];
+            assert_eq!(group["matcher"].as_str(), Some("apply_patch"));
+            let edit_hook = &group["hooks"][0];
+            assert_eq!(edit_hook["type"].as_str(), Some("command"));
+            assert_eq!(edit_hook["timeout"].as_integer(), Some(10));
+            // The same command as the status hooks', which Codex was asked
+            // to trust.
+            let (_, stop) = without[2 * 3 + 1].split_once('=').unwrap();
+            let stop: toml::Table = toml::from_str(&format!("value = {stop}")).unwrap();
+            assert_eq!(
+                edit_hook["command"],
+                stop["value"][0]["hooks"][0]["command"]
+            );
+        }
     }
 
     /// A hook path with spaces or parentheses goes to Codex in its short

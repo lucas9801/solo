@@ -997,6 +997,7 @@ impl VsCodeSettings {
             agent_commands: None,
             claude_code_hooks: None,
             codex_hooks: None,
+            codex_edit_hooks: None,
             copilot_hooks: None,
             opencode_hooks: None,
             ide_tools: None,

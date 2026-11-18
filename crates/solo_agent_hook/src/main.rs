@@ -719,6 +719,31 @@ mod tests {
         assert_eq!(patch_files("*** Update File: x").count(), 0);
     }
 
+    /// SOLO: The input Codex 0.162 gives its `PostToolUse` hook for
+    /// `apply_patch`, as a real session sent it: the patch is a string in
+    /// `tool_input.command`, its paths relative to `cwd`; its shell tool is
+    /// `Bash`, which isn't an edit (R3 M5).
+    #[test]
+    fn codex_apply_patch_input_reports_its_files() {
+        let input = r#"{"session_id":"01a1ec11-629b-7681-8029-a0f503e33373","turn_id":"01a1ec11-6dae-7432-afa5-5a3bb9df4c6d","transcript_path":"C:\\Users\\me\\.codex\\sessions\\2026\\11\\18\\rollout.jsonl","cwd":"C:\\Users\\me\\repo","hook_event_name":"PostToolUse","model":"gpt-5","permission_mode":"bypassPermissions","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Add File: hello.txt\n+hi\n*** Update File: a.py\n@@\n def a():\n     return 1\n+\n+\n+def b():\n+    return 2\n*** End Patch"},"tool_response":"Exit code: 0\nWall time: 14.8 seconds\nOutput:\nSuccess. Updated the following files:\nA hello.txt\nM a.py\n","tool_use_id":"exec-60496958-8682-4efd-9cec-b1163c1a04ae"}"#;
+        assert_eq!(kind_of(input, Some("edit")), Some("edit"));
+        assert_eq!(
+            session_id_of(input).as_deref(),
+            Some("01a1ec11-629b-7681-8029-a0f503e33373")
+        );
+        let files = edited_files_of(input);
+        if cfg!(windows) {
+            assert_eq!(
+                files,
+                [r"C:\Users\me\repo\hello.txt", r"C:\Users\me\repo\a.py"]
+            );
+        } else {
+            assert_eq!(files.len(), 2, "{files:?}");
+        }
+        let shell = r#"{"cwd":"C:\\Users\\me\\repo","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"Get-Content a.py"},"tool_response":"*** Begin Patch\n*** Add File: x\n"}"#;
+        assert_eq!(kind_of(shell, None), None);
+    }
+
     #[test]
     fn edits_report_the_file() {
         let (root, cwd) = if cfg!(windows) {

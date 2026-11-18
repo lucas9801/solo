@@ -189,7 +189,10 @@ file open, the page says so and keeps **Undo Rollback**: close that program
 and click it to put every file back as it was.
 
 A turn is only the files the agent reported editing, when it reports them
-(Claude Code does, through Solo's hook for its Edit and Write tools): files
+(Claude Code does, through Solo's hook for its Edit and Write tools; Codex
+does for its `apply_patch` edits when `"terminal": {"codex_edit_hooks": true}`
+is set, which is off by default because Codex waits for the hook after every
+patch, and on Windows starting it through PowerShell adds about a second): files
 you or another agent in the same repository changed meanwhile aren't in it,
 and **Reject All**, which says how many files it puts back, leaves them alone.
 The page lists the other files that changed during the turn, including what
@@ -832,6 +835,7 @@ Solo's own settings, under `"terminal"`:
 | `shell_integration` | `true` | load the shell integration (command blocks, input editor and hooks need it) |
 | `claude_code_hooks` | `true` | add status hooks to Claude Code with `--settings` |
 | `codex_hooks` | `true` | add status hooks to Codex with `-c hooks...` |
+| `codex_edit_hooks` | `false` | also have Codex report the files each `apply_patch` edits, so its turns are only its edits (about a second more per patch on Windows) |
 | `copilot_hooks` | `true` | add status hooks to Copilot CLI with `--plugin-dir` |
 | `opencode_hooks` | `true` | load a status plugin into OpenCode for each session |
 | `ide_tools` | `true` | give Claude Code and Codex Solo's read-only IDE tools (symbols, definitions, references, diagnostics) as an MCP server |
