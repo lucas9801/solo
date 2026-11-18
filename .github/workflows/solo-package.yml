@@ -239,11 +239,14 @@ jobs:
       - name: Check the built files
         run: |
           $expected = @("solo.exe", "solo-cli.exe", "solo-agent-hook.exe", "solo-terminal-host.exe", "solo-update-helper.exe",
-            "conpty.dll", "OpenConsole.exe", "LICENSE-GPL", "licenses.md", "THIRD-PARTY-VENDORED.md", "LICENSE-command-signatures.md")
+            "LICENSE-GPL", "licenses.md", "THIRD-PARTY-VENDORED.md", "LICENSE-command-signatures.md")
+          # Optional, as in script/package-solo-msix.ps1: without them terminals use the system's ConPTY.
+          $optional = @("conpty.dll", "OpenConsole.exe")
           $dir = (Resolve-Path dist/Solo).Path
           $actual = @(Get-ChildItem -Recurse -File $dir | ForEach-Object { $_.FullName.Substring($dir.Length + 1) })
           $missing = @($expected | Where-Object { $actual -notcontains $_ })
-          $extra = @($actual | Where-Object { $expected -notcontains $_ })
+          $extra = @($actual | Where-Object { $expected -notcontains $_ -and $optional -notcontains $_ })
+          foreach ($file in $optional) { if ($actual -notcontains $file) { Write-Warning "$file isn't in the built files; terminals use the system's ConPTY" } }
           if ($missing) { throw "Missing from the built files: $($missing -join ', ')" }
           if ($extra) { throw "Not expected in the built files (add them here, and to script/package-solo-msix.ps1 if the Store package needs them too): $($extra -join ', ')" }
 
