@@ -1,13 +1,21 @@
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, fmt::Write as _, mem, path::Path, sync::Arc};
-use telemetry_events::EditPredictionRating;
 
 pub use zeta_prompt::udiff::{
     CURSOR_POSITION_MARKER, INLINE_CURSOR_MARKER, encode_cursor_in_patch, extract_cursor_from_patch,
 };
 
 use crate::data_collection::format_cursor_excerpt;
+
+/// A rating of an edit prediction.
+///
+/// SOLO: was in Zed's `telemetry_events` crate, which Solo doesn't have.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum EditPredictionRating {
+    Positive,
+    Negative,
+}
 
 /// Maximum cursor file size to capture (64KB).
 /// Files larger than this will not have their content captured,

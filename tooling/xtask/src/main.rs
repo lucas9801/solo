@@ -1,5 +1,4 @@
 mod tasks;
-mod workspace;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -13,30 +12,14 @@ struct Args {
 
 #[derive(Subcommand)]
 enum CliCommand {
-    /// Runs `cargo clippy`.
-    Clippy(tasks::clippy::ClippyArgs),
-    Licenses(tasks::licenses::LicensesArgs),
-    /// Checks that packages conform to a set of standards.
-    PackageConformity(tasks::package_conformity::PackageConformityArgs),
-    /// Runs the Linux Bubblewrap sandboxing NixOS VM tests.
-    SandboxTests(tasks::sandbox_tests::SandboxTestsArgs),
     /// Runs the Windows WSL Bubblewrap sandbox behavior tests.
     WslSandboxTests(tasks::wsl_sandbox_tests::WslSandboxTestsArgs),
-    /// Downloads the pinned `webrtc-sys` release and configures `LK_CUSTOM_WEBRTC`.
-    SetupWebrtc(tasks::setup_webrtc::SetupWebrtcArgs),
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
-        CliCommand::Clippy(args) => tasks::clippy::run_clippy(args),
-        CliCommand::Licenses(args) => tasks::licenses::run_licenses(args),
-        CliCommand::PackageConformity(args) => {
-            tasks::package_conformity::run_package_conformity(args)
-        }
-        CliCommand::SandboxTests(args) => tasks::sandbox_tests::run_sandbox_tests(args),
         CliCommand::WslSandboxTests(args) => tasks::wsl_sandbox_tests::run_wsl_sandbox_tests(args),
-        CliCommand::SetupWebrtc(args) => tasks::setup_webrtc::run_setup_webrtc(args),
     }
 }

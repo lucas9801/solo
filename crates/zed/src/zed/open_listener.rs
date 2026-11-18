@@ -4,7 +4,6 @@ use agent_ui::ExternalSourcePrompt;
 use anyhow::{Context as _, Result, anyhow};
 use cli::{CliRequest, CliResponse, CliResponseSink};
 use cli::{IpcHandshake, ipc};
-use client::{ZedLink, parse_zed_link};
 use db::kvp::KeyValueStore;
 use editor::Editor;
 use fs::Fs;
@@ -40,8 +39,6 @@ pub struct OpenRequest {
     pub diff_paths: Vec<[String; 2]>,
     pub diff_all: bool,
     pub dev_container: bool,
-    pub open_channel_notes: Vec<(u64, Option<String>)>,
-    pub join_channel: Option<u64>,
     pub remote_connection: Option<RemoteConnectionOptions>,
     pub open_behavior: Option<cli::OpenBehavior>,
     /// SOLO: What links in the request ask for that the user confirms
@@ -68,7 +65,9 @@ impl LinkRequest {
             Self::OpenPath(path) if chinese => format!("打开 {path}"),
             Self::OpenPath(path) => format!("Open {path}"),
             Self::Ssh { destination, path } if chinese => {
-                format!("通过 SSH 连接主机 {destination}（会在那里安装 Solo 的远程服务），并打开 {path}")
+                format!(
+                    "通过 SSH 连接主机 {destination}（会在那里安装 Solo 的远程服务），并打开 {path}"
+                )
             }
             Self::Ssh { destination, path } => format!(
                 "Connect to the host {destination} over SSH (installing Solo's remote server there) and open {path}"
@@ -167,8 +166,6 @@ impl OpenRequest {
             && self.open_paths.is_empty()
             && self.diff_paths.is_empty()
             && self.remote_connection.is_none()
-            && self.join_channel.is_none()
-            && self.open_channel_notes.is_empty()
     }
 
     pub fn parse(request: RawOpenRequest, cx: &App) -> Result<Self> {
@@ -210,8 +207,7 @@ impl OpenRequest {
                 this.parse_file_path(file);
                 // SOLO: links ask first (R3 M13).
                 if let Some(path) = this.open_paths.last() {
-                    this.link_requests
-                        .push(LinkRequest::OpenPath(path.clone()));
+                    this.link_requests.push(LinkRequest::OpenPath(path.clone()));
                 }
             } else if let Some(file) = url.strip_prefix("zed://ssh") {
                 let ssh_url = "ssh:/".to_string() + file;
@@ -262,18 +258,6 @@ impl OpenRequest {
                 }
             } else if url.starts_with("ssh://") {
                 this.parse_ssh_file_path(&url, cx)?
-            } else if let Some(zed_link) = parse_zed_link(&url, cx) {
-                match zed_link {
-                    ZedLink::Channel { channel_id } => {
-                        this.join_channel = Some(channel_id);
-                    }
-                    ZedLink::ChannelNotes {
-                        channel_id,
-                        heading,
-                    } => {
-                        this.open_channel_notes.push((channel_id, heading));
-                    }
-                }
             } else {
                 log::error!("unhandled url: {}", url);
             }
@@ -3200,10 +3184,7 @@ mod tests {
             }]
         );
         // `zed://` links are taken too.
-        assert_eq!(
-            parse("zed://file/tmp/evil.txt", cx).link_requests.len(),
-            1
-        );
+        assert_eq!(parse("zed://file/tmp/evil.txt", cx).link_requests.len(), 1);
 
         // Paths and `ssh://` given on the command line, and Solo's own links
         // that stay inside it, don't ask.
