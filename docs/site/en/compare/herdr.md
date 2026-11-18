@@ -20,6 +20,7 @@
 - **An editor.** Herdr has none; Solo includes the full Zed, so reading code, navigating and debugging happen in the same window.
 - **Per-turn review.** Herdr relies on third-party plugins; Solo has it built in: keep or reject hunks, roll back, diagnostics per turn, document comments.
 - **A graphical terminal:** command blocks, the input editor at the bottom, completions, paths that open with a click.
+- **A built-in browser:** local pages open inside Solo, and you can pick elements and send comments to the agent.
 
 ## Which to pick
 
