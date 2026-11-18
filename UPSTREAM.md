@@ -10,7 +10,7 @@ commit is Solo's.
 | Zed commit | [`4d847859f5506471bd80ca78ee6ced161b19a4e8`](https://github.com/zed-industries/zed/commit/4d847859f5506471bd80ca78ee6ced161b19a4e8) |
 | Date | 2026-10-28 (Zed's `main`) |
 | Zed version | 1.28.0 (Zed's `crates/zed/Cargo.toml`) |
-| Imported in | the first commit, "Import Zed 1.28.0" |
+| Imported in | the first commit |
 
 When Zed is updated, change the table to the new commit.
 
@@ -39,7 +39,7 @@ python script/zed-update-patch.py --zed $zed --base $base --new $new -o ..\zed.p
 # first commit has it for the first update; after that, fetch it.
 git fetch --no-tags --depth 1 https://github.com/zed-industries/zed.git $base
 
-git switch -c zed-update
+git switch -c upstream-update
 git apply -3 --index ..\zed.patch
 ```
 
@@ -56,7 +56,10 @@ Then:
    changed.
 4. Change the table above to `$new`, its date and the version in Zed's
    `crates/zed/Cargo.toml`, and commit it all as one commit,
-   "Update Zed to <version>", naming the Zed commit in the message.
+   "Update the editor base to <version>". The upstream commit is recorded
+   only in the table above; commit messages, merge messages, tag messages
+   and branch names never name the upstream editor (CI checks this with
+   script/check-commit-messages.ps1).
 
 The patch and the shallow fetch are only needed while merging; nothing from
 them is pushed except the commit.

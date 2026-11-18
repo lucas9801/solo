@@ -44,6 +44,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The commit message check below needs the commits this push or
+          # pull request brings.
+          fetch-depth: 0
+
+      # Commit messages describe changes in Solo's own words (see
+      # script/check-commit-messages.ps1).
+      - name: Check the commit messages
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if ($env:BASE) { $range = "$($env:BASE)..HEAD" }
+          elseif ($env:BEFORE -and $env:BEFORE -notmatch '^0+$' -and (git cat-file -t $env:BEFORE 2>$null) -eq 'commit') { $range = "$($env:BEFORE)..HEAD" }
+          else { $range = "HEAD~1..HEAD" }
+          ./script/check-commit-messages.ps1 $range
 
       # Quick, so before the build: the release script's version rules.
       - name: Test the release script
