@@ -473,6 +473,7 @@ impl Project {
                                 if settings.codex_hooks {
                                     terminal::shell_integration::integrate_codex(
                                         path_style.is_windows(),
+                                        settings.codex_edit_hooks,
                                         &mut env,
                                     );
                                 }

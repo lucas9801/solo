@@ -461,8 +461,10 @@ impl AgentTurns {
         let terminal = self.terminals.entry(terminal).or_default();
         terminal.reports_edits = true;
         let Some(pending) = terminal.pending.as_mut() else {
+            log::debug!("the agent reported editing {path:?} outside a turn");
             return;
         };
+        log::debug!("the agent reported editing {path:?}");
         if pending.snapshot.peek().is_none() && !pending.edited_before_snapshot.contains(&path) {
             pending.edited_before_snapshot.push(path.clone());
         }
@@ -526,10 +528,18 @@ impl AgentTurns {
                         let (changed, others) = if attributed {
                             let edited: Vec<PathBuf> =
                                 edited.iter().map(|path| comparable_path(path)).collect();
-                            changed.into_iter().partition(|file| {
-                                let abs_path = comparable_path(&started.store.abs_path(&file.path));
-                                edited.iter().any(|edited| is_same_path(edited, &abs_path))
-                            })
+                            let (changed, others): (Vec<_>, Vec<_>) =
+                                changed.into_iter().partition(|file| {
+                                    let abs_path =
+                                        comparable_path(&started.store.abs_path(&file.path));
+                                    edited.iter().any(|edited| is_same_path(edited, &abs_path))
+                                });
+                            log::debug!(
+                                "the turn's reported edits {edited:?}: {} of its changed files are the agent's, {} others",
+                                changed.len(),
+                                others.len()
+                            );
+                            (changed, others)
                         } else {
                             (changed, Vec::new())
                         };

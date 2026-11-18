@@ -333,6 +333,14 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub codex_hooks: Option<bool>,
+    /// SOLO: Whether Codex's hooks (`codex_hooks`) also report the files each
+    /// `apply_patch` edits, so a turn's review lists only Codex's edits and
+    /// shows other changes made meanwhile apart. Codex waits for the hook
+    /// after every patch; on Windows it starts PowerShell for it, which adds
+    /// about a second to each. Takes effect in new terminals.
+    ///
+    /// Default: false
+    pub codex_edit_hooks: Option<bool>,
     /// Whether GitHub Copilot CLI started in a terminal with shell
     /// integration reports what it's doing through hooks in a plugin Solo
     /// loads for that session with `copilot --plugin-dir`, so its turns can be
@@ -433,7 +441,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         open_links_on_click,
         notify_long_commands_after_seconds, program_notifications, agent_input_notifications,
         agent_stopped_notifications, restore_contents,
-        agent_commands, claude_code_hooks, codex_hooks, copilot_hooks, opencode_hooks, ide_tools, more_agent_hooks, global_agent_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
+        agent_commands, claude_code_hooks, codex_hooks, codex_edit_hooks, copilot_hooks, opencode_hooks, ide_tools, more_agent_hooks, global_agent_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
         agent_task_command, agent_control, agent_usage_display,
     },
     defaults: {},
