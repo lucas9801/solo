@@ -26,7 +26,7 @@ Plenty of tools help you run several AI agents at once. Here Solo is set beside 
 | Reviewing changes | per-turn snapshots, keep or reject hunks, roll back, diagnostics per turn, document comments | line comments, PRs | changes view | per turn or per session, line comments | third-party plugins |
 | When the window closes or updates | a background process per terminal keeps them (Windows) | a daemon keeps them | a daemon keeps them | a daemon keeps them | a background service keeps them |
 | Interface for agents | `solo-cli agent` | CLI | CLI, SDK, MCP, skills | CLI, session tools | CLI, socket API |
-| Phone | in development; for now through Claude's Remote Control | yes | full app | yes | over SSH |
+| Phone | in development | yes | full app | yes | over SSH |
 | Built-in browser | yes: pick page elements and send comments to the agent; Claude Code and Codex can drive it (off by default) | yes, pick page elements | yes | annotate elements | no |
 | Platforms | **Windows only**, installed from the Microsoft Store (Store-signed) | several; signed on Windows | several | several | several; unsigned on Windows |
 | Account | none | none | none | required | none |
