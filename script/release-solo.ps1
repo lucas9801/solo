@@ -15,17 +15,14 @@
 #
 #   script\release-solo.ps1 (-Notes <text> | -NotesFile <file>) (-Bump patch|minor|major | -Version <x.y.z>) [-DryRun] [-SkipCiCheck]
 #
-# Version numbers:
-# - patch (2.5.1): bug fixes only. No new features, no new or changed
-#   settings, no interface changes (fixing a typo aside). The notes list fixes.
-# - minor (2.6.0): new features, changed behavior or defaults, new settings.
-# - major (3.0.0): only when settings or data aren't compatible and users
-#   have to do something by hand.
-# Minor and major versions are released from main; releasing one also
-# creates the branch release/<x.y> on its version commit. Patch versions are
-# released from release/<x.y>: fixes go into main first and are then
-# cherry-picked onto it; main's new features wait for the next minor version.
-# Only the newest minor version gets patches.
+# Version numbers: every release, with fixes or new features, raises only
+# the last number (2.5.1, 2.5.2, ...) and is released from main, which has
+# whatever was tested and merged by then (-Bump patch). Minor and major
+# versions are kept for big changes: a major one (3.0.0) only when settings
+# or data aren't compatible and users have to do something by hand. Releasing
+# a minor or major version also creates the branch release/<x.y> on its
+# version commit. An urgent fix for an older version can still be released
+# from its release/<x.y> branch as a patch version.
 #
 # The release notes must start with a one-sentence summary in Chinese on the
 # first line and in English on the second, plain text: the update
@@ -96,7 +93,7 @@ if ($Bump) {
 $v = [version]$Version
 $releaseBranch = "release/$($v.Major).$($v.Minor)"
 if ($Bump -eq "patch") {
-    if ($branch -ne $releaseBranch) { throw "Patch version $Version is released from $releaseBranch, not $branch; cherry-pick the fixes onto $releaseBranch." }
+    if ($branch -ne "main" -and $branch -ne $releaseBranch) { throw "Patch version $Version is released from main (or $releaseBranch), not $branch." }
 } else {
     if ($branch -ne "main") { throw "The $Bump version $Version is released from main, not $branch." }
     $remoteBranch = git ls-remote --heads origin "refs/heads/$releaseBranch"
