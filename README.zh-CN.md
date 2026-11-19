@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/df4a53d7-075a-44b7-9874-f3f71f2eaf61
 
 终端占满整个窗口；打开一个文件，编辑器就从右边出现，关掉最后一个文件又收回去。中间的分隔线可以拖动，比例会记住。左边一排按钮打开文件树、Git、大纲、agent 看板等侧栏。
 
-![终端和编辑器分屏：左边 agent 在终端里工作，右边编辑器打开它改的文件](docs/media/split.png)
+![终端和编辑器分屏：左边 Claude Code 刚改完 Godot 的 reparent()，右边编辑器打开它改的 node.cpp；标题栏上五个工作区标签各带状态](docs/media/zh/split.png)
 
 ### agent 状态一眼看清
 
@@ -28,19 +28,29 @@ https://github.com/user-attachments/assets/df4a53d7-075a-44b7-9874-f3f71f2eaf61
 
 Claude Code、Codex、Copilot CLI 通过 Solo 为这次会话加的 hooks 上报状态，OpenCode 通过 Solo 加的插件，都不改它们的配置；其他 agent 按各自的屏幕规则识别。
 
-![agent 状态：几个终端标签分别在工作、等你回复、做完待看，悬停卡片展开](docs/media/status.png)
+![agent 状态：godot 里 Claude Code、Codex 在工作，Gemini CLI 等你回复；Codex 标签的悬停卡片展开，显示模型、上下文、token 和速度](docs/media/zh/status.png)
+
+不确定状态对不对时，在终端里右键选"为什么是这个 agent 状态？"，Solo 说明它来自 hook 上报、程序退出还是屏幕规则，以及最后一次上报和输出是什么时候。
+
+![为什么是这个状态：api-server 里失败的 Codex 终端，Solo 说明程序已经退出，以及最后一次 hook 上报和输出的时间](docs/media/zh/why-status.png)
 
 ### 工作区标签：按项目分开
 
 每个项目文件夹是一个工作区，标题栏上一个标签，里面有它自己的终端、agent、编辑器和文件树；切换标签，这些一起换。标签上显示这个项目里 agent 的状态，后台项目有 agent 在等你也看得到；标签菜单列出它的终端，点一下直接跳过去。`Ctrl+Alt+1…9` 切换，重启后所有标签都回来。
 
-![工作区标签：标题栏上三个项目，一个标签的菜单展开](docs/media/workspaces.png)
+![工作区标签：标题栏上五个项目，godot 标签的菜单展开，列出它的三个 agent](docs/media/zh/workspaces.png)
 
 ### 按轮审阅和回滚
 
 agent 每做完一轮，终端标签上出现"N 个文件已修改"。点开就是这一轮的全部改动：逐块保留或拒绝，在代码行上写意见，一次发回给 agent。Solo 还会告诉你这一轮**新增**了几个错误和警告、修掉了几个。可以回滚到任意一轮之前，回滚本身也能撤销；快照存在 Solo 自己的目录里，不碰你的分支、暂存区和 stash。[详细 →](docs/site/zh/features/review.md)
 
-![按轮审阅：一轮改了几个文件，顶部是新增的警告，一行代码上挂着审阅意见](docs/media/review.png)
+![按轮审阅：Claude Code 这一轮改的几个文件，一行代码上挂着审阅意见，顶部可以把意见一次发给 agent](docs/media/zh/review.png)
+
+### Agent 时间线
+
+Claude Code 和 Codex 的会话按轮列出：每一轮的提示、读过和改过的文件、运行的命令和回答，点文件直接打开。在终端标签上右键选"Agent 时间线"。
+
+![Agent 时间线：右边按轮列出 Claude Code 这次会话读过和改过的文件、运行的命令和回答](docs/media/zh/timeline.png)
 
 ### 关掉 Solo，agent 照样在跑
 
@@ -50,35 +60,49 @@ agent 每做完一轮，终端标签上出现"N 个文件已修改"。点开就�
 
 终端输出里的文件路径，点一下就打开：代码在编辑器里，Markdown 在渲染好的预览里（Mermaid 图和图片都显示），图片在图片查看器里。agent 说"改了 src/app.ts:42"，点一下就跳到那一行；输出里只有行号（比如 `(:120)`）时，Solo 会到前面提到的文件里找有这一行的那个打开。
 
-![终端里的链接：点 agent 输出里的路径，编辑器打开那个文件](docs/media/links.gif)
+![终端里的链接：点 agent 输出里的路径，编辑器打开那个文件并跳到那一行](docs/media/zh/links.gif)
 
 ### Mermaid 图和文档审阅
 
 agent 输出里的 `mermaid` 代码块，点 `mermaid` 那一行就能看图；屏幕上只显示了一部分时，Solo 从 agent 的会话记录里取完整内容。Markdown 预览里的 Mermaid 图也直接渲染。
 
-![Mermaid 图：左边是 agent 输出的 mermaid 代码，右边是渲染出的图](docs/media/mermaid.png)
+![Mermaid 图：左边是 agent 输出的 mermaid 代码，右边是渲染出的流程图](docs/media/zh/mermaid.png)
 
 agent 写的计划和设计文档在预览里打开，选中文字写批注，一次发回给 agent；文档再被改时，Solo 告诉你改了哪几块。[详细 →](docs/site/zh/features/documents.md)
 
-![文档审阅：计划文档的预览，下方是一条批注和"发给 agent"](docs/media/documents.png)
+![文档审阅：agent 写的计划在预览里打开，一句话上挂着批注，下方是"发给 agent"](docs/media/zh/documents.png)
 
 ### 好几个 agent 同时干活
 
 一个任务一个 git worktree 和分支，互不干扰，做完合并、开 PR 或丢弃；工作区里有几个仓库时，一个任务可以横跨它们。左侧的 agent 看板列出所有 agent 和任务，等你回复的排在最前面。终端里的 agent 也能用 `solo-cli agent` 查看、等待别的 agent，给它们发消息，或者新开任务。[详细 →](docs/site/zh/features/parallel.md)
 
-![agent 看板：左侧列出几个 agent 的状态、分支和最后一句话](docs/media/board.png)
+![agent 看板：左侧列出 godot 里三个 agent 的状态、分支和最后一句话，等你回复的排在最前](docs/media/zh/board.png)
 
 ### 内置浏览器
 
 本机地址（localhost 等）的链接在 Solo 里打开，开发时不用切窗口。在网页上点选元素、写批注，一次发给 agent，带上选择器、HTML、样式和截图。打开设置后，Solo 终端里启动的 agent 还能在这个浏览器里打开网页、点击、填表、截图，你看着它操作。[详细 →](docs/site/zh/features/browser.md)
 
-![内置浏览器：左边终端里跑着本地服务器，右边 Solo 的浏览器打开了这个页面，工具栏上有地址栏、视口和"选取"](docs/media/browser.png)
+![内置浏览器：左边 OpenCode 在改待办页，右边 Solo 的浏览器打开本地服务器上的这个页面，工具栏上有地址栏、视口和"选取"](docs/media/zh/browser.png)
 
 ### 好用的终端
 
 命令块、底部的输入编辑器、边输边弹的补全、失败的命令一键把错误发给 agent，还能用一句话让你自己的 Claude Code 或 Codex 给出命令。[详细 →](docs/site/zh/features/terminal.md)
 
-![好用的终端：几个命令块，失败的标红，输入框正在弹出 git 子命令的补全](docs/media/terminal.png)
+![好用的终端：cargo build、失败标红的 git push 和 cargo run 几个命令块，输入框正在弹出 git 子命令的补全](docs/media/zh/terminal.png)
+
+### 下载前先问，也能离线
+
+语言服务、Node.js 这类东西第一次下载前，Solo 先问一次，写明从哪里下载；可以全部允许并记住、逐个选择，或者指定本机已有的路径。状态栏右边的按钮切到离线模式，Solo 就只连本机和局域网。
+
+![下载前先问：打开 TypeScript 文件时，Solo 列出要下载的语言服务和来源，等你同意](docs/media/zh/download.png)
+
+![离线模式：状态栏右边显示"离线"，悬停说明 Solo 只连本机和局域网](docs/media/zh/offline.png)
+
+### 在 Solo 里更新
+
+有新版本时标题栏右边出现更新按钮，不弹通知；菜单里有这一版的简介，可以更新并重启、退出时再装、看更新内容或跳过这个版本。
+
+![更新按钮：标题栏右边的"更新到 2.5.2"和它的菜单](docs/media/zh/update.png)
 
 ### 全部功能
 
@@ -126,6 +150,8 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 
 - Zed 的编辑器：语言服务、跳到定义、查找引用、全项目搜索、多光标、Git 面板、diff 和 blame。
 - 大仓库里语言服务默认更省资源；状态栏显示它们占了多少内存，可以按项目选完整分析、只分析打开的文件或关掉；占内存多时提醒；起不来时写明原因。
+
+![编辑器：左边 Git 面板列出改动，中间是终端的命令块，右边是 add() 的"查找所有引用"结果](docs/media/zh/editor.png)
 
 **文档、Markdown 和图**
 
