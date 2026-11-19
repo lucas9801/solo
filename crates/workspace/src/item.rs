@@ -167,6 +167,9 @@ pub struct RunningProgram {
 pub enum TabTooltipContent {
     Text(SharedString),
     Custom(Box<dyn Fn(&mut Window, &mut App) -> AnyView>),
+    /// SOLO: a custom tooltip that stays while the mouse is on it, for one
+    /// with something to click.
+    Hoverable(Box<dyn Fn(&mut Window, &mut App) -> AnyView>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

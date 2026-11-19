@@ -1,17 +1,24 @@
 //! SOLO: how an agent's terminal tab shows the agent: its icon with its
 //! status on it, how full its context is, and the card shown on hover.
 
-use std::time::Duration;
+use std::{
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use agent_sessions::{
     CONTEXT_ALMOST_OUT, CONTEXT_NEARLY_FULL, MatchedBy, ResponseSummary, SessionState, TokenUsage,
 };
-use gpui::{AnyElement, App, FontWeight, Hsla};
+use gpui::{AnyElement, App, FontWeight, Hsla, Window};
 use ui::{CircularProgress, Divider, prelude::*};
 use util::i18n::tr;
 use workspace::agent_activity::{AgentStateIcon, legible_on};
 
-use crate::{TerminalView, agent_session::AgentMetrics, agent_status::AgentStatus};
+use crate::{
+    TerminalView,
+    agent_session::AgentMetrics,
+    agent_status::{AgentStatus, HooksMissing},
+};
 
 impl TerminalView {
     /// The card shown on the terminal's tab; `None` before its process runs.
@@ -20,14 +27,30 @@ impl TerminalView {
         let pid = terminal.pid_getter()?.fallback_pid().as_u32();
         let agent = self.agent_status().map(|(name, status)| {
             let session = self.agent_session().map(|session| session.read(cx));
-            AgentCard::new(
-                name,
-                Some(status),
-                session.map(|session| (session.state(), session.location().matched_by)),
-                &self.agent_metrics(cx),
-            )
+            AgentCard {
+                hooks_missing: self.agent_hooks_missing(Instant::now()),
+                ..AgentCard::new(
+                    name,
+                    Some(status),
+                    session.map(|session| (session.state(), session.location().matched_by)),
+                    &self.agent_metrics(cx),
+                )
+            }
         });
+        // SOLO: the note on an agent without Solo's hooks opens "why this
+        // status".
+        let explain = agent
+            .as_ref()
+            .is_some_and(|agent| agent.hooks_missing.is_some())
+            .then(|| {
+                let view = self.self_handle.clone();
+                Rc::new(move |_: &mut Window, cx: &mut App| {
+                    view.update(cx, |view, cx| view.show_agent_status_explanation(cx))
+                        .ok();
+                }) as Rc<dyn Fn(&mut Window, &mut App)>
+            });
         Some(TabCard {
+            explain,
             title: self.title_with(0, false, agent.is_some(), cx),
             agent,
             location: self.title_details(cx),
@@ -320,6 +343,9 @@ pub(crate) struct AgentCard {
     pub session_time: Option<Duration>,
     /// SOLO: how fast the model answered.
     pub responses: ResponseSummary,
+    /// SOLO: the agent can report its status through Solo's hooks but runs
+    /// without them.
+    pub hooks_missing: Option<HooksMissing>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -381,6 +407,28 @@ impl AgentCard {
         card
     }
 
+    /// SOLO: the note under the status of an agent that runs without
+    /// Solo's hooks.
+    pub(crate) fn hooks_note(&self) -> Option<&'static str> {
+        self.hooks_missing.map(|_| {
+            tr(
+                "No status reports — read from screen. A new terminal fixes it.",
+                "收不到状态上报，改为读屏幕。新开一个终端即可恢复。",
+            )
+        })
+    }
+
+    /// SOLO: the note by the turn's figures when the agent's turns won't
+    /// list the files they change: its hooks' files were missing.
+    pub(crate) fn unlisted_files_note(&self) -> Option<&'static str> {
+        matches!(self.hooks_missing, Some(HooksMissing::FilesMissing)).then(|| {
+            tr(
+                "Changed files won't be listed for this session",
+                "本会话不会列出改动的文件",
+            )
+        })
+    }
+
     /// The line on what of the session's input the cache served.
     pub(crate) fn cache_line(&self) -> Option<String> {
         let session = &self.session;
@@ -414,6 +462,9 @@ pub(crate) struct TabCard {
     /// A warning, like the terminal not outliving Solo.
     pub warning: Option<&'static str>,
     pub pid: Option<u32>,
+    /// SOLO: shows why the agent has its status, for the note on an agent
+    /// without Solo's hooks.
+    pub explain: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
 }
 
 const LABEL_COLUMN: f32 = 64.;
@@ -469,7 +520,14 @@ impl TabCard {
                                             AgentStateIcon::new(status)
                                                 .size(IconSize::Custom(rems_from_px(10_f32))),
                                         )
-                                        .child(small(status.label().to_string())),
+                                        .child(small(status.label().to_string()))
+                                        .when(agent.hooks_missing.is_some(), |this| {
+                                            this.child(
+                                                Icon::new(IconName::Warning)
+                                                    .size(IconSize::Custom(rems_from_px(10_f32)))
+                                                    .color(Color::Warning),
+                                            )
+                                        }),
                                 )
                             })
                             .child(
@@ -479,6 +537,21 @@ impl TabCard {
                                     .truncate(),
                             ),
                     )
+                    // SOLO: an agent without Solo's hooks says so; the note
+                    // opens "why this status".
+                    .when_some(agent.hooks_note(), |this, note| {
+                        let explain = self.explain.clone();
+                        this.child(
+                            div()
+                                .id("agent-hooks-missing")
+                                .debug_selector(|| "agent-hooks-missing".into())
+                                .when_some(explain, |this, explain| {
+                                    this.cursor_pointer()
+                                        .on_click(move |_, window, cx| explain(window, cx))
+                                })
+                                .child(small(note.to_string()).color(Color::Muted)),
+                        )
+                    })
             }
             None => v_flex().child(Label::new(self.title.clone()).untranslated()),
         };
@@ -633,6 +706,14 @@ impl TabCard {
                     .when_some(agent.cache_line(), |this, line| {
                         this.child(small(line).untranslated().color(Color::Muted))
                     });
+            }
+            // SOLO: no turn will list its changed files.
+            if let Some(note) = agent.unlisted_files_note() {
+                card = card.child(
+                    div()
+                        .debug_selector(|| "agent-files-unlisted".into())
+                        .child(small(note.to_string()).color(Color::Muted)),
+                );
             }
 
             // How fast the model answered.
@@ -870,5 +951,95 @@ mod tests {
                 "本会话输入里 150.0k 是缓存读取，20.0k 是缓存写入"
             )
         );
+    }
+
+    #[test]
+    fn test_hooks_notes() {
+        let card = |hooks_missing| AgentCard {
+            agent: "claude".to_string(),
+            status: Some(AgentStatus::Working),
+            hooks_missing,
+            ..Default::default()
+        };
+        let with_hooks = card(None);
+        assert_eq!(with_hooks.hooks_note(), None);
+        assert_eq!(with_hooks.unlisted_files_note(), None);
+        // Only quiet so far: its status is read from the screen, but that
+        // its turns won't list files isn't certain.
+        let quiet = card(Some(HooksMissing::NoReports(Duration::from_secs(20))));
+        assert_eq!(
+            quiet.hooks_note(),
+            Some(tr(
+                "No status reports — read from screen. A new terminal fixes it.",
+                "收不到状态上报，改为读屏幕。新开一个终端即可恢复。",
+            ))
+        );
+        assert_eq!(quiet.unlisted_files_note(), None);
+        let files_missing = card(Some(HooksMissing::FilesMissing));
+        assert_eq!(files_missing.hooks_note(), quiet.hooks_note());
+        assert_eq!(
+            files_missing.unlisted_files_note(),
+            Some(tr(
+                "Changed files won't be listed for this session",
+                "本会话不会列出改动的文件",
+            ))
+        );
+    }
+
+    #[gpui::test]
+    async fn test_card_hooks_note_opens_explanation(cx: &mut gpui::TestAppContext) {
+        struct Card(TabCard);
+        impl Render for Card {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.render(cx))
+            }
+        }
+        let tab_card = |hooks_missing: Option<HooksMissing>, explain| TabCard {
+            title: "claude".to_string(),
+            agent: Some(AgentCard {
+                agent: "claude".to_string(),
+                status: Some(AgentStatus::Working),
+                agent_line: "Claude Code".to_string(),
+                hooks_missing,
+                ..Default::default()
+            }),
+            location: Vec::new(),
+            location_note: None,
+            warning: None,
+            pid: Some(42),
+            explain,
+        };
+        crate::tests::init_test(cx).await;
+        let explained = Rc::new(std::cell::Cell::new(0));
+        let explain = {
+            let explained = explained.clone();
+            Rc::new(move |_: &mut Window, _: &mut App| explained.set(explained.get() + 1))
+                as Rc<dyn Fn(&mut Window, &mut App)>
+        };
+        let (card, cx) = cx.add_window_view(|_, _| Card(tab_card(None, None)));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("agent-hooks-missing").is_none());
+        assert!(cx.debug_bounds("agent-files-unlisted").is_none());
+
+        card.update(cx, |card, cx| {
+            card.0 = tab_card(
+                Some(HooksMissing::NoReports(Duration::from_secs(20))),
+                Some(explain.clone()),
+            );
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let note = cx.debug_bounds("agent-hooks-missing").expect("the note");
+        assert!(cx.debug_bounds("agent-files-unlisted").is_none());
+        cx.simulate_click(note.center(), gpui::Modifiers::none());
+        assert_eq!(explained.get(), 1);
+
+        card.update(cx, |card, cx| {
+            card.0 = tab_card(Some(HooksMissing::FilesMissing), Some(explain.clone()));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("agent-hooks-missing").is_some());
+        assert!(cx.debug_bounds("agent-files-unlisted").is_some());
     }
 }

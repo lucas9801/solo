@@ -995,17 +995,23 @@ impl TerminalView {
                 .output_at
                 .map(|output_at| now.saturating_duration_since(output_at)),
             unseen_finish: activity.unseen_finish,
-            hooks_missing: activity.hooks_check.and_then(|check| {
-                hooks_missing(
-                    check.gets_hooks,
-                    check.integrated,
-                    activity.hook.is_some(),
-                    activity.started_at,
-                    check.without_hooks_at,
-                    now,
-                )
-            }),
+            hooks_missing: self.agent_hooks_missing(now),
         })
+    }
+
+    /// SOLO: Whether the running agent runs without Solo's hooks, as of
+    /// `now` (see [`hooks_missing`]).
+    pub(crate) fn agent_hooks_missing(&self, now: Instant) -> Option<HooksMissing> {
+        let activity = &self.agent_activity;
+        let check = activity.hooks_check?;
+        hooks_missing(
+            check.gets_hooks,
+            check.integrated,
+            activity.hook.is_some(),
+            activity.started_at,
+            check.without_hooks_at,
+            now,
+        )
     }
 }
 

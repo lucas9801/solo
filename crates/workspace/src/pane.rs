@@ -3211,6 +3211,9 @@ impl Pane {
                         Some(TabTooltipContent::Custom(element_fn)) => {
                             this.tooltip(move |window, cx| element_fn(window, cx))
                         }
+                        Some(TabTooltipContent::Hoverable(element_fn)) => {
+                            this.hoverable_tooltip(move |window, cx| element_fn(window, cx))
+                        }
                         None => this,
                     })
                     .when(capability == Capability::Read && has_file_icon, |this| {
