@@ -10,17 +10,17 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
 
 有两种装法，装一种就够了。
 
-**首选：Microsoft Store 的 Solo Code。** [下载 Solo Code 的安装程序](https://get.microsoft.com/installer/download/9NBW452JVWN6)，运行后直接为当前用户装好，不打开商店应用；链接下载不了时，打开 [Solo Code 的商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)安装。商店版由微软签名。装好后有开始菜单项、可以在 Windows 命令行里用的 `solo` 命令，以及资源管理器右键菜单里的“通过 Solo Code 打开”（在 Windows 11 自己的菜单里，不只在“显示更多选项”里）。
-
-想把 Solo Code 装到别的盘：在“设置 → 系统 → 存储 → 高级存储设置 → 保存新内容的地方”里把“新的应用将保存到”改成那个盘再安装，或者装好后在“设置 → 应用 → 已安装的应用”里点 Solo Code 的“…”选“移动”。（这些菜单名称是按微软的说明写的，没有实测。）
-
-**其次：GitHub 上的安装程序。** 从 [GitHub Releases](https://github.com/lucas9801/solo/releases/latest) 下载 `Solo-Setup-<版本>.exe`（同一页上的 `solo-remote-server-linux-*.gz` 是远程开发用的 Linux 服务端，不是安装程序）。
+**GitHub 上的安装程序。** 从 [GitHub Releases](https://github.com/lucas9801/solo/releases/latest) 下载 `Solo-Setup-<版本>.exe`（同一页上的 `solo-remote-server-linux-*.gz` 是远程开发用的 Linux 服务端，不是安装程序）。
 
 - 安装程序**没有签名**，所以运行时 Windows 的 SmartScreen 会提示“Windows 已保护你的电脑”：点“更多信息”，再点“仍要运行”。
 - 可以**选择安装目录**（默认 `%LOCALAPPDATA%\Programs\Solo`，只为当前用户安装，不需要管理员权限）；选一个你有写权限的文件夹，比如 `D:\Apps\Solo`，不要选 `C:\Program Files`。
 - 有开始菜单项、可选的桌面图标、资源管理器右键菜单里的“通过 Solo 打开”（在 Windows 11 的“显示更多选项”里，可以在安装时取消），以及 `solo://` 链接。
 - **Solo 自己更新**：从 GitHub 下载新版本的安装程序，静默装到同一个目录（见第 3 节）。
 - 用 2.4.2 及更早的安装程序装的 Solo 就是这一种，直接用新安装程序覆盖安装即可，设置和数据不变。以前的便携 zip 不再提供。
+
+**Microsoft Store 的 Solo Code。** [下载 Solo Code 的安装程序](https://get.microsoft.com/installer/download/9NBW452JVWN6)，运行后直接为当前用户装好，不打开商店应用；链接下载不了时，打开 [Solo Code 的商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)安装。商店版由微软签名，通过商店更新，版本可能比 GitHub 晚一个。装好后有开始菜单项、可以在 Windows 命令行里用的 `solo` 命令，以及资源管理器右键菜单里的“通过 Solo Code 打开”（在 Windows 11 自己的菜单里，不只在“显示更多选项”里）。
+
+想把 Solo Code 装到别的盘：在“设置 → 系统 → 存储 → 高级存储设置 → 保存新内容的地方”里把“新的应用将保存到”改成那个盘再安装，或者装好后在“设置 → 应用 → 已安装的应用”里点 Solo Code 的“…”选“移动”。（这些菜单名称是按微软的说明写的，没有实测。）
 
 **右键菜单“通过 Solo Code 打开”**（GitHub 安装版叫“通过 Solo 打开”）：在文件、文件夹、文件夹空白处和驱动器上都有。打开文件夹时，Solo 没在运行就启动并打开它；已在运行就在现有窗口里加一个工作区标签并切过去，这个文件夹已经有标签时直接切到那个标签。打开文件时，放进包含它的那个标签，没有就放进当前标签，不会新开窗口。卸载时右键菜单会一起删掉。
 
