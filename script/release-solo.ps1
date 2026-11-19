@@ -4,9 +4,10 @@
 # "Solo package" workflow (.github/workflows/solo-package.yml), which builds
 # Solo on GitHub's runners, checks solo.exe was built from the tagged commit,
 # makes the Microsoft Store package and the installer (Solo-Setup-<version>.exe,
-# unsigned), and creates a draft GitHub release with the installer, the
-# remote servers and the notes. Check the draft, then publish
-# it (on GitHub, or `gh release edit v<version> --draft=false`); running
+# unsigned), and creates a draft GitHub release with the installer (also as
+# Solo-Setup.exe, the same file under a fixed name for README's
+# releases/latest/download/ links), the remote servers and the notes. Check
+# the draft, then publish it (on GitHub, or `gh release edit v<version> --draft=false`); running
 # copies of Solo update only from published releases. Publishing it also
 # submits the Microsoft Store package (Solo Code) to Partner Center
 # (.github/workflows/solo-store.yml) when the repository variable

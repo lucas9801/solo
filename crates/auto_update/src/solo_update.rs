@@ -1563,6 +1563,31 @@ mod tests {
         assert!(!is_installer_asset("Solo-Setup-C:evil.exe"));
     }
 
+    /// Releases also carry the installer as `Solo-Setup.exe` (a copy under a
+    /// fixed name for README's `releases/latest/download/` links); the
+    /// updater only takes the versioned one.
+    #[test]
+    fn fixed_name_installer_isnt_the_update() {
+        assert!(!is_installer_asset("Solo-Setup.exe"));
+        assert!(!is_installer_asset("solo-setup.exe"));
+
+        let versioned = r#"{"name": "Solo-Setup-2.5.3.exe", "size": 1234, "browser_download_url": "https://example.com/Solo-Setup-2.5.3.exe"}"#;
+        let fixed = r#"{"name": "Solo-Setup.exe", "size": 1234, "browser_download_url": "https://example.com/Solo-Setup.exe"}"#;
+        for assets in [
+            format!("{fixed}, {versioned}"),
+            format!("{versioned}, {fixed}"),
+        ] {
+            let release = parse_release(release_json("v2.5.3", false, &assets).as_bytes()).unwrap();
+            let installer = release.installer.unwrap();
+            assert_eq!(installer.name, "Solo-Setup-2.5.3.exe", "assets: {assets}");
+            assert_eq!(installer.url, "https://example.com/Solo-Setup-2.5.3.exe");
+        }
+
+        // A release with only the fixed name has no installer for the updater.
+        let release = parse_release(release_json("v2.5.3", false, fixed).as_bytes()).unwrap();
+        assert!(release.installer.is_none());
+    }
+
     #[test]
     fn download_percents_dont_overflow() {
         assert_eq!(download_percent(50, 200), 25);

@@ -11,9 +11,10 @@ file to the folder the user picks, `%LOCALAPPDATA%\Programs\Solo` by
 default). Versions are those of Solo 2.2.0 unless said otherwise. The Store
 signs its package and the files in it aren't signed separately; the
 installer and the files it installs are unsigned (except Microsoft's
-`conpty.dll` and `OpenConsole.exe`). Releases have no zip.
+`conpty.dll` and `OpenConsole.exe`). Releases have no zip; their
+`Solo-Setup.exe` is a copy of `Solo-Setup-<version>.exe` under a fixed name.
 
-Solo Code 的 Microsoft Store 安装包和 GitHub 安装程序 `Solo-Setup-<版本>.exe` 里的每个文件，列出来源和许可证。两者都用 `script/package-solo.ps1` 准备的文件（`dist\Solo`）打包：商店包由 `script/package-solo-msix.ps1` 生成（另加清单、图标和右键菜单 DLL），安装程序由 `script/solo.iss`（Inno Setup）生成，把这些文件全部装到用户选的目录（默认 `%LOCALAPPDATA%\Programs\Solo`）。版本除另有说明外以 Solo 2.2.0 为准。商店包由 Store 签名，里面的文件不单独签名；安装程序和它装的文件没有签名（微软的 `conpty.dll`、`OpenConsole.exe` 除外）。发布里没有 zip。
+Solo Code 的 Microsoft Store 安装包和 GitHub 安装程序 `Solo-Setup-<版本>.exe` 里的每个文件，列出来源和许可证。两者都用 `script/package-solo.ps1` 准备的文件（`dist\Solo`）打包：商店包由 `script/package-solo-msix.ps1` 生成（另加清单、图标和右键菜单 DLL），安装程序由 `script/solo.iss`（Inno Setup）生成，把这些文件全部装到用户选的目录（默认 `%LOCALAPPDATA%\Programs\Solo`）。版本除另有说明外以 Solo 2.2.0 为准。商店包由 Store 签名，里面的文件不单独签名；安装程序和它装的文件没有签名（微软的 `conpty.dll`、`OpenConsole.exe` 除外）。发布里没有 zip；发布里的 `Solo-Setup.exe` 是 `Solo-Setup-<版本>.exe` 换成固定文件名的副本。
 
 ## Files / 文件
 
