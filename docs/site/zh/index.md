@@ -38,7 +38,7 @@ Solo 是一个给 AI agent 用的编辑器，基于 [Zed](https://github.com/zed
 
 命令块、底部的输入编辑器、边输边弹的补全、失败命令一键把错误发给 agent、用一句话让你自己的 Claude Code 或 Codex 给出命令。[详细 →](features/terminal.md)
 
-完整的功能列表见 [README](../../../README.md#全部功能)。
+完整的功能列表见 [README](../../../README.zh-CN.md#全部功能)。
 
 ---
 

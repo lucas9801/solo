@@ -7,7 +7,7 @@ Building Solo from source, moved here from the README.
 ## Building
 
 See [Building Zed for Windows](https://github.com/zed-industries/zed/blob/main/docs/src/development/windows.md)
-for the toolchain (the README's "从源码编译" section lists what Solo needs), then:
+for the toolchain (the README's "Build from source" section lists what Solo needs), then:
 
 ```powershell
 cargo run -p solo              # debug build, runs target\debug\solo.exe
