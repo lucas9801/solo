@@ -4,7 +4,9 @@
 
 Solo 是给 AI 编程 agent 用的编辑器，基于 [Zed](https://github.com/zed-industries/zed)：终端占满窗口，Claude Code、Codex 这些 agent 在真终端里跑，用的是你自己装的命令行工具和订阅；需要看代码时，完整的代码编辑器从右边打开，随时看 agent 改了什么。
 
-[下载 Windows 版（Microsoft Store）](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)） · [用户指南](docs/guide/zh-CN.md) · [和其他工具比较](docs/site/zh/compare/index.md) · [English](docs/site/en/index.md)
+**下载**：[Windows x64 安装程序（GitHub Releases）](https://github.com/lucas9801/solo/releases/latest)。安装程序没有签名，SmartScreen 提示时点"更多信息"，再点"仍要运行"。也可以从 [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)）安装：由微软签名，通过商店更新，版本可能比 GitHub 晚一个。
+
+[用户指南](docs/guide/zh-CN.md) · [和其他工具比较](docs/site/zh/compare/index.md) · [English](docs/site/en/index.md)
 
 https://github.com/user-attachments/assets/df4a53d7-075a-44b7-9874-f3f71f2eaf61
 
@@ -188,8 +190,8 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 
 Solo 目前只有 Windows x64 版，有两种装法，装一种就够了：
 
-1. **Microsoft Store（推荐）**：[下载 Solo Code 的安装程序](https://get.microsoft.com/installer/download/9NBW452JVWN6)，运行后直接装好 Solo Code，不打开商店应用。链接下载不了时，打开 [Solo Code 的商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)安装。商店版由微软签名。想装到别的盘：在“设置 → 系统 → 存储 → 高级存储设置 → 保存新内容的地方”里把“新的应用将保存到”改成那个盘再安装，或者装好后在“设置 → 应用”里移动 Solo Code（菜单名称按微软的说明写的，没有实测）。
-2. **GitHub 安装程序**：从 [GitHub Releases](https://github.com/lucas9801/solo/releases/latest) 下载 `Solo-Setup-<版本>.exe`。它没有签名，运行时 Windows 的 SmartScreen 会提示“Windows 已保护你的电脑”：点“更多信息”，再点“仍要运行”。安装时可以选择安装目录（默认 `%LOCALAPPDATA%\Programs\Solo`），装好后 Solo 自己更新。
+1. **GitHub 安装程序**：从 [GitHub Releases](https://github.com/lucas9801/solo/releases/latest) 下载 `Solo-Setup-<版本>.exe`。它没有签名，运行时 Windows 的 SmartScreen 会提示“Windows 已保护你的电脑”：点“更多信息”，再点“仍要运行”。安装时可以选择安装目录（默认 `%LOCALAPPDATA%\Programs\Solo`），装好后 Solo 自己更新。
+2. **Microsoft Store**：[下载 Solo Code 的安装程序](https://get.microsoft.com/installer/download/9NBW452JVWN6)，运行后直接装好 Solo Code，不打开商店应用。链接下载不了时，打开 [Solo Code 的商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)安装。商店版由微软签名，通过商店更新，版本可能比 GitHub 晚一个。想装到别的盘：在“设置 → 系统 → 存储 → 高级存储设置 → 保存新内容的地方”里把“新的应用将保存到”改成那个盘再安装，或者装好后在“设置 → 应用”里移动 Solo Code（菜单名称按微软的说明写的，没有实测）。
 
 **开始用**：打开 Solo，打开一个项目文件夹，在终端里运行 `claude`、`codex` 或你常用的 agent（agent 要你自己先装好）。
 
