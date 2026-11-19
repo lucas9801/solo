@@ -20,7 +20,7 @@ The ones used most come first; the [full feature list](#all-features) follows.
 
 The terminal fills the whole window. Open a file and the editor appears on the right; close the last file and it goes away again. The divider can be dragged, and the split is remembered. A row of buttons on the left opens the sidebars: files, git, outline, the agent board and more.
 
-![Terminal and editor side by side: an agent works in the terminal on the left, the editor on the right shows a file it changed](docs/media/split.png)
+![Terminal and editor side by side: Claude Code has just changed Godot's reparent() on the left, the editor on the right shows the node.cpp it changed; five workspace tabs with their status in the title bar](docs/media/en/split.png)
 
 ### Agent status at a glance
 
@@ -28,19 +28,29 @@ The tab of a terminal running an agent shows the agent's icon, its session name 
 
 Claude Code, Codex and Copilot CLI report their status through hooks Solo adds for the session, and OpenCode through a plugin Solo adds, without changing their config; other agents are recognized from their screen with per-agent rules.
 
-![Agent status: terminal tabs working, waiting for you and done, with a hover card open](docs/media/status.png)
+![Agent status: in godot, Claude Code and Codex are working and Gemini CLI waits for you; the Codex tab's hover card shows the model, context, tokens and speed](docs/media/en/status.png)
+
+When a status looks wrong, right-click in the terminal and choose "Why This Agent Status?": Solo tells you whether it came from a hook report, the program exiting or a screen rule, and when the last report and output arrived.
+
+![Why this status: the failed Codex terminal in api-server, where Solo explains that the program exited, and when the last hook report and output came](docs/media/en/why-status.png)
 
 ### Workspace tabs: one per project
 
 Each project folder is a workspace with a tab in the title bar, holding its own terminals, agents, editors and file tree; switching tabs swaps all of them. A tab shows the status of the project's agents, so you see an agent waiting in a background project too; its menu lists its terminals, and a click jumps to one. `Ctrl+Alt+1…9` switches, and all the tabs come back after a restart.
 
-![Workspace tabs: three projects in the title bar, with one tab's menu open](docs/media/workspaces.png)
+![Workspace tabs: five projects in the title bar, with the godot tab's menu open, listing its three agents](docs/media/en/workspaces.png)
 
 ### Per-turn review and roll back
 
 When an agent finishes a turn, its terminal tab shows "N files changed". Open it to see everything the turn changed: keep or reject each hunk, comment on lines and send all the comments to the agent at once. Solo also tells you how many errors and warnings the turn **added**, and how many it fixed. You can roll back to before any turn, and undo the rollback; snapshots are kept in Solo's own folder, never touching your branch, index or stash. [More →](docs/site/en/features/review.md)
 
-![Per-turn review: a turn that changed a few files, the added warnings at the top, a review comment on a line of code](docs/media/review.png)
+![Per-turn review: the files Claude Code's turn changed, a review comment on a line of code, and sending the comments to the agent at the top](docs/media/en/review.png)
+
+### Agent timeline
+
+Claude Code and Codex sessions are listed turn by turn: each prompt, the files read and changed, the commands run and the answer, with files opening on a click. Right-click a terminal tab and choose "Agent Timeline".
+
+![Agent timeline: on the right, the turns of a Claude Code session with the files it read and changed, the commands it ran and its answer](docs/media/en/timeline.png)
 
 ### Agents keep running when Solo closes
 
@@ -50,35 +60,49 @@ Each terminal's shell runs in a small background process. When Solo quits, resta
 
 A file path in the terminal's output opens with a click: code in the editor, Markdown in a rendered preview (Mermaid diagrams and images included), images in the image viewer. When the agent says "changed src/app.ts:42", a click takes you to that line; when the output only has a line number (such as `(:120)`), Solo finds the file mentioned earlier that has that line and opens it.
 
-![Links in the terminal: clicking a path in the agent's output opens the file in the editor](docs/media/links.gif)
+![Links in the terminal: clicking a path in the agent's output opens the file in the editor at that line](docs/media/en/links.gif)
 
 ### Mermaid diagrams and document review
 
 Click the `mermaid` line of a `mermaid` block in an agent's output to see the diagram; when the screen only shows part of it, Solo takes the whole block from the agent's transcript. Mermaid diagrams in Markdown previews render too.
 
-![Mermaid diagram: the agent's mermaid code on the left, the rendered diagram on the right](docs/media/mermaid.png)
+![Mermaid diagram: the agent's mermaid code on the left, the rendered flowchart on the right](docs/media/en/mermaid.png)
 
 Plans and designs the agent writes open in a preview: select text, comment, and send the comments to the agent at once; when the document changes again, Solo tells you which parts. [More →](docs/site/en/features/documents.md)
 
-![Document review: a plan in the preview, with a comment and "Send to Agent" below](docs/media/documents.png)
+![Document review: the plan the agent wrote in the preview, a comment on one sentence and "Send to Agent" below](docs/media/en/documents.png)
 
 ### Several agents at once
 
 Each task gets its own git worktree and branch, so agents don't get in each other's way; merge it, open a pull request or discard it when done. In a workspace with several repositories, a task can span them. The agent board on the left lists every agent and task, with those waiting for you first. An agent in a terminal can also use `solo-cli agent` to look at and wait for the other agents, send them messages, or start a new task. [More →](docs/site/en/features/parallel.md)
 
-![Agent board: the status, branch and last message of several agents on the left](docs/media/board.png)
+![Agent board: the status, branch and last message of the three agents in godot on the left, those waiting for you first](docs/media/en/board.png)
 
 ### Built-in browser
 
 Links to local addresses (localhost and the like) open in Solo, so you don't switch windows while developing. Pick elements on a page, comment on them, and send the comments to an agent at once, with their selectors, HTML, styles and screenshots. With a setting on, agents started in Solo's terminals can also open pages, click, fill in forms and take screenshots in this browser while you watch. [More →](docs/site/en/features/browser.md)
 
-![Built-in browser: a local server runs in the terminal on the left, Solo's browser shows its page on the right, with the address bar, viewports and "Pick" in the toolbar](docs/media/browser.png)
+![Built-in browser: OpenCode works on the todo page on the left, Solo's browser shows the page from the local server on the right, with the address bar, viewports and "Pick" in the toolbar](docs/media/en/browser.png)
 
 ### A good terminal
 
 Command blocks, an input editor at the bottom, completions as you type, a failed command's errors sent to an agent in one click, and a command from a sentence by your own Claude Code or Codex. [More →](docs/site/en/features/terminal.md)
 
-![The terminal: command blocks, a failed one in red, and git subcommand completions open in the input](docs/media/terminal.png)
+![The terminal: cargo build, a failed git push in red and cargo run as command blocks, and git subcommand completions open in the input](docs/media/en/terminal.png)
+
+### Asks before downloading, works offline
+
+Before a language server, Node.js and the like is first downloaded, Solo asks once and says where it comes from; you can allow all and remember, choose one by one, or point to a local copy. The button at the right of the status bar switches to offline mode, where Solo only connects to this computer and the local network.
+
+![Asking before downloading: opening a TypeScript file, Solo lists the language servers it needs and where they come from, and waits for you](docs/media/en/download.png)
+
+![Offline mode: "Offline" at the right of the status bar, its tooltip saying Solo only connects to this computer and the local network](docs/media/en/offline.png)
+
+### Updates inside Solo
+
+A newer version shows an update button at the right of the title bar, with no notification; its menu sums up the release and offers "Update and Restart", "Install When Solo Quits", the release notes or skipping the version.
+
+![The update button: "Update to 2.5.2" at the right of the title bar, with its menu open](docs/media/en/update.png)
 
 ### All features
 
@@ -126,6 +150,8 @@ Command blocks, an input editor at the bottom, completions as you type, a failed
 
 - Zed's editor: language servers, go to definition, find references, project-wide search, multiple cursors, the git panel, diffs and blame.
 - Language servers use fewer resources on large repositories by default; the status bar shows how much memory they take, and each project can choose full analysis, open files only, or off. Solo warns when they take a lot of memory, and says why when one fails to start.
+
+![The editor: the git panel with the changes on the left, command blocks in the terminal in the middle, and "Find All References" for add() on the right](docs/media/en/editor.png)
 
 **Documents, Markdown and diagrams**
 

@@ -4,7 +4,7 @@
 
 When you build a web page, you check the agent's work in a browser and come back to describe what's wrong. Solo puts the browser next to the terminal, and you point at the problem on the page itself and send it to the agent.
 
-![The built-in browser: a local server running in the terminal on the left, the page open in Solo's browser on the right](../../../media/browser.png)
+![The built-in browser: a local server running in the terminal on the left, the page open in Solo's browser on the right](../../../media/en/browser.png)
 
 ## Opening pages
 
