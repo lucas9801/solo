@@ -29,8 +29,9 @@ logical processor.
   file that large).
 - **Ten terminals printing like agents cost Solo and Zed about 3.6 cores,
   VS Code 0.6.** Solo 364 %, Zed 362 %, VS Code 59 % of a core (language
-  servers off). Solo inherits this from Zed; it is the clearest place where
-  both are worse than VS Code. Solo's 10 terminals take 861 MB (Zed 674 MB,
+  servers off). Solo inherited this from Zed; it was the clearest place where
+  both were worse than VS Code. Since fixed in Solo: about 0.3 cores (see
+  [Terminals that print](#terminals-that-print)). Solo's 10 terminals take 861 MB (Zed 674 MB,
   VS Code 956 MB); the shells themselves are about 650 MB of that in all
   three.
 - **Idle, all three use about 1 % of a core.** With 10 idle terminals: Solo
@@ -185,13 +186,41 @@ a core). Sampling the threads of Solo's process for 20 s (`-ThreadProfile`,
 thread CPU times through `GetThreadTimes`): the main thread used 28-46 % of
 a core, and 13-14 thread-pool workers (the background executor, which
 Windows runs on its thread pool) up to 45 % each. Zed's process showed the
-same picture (main thread 43-55 %, 10-12 busy workers). Zed's terminal
-handles each terminal's output in batches every 4 ms and redraws the window
-when a terminal changes (`crates/terminal/src/terminal.rs`, the event loop
-in `subscribe`), which fits, but thread times alone don't show which code
-runs on the workers: without symbols, they all start in `ntdll.dll`. The
-numbers vary between runs (Solo 161-455 % in the 20 s thread samples)
-because the machine was busy.
+same picture (main thread 43-55 %, 10-12 busy workers). The numbers vary
+between runs (Solo 161-455 % in the 20 s thread samples) because the
+machine was busy.
+
+**Found and fixed since** (2026-11-20). A build that records the time of
+every task by where it was spawned showed where the workers' time went:
+about 95 % of it was one task, the one that reads the terminal's process
+again after output to update its title and folder
+(`crates/terminal/src/pty_info.rs`, code from Zed). It ran after every
+batch of output, up to 250 times a second per terminal, and on Windows
+each run takes a snapshot of every process on the machine (12-24 ms of
+CPU), so a terminal that kept printing kept a worker busy. Solo's own
+per-output work (agent status, command blocks, tab titles, the terminal's
+saved contents) came to about 0.2 % of a core in all. Two changes:
+
+- The process is read again at most every 0.5 s after input went to the
+  terminal or after a reading found a change (what usually changes the
+  program or its folder), and every 5 s while a program prints on its own.
+- A terminal in a background tab redraws the window once for its output,
+  not after every batch: it isn't drawn, and its tab title is updated
+  separately.
+
+The same 10 terminals and script, measured the same way (release builds
+of `main` and of the change, 60 s each, 3 runs each, alternating):
+
+| % of a core (median of 3) | Before | After |
+|---|--:|--:|
+| Solo's main thread | 30.0 | 16.7 |
+| Solo's other threads | 272.7 | 4.8 |
+| Solo's process in all | 302.7 | 22.0 |
+| Terminal hosts and shells | 5.3 | 7.5 |
+
+That is about 0.3 of a core for Solo and its terminals, against VS Code's
+0.6 above. The other programs on the machine used 1.2-4.6 cores during
+the runs. The visible terminal's output looked the same.
 
 ### Idle CPU
 

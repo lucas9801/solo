@@ -68,7 +68,7 @@ use settings::{
 use solo_actions::{agent::AddSelectionToThread, assistant::InlineAssist};
 use std::{
     any::Any,
-    cmp,
+    cmp, mem,
     ops::Range as StdRange,
     path::{Path, PathBuf},
     rc::Rc,
@@ -263,6 +263,10 @@ pub struct TerminalView {
     /// SOLO: saves the contents to show them again after a restart.
     save_contents: Task<()>,
     save_contents_scheduled: bool,
+    /// SOLO: whether the view rendered since output last redrew it. A
+    /// terminal in a background tab doesn't render, so its output redraws
+    /// the window once, not on every batch (up to 250 a second).
+    rendered_since_output: bool,
     /// SOLO: the item this terminal was restored from, whose saved contents
     /// are deleted once this one's are saved.
     restored_from: Option<workspace::ItemId>,
@@ -464,6 +468,7 @@ impl TerminalView {
             pending_workflow: None,
             save_contents: Task::ready(()),
             save_contents_scheduled: false,
+            rendered_since_output: true,
             restored_from: None,
             agent_activity: Default::default(),
             grouping: Default::default(),
@@ -1609,7 +1614,12 @@ fn subscribe_for_terminal_events(
                     terminal_view.agent_output(window, cx);
                     terminal_view.update_keep_running(cx);
                     terminal_view.update_title_git_branch(cx);
-                    cx.notify();
+                    // SOLO: after the first, a background tab's output doesn't
+                    // redraw the window; the tab shows changes through
+                    // `update_tab_after_output`.
+                    if mem::take(&mut terminal_view.rendered_since_output) {
+                        cx.notify();
+                    }
                     window.invalidate_character_coordinates();
                     cx.emit(Event::Wakeup);
                     terminal_view.update_tab_after_output(cx);
@@ -1903,6 +1913,7 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.rendered_since_output = true;
         // TODO: this should be moved out of render
         self.scroll_handle.update(self.terminal.read(cx));
         self.tick_while_command_runs(cx);
@@ -4150,6 +4161,70 @@ mod tests {
             let text = view.tab_content_text(0, cx);
             assert_ne!(text.as_ref(), "my-server");
         });
+    }
+
+    /// SOLO: output to a terminal that isn't drawn (a background tab)
+    /// redraws the window once, not on every batch of output.
+    #[gpui::test]
+    async fn test_output_redraws_an_undrawn_terminal_once(cx: &mut TestAppContext) {
+        let (project, workspace) = init_test(cx).await;
+        let terminal = cx.new(|cx| {
+            terminal::TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                terminal::terminal_settings::AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        // Not the window's root view: drawn only by `draw` below.
+        let cx = cx.add_empty_window();
+        let terminal_view = cx.update(|window, cx| {
+            cx.new(|cx| {
+                TerminalView::new(
+                    terminal.clone(),
+                    workspace.downgrade(),
+                    None,
+                    project.downgrade(),
+                    window,
+                    cx,
+                )
+            })
+        });
+        let notifications = Rc::new(std::cell::Cell::new(0));
+        let _subscription = cx.update(|_, cx| {
+            let notifications = notifications.clone();
+            cx.observe(&terminal_view, move |_, _| {
+                notifications.set(notifications.get() + 1)
+            })
+        });
+        let draw = |cx: &mut VisualTestContext| {
+            cx.draw(
+                gpui::Point::default(),
+                gpui::size(px(400.), px(200.)),
+                |_, _| terminal_view.clone().into_any_element(),
+            );
+            cx.run_until_parked();
+        };
+        draw(cx);
+        notifications.set(0);
+
+        for _ in 0..3 {
+            terminal.update(cx, |terminal, cx| terminal.write_output(b"line\n", cx));
+            cx.run_until_parked();
+        }
+        assert_eq!(
+            notifications.get(),
+            1,
+            "output redraws an undrawn view once"
+        );
+
+        draw(cx);
+        terminal.update(cx, |terminal, cx| terminal.write_output(b"more\n", cx));
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 2, "output redraws a drawn view again");
     }
 
     async fn draw_standalone_terminal(
