@@ -65,6 +65,27 @@ if [[ -n ${SOLO_CLAUDE_SETTINGS-}${SOLO_CODEX_ARGS-}${SOLO_COPILOT_PLUGIN-}${SOL
     export SOLO_AGENT_TTY=$TTY
 fi
 
+# SOLO: Whether Solo's files an agent wrapper passes to its agent are there.
+# If one is gone (a temp or disk cleaner, by hand), Solo is asked to write its
+# files again, and this waits a moment for them; if they don't come back, it
+# says the agent runs without status reports here, and tells Solo so.
+__solo_ensure_files() {
+    local agent=$1 path missing tries
+    shift
+    for (( tries = 0; tries <= 40; tries++ )); do
+        missing=
+        for path in "$@"; do
+            [[ -z $path || -e $path ]] || missing=1
+        done
+        [[ -z $missing ]] && return 0
+        (( tries == 0 )) && printf '\e]6973;agent;nonce=%s;restore-files\a' "$__solo_nonce"
+        sleep 0.05
+    done
+    printf '\e]6973;agent;nonce=%s;no-hooks;%s\a' "$__solo_nonce" "$agent"
+    printf '%s\n' "Solo: $agent runs without status reports in this terminal (Solo's files for it are missing). A new terminal fixes it." >&2
+    return 1
+}
+
 # Claude Code reports what it's doing through hooks in the settings file Solo
 # passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this terminal.
 # A claude function of the user's own stays.
@@ -86,14 +107,14 @@ if [[ -n ${SOLO_CLAUDE_SETTINGS-} ]] && (( ! ${+functions[claude]} )); then
                     ;;
             esac
         done
-        if [[ -r $SOLO_CLAUDE_SETTINGS && -n ${SOLO_CLAUDE_MCP_CONFIG-} && -r $SOLO_CLAUDE_MCP_CONFIG ]]; then
+        if ! __solo_ensure_files claude "$SOLO_CLAUDE_SETTINGS" "${SOLO_CLAUDE_MCP_CONFIG-}"; then
+            command claude "$@"
+        elif [[ -n ${SOLO_CLAUDE_MCP_CONFIG-} && -r $SOLO_CLAUDE_MCP_CONFIG ]]; then
             # Solo's MCP servers: its browser, its IDE tools (before --settings,
             # which ends --mcp-config's list of files).
             command claude --mcp-config "$SOLO_CLAUDE_MCP_CONFIG" --settings "$SOLO_CLAUDE_SETTINGS" "$@"
-        elif [[ -r $SOLO_CLAUDE_SETTINGS ]]; then
-            command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
         else
-            command claude "$@"
+            command claude --settings "$SOLO_CLAUDE_SETTINGS" "$@"
         fi
     }
 fi
@@ -126,7 +147,7 @@ if [[ -n "${SOLO_COPILOT_PLUGIN-}" ]] && (( ! ${+functions[copilot]} )); then
                 return
                 ;;
         esac
-        if [[ -d "$SOLO_COPILOT_PLUGIN" ]]; then
+        if __solo_ensure_files copilot "$SOLO_COPILOT_PLUGIN"; then
             command copilot --plugin-dir "$SOLO_COPILOT_PLUGIN" "$@"
         else
             command copilot "$@"
@@ -144,7 +165,7 @@ if [[ -n "${SOLO_OPENCODE_CONFIG_DIR-}" ]] && (( ! ${+functions[opencode]} )); t
             if [[ -z "${OPENCODE_CLI_CONFIG_CONTENT+set}" && -n "${SOLO_OPENCODE_CLI_CONFIG-}" ]]; then
                 export OPENCODE_CLI_CONFIG_CONTENT="$SOLO_OPENCODE_CLI_CONFIG"
             fi
-            if [[ -z "${OPENCODE_CONFIG_DIR+set}" && -d "$SOLO_OPENCODE_CONFIG_DIR" ]]; then
+            if [[ -z "${OPENCODE_CONFIG_DIR+set}" ]] && __solo_ensure_files opencode "$SOLO_OPENCODE_CONFIG_DIR"; then
                 export OPENCODE_CONFIG_DIR="$SOLO_OPENCODE_CONFIG_DIR"
             fi
             command opencode "$@"
@@ -164,7 +185,7 @@ __solo_pi_like() {
             return
             ;;
     esac
-    if [[ -r "${SOLO_PI_EXTENSION-}" ]]; then
+    if [[ -n "${SOLO_PI_EXTENSION-}" ]] && __solo_ensure_files "$program" "$SOLO_PI_EXTENSION"; then
         command "$program" -e "$SOLO_PI_EXTENSION" "$@"
     else
         command "$program" "$@"

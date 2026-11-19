@@ -526,9 +526,11 @@ fn why(id: &str, caller: Option<&str>, json_output: bool, cx: &mut App) -> Agent
             rules: Option<String>,
             rules_file: Option<PathBuf>,
             rule: Option<String>,
+            /// SOLO: why it seems to run without Solo's hooks.
+            hooks_missing: Option<&'static str>,
             explanation: String,
         }
-        use crate::agent_status::StatusSource;
+        use crate::agent_status::{HooksMissing, StatusSource};
         let rules = explanation.rules.clone();
         return AgentCliOutput::ok(json(&Why {
             agent: explanation.agent.clone(),
@@ -545,6 +547,10 @@ fn why(id: &str, caller: Option<&str>, json_output: bool, cx: &mut App) -> Agent
             rules: rules.as_ref().map(|rules| rules.agent.clone()),
             rules_file: rules.as_ref().and_then(|rules| rules.file.clone()),
             rule: rules.and_then(|rules| rules.skipped_by.or(rules.rule)),
+            hooks_missing: explanation.hooks_missing.map(|missing| match missing {
+                HooksMissing::FilesMissing => "files-missing",
+                HooksMissing::NoReports(_) => "no-reports",
+            }),
             explanation: explanation.text(false),
         }));
     }

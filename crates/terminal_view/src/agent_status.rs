@@ -130,6 +130,72 @@ pub(crate) struct AgentActivity {
     pub(crate) copilot_telemetry: Option<Task<()>>,
     /// SOLO: what decided the status last, for "why this status".
     source: Option<StatusSource>,
+    /// SOLO: what tells whether the running agent runs without Solo's
+    /// hooks, for "why this status" (worked out when it's asked).
+    hooks_check: Option<HooksCheck>,
+}
+
+/// SOLO: What tells whether a running agent runs without Solo's hooks,
+/// besides its reports (see [`hooks_missing`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HooksCheck {
+    /// The agent gets Solo's hooks in an integrated terminal.
+    gets_hooks: bool,
+    /// Solo integrated the terminal's shell.
+    integrated: bool,
+    /// When the shell last said it started an agent without them.
+    without_hooks_at: Option<Instant>,
+}
+
+/// SOLO: An agent that can report its status through Solo's hooks runs
+/// without them, so its status is read from the screen and its turns may not
+/// list the files they changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HooksMissing {
+    /// Its shell's wrapper started it without them: their files were missing
+    /// and Solo couldn't write them again.
+    FilesMissing,
+    /// No report has come in the time it's been running.
+    NoReports(Duration),
+}
+
+/// SOLO: An agent that reports through hooks does so when its session
+/// starts; one quiet for this long likely runs without them.
+const NO_REPORTS_AFTER: Duration = Duration::from_secs(15);
+
+/// SOLO: Whether the agent `program` (lowercased) gets Solo's hooks in an
+/// integrated terminal, by the settings that give them.
+fn gets_hooks(program: &str, settings: &TerminalSettings) -> bool {
+    match program {
+        "claude" => settings.claude_code_hooks,
+        "codex" => settings.codex_hooks,
+        "copilot" => settings.copilot_hooks,
+        "opencode" => settings.opencode_hooks,
+        "pi" | "omp" | "kilo" | "gemini" | "qwen" => settings.more_agent_hooks,
+        _ => false,
+    }
+}
+
+/// SOLO: Why a running agent seems to run without Solo's hooks, if it does:
+/// its shell said it started it without them (at `without_hooks_at`), or it
+/// `gets_hooks` but hasn't `reported` since it started.
+fn hooks_missing(
+    gets_hooks: bool,
+    integrated: bool,
+    reported: bool,
+    started_at: Option<Instant>,
+    without_hooks_at: Option<Instant>,
+    now: Instant,
+) -> Option<HooksMissing> {
+    if reported || !integrated {
+        return None;
+    }
+    let started_at = started_at?;
+    if without_hooks_at.is_some_and(|at| at >= started_at) {
+        return Some(HooksMissing::FilesMissing);
+    }
+    let running_for = now.saturating_duration_since(started_at);
+    (gets_hooks && running_for >= NO_REPORTS_AFTER).then_some(HooksMissing::NoReports(running_for))
 }
 
 /// SOLO: What decided an agent's status, for "why this status"
@@ -812,6 +878,16 @@ impl TerminalView {
                 (agent_name(&command), true, None)
             }
         };
+        // SOLO: for "why this status".
+        activity.hooks_check = running.then(|| {
+            let program = command_program(block.and_then(|block| block.command.as_deref()))
+                .unwrap_or_else(|| name.to_lowercase());
+            HooksCheck {
+                gets_hooks: gets_hooks(&program, TerminalSettings::get_global(cx)),
+                integrated: terminal.shell_integration().is_integrated(),
+                without_hooks_at: terminal.agent_without_hooks().map(|(_, at)| at),
+            }
+        });
         if running {
             let due = activity
                 .screen_read_at
@@ -919,6 +995,16 @@ impl TerminalView {
                 .output_at
                 .map(|output_at| now.saturating_duration_since(output_at)),
             unseen_finish: activity.unseen_finish,
+            hooks_missing: activity.hooks_check.and_then(|check| {
+                hooks_missing(
+                    check.gets_hooks,
+                    check.integrated,
+                    activity.hook.is_some(),
+                    activity.started_at,
+                    check.without_hooks_at,
+                    now,
+                )
+            }),
         })
     }
 }
@@ -937,6 +1023,8 @@ pub(crate) struct StatusExplanation {
     pub output_ago: Option<Duration>,
     /// Shown as done: a turn ended while you weren't looking.
     pub unseen_finish: bool,
+    /// SOLO: the agent can report through Solo's hooks but runs without them.
+    pub hooks_missing: Option<HooksMissing>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1073,9 +1161,11 @@ impl StatusExplanation {
                 "由屏幕决定：屏幕上明确显示提问或工作，优先于 hook 的最后一次上报。"
             }
             (Some(StatusSource::Screen), false) => {
-                "Decided by the screen rules (the agent doesn't report through hooks)."
+                "Decided by the screen rules (no hook reports from this agent)."
             }
-            (Some(StatusSource::Screen), true) => "由屏幕规则决定（这个 agent 没有 hook 上报）。",
+            (Some(StatusSource::Screen), true) => {
+                "由屏幕规则决定（没有收到这个 agent 的 hook 上报）。"
+            }
             (Some(StatusSource::Output), false) => {
                 "Decided by the agent's output: no hook reports and no screen rules for it. Printing means working, 3 seconds of quiet means idle, the bell means it needs you."
             }
@@ -1088,6 +1178,18 @@ impl StatusExplanation {
             (None, true) => "还不知道。",
         };
         lines.push(source.to_string());
+        lines.extend(self.hooks_missing.map(|missing| match (missing, chinese) {
+            (HooksMissing::FilesMissing, false) => "It was started without Solo's status hooks: their files were missing and couldn't be written again, so its status is read from the screen and its turns don't list the files they changed. A new terminal fixes it.".to_string(),
+            (HooksMissing::FilesMissing, true) => "它启动时没有带上 Solo 的状态 hooks：hook 文件丢失，也没能重新写出，所以状态只能从屏幕读取，每轮也列不出改动的文件。新开一个终端即可恢复。".to_string(),
+            (HooksMissing::NoReports(running_for), false) => format!(
+                "It can report through Solo's hooks, but none has come since it started {}: it likely runs without them (started by its full path or from a shell Solo didn't set up, given settings of its own, a version that doesn't run them, or their files were missing), so its status is read from the screen and its turns may not list the files they changed. Starting it in a new terminal usually fixes it.",
+                ago(running_for, false)
+            ),
+            (HooksMissing::NoReports(running_for), true) => format!(
+                "它能通过 Solo 的 hooks 上报状态，但从启动（{}）到现在一次也没收到：很可能没带上 hooks（用完整路径或在 Solo 没接管的 shell 里启动、自己传了设置、版本不支持，或 hook 文件丢失），所以状态只能从屏幕读取，每轮也可能列不出改动的文件。在新终端里重新启动它通常就能恢复。",
+                ago(running_for, true)
+            ),
+        }));
         lines.extend(hook);
         lines.extend(rule_line);
         if let Some(output_ago) = self.output_ago {
@@ -1190,6 +1292,7 @@ mod tests {
             }),
             output_ago: Some(Duration::from_secs(1)),
             unseen_finish: false,
+            hooks_missing: None,
         };
         let text = explanation.text(false);
         assert!(text.starts_with("codex: needs input\n"), "{text}");
@@ -1224,6 +1327,77 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("Last hook report"), "{text}");
+    }
+
+    #[test]
+    fn says_when_an_agent_runs_without_its_hooks() {
+        let start = Instant::now();
+        let at = |secs: u64| start + Duration::from_secs(secs);
+        // Its shell said it started it without them.
+        assert_eq!(
+            hooks_missing(true, true, false, Some(at(0)), Some(at(1)), at(2)),
+            Some(HooksMissing::FilesMissing)
+        );
+        // That was about an earlier run.
+        assert_eq!(
+            hooks_missing(true, true, false, Some(at(5)), Some(at(1)), at(6)),
+            None
+        );
+        // No report for a while from an agent that gets hooks.
+        assert_eq!(
+            hooks_missing(true, true, false, Some(at(0)), None, at(20)),
+            Some(HooksMissing::NoReports(Duration::from_secs(20)))
+        );
+        // Not yet, or it reported, or it gets none, or the shell isn't Solo's.
+        assert_eq!(
+            hooks_missing(true, true, false, Some(at(0)), None, at(5)),
+            None
+        );
+        assert_eq!(
+            hooks_missing(true, true, true, Some(at(0)), None, at(20)),
+            None
+        );
+        assert_eq!(
+            hooks_missing(false, true, false, Some(at(0)), None, at(20)),
+            None
+        );
+        assert_eq!(
+            hooks_missing(true, false, false, Some(at(0)), None, at(20)),
+            None
+        );
+
+        let explanation = StatusExplanation {
+            agent: "claude".to_string(),
+            status: AgentStatus::Working,
+            source: Some(StatusSource::Screen),
+            hook: None,
+            rules: None,
+            output_ago: None,
+            unseen_finish: false,
+            hooks_missing: Some(HooksMissing::FilesMissing),
+        };
+        let text = explanation.text(false);
+        assert!(
+            text.contains("started without Solo's status hooks"),
+            "{text}"
+        );
+        assert!(text.contains("A new terminal fixes it"), "{text}");
+        let text = StatusExplanation {
+            hooks_missing: Some(HooksMissing::NoReports(Duration::from_secs(150))),
+            ..explanation.clone()
+        }
+        .text(false);
+        assert!(
+            text.contains("none has come since it started 2m ago"),
+            "{text}"
+        );
+        assert!(explanation.text(true).contains("hook 文件丢失"));
+        let text = StatusExplanation {
+            hooks_missing: None,
+            ..explanation
+        }
+        .text(false);
+        assert!(!text.contains("Solo's hooks"), "{text}");
     }
 
     #[test]
