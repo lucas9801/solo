@@ -1963,7 +1963,7 @@ impl Terminal {
                 cx.emit(Event::Wakeup);
 
                 if let TerminalType::Pty { info, .. } = &self.terminal_type {
-                    info.emit_title_changed_if_changed(cx);
+                    info.emit_title_changed_if_changed(self.last_sent_to_pty.get(), cx);
                 }
             }
             TerminalBackendEvent::ColorRequest(index, format) => {

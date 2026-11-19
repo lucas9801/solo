@@ -1,6 +1,10 @@
 use gpui::{Context, Task};
 use parking_lot::{MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 #[cfg(target_os = "windows")]
 use windows::Win32::{Foundation::HANDLE, System::Threading::GetProcessId};
@@ -80,6 +84,41 @@ pub(crate) struct PtyProcessInfo {
     last_foreground_pid: Mutex<Option<Pid>>,
     pub(crate) current: RwLock<Option<ProcessInfo>>,
     task: Mutex<Option<Task<()>>>,
+    /// SOLO: when the process was last read for the title, by the
+    /// executor's clock and by the system's (input times use the latter),
+    /// and whether that reading found a change.
+    last_refresh: Mutex<Option<RefreshStamp>>,
+}
+
+#[derive(Clone, Copy)]
+struct RefreshStamp {
+    at: Instant,
+    at_system: Instant,
+    changed: bool,
+}
+
+/// SOLO: how soon output reads the terminal's process again for its title
+/// after input went to it, or after a reading found a change...
+const REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+/// ...and otherwise, while a program prints on its own.
+const QUIET_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// SOLO: how long until the process is to be read again for the title.
+fn refresh_delay(
+    last: Option<RefreshStamp>,
+    last_input: Option<Instant>,
+    now: Instant,
+) -> Duration {
+    let Some(last) = last else {
+        return Duration::ZERO;
+    };
+    let input_since = last_input.is_some_and(|input| input >= last.at_system);
+    let interval = if input_since || last.changed {
+        REFRESH_INTERVAL
+    } else {
+        QUIET_REFRESH_INTERVAL
+    };
+    interval.saturating_sub(now.saturating_duration_since(last.at))
 }
 
 impl PtyProcessInfo {
@@ -111,6 +150,7 @@ impl PtyProcessInfo {
             last_foreground_pid: Mutex::new(None),
             current: RwLock::new(None),
             task: Mutex::new(None),
+            last_refresh: Mutex::new(None),
         }
     }
 
@@ -197,32 +237,65 @@ impl PtyProcessInfo {
     }
 
     /// Updates the cached process info, emitting a [`Event::TitleChanged`] event if the Zed-relevant info has changed
-    pub(crate) fn emit_title_changed_if_changed(self: &Arc<Self>, cx: &mut Context<'_, Terminal>) {
-        if self.task.lock().is_some() {
+    ///
+    /// SOLO: called on every batch of output, which comes up to 250 times a
+    /// second per terminal. Reading the process takes a snapshot of every
+    /// process on the machine on Windows (milliseconds of CPU each time), so
+    /// a terminal printing continuously kept a thread-pool worker busy. The
+    /// process is read again at most every [`REFRESH_INTERVAL`] after input
+    /// (what usually changes the program or its folder) or a change, and
+    /// every [`QUIET_REFRESH_INTERVAL`] while a program prints on its own.
+    /// Output sooner than that schedules one reading for when it's due.
+    pub(crate) fn emit_title_changed_if_changed(
+        self: &Arc<Self>,
+        last_input: Option<Instant>,
+        cx: &mut Context<'_, Terminal>,
+    ) {
+        let mut task = self.task.lock();
+        if task.is_some() {
             return;
         }
-        let this = self.clone();
-        let change_task = cx.background_executor().spawn(async move {
-            let previous = this.current.read().clone();
-            let current = this.load();
-            let has_changed = match (previous.as_ref(), current.as_ref()) {
-                (None, None) => false,
-                (Some(prev), Some(now)) => prev.cwd != now.cwd || prev.name != now.name,
-                _ => true,
-            };
-            if has_changed {
-                *this.current.write() = current.clone();
-            }
-            let changed_cwd = match (previous.as_ref(), current.as_ref()) {
-                (Some(prev), Some(now)) if prev.cwd != now.cwd => Some(now.cwd.clone()),
-                (None, Some(now)) => Some(now.cwd.clone()),
-                _ => None,
-            };
-            (has_changed, changed_cwd)
-        });
+        let delay = refresh_delay(
+            *self.last_refresh.lock(),
+            last_input,
+            cx.background_executor().now(),
+        );
         let this = Arc::downgrade(self);
-        *self.task.lock() = Some(cx.spawn(async move |term, cx| {
+        *task = Some(cx.spawn(async move |term, cx| {
+            if !delay.is_zero() {
+                cx.background_executor().timer(delay).await;
+            }
+            let Some(info) = this.upgrade() else {
+                return;
+            };
+            let at = cx.background_executor().now();
+            let at_system = Instant::now();
+            let change_task = cx.background_executor().spawn(async move {
+                let previous = info.current.read().clone();
+                let current = info.load();
+                let has_changed = match (previous.as_ref(), current.as_ref()) {
+                    (None, None) => false,
+                    (Some(prev), Some(now)) => prev.cwd != now.cwd || prev.name != now.name,
+                    _ => true,
+                };
+                if has_changed {
+                    *info.current.write() = current.clone();
+                }
+                let changed_cwd = match (previous.as_ref(), current.as_ref()) {
+                    (Some(prev), Some(now)) if prev.cwd != now.cwd => Some(now.cwd.clone()),
+                    (None, Some(now)) => Some(now.cwd.clone()),
+                    _ => None,
+                };
+                (has_changed, changed_cwd)
+            });
             let (has_changed, new_cwd) = change_task.await;
+            if let Some(info) = this.upgrade() {
+                *info.last_refresh.lock() = Some(RefreshStamp {
+                    at,
+                    at_system,
+                    changed: has_changed,
+                });
+            }
             if has_changed {
                 term.update(cx, |terminal, cx| {
                     if let Some(cwd) = new_cwd {
@@ -287,6 +360,55 @@ mod tests {
         assert!(
             churned_len <= 2,
             "foreground process churn retained {churned_len} process entries"
+        );
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+
+    #[test]
+    fn output_reads_the_process_again_sooner_after_input_or_a_change() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let stamp = |changed| {
+            Some(RefreshStamp {
+                at: at(0),
+                at_system: at(0),
+                changed,
+            })
+        };
+        // Never read: now.
+        assert_eq!(refresh_delay(None, None, at(0)), Duration::ZERO);
+        // A program printing on its own: every QUIET_REFRESH_INTERVAL.
+        assert_eq!(
+            refresh_delay(stamp(false), None, at(100)),
+            QUIET_REFRESH_INTERVAL - Duration::from_millis(100)
+        );
+        assert_eq!(refresh_delay(stamp(false), None, at(6000)), Duration::ZERO);
+        // Input before the reading doesn't count...
+        assert_eq!(
+            refresh_delay(
+                stamp(false),
+                Some(start - Duration::from_millis(1)),
+                at(100)
+            ),
+            QUIET_REFRESH_INTERVAL - Duration::from_millis(100)
+        );
+        // ...input after it does.
+        assert_eq!(
+            refresh_delay(stamp(false), Some(at(50)), at(100)),
+            REFRESH_INTERVAL - Duration::from_millis(100)
+        );
+        assert_eq!(
+            refresh_delay(stamp(false), Some(at(50)), at(700)),
+            Duration::ZERO
+        );
+        // A reading that found a change: soon again.
+        assert_eq!(
+            refresh_delay(stamp(true), None, at(100)),
+            REFRESH_INTERVAL - Duration::from_millis(100)
         );
     }
 }
