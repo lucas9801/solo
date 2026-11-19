@@ -40,6 +40,10 @@ util.workspace = true
 workspace.workspace = true
 solo_actions.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# SOLO: reads the memory of the language servers' processes.
+windows = { workspace = true, features = ["Win32_System_ProcessStatus"] }
+
 [dev-dependencies]
 editor = { workspace = true, features = ["test-support"] }
 release_channel.workspace = true

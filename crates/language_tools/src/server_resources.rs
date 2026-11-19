@@ -197,12 +197,22 @@ fn is_compiler(name: &str) -> bool {
     COMPILER_NAMES.contains(&name)
 }
 
-/// Sums up the process trees under `roots`. A process is identified by its
-/// id, its parent's id and its name.
-pub(crate) fn sum_process_trees(
+/// A process in a server's tree, found by the last full scan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TreeMember {
+    /// The server at the root of the tree.
+    pub root: u32,
+    pub pid: u32,
+    /// A compiler the server started (the server itself never counts).
+    pub compiler: bool,
+}
+
+/// Finds the processes of the trees under `roots`. A process is identified
+/// by its id, its parent's id and its name; its memory is not used here.
+pub(crate) fn process_tree_members(
     processes: &[(u32, Option<u32>, String, u64)],
     roots: &[u32],
-) -> HashMap<u32, ProcessTreeUsage> {
+) -> Vec<TreeMember> {
     let mut children: HashMap<u32, Vec<usize>> = HashMap::default();
     for (index, (pid, parent, _, _)) in processes.iter().enumerate() {
         if let Some(parent) = parent
@@ -216,58 +226,291 @@ pub(crate) fn sum_process_trees(
         .enumerate()
         .map(|(index, (pid, _, _, _))| (*pid, index))
         .collect();
-    roots
-        .iter()
-        .filter_map(|root| {
-            let root_index = *by_pid.get(root)?;
-            let mut usage = ProcessTreeUsage::default();
-            let mut seen = HashSet::default();
-            let mut queue = vec![root_index];
-            while let Some(index) = queue.pop() {
-                if !seen.insert(index) {
-                    continue;
-                }
-                let Some((pid, _, name, memory)) = processes.get(index) else {
-                    continue;
-                };
-                usage.memory += memory;
-                usage.processes += 1;
-                if index != root_index && is_compiler(name) {
-                    usage.compilers += 1;
-                }
-                if let Some(child_indices) = children.get(pid) {
-                    queue.extend(child_indices.iter().copied());
-                }
+    let mut members = Vec::new();
+    for root in roots {
+        let Some(&root_index) = by_pid.get(root) else {
+            continue;
+        };
+        let mut seen = HashSet::default();
+        let mut queue = vec![root_index];
+        while let Some(index) = queue.pop() {
+            if !seen.insert(index) {
+                continue;
             }
-            Some((*root, usage))
-        })
-        .collect()
+            let Some((pid, _, name, _)) = processes.get(index) else {
+                continue;
+            };
+            members.push(TreeMember {
+                root: *root,
+                pid: *pid,
+                compiler: index != root_index && is_compiler(name),
+            });
+            if let Some(child_indices) = children.get(pid) {
+                queue.extend(child_indices.iter().copied());
+            }
+        }
+    }
+    members
 }
 
-/// Reads all processes and sums up the trees under `roots`. Slow enough
-/// (tens of milliseconds) to belong on a background thread.
-pub(crate) fn sample_process_trees(
-    system: &mut System,
+/// Sums up the members of each tree with the memory of each process.
+pub(crate) fn sum_tree_members(
+    members: &[TreeMember],
+    mut memory: impl FnMut(u32) -> u64,
+) -> HashMap<u32, ProcessTreeUsage> {
+    let mut usage: HashMap<u32, ProcessTreeUsage> = HashMap::default();
+    for member in members {
+        let tree = usage.entry(member.root).or_default();
+        tree.memory += memory(member.pid);
+        tree.processes += 1;
+        if member.compiler {
+            tree.compilers += 1;
+        }
+    }
+    usage
+}
+
+/// Sums up the process trees under `roots`. A process is identified by its
+/// id, its parent's id and its name.
+#[cfg(test)]
+pub(crate) fn sum_process_trees(
+    processes: &[(u32, Option<u32>, String, u64)],
     roots: &[u32],
 ) -> HashMap<u32, ProcessTreeUsage> {
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_memory(),
-    );
-    let processes: Vec<(u32, Option<u32>, String, u64)> = system
-        .processes()
+    let memory: HashMap<u32, u64> = processes
         .iter()
-        .map(|(pid, process)| {
-            (
-                pid.as_u32(),
-                process.parent().map(Pid::as_u32),
-                process.name().to_string_lossy().into_owned(),
-                process.memory(),
-            )
-        })
+        .map(|(pid, _, _, memory)| (*pid, *memory))
         .collect();
-    sum_process_trees(&processes, roots)
+    sum_tree_members(&process_tree_members(processes, roots), |pid| {
+        memory.get(&pid).copied().unwrap_or(0)
+    })
+}
+
+/// How often the full process list is read while no server reports
+/// progress, to find the processes the servers started since.
+pub(crate) const FULL_SCAN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Whether the next sample has to read the full process list (tens of
+/// milliseconds of CPU on Windows) to find the trees again, rather than only
+/// the memory of the processes found last time (microseconds). That is while
+/// a server works (a check starts and ends compilers), when the servers
+/// change, and every `FULL_SCAN_INTERVAL` otherwise.
+pub(crate) fn needs_full_scan(
+    last_scan: Option<Instant>,
+    scanned_roots: &[u32],
+    roots: &[u32],
+    busy: bool,
+    now: Instant,
+) -> bool {
+    busy || scanned_roots != roots
+        || last_scan.is_none_or(|last_scan| now.duration_since(last_scan) >= FULL_SCAN_INTERVAL)
+}
+
+/// SOLO: samples the memory of the servers' process trees. Reading every
+/// process on the machine is what costs, so it is done only when the trees
+/// may have changed (see `needs_full_scan`); in between, only the processes
+/// of the known trees are read. A process of a tree that exited makes the
+/// sample read the full list again.
+pub(crate) struct ProcessTreeSampler {
+    system: System,
+    roots: Vec<u32>,
+    members: Vec<TreeMember>,
+    last_scan: Option<Instant>,
+    watched: watched::WatchedProcesses,
+    full_scans: usize,
+}
+
+impl ProcessTreeSampler {
+    pub(crate) fn new() -> Self {
+        Self {
+            system: System::new(),
+            roots: Vec::new(),
+            members: Vec::new(),
+            last_scan: None,
+            watched: watched::WatchedProcesses::default(),
+            full_scans: 0,
+        }
+    }
+
+    /// The memory of each tree under `roots`. `busy` is whether a server
+    /// reports progress.
+    pub(crate) fn sample(
+        &mut self,
+        roots: &[u32],
+        busy: bool,
+        now: Instant,
+    ) -> HashMap<u32, ProcessTreeUsage> {
+        let mut roots = roots.to_vec();
+        roots.sort_unstable();
+        roots.dedup();
+        if !needs_full_scan(self.last_scan, &self.roots, &roots, busy, now) {
+            let mut pids: Vec<u32> = self.members.iter().map(|member| member.pid).collect();
+            pids.sort_unstable();
+            pids.dedup();
+            if let Some(memory) = self.watched.memory(&mut self.system, &pids) {
+                return sum_tree_members(&self.members, |pid| {
+                    memory.get(&pid).copied().unwrap_or(0)
+                });
+            }
+        }
+        self.full_scan(roots, now)
+    }
+
+    /// How many times the full process list was read.
+    #[cfg(test)]
+    pub(crate) fn full_scans(&self) -> usize {
+        self.full_scans
+    }
+
+    fn full_scan(&mut self, roots: Vec<u32>, now: Instant) -> HashMap<u32, ProcessTreeUsage> {
+        self.full_scans += 1;
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_memory(),
+        );
+        let processes: Vec<(u32, Option<u32>, String, u64)> = self
+            .system
+            .processes()
+            .iter()
+            .map(|(pid, process)| {
+                (
+                    pid.as_u32(),
+                    process.parent().map(Pid::as_u32),
+                    process.name().to_string_lossy().into_owned(),
+                    process.memory(),
+                )
+            })
+            .collect();
+        let memory: HashMap<u32, u64> = processes
+            .iter()
+            .map(|(pid, _, _, memory)| (*pid, *memory))
+            .collect();
+        self.members = process_tree_members(&processes, &roots);
+        self.watched
+            .watch(self.members.iter().map(|member| member.pid));
+        self.roots = roots;
+        self.last_scan = Some(now);
+        sum_tree_members(&self.members, |pid| memory.get(&pid).copied().unwrap_or(0))
+    }
+}
+
+/// Reads the memory of known processes without listing all of them.
+#[cfg(windows)]
+mod watched {
+    use collections::{HashMap, HashSet};
+    use sysinfo::System;
+    use windows::Win32::{
+        Foundation::{CloseHandle, HANDLE, STILL_ACTIVE},
+        System::{
+            ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+            Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        },
+    };
+
+    /// An open handle also keeps the process id from being given to another
+    /// process after this one exits.
+    struct ProcessHandle(HANDLE);
+
+    // SAFETY: a process handle can be used and closed from any thread.
+    unsafe impl Send for ProcessHandle {}
+
+    impl Drop for ProcessHandle {
+        fn drop(&mut self) {
+            // SAFETY: the handle was opened by `OpenProcess` and is closed once.
+            unsafe {
+                CloseHandle(self.0).ok();
+            }
+        }
+    }
+
+    #[derive(Default)]
+    pub(super) struct WatchedProcesses {
+        /// `None` for a process that cannot be opened; its memory counts as
+        /// zero, as when the full list is read.
+        handles: HashMap<u32, Option<ProcessHandle>>,
+    }
+
+    impl WatchedProcesses {
+        pub(super) fn watch(&mut self, pids: impl IntoIterator<Item = u32>) {
+            let pids: HashSet<u32> = pids.into_iter().collect();
+            self.handles.retain(|pid, _| pids.contains(pid));
+            for pid in pids {
+                self.handles.entry(pid).or_insert_with(|| {
+                    // SAFETY: plain call; the handle is owned by `ProcessHandle`.
+                    unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
+                        .ok()
+                        .map(ProcessHandle)
+                });
+            }
+        }
+
+        /// The working set of each process, as `sysinfo` reports memory, or
+        /// `None` when one of them exited or is not watched.
+        pub(super) fn memory(
+            &mut self,
+            _system: &mut System,
+            pids: &[u32],
+        ) -> Option<HashMap<u32, u64>> {
+            let mut memory = HashMap::default();
+            for pid in pids {
+                let Some(handle) = self.handles.get(pid)? else {
+                    memory.insert(*pid, 0);
+                    continue;
+                };
+                let mut exit_code = 0u32;
+                // SAFETY: the handle is open and the out pointer is valid.
+                unsafe { GetExitCodeProcess(handle.0, &mut exit_code) }.ok()?;
+                if exit_code != STILL_ACTIVE.0 as u32 {
+                    return None;
+                }
+                let mut counters = PROCESS_MEMORY_COUNTERS::default();
+                // SAFETY: the handle is open and `counters` is as large as
+                // the size passed.
+                let working_set = unsafe {
+                    GetProcessMemoryInfo(
+                        handle.0,
+                        &mut counters,
+                        size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+                    )
+                }
+                .map_or(0, |()| counters.WorkingSetSize as u64);
+                memory.insert(*pid, working_set);
+            }
+            Some(memory)
+        }
+    }
+}
+
+/// Reads the memory of known processes without listing all of them.
+#[cfg(not(windows))]
+mod watched {
+    use collections::HashMap;
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+    #[derive(Default)]
+    pub(super) struct WatchedProcesses;
+
+    impl WatchedProcesses {
+        pub(super) fn watch(&mut self, _pids: impl IntoIterator<Item = u32>) {}
+
+        /// The memory of each process, or `None` when one of them exited.
+        pub(super) fn memory(
+            &mut self,
+            system: &mut System,
+            pids: &[u32],
+        ) -> Option<HashMap<u32, u64>> {
+            let pids: Vec<Pid> = pids.iter().copied().map(Pid::from_u32).collect();
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&pids),
+                true,
+                ProcessRefreshKind::nothing().with_memory(),
+            );
+            pids.iter()
+                .map(|pid| Some((pid.as_u32(), system.process(*pid)?.memory())))
+                .collect()
+        }
+    }
 }
 
 pub(crate) fn format_memory(bytes: u64) -> String {
@@ -683,6 +926,78 @@ mod tests {
         assert_eq!(usage.get(&20).map(|usage| usage.processes), Some(1));
         assert_eq!(usage.get(&30).map(|usage| usage.processes), Some(1));
         assert!(!usage.contains_key(&99));
+    }
+
+    #[test]
+    fn reads_all_processes_only_when_trees_may_change() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        // The first sample, and new or stopped servers.
+        assert!(needs_full_scan(None, &[], &[10], false, at(0)));
+        assert!(needs_full_scan(Some(at(0)), &[10], &[10, 20], false, at(4)));
+        assert!(needs_full_scan(Some(at(0)), &[10, 20], &[20], false, at(4)));
+        // Idle servers: only every 30 seconds.
+        assert!(!needs_full_scan(Some(at(0)), &[10], &[10], false, at(4)));
+        assert!(!needs_full_scan(Some(at(0)), &[10], &[10], false, at(29)));
+        assert!(needs_full_scan(Some(at(0)), &[10], &[10], false, at(30)));
+        // A working server may start compilers at any time.
+        assert!(needs_full_scan(Some(at(0)), &[10], &[10], true, at(4)));
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a plain child process for the test to find"
+    )]
+    fn samples_known_trees_without_reading_all_processes() {
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("ping")
+                .args(["-n", "60", "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .spawn()
+        } else {
+            std::process::Command::new("sleep").arg("60").spawn()
+        }
+        .expect("start a child process");
+        let root = std::process::id();
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut sampler = ProcessTreeSampler::new();
+
+        // The first sample reads all processes and finds the child.
+        let usage = sampler.sample(&[root], false, at(0));
+        let tree = usage.get(&root).copied().expect("the test process");
+        assert!(tree.processes >= 2, "{tree:?}");
+        assert!(tree.memory > 0);
+        assert_eq!(sampler.full_scans(), 1);
+
+        // Idle: only the known processes are read, with the same tree.
+        let usage = sampler.sample(&[root], false, at(4));
+        let fast = usage.get(&root).copied().expect("the test process");
+        assert_eq!(fast.processes, tree.processes);
+        assert!(fast.memory > 0);
+        assert_eq!(sampler.full_scans(), 1);
+
+        // A busy server, or 30 seconds, read them all again.
+        sampler.sample(&[root], true, at(8));
+        assert_eq!(sampler.full_scans(), 2);
+        sampler.sample(&[root], false, at(12));
+        assert_eq!(sampler.full_scans(), 2);
+        sampler.sample(&[root], false, at(38));
+        assert_eq!(sampler.full_scans(), 3);
+
+        // A process of the tree that exits makes the next sample read them
+        // all again, without it.
+        child.kill().ok();
+        child.wait().ok();
+        let usage = sampler.sample(&[root], false, at(42));
+        assert_eq!(sampler.full_scans(), 4);
+        let after = usage.get(&root).copied().expect("the test process");
+        assert_eq!(after.processes, tree.processes - 1);
+
+        // An unknown server has no usage.
+        let usage = sampler.sample(&[u32::MAX - 1], false, at(46));
+        assert!(usage.is_empty());
     }
 
     #[test]

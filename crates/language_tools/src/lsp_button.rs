@@ -5,8 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sysinfo::System;
-
 use language::language_settings::{EditPredictionProvider, all_language_settings};
 
 use client::proto;
@@ -31,9 +29,9 @@ use workspace::{StatusItemView, ToggleWorktreeSecurity, Workspace};
 
 use crate::lsp_log_view;
 use crate::server_resources::{
-    self, AlertedProjects, MemoryAlertTracker, ProcessTreeUsage, ServerActivity, choose_mode,
-    choose_project_mode, describe_server, describe_usage, effective_mode, format_memory,
-    mode_label, modes_for, server_activity, short_mode_label,
+    self, AlertedProjects, MemoryAlertTracker, ProcessTreeSampler, ProcessTreeUsage,
+    ServerActivity, choose_mode, choose_project_mode, describe_server, describe_usage,
+    effective_mode, format_memory, mode_label, modes_for, server_activity, short_mode_label,
 };
 use project::lsp_store::solo_server_modes::{self, AnalysisMode, LanguageServerModes};
 
@@ -1204,32 +1202,40 @@ impl LspButton {
     fn sample_usage(server_state: Entity<LanguageServerState>, cx: &mut Context<Self>) -> Task<()> {
         const INTERVAL: Duration = Duration::from_secs(4);
         cx.spawn(async move |lsp_button, cx| {
-            let mut system = System::new();
+            let mut sampler = ProcessTreeSampler::new();
             let mut memory_alert = MemoryAlertTracker::default();
             loop {
-                let roots = server_state.update(cx, |state, cx| {
+                let (roots, busy) = server_state.update(cx, |state, cx| {
                     let Some(lsp_store) = state.lsp_store.upgrade() else {
-                        return Vec::new();
+                        return (Vec::new(), false);
                     };
                     let lsp_store = lsp_store.read(cx);
                     if lsp_store.as_remote().is_some() {
-                        return Vec::new();
+                        return (Vec::new(), false);
                     }
-                    lsp_store
+                    let mut busy = false;
+                    let roots = lsp_store
                         .language_server_statuses()
-                        .filter_map(|(_, status)| status.process_id)
-                        .collect::<Vec<_>>()
+                        .filter_map(|(_, status)| {
+                            let pid = status.process_id?;
+                            busy |= !status.pending_work.is_empty();
+                            Some(pid)
+                        })
+                        .collect::<Vec<_>>();
+                    (roots, busy)
                 });
                 let usage = if roots.is_empty() {
                     HashMap::new()
                 } else {
-                    let (returned_system, usage) = cx
+                    // SOLO: reading every process is what costs, so the
+                    // sampler does it only while the trees may change.
+                    let (returned_sampler, usage) = cx
                         .background_spawn(async move {
-                            let usage = server_resources::sample_process_trees(&mut system, &roots);
-                            (system, usage)
+                            let usage = sampler.sample(&roots, busy, Instant::now());
+                            (sampler, usage)
                         })
                         .await;
-                    system = returned_system;
+                    sampler = returned_sampler;
                     usage.into_iter().collect()
                 };
                 let (changed, alert) = server_state.update(cx, |state, cx| {

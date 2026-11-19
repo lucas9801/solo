@@ -8469,6 +8469,7 @@ dependencies = [
  "tree-sitter",
  "ui",
  "util",
+ "windows 0.62.2",
  "workspace",
  "zlog",
 ]
