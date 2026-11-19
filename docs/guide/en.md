@@ -14,21 +14,7 @@ several agents in parallel in their own git worktrees.
 
 There are two ways to install Solo; one is enough.
 
-**First choice: Solo Code from the Microsoft Store.**
-[Download Solo Code's installer](https://get.microsoft.com/installer/download/9NBW452JVWN6): it installs Solo Code for the
-current user without opening the Store app. If the link doesn't download,
-install it from [Solo Code's Store page](https://apps.microsoft.com/detail/9NBW452JVWN6). Microsoft signs the
-Store package. It has a Start menu entry, the `solo` command in Windows'
-command line, and "Open with Solo Code" in Explorer's context menu (in
-Windows 11's own menu, not only under "Show more options").
-
-To put Solo Code on another drive, choose that drive under Settings > System >
-Storage > Advanced storage settings > Where new content is saved > New apps
-will save to before installing it, or move it later from Settings > Apps >
-Installed apps (Solo Code's "..." menu, Move). (These menu names are as
-Microsoft documents them, not tested.)
-
-**Second choice: the installer on GitHub.** Download
+**The installer on GitHub.** Download
 `Solo-Setup-<version>.exe` from [GitHub Releases](https://github.com/lucas9801/solo/releases/latest) (the
 `solo-remote-server-linux-*.gz` files there are the Linux server for remote
 development, not installers).
@@ -47,6 +33,21 @@ development, not installers).
 - A Solo installed with the installer of 2.4.2 or earlier is this kind: run
   the new installer over it; settings and data stay. The portable zip is no
   longer made.
+
+**Solo Code from the Microsoft Store.**
+[Download Solo Code's installer](https://get.microsoft.com/installer/download/9NBW452JVWN6): it installs Solo Code for the
+current user without opening the Store app. If the link doesn't download,
+install it from [Solo Code's Store page](https://apps.microsoft.com/detail/9NBW452JVWN6). Microsoft signs the
+Store package; it updates through the Store and may be a version behind
+GitHub. It has a Start menu entry, the `solo` command in Windows'
+command line, and "Open with Solo Code" in Explorer's context menu (in
+Windows 11's own menu, not only under "Show more options").
+
+To put Solo Code on another drive, choose that drive under Settings > System >
+Storage > Advanced storage settings > Where new content is saved > New apps
+will save to before installing it, or move it later from Settings > Apps >
+Installed apps (Solo Code's "..." menu, Move). (These menu names are as
+Microsoft documents them, not tested.)
 
 **"Open with Solo Code"** ("Open with Solo" for the GitHub installer) is on files, folders, a folder's background and
 drives. A folder opens in Solo, started if it isn't running; a running Solo adds a
