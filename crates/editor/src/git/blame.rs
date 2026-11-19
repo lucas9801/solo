@@ -1,6 +1,6 @@
 use crate::Editor;
 use anyhow::{Context as _, Result};
-use collections::HashMap;
+use collections::{HashMap, HashSet};
 
 use git::{
     GitHostingProviderRegistry, Oid,
@@ -104,6 +104,10 @@ pub struct GitBlame {
     regenerate_on_edit_task: Task<Result<()>>,
     _regenerate_subscriptions: Vec<Subscription>,
     kind: GitBlameKind,
+    /// SOLO: the buffers inline blame was asked for, in a multibuffer: only
+    /// these are blamed there (see [`Self::blames_on_demand`]).
+    requested: HashSet<BufferId>,
+    request_task: Task<()>,
 }
 
 pub trait BlameRenderer {
@@ -296,6 +300,8 @@ impl GitBlame {
             changed_while_blurred: false,
             task: Task::ready(Ok(())),
             regenerate_on_edit_task: Task::ready(Ok(())),
+            requested: HashSet::default(),
+            request_task: Task::ready(()),
             _regenerate_subscriptions: vec![
                 multi_buffer_subscription,
                 project_subscription,
@@ -350,6 +356,8 @@ impl GitBlame {
             changed_while_blurred: false,
             user_triggered: true,
             regenerate_on_edit_task: Task::ready(Ok(())),
+            requested: HashSet::default(),
+            request_task: Task::ready(()),
             _regenerate_subscriptions: Vec::new(),
             kind: GitBlameKind::Static {
                 repository,
@@ -407,13 +415,22 @@ impl GitBlame {
             .unwrap_or_default()
     }
 
-    pub fn blame_for_rows<'a>(
+    pub fn blame_for_rows<'a, 'b>(
         &'a mut self,
         rows: &'a [RowInfo],
-        cx: &'a mut App,
-    ) -> impl Iterator<Item = Option<(BufferId, BlameEntry)>> + use<'a> {
+        cx: &'a mut Context<'b, Self>,
+    ) -> impl Iterator<Item = Option<(BufferId, BlameEntry)>> + use<'a, 'b> {
+        let on_demand = self.blames_on_demand(cx);
         rows.iter().map(move |info| {
             let buffer_id = info.buffer_id?;
+            if on_demand
+                && !self.buffers.contains_key(&buffer_id)
+                && self.requested.insert(buffer_id)
+            {
+                self.request_task = cx.spawn(async move |this, cx| {
+                    this.update(cx, |this, cx| this.generate(cx)).ok();
+                });
+            }
             self.sync(cx, buffer_id);
 
             let buffer_row = info.buffer_row?;
@@ -443,6 +460,18 @@ impl GitBlame {
         }
 
         max_author_length
+    }
+
+    /// SOLO: inline blame, which shows the line at the cursor, blames only
+    /// the buffers it's asked for in a multibuffer. Blaming every buffer of
+    /// project search results ran `git blame` for each matching file, again
+    /// each time more results came in, which took longer than the search.
+    fn blames_on_demand(&self, cx: &App) -> bool {
+        !self.user_triggered
+            && self
+                .multi_buffer
+                .upgrade()
+                .is_some_and(|multi_buffer| !multi_buffer.read(cx).is_singleton())
     }
 
     pub fn blur(&mut self, _: &mut Context<Self>) {
@@ -615,12 +644,20 @@ impl GitBlame {
             self.changed_while_blurred = true;
             return;
         }
+        let on_demand = self.blames_on_demand(cx);
+        let requested = &mut self.requested;
         let buffers_to_blame = self
             .multi_buffer
             .update(cx, |multi_buffer, cx| {
                 let snapshot = multi_buffer.snapshot(cx);
-                snapshot
-                    .all_buffer_ids()
+                let buffer_ids = snapshot.all_buffer_ids().collect::<Vec<_>>();
+                if on_demand {
+                    let present = buffer_ids.iter().copied().collect::<HashSet<_>>();
+                    requested.retain(|id| present.contains(id));
+                }
+                buffer_ids
+                    .into_iter()
+                    .filter(|id| !on_demand || requested.contains(id))
                     .filter_map(|id| Some(multi_buffer.buffer(id)?.downgrade()))
                     .collect::<Vec<_>>()
             })
@@ -919,6 +956,101 @@ mod tests {
             theme_settings::init(theme::LoadThemes::JustBase, cx);
 
             crate::init(cx);
+        });
+    }
+
+    /// SOLO: inline blame in a multibuffer (project search results) blames
+    /// only the buffers it's asked for, not every buffer in it.
+    #[gpui::test]
+    async fn test_inline_blame_in_multibuffer_blames_on_demand(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            "/my-repo",
+            json!({
+                ".git": {},
+                "a.txt": "a0\na1\n",
+                "b.txt": "b0\nb1\n",
+            }),
+        )
+        .await;
+        fs.set_blame_for_repo(
+            Path::new("/my-repo/.git"),
+            vec![
+                (
+                    repo_path("a.txt"),
+                    Blame {
+                        entries: vec![blame_entry("1a1a1a", 0..2)],
+                        ..Default::default()
+                    },
+                ),
+                (
+                    repo_path("b.txt"),
+                    Blame {
+                        entries: vec![blame_entry("2b2b2b", 0..2)],
+                        ..Default::default()
+                    },
+                ),
+            ],
+        );
+        let project = Project::test(fs, ["/my-repo".as_ref()], cx).await;
+        let mut buffers = Vec::new();
+        for path in ["/my-repo/a.txt", "/my-repo/b.txt"] {
+            let buffer = project
+                .update(cx, |project, cx| project.open_local_buffer(path, cx))
+                .await
+                .unwrap();
+            buffers.push(buffer);
+        }
+        let buffer_a = buffers[0].read_with(cx, |buffer, _| buffer.remote_id());
+        let buffer_b = buffers[1].read_with(cx, |buffer, _| buffer.remote_id());
+        let multi_buffer = cx.new(|cx| {
+            let mut multi_buffer = MultiBuffer::new(Capability::ReadWrite);
+            for (ix, buffer) in buffers.iter().enumerate() {
+                multi_buffer.set_excerpts_for_path(
+                    multi_buffer::PathKey::sorted(ix as u64),
+                    buffer.clone(),
+                    [Point::new(0, 0)..Point::new(1, 2)],
+                    0,
+                    cx,
+                );
+            }
+            multi_buffer
+        });
+
+        let git_blame =
+            cx.new(|cx| GitBlame::new(multi_buffer.clone(), project.clone(), false, true, cx));
+        cx.executor().run_until_parked();
+        git_blame.update(cx, |blame, _| {
+            assert!(
+                blame.buffers.is_empty(),
+                "nothing is blamed before it's asked for"
+            );
+        });
+
+        git_blame.update(cx, |blame, cx| {
+            // Not blamed yet: asking starts it.
+            assert_blame_rows(blame, buffer_b, 0..1, vec![None], cx);
+        });
+        cx.executor().run_until_parked();
+        git_blame.update(cx, |blame, cx| {
+            assert_blame_rows(
+                blame,
+                buffer_b,
+                0..1,
+                vec![Some(blame_entry("2b2b2b", 0..2))],
+                cx,
+            );
+            assert!(!blame.buffers.contains_key(&buffer_a));
+        });
+
+        // Blame asked for by the user covers every buffer.
+        let user_blame = cx.new(|cx| GitBlame::new(multi_buffer, project, true, true, cx));
+        cx.executor().run_until_parked();
+        user_blame.update(cx, |blame, _| {
+            assert!(blame.buffers.contains_key(&buffer_a));
+            assert!(blame.buffers.contains_key(&buffer_b));
         });
     }
 
