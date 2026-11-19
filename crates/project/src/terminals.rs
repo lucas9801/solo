@@ -391,8 +391,22 @@ impl Project {
         let path_style = self.path_style(cx);
 
         // Prepare a task for resolving the environment
-        let env_task =
-            self.resolve_directory_environment(&env_shell, path.clone(), remote_client.clone(), cx);
+        // SOLO: a local PowerShell terminal doesn't wait for the environment
+        // read by starting PowerShell (and `solo --printenv` in it) first: the
+        // terminal's own PowerShell runs the same profile, and on Windows
+        // there's no direnv. That kept a new window's terminal from starting
+        // for 0.4-0.7 s. An environment Solo got from the command line still
+        // applies.
+        let env_task = if remote_client.is_none()
+            && path_style.is_windows()
+            && is_powershell(&shell)
+            && is_powershell(&env_shell)
+        {
+            let cli_environment = self.environment.read(cx).get_cli_environment();
+            Task::ready(cli_environment).shared()
+        } else {
+            self.resolve_directory_environment(&env_shell, path.clone(), remote_client.clone(), cx)
+        };
 
         let lang_registry = self.languages.clone();
         cx.spawn(async move |project, cx| {
@@ -716,6 +730,14 @@ impl Project {
     }
 }
 
+/// SOLO: whether `program` is Windows PowerShell or PowerShell 7.
+fn is_powershell(program: &str) -> bool {
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let name = name.to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    matches!(name, "powershell" | "pwsh")
+}
+
 fn create_remote_shell(
     spawn_command: Option<(&String, &Vec<String>)>,
     mut env: HashMap<String, String>,
@@ -831,6 +853,19 @@ mod tests {
             shell: Shell::Program("cmd.exe".to_string()),
             ..SpawnInTerminal::default()
         }
+    }
+
+    #[test]
+    fn recognizes_powershell_programs() {
+        assert!(is_powershell("powershell.exe"));
+        assert!(is_powershell(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.EXE"
+        ));
+        assert!(is_powershell("C:/Program Files/PowerShell/7/pwsh.exe"));
+        assert!(is_powershell("pwsh"));
+        assert!(!is_powershell("cmd.exe"));
+        assert!(!is_powershell(r"C:\Program Files\Git\bin\bash.exe"));
+        assert!(!is_powershell(r"C:\tools\powershell-helper.exe"));
     }
 
     #[test]

@@ -43,6 +43,8 @@ logical processor.
   in all three. Zed's picture is final at once (1.1 s); VS Code's after
   3.6 s; Solo's after 2.6 s, because it keeps changing until the shell in
   its terminal shows a prompt. Warm: Zed 0.7 s, Solo 2.1 s, VS Code 2.4 s.
+  A later change made Solo's terminal start 0.3 s sooner (see
+  [Startup](#startup-s-median)).
 - **The machine was busy** with other work during most runs (see
   [Limitations](#limitations)); the CPU and time numbers carry that noise.
 
@@ -165,6 +167,46 @@ busy.
 | First launch, ready | 2.55 | 1.09 | 3.62 |
 | Warm launch, window shown | 0.45 | 0.54 | 0.33 |
 | Warm launch, ready | 2.10 | 0.67 | 2.40 |
+
+**What Solo's terminal waits for** (2026-11-20). Solo's window is ready
+when the PowerShell in its terminal shows a prompt. Watching which
+processes Solo starts (every 10 ms) showed that before starting the
+terminal, Solo started a PowerShell of its own, which ran `solo --printenv`
+to read the environment a shell gets (as Zed does, to pick up what the
+user's profile sets): 0.4-0.7 s, and only then the terminal host and the
+terminal's PowerShell, which runs the same profile again. Solo's shell
+integration script also spent 50-80 ms on `Get-Process` to find its own
+path. Changed:
+
+- A local PowerShell terminal no longer waits for that environment (an
+  environment Solo got from the command line still applies; other shells
+  and remote terminals still wait for it).
+- The integration script asks .NET for its path (about 4 ms).
+
+The completion shell of the terminal's input box wasn't on the way: it
+starts only when completions are first asked for.
+
+Measured with release builds of `main` and of the change, launched with no
+folder off-screen, 3 rounds of a first launch with a fresh data folder and
+two warm launches, alternating, on a machine with 1-3 of its 12 logical
+processors busy with other work. "Ready" as above (the picture stays the
+same for three captures 250 ms apart):
+
+| s, median of 3 | Before | After |
+|---|--:|--:|
+| First launch, window shown | 0.37 | 0.37 |
+| First launch, terminal host started | 0.80 | 0.52 |
+| First launch, ready | 1.98 | 1.65 |
+| Warm launch, window shown | 0.32 | 0.33 |
+| Warm launch, terminal host started | 0.63 | 0.36 |
+| Warm launch, ready | 1.58 | 1.28 |
+
+What's left is mostly PowerShell itself: about 0.9 s from starting it to a
+prompt Solo has drawn. On this machine Windows PowerShell 5.1 takes about
+0.23 s to start and exit; running Solo's integration script before the
+change added about 0.25 s, of which about 0.1 s is loading PowerShell's
+line editor module (which an interactive PowerShell loads anyway) and
+50-80 ms was the `Get-Process` call.
 
 ### Search
 

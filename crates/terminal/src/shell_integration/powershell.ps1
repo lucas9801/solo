@@ -16,8 +16,9 @@ $Global:__SoloNonce = $env:SOLO_SHELL_NONCE
 Remove-Item Env:SOLO_SHELL_NONCE -ErrorAction SilentlyContinue
 
 # Tell the terminal which PowerShell this is, so its input editor can ask the
-# same one for completions.
-$__soloShellPath = (Get-Process -Id $PID).Path -replace '\\', '\\' -replace ';', '\x3b'
+# same one for completions. (Get-Process would take 50-80 ms here, before
+# the first prompt.)
+$__soloShellPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName -replace '\\', '\\' -replace ';', '\x3b'
 [Console]::Write("$([char]27)]633;P;Shell=$__soloShellPath;$Global:__SoloNonce$([char]7)")
 Remove-Variable __soloShellPath
 
