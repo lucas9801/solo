@@ -272,6 +272,7 @@ pub(crate) fn sum_tree_members(
 
 /// Sums up the process trees under `roots`. A process is identified by its
 /// id, its parent's id and its name.
+#[cfg(test)]
 pub(crate) fn sum_process_trees(
     processes: &[(u32, Option<u32>, String, u64)],
     roots: &[u32],

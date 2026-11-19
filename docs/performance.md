@@ -36,7 +36,8 @@ logical processor.
 - **Idle, all three use about 1 % of a core.** With 10 idle terminals: Solo
   1.30 %, Zed 1.26 %, VS Code 0.90 %. With language servers running, Solo
   uses about 0.8 % of a core more than Zed (2.25 % against 1.32 %); see
-  [Idle CPU](#idle-cpu).
+  [Idle CPU](#idle-cpu), which also has how much of that a later change
+  saved.
 - **Startup:** with a fresh data folder, the window appears after 0.6-1.1 s
   in all three. Zed's picture is final at once (1.1 s); VS Code's after
   3.6 s; Solo's after 2.6 s, because it keeps changing until the shell in
@@ -203,16 +204,37 @@ after closing everything, 1.96 % against 1.34 %), and the 60 s thread
 samples put the difference in the thread-pool workers (Solo's main process
 1.9-2.1 % in all, Zed's 0.7-1.0 %).
 
-The likely cause is a Solo addition, not something from Zed: while any
-language server runs, the language server button samples the memory of
+The likely cause was a Solo addition, not something from Zed: while any
+language server runs, the language server button sampled the memory of
 every process on the machine every 4 s, to show what each server uses and
 to warn when they use too much (`sample_usage` in
-`crates/language_tools/src/lsp_button.rs`, which calls
+`crates/language_tools/src/lsp_button.rs`, which called
 `server_resources::sample_process_trees`, a `sysinfo` refresh of all
 processes, on the background executor). That fits the extra CPU appearing
-only with language servers on, and only in thread-pool workers. It wasn't
-confirmed by profiling (a Windows Performance Recorder session needs
-administrator rights), and nothing was changed here.
+only with language servers on, and only in thread-pool workers.
+
+**Since then** (2026-11-20), the button reads every process only when the
+servers' process trees may have changed (the first sample, servers
+starting or stopping, a server reporting progress, a known process
+ending) and every 30 s otherwise; in between it reads only the memory of
+the processes it already knows. Measured with a release build
+(`solo-dist`) of each, `json-language-server` and `vtsls` running on a
+small TypeScript project (5 `node.exe` processes), 60 s idle after 60 s to
+settle, 3 runs each, alternating, while other work kept about 4 of the 12
+logical processors busy:
+
+| Solo's process, % of a core (median of 3) | Before | After |
+|---|--:|--:|
+| Main thread | 0.68 | 0.52 |
+| Other threads | 0.78 | 0.49 |
+| Total | 1.46 | 1.12 |
+| The sampling itself (its tasks' time, in a build that records task times) | 0.34 | 0.05 |
+
+Per minute, the sampling took 196-206 ms before (16 samples of about
+12 ms) and 26-28 ms after. The status bar shows the same memory figure as
+before (412 MB against 413 MB for these servers). The sampling was about
+0.3 % of a core, less than the 0.8 % by which Solo exceeded Zed above, so
+it explains only part of that difference; the rest wasn't measured again.
 
 With language servers on, Solo also used 11-12 % of a core in the minute
 after opening the 200,000-line log in two of three runs, where Zed used
