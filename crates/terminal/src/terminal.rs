@@ -9,9 +9,9 @@ mod mermaid;
 pub use mermaid::is_complete as mermaid_diagram_is_complete;
 mod pty_info;
 // SOLO: Solo's IDE tools for agents in the terminal.
-pub mod ide_tools;
 pub mod agent_integrations;
 pub mod global_agent_hooks;
+pub mod ide_tools;
 pub mod shell_integration;
 pub mod stable_programs;
 pub mod terminal_settings;
@@ -1213,6 +1213,7 @@ impl TerminalBuilder {
             #[cfg(windows)]
             _host_claim: None,
             replaying_until: None,
+            agent_without_hooks: None,
             cwd_history: Vec::new(),
             pending_cwd_boundary: None,
             #[cfg(any(test, feature = "test-support"))]
@@ -1585,6 +1586,7 @@ impl TerminalBuilder {
                 #[cfg(windows)]
                 _host_claim: host_claim,
                 replaying_until: reconnected_to_host.then(|| Instant::now() + REPLAY_TIMEOUT),
+                agent_without_hooks: None,
                 background_executor,
                 path_style,
                 cwd_history: if is_remote_terminal {
@@ -1809,6 +1811,9 @@ pub struct Terminal {
     /// its output, whose queries mustn't be answered again; it says when it's
     /// done (hosts from Solo 2.0.0 don't, hence the time).
     replaying_until: Option<Instant>,
+    /// SOLO: the agent the shell last started without Solo's hooks, as their
+    /// files couldn't be written again, and when it said so.
+    agent_without_hooks: Option<(String, Instant)>,
     cwd_history: Vec<CwdHistoryEntry>,
     pending_cwd_boundary: Option<i32>,
     #[cfg(any(test, feature = "test-support"))]
@@ -1992,6 +1997,14 @@ impl Terminal {
                 }
                 self.shell_integration.handle_mark(mark, line);
                 if started {
+                    // SOLO: the files agents started by this command read
+                    // must be there (see `restore_missing_files`).
+                    if self.shell_integration.is_integrated() {
+                        cx.background_spawn(async {
+                            shell_integration::restore_missing_files(false);
+                        })
+                        .detach();
+                    }
                     cx.emit(Event::CommandStarted);
                 }
                 if finished {
@@ -2013,6 +2026,24 @@ impl Terminal {
                     log::debug!("agent report without this terminal's nonce, ignored");
                     return;
                 };
+                // SOLO: the shell's agent wrappers found Solo's files gone.
+                match params.first().map(|kind| kind.trim()) {
+                    Some(shell_integration::RESTORE_FILES_REQUEST) => {
+                        cx.background_spawn(async {
+                            shell_integration::restore_missing_files(true);
+                        })
+                        .detach();
+                        return;
+                    }
+                    Some(shell_integration::NO_HOOKS_REPORT) => {
+                        let agent = params.get(1).map(|agent| agent.trim()).unwrap_or_default();
+                        log::warn!("{agent} started without Solo's hooks: their files are missing");
+                        self.agent_without_hooks = Some((agent.to_string(), Instant::now()));
+                        cx.notify();
+                        return;
+                    }
+                    _ => {}
+                }
                 if let Some(path) = shell_integration::parse_agent_edit(params) {
                     cx.emit(Event::AgentEditedFile(path));
                     return;
@@ -2076,6 +2107,14 @@ impl Terminal {
         return self.host.as_ref().map(|host| host.pipe());
         #[cfg(not(windows))]
         return None;
+    }
+
+    /// SOLO: The agent the shell last started without Solo's hooks, as
+    /// their files were missing and couldn't be written again, and when.
+    pub fn agent_without_hooks(&self) -> Option<(&str, Instant)> {
+        self.agent_without_hooks
+            .as_ref()
+            .map(|(agent, at)| (agent.as_str(), *at))
     }
 
     /// SOLO: whether this terminal's console is one an earlier Solo left
@@ -7593,6 +7632,33 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[gpui::test]
+    async fn test_shell_says_an_agent_runs_without_hooks(cx: &mut TestAppContext) {
+        let (terminal, cx) = init_terminal_test_with_window(cx, b"");
+        terminal.update(cx, |terminal, cx| {
+            terminal.set_shell_nonce("n1");
+            // Without the nonce, it's anything printed.
+            terminal.write_raw_output(b"\x1b]6973;agent;nonce=n2;no-hooks;claude\x07", cx);
+        });
+        cx.run_until_parked();
+        terminal.read_with(cx, |terminal, _| {
+            assert_eq!(terminal.agent_without_hooks(), None);
+        });
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(
+                b"\x1b]6973;agent;nonce=n1;restore-files\x07\x1b]6973;agent;nonce=n1;no-hooks;claude\x07",
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        terminal.read_with(cx, |terminal, _| {
+            assert_eq!(
+                terminal.agent_without_hooks().map(|(agent, _)| agent),
+                Some("claude")
+            );
+        });
     }
 
     #[gpui::test]

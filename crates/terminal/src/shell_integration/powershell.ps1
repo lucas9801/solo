@@ -81,6 +81,28 @@ if ($env:SOLO_CLAUDE_SETTINGS -or $env:SOLO_CODEX_ARGS -or $env:SOLO_COPILOT_PLU
     $env:SOLO_AGENT_CONSOLE_PID = "$PID"
 }
 
+# SOLO: Whether Solo's files an agent wrapper passes to its agent are there.
+# If one is gone (a temp or disk cleaner, by hand), Solo is asked to write its
+# files again, and this waits a moment for them; if they don't come back, it
+# says the agent runs without status reports here, and tells Solo so.
+function Global:__SoloEnsureFiles {
+    param([string]$Agent, [string[]]$Paths)
+    $missing = @($Paths | Where-Object { $_ -and -not (Test-Path -LiteralPath $_) })
+    if ($missing.Count -eq 0) { return $true }
+    $esc = [char]27
+    $bel = [char]7
+    [Console]::Write("$esc]6973;agent;nonce=$Global:__SoloNonce;restore-files$bel")
+    $deadline = [DateTime]::UtcNow.AddSeconds(2)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 50
+        $missing = @($missing | Where-Object { -not (Test-Path -LiteralPath $_) })
+        if ($missing.Count -eq 0) { return $true }
+    }
+    [Console]::Write("$esc]6973;agent;nonce=$Global:__SoloNonce;no-hooks;$Agent$bel")
+    [Console]::Error.WriteLine("Solo: $Agent runs without status reports in this terminal (Solo's files for it are missing). A new terminal fixes it.")
+    return $false
+}
+
 # Claude Code reports what it's doing through hooks in the settings file Solo
 # passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this console.
 # A claude function or alias of the user's own stays.
@@ -95,7 +117,7 @@ if ($env:SOLO_CLAUDE_SETTINGS -and -not (Get-Command -Name claude -CommandType F
         $asTyped = ($args.Count -gt 0 -and "$($args[0])" -in @('agents', 'attach', 'auth', 'auto-mode', 'doctor', 'gateway', 'import', 'install', 'logs', 'mcp', 'plugin', 'plugins', 'purge', 'respawn', 'rm', 'setup-token', 'stop', 'kill', 'ultrareview', 'update', 'upgrade')) -or
             ($args | Where-Object { "$_" -in @('--settings', '--bg', '--background') -or "$_" -like '--settings=*' })
         $settings = @()
-        if (-not $asTyped -and (Test-Path -LiteralPath $env:SOLO_CLAUDE_SETTINGS)) {
+        if (-not $asTyped -and (__SoloEnsureFiles -Agent claude -Paths @($env:SOLO_CLAUDE_SETTINGS, $env:SOLO_CLAUDE_MCP_CONFIG))) {
             $settings = @('--settings', $env:SOLO_CLAUDE_SETTINGS)
             # Solo's MCP servers (its browser, its IDE tools). --mcp-config adds to
             # the user's own MCP servers; it takes several files, so it goes
@@ -158,7 +180,7 @@ if ($env:SOLO_COPILOT_PLUGIN -and -not (Get-Command -Name copilot -CommandType F
         }
         # Commands that don't run a session run as typed.
         $plugin = @()
-        if (-not ($args.Count -gt 0 -and "$($args[0])" -in @('app', 'login', 'help', 'init', 'config', 'update', 'version', 'sessions', 'memories', 'plugin', 'mcp', 'skill', 'instruction', 'lsp', 'sandbox', 'completion')) -and (Test-Path -LiteralPath $env:SOLO_COPILOT_PLUGIN)) {
+        if (-not ($args.Count -gt 0 -and "$($args[0])" -in @('app', 'login', 'help', 'init', 'config', 'update', 'version', 'sessions', 'memories', 'plugin', 'mcp', 'skill', 'instruction', 'lsp', 'sandbox', 'completion')) -and (__SoloEnsureFiles -Agent copilot -Paths @($env:SOLO_COPILOT_PLUGIN))) {
             $plugin = @('--plugin-dir', $env:SOLO_COPILOT_PLUGIN)
         }
         $Global:LASTEXITCODE = 0
@@ -183,7 +205,7 @@ if ($env:SOLO_OPENCODE_CONFIG_DIR -and -not (Get-Command -Name opencode -Command
             return
         }
         $setCliConfig = $env:SOLO_OPENCODE_CLI_CONFIG -and -not (Test-Path Env:OPENCODE_CLI_CONFIG_CONTENT)
-        $setConfigDir = -not (Test-Path Env:OPENCODE_CONFIG_DIR) -and (Test-Path -LiteralPath $env:SOLO_OPENCODE_CONFIG_DIR)
+        $setConfigDir = -not (Test-Path Env:OPENCODE_CONFIG_DIR) -and (__SoloEnsureFiles -Agent opencode -Paths @($env:SOLO_OPENCODE_CONFIG_DIR))
         if ($setCliConfig) { $env:OPENCODE_CLI_CONFIG_CONTENT = $env:SOLO_OPENCODE_CLI_CONFIG }
         if ($setConfigDir) { $env:OPENCODE_CONFIG_DIR = $env:SOLO_OPENCODE_CONFIG_DIR }
         try {
@@ -213,7 +235,7 @@ if ($env:SOLO_PI_EXTENSION) {
             return
         }
         $extension = @()
-        if (-not ($Arguments.Count -gt 0 -and "$($Arguments[0])" -in @('install', 'remove', 'uninstall', 'update', 'list', 'config', 'plugin', 'plugins', 'help')) -and (Test-Path -LiteralPath $env:SOLO_PI_EXTENSION)) {
+        if (-not ($Arguments.Count -gt 0 -and "$($Arguments[0])" -in @('install', 'remove', 'uninstall', 'update', 'list', 'config', 'plugin', 'plugins', 'help')) -and (__SoloEnsureFiles -Agent $Name -Paths @($env:SOLO_PI_EXTENSION))) {
             $extension = @('-e', $env:SOLO_PI_EXTENSION)
         }
         $Global:LASTEXITCODE = 0

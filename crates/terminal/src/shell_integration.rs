@@ -238,9 +238,18 @@ fn integrate_zsh(env: &mut HashMap<String, String>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Where the scripts go: a directory in the temp dir of this user's own.
+/// SOLO: The name of the folder the scripts go in.
+const SCRIPTS_DIR_NAME: &str = "solo-shell-integration";
+
+/// Where the scripts go: a directory of this user's own.
 /// SOLO: also for other files agents read, such as the settings of the agent
 /// generating commands (R3 L-S1).
+///
+/// SOLO: on Windows that's in Solo's data folder (or, packaged, its
+/// package's), not the temp dir: cleaners empty that, and agents started
+/// after that ran without their hooks, so without status reports or the
+/// files each turn changed. The data folder is in the user's profile, which
+/// only they (and administrators) can open, like their temp dir.
 pub fn scripts_dir() -> std::io::Result<PathBuf> {
     #[cfg(unix)]
     {
@@ -266,14 +275,60 @@ pub fn scripts_dir() -> std::io::Result<PathBuf> {
     }
     #[cfg(not(unix))]
     {
-        // A packaged Solo's writes to the temp dir may be redirected to a
+        // A packaged Solo's writes to its data folder may be redirected to a
         // place the shells (outside the package) don't see.
-        if let Some(dir) = util::packaged::package_shared_dir() {
-            return Ok(dir.join("solo-shell-integration"));
-        }
-        // Windows' temp dir is the user's own.
-        Ok(std::env::temp_dir().join("solo-shell-integration"))
+        Ok(windows_scripts_dir(
+            util::packaged::package_shared_dir(),
+            windows_data_dir(),
+        ))
     }
+}
+
+/// SOLO: The scripts' folder on Windows: in the package's shared folder when
+/// Solo is packaged (the Microsoft Store), else in Solo's data folder.
+#[cfg_attr(unix, allow(dead_code))]
+fn windows_scripts_dir(package_dir: Option<PathBuf>, data_dir: PathBuf) -> PathBuf {
+    package_dir.unwrap_or(data_dir).join(SCRIPTS_DIR_NAME)
+}
+
+/// SOLO: Solo's data folder, for the scripts; tests write theirs to the temp
+/// dir instead of the user's Solo data.
+#[cfg(not(unix))]
+fn windows_data_dir() -> PathBuf {
+    if cfg!(any(test, feature = "test-support")) {
+        std::env::temp_dir().join("solo-test-data")
+    } else {
+        paths::data_dir().clone()
+    }
+}
+
+/// SOLO: The temp dir's folder Solo 2.5.2 and earlier wrote the scripts to
+/// (on Windows, unpackaged), while it's there: terminals those Solos started
+/// can still be open, as their terminal hosts outlive an update, and their
+/// shells and agents name files there. So the files are written there too
+/// for as long as this Solo runs, and written again if they go missing; if
+/// the folder is gone when Solo first writes a file, it isn't made again.
+fn legacy_scripts_dir() -> Option<&'static Path> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        if cfg!(unix) || cfg!(any(test, feature = "test-support")) {
+            return None;
+        }
+        let primary = scripts_dir().ok()?;
+        legacy_dir_for(
+            util::packaged::package_shared_dir().is_some(),
+            &std::env::temp_dir(),
+            &primary,
+        )
+    })
+    .as_deref()
+}
+
+/// The old scripts folder in `temp_dir`, if Solo isn't packaged (a packaged
+/// Solo never used it), it's there and it isn't `primary`.
+fn legacy_dir_for(packaged: bool, temp_dir: &Path, primary: &Path) -> Option<PathBuf> {
+    let dir = temp_dir.join(SCRIPTS_DIR_NAME);
+    (!packaged && dir.is_dir() && dir != primary).then_some(dir)
 }
 
 /// SOLO: a short hash of `contents`, which names the files Solo writes for
@@ -291,27 +346,117 @@ fn contents_hash(contents: &[&str]) -> String {
     format!("{:08x}", hash as u32)
 }
 
-/// Shells only load extra scripts from disk, so they go to the temp dir.
+/// Shells only load extra scripts from disk, so they go to [`scripts_dir`].
+/// SOLO: Solo remembers each file it wrote, to write it again if it goes
+/// missing while terminals that name it are open (see
+/// [`restore_missing_files`]).
 pub(crate) fn write_script(name: &str, script: &str) -> std::io::Result<String> {
     let path = scripts_dir()?.join(name);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(script) {
-        // Written aside and renamed, so a shell starting meanwhile (in this
-        // Solo or another) never reads half a script.
-        let partial = path.with_extension(format!("{}.partial", std::process::id()));
-        std::fs::write(&partial, script)?;
-        if let Err(error) = std::fs::rename(&partial, &path) {
-            std::fs::remove_file(&partial).ok();
-            // Another Solo may have just written the same script.
-            if std::fs::read_to_string(&path).ok().as_deref() != Some(script) {
-                return Err(error);
-            }
+    write_file(&path, script)?;
+    let contents: std::sync::Arc<str> = script.into();
+    remember_written(&path, &contents);
+    if let Some(legacy) = legacy_scripts_dir() {
+        let copy = legacy.join(name);
+        match write_file(&copy, script) {
+            Ok(()) => remember_written(&copy, &contents),
+            Err(error) => log::debug!("failed to write {}: {error}", copy.display()),
         }
     }
     // Forward slashes work both natively and in Git Bash on Windows.
     Ok(path.to_string_lossy().replace('\\', "/"))
+}
+
+/// Writes `contents` to `path` unless it has them already.
+fn write_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    if std::fs::read_to_string(path).ok().as_deref() != Some(contents) {
+        // Written aside and renamed, so a shell starting meanwhile (in this
+        // Solo or another) never reads half a script.
+        let partial = path.with_extension(format!("{}.partial", std::process::id()));
+        std::fs::write(&partial, contents)?;
+        if let Err(error) = std::fs::rename(&partial, path) {
+            std::fs::remove_file(&partial).ok();
+            // Another Solo may have just written the same script.
+            if std::fs::read_to_string(path).ok().as_deref() != Some(contents) {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// SOLO: The files Solo wrote for shells and agents in this run, with their
+/// contents. A handful: their names are their contents' hashes.
+static WRITTEN: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<PathBuf, std::sync::Arc<str>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn remember_written(path: &Path, contents: &std::sync::Arc<str>) {
+    WRITTEN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.to_path_buf(), contents.clone());
+}
+
+/// SOLO: The kind of report an integrated shell sends (`OSC 6973 ; agent ;
+/// nonce=<nonce> ; restore-files`) when a file its agent wrapper passes to an
+/// agent is gone: Solo writes its files again ([`restore_missing_files`]) and
+/// the wrapper waits a moment for them.
+pub const RESTORE_FILES_REQUEST: &str = "restore-files";
+
+/// SOLO: The kind of report an integrated shell sends (`OSC 6973 ; agent ;
+/// nonce=<nonce> ; no-hooks ; <agent>`) when it starts an agent without
+/// Solo's hooks, as their files couldn't be written again.
+pub const NO_HOOKS_REPORT: &str = "no-hooks";
+
+/// SOLO: Writes again the files Solo wrote for shells and agents that have
+/// gone missing (a temp or disk cleaner, by hand): the agent wrappers of
+/// terminals already open keep naming them, and without them agents run
+/// without status reports. Called when a command starts in an integrated
+/// terminal (cheap: a check that each file is there) and when a wrapper
+/// finds a file missing ([`RESTORE_FILES_REQUEST`]).
+///
+/// With `regenerate` (and the first time in a run), it first writes the
+/// agents' files a new terminal gets, which also covers terminals an earlier
+/// run of Solo started (they outlive a restart in their terminal hosts).
+/// Returns how many missing files it wrote again.
+pub fn restore_missing_files(regenerate: bool) -> usize {
+    static REGENERATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !REGENERATED.swap(true, std::sync::atomic::Ordering::Relaxed) || regenerate {
+        write_agent_files();
+    }
+    let missing: Vec<(PathBuf, std::sync::Arc<str>)> = WRITTEN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .filter(|(path, _)| !path.exists())
+        .map(|(path, contents)| (path.clone(), contents.clone()))
+        .collect();
+    let mut restored = 0;
+    for (path, contents) in missing {
+        match write_file(&path, &contents) {
+            Ok(()) => {
+                log::info!("wrote {} again: it had gone missing", path.display());
+                restored += 1;
+            }
+            Err(error) => log::warn!("failed to write {} again: {error}", path.display()),
+        }
+    }
+    restored
+}
+
+/// SOLO: Writes the files agents in a new terminal get, as
+/// `project::terminals` does for each terminal.
+fn write_agent_files() {
+    let is_windows = cfg!(windows);
+    let mut env = HashMap::default();
+    integrate_claude_code(is_windows, &mut env);
+    integrate_copilot(is_windows, &mut env);
+    integrate_opencode(&mut env);
+    crate::agent_integrations::integrate_more_agents(is_windows, &mut env);
+    integrate_browser(is_windows, &mut env);
 }
 
 /// A `-Command` for PowerShell that runs `script`, which is written to the
@@ -1518,6 +1663,11 @@ impl ShellIntegration {
         (key == agent_token(nonce) || key == nonce).then_some(rest)
     }
 
+    /// SOLO: Whether Solo integrated the shell (gave it a nonce).
+    pub fn is_integrated(&self) -> bool {
+        self.nonce.is_some()
+    }
+
     /// Whether the shell has sent any marks, i.e. integration is working.
     pub fn is_active(&self) -> bool {
         !self.blocks.is_empty()
@@ -1822,6 +1972,236 @@ mod tests {
             )
         );
         assert_eq!(run(false), format!("--settings {} hi", posix(&settings)));
+    }
+
+    #[test]
+    fn scripts_go_to_solos_data_folder_unless_packaged() {
+        let data = PathBuf::from(r"C:\Users\me\AppData\Local\Solo");
+        let package = PathBuf::from(
+            r"C:\Users\me\AppData\Local\Packages\lucas9801.SoloCode_x\LocalCache\Solo",
+        );
+        assert_eq!(
+            windows_scripts_dir(None, data.clone()),
+            data.join("solo-shell-integration")
+        );
+        // The Store's package folder, as before.
+        assert_eq!(
+            windows_scripts_dir(Some(package.clone()), data),
+            package.join("solo-shell-integration")
+        );
+
+        // The temp dir's old folder gets copies while it's there, unless
+        // Solo is packaged (it never used it).
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp.path().join("data").join("solo-shell-integration");
+        assert_eq!(legacy_dir_for(false, temp.path(), &primary), None);
+        let old = temp.path().join("solo-shell-integration");
+        std::fs::create_dir_all(&old).unwrap();
+        assert_eq!(
+            legacy_dir_for(false, temp.path(), &primary),
+            Some(old.clone())
+        );
+        assert_eq!(legacy_dir_for(true, temp.path(), &primary), None);
+        assert_eq!(legacy_dir_for(false, temp.path(), &old), None);
+    }
+
+    #[test]
+    fn missing_files_are_written_again() {
+        // Files of this test's own: other tests use the shared ones.
+        let path =
+            PathBuf::from(write_script("restore-test/settings.json", "{\"hooks\": {}}").unwrap());
+        let plugin = PathBuf::from(write_script("restore-test/plugin/a.js", "a").unwrap());
+        // Its whole folder is gone, as after a cleaner.
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        restore_missing_files(false);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"hooks\": {}}");
+        assert_eq!(std::fs::read_to_string(&plugin).unwrap(), "a");
+    }
+
+    /// Runs `claude hi` with a fake `claude` in Solo's PowerShell
+    /// integration, whose settings file is gone; `restore` answers the
+    /// wrapper's request to write it again. Returns stdout and stderr.
+    #[cfg(windows)]
+    #[allow(clippy::disallowed_methods, reason = "a test running a short script")]
+    fn run_powershell_claude(settings: &str, restore: impl FnOnce()) -> (String, String) {
+        use std::io::Read as _;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("claude.cmd"), "@echo ARGS: %*\r\n").unwrap();
+        let script = dir.path().join("integration.ps1");
+        std::fs::write(&script, POWERSHELL_SCRIPT).unwrap();
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let mut child = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+            ])
+            .arg("-Command")
+            .arg(format!(
+                "{}; claude hi",
+                powershell_load_command(&script.to_string_lossy().replace('\\', "/"))
+            ))
+            .env("PATH", format!(r"{};{system}\System32", bin.display()))
+            .env(SHELL_NONCE_ENV, "n1")
+            .env("SOLO_CLAUDE_SETTINGS", settings)
+            .env_remove("SOLO_CLAUDE_MCP_CONFIG")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdout_pipe = child.stdout.take().unwrap();
+        let mut stderr_pipe = child.stderr.take().unwrap();
+        let stderr_reader = std::thread::spawn(move || {
+            let mut stderr = String::new();
+            stderr_pipe.read_to_string(&mut stderr).ok();
+            stderr
+        });
+        let mut stdout = Vec::new();
+        let mut restore = Some(restore);
+        let mut buffer = [0u8; 4096];
+        loop {
+            let read = stdout_pipe.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            stdout.extend_from_slice(&buffer[..read]);
+            if String::from_utf8_lossy(&stdout).contains("nonce=n1;restore-files")
+                && let Some(restore) = restore.take()
+            {
+                restore();
+            }
+        }
+        child.wait().unwrap();
+        (
+            String::from_utf8_lossy(&stdout).into_owned(),
+            stderr_reader.join().unwrap(),
+        )
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn powershell_wrapper_gets_deleted_hook_settings_written_again() {
+        // A settings file of this test's own: other tests use the shared one.
+        let settings = write_script("restore-test-powershell/claude-settings.json", "{}").unwrap();
+        std::fs::remove_file(&settings).unwrap();
+        // Solo answers the wrapper's request.
+        let (stdout, stderr) = run_powershell_claude(&settings, || {
+            restore_missing_files(true);
+        });
+        let args = stdout
+            .lines()
+            .find_map(|line| {
+                line.split_once("ARGS: ")
+                    .map(|(_, args)| args.trim().to_string())
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            args,
+            format!("--settings {settings} hi"),
+            "{stdout}{stderr}"
+        );
+        assert!(!stdout.contains("no-hooks"), "{stdout}");
+        assert!(!stderr.contains("without status reports"), "{stderr}");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn powershell_wrapper_says_when_hook_settings_cant_be_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("claude-settings-gone.json");
+        // Nobody answers the wrapper's request.
+        let (stdout, stderr) = run_powershell_claude(&settings.to_string_lossy(), || {});
+        assert!(stdout.contains("ARGS: hi"), "{stdout}{stderr}");
+        assert!(!stdout.contains("--settings"), "{stdout}");
+        assert!(
+            stdout.contains("\x1b]6973;agent;nonce=n1;no-hooks;claude\x07"),
+            "{stdout:?}"
+        );
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|line| line.contains("without status reports"))
+                .collect::<Vec<_>>(),
+            vec![
+                "Solo: claude runs without status reports in this terminal (Solo's files for it are missing). A new terminal fixes it."
+            ],
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test waiting for a short shell script"
+    )]
+    fn bash_wrapper_says_when_hook_settings_cant_be_restored() {
+        // Not WSL's bash in System32: it has its own file system.
+        let Some(bash) = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .filter(|dir| !dir.to_string_lossy().to_lowercase().contains("system32"))
+                .map(|dir| dir.join(if cfg!(windows) { "bash.exe" } else { "bash" }))
+                .find(|bash| bash.is_file())
+        }) else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let fake = bin.join("claude");
+        std::fs::write(&fake, "#!/bin/sh\necho \"ARGS: $*\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let script = dir.path().join("integration.sh");
+        std::fs::write(&script, BASH_SCRIPT).unwrap();
+        let posix = |path: &Path| {
+            let path = path.to_string_lossy().replace('\\', "/");
+            match path.split_once(":/") {
+                Some((drive, rest)) if cfg!(windows) && drive.len() == 1 => {
+                    format!("/{}/{rest}", drive.to_ascii_lowercase())
+                }
+                _ => path,
+            }
+        };
+        // `sleep` is in bash's own folder (Git Bash's usr/bin).
+        let bash_dir = bash.parent().map(posix).unwrap_or_default();
+        let output = std::process::Command::new(&bash)
+            .env_clear()
+            .env("PATH", format!("{}:{bash_dir}:/usr/bin:/bin", posix(&bin)))
+            .env(SHELL_NONCE_ENV, "n1")
+            .env("SOLO_CLAUDE_SETTINGS", posix(&dir.path().join("gone.json")))
+            .args(["--norc", "--noprofile", "-c"])
+            .arg(format!(
+                "source '{}'; [ \"$(command -v claude)\" = claude ] && claude hi",
+                posix(&script)
+            ))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stdout.contains("ARGS: ") {
+            // This bash can't run the fake (e.g. WSL's bash.exe): nothing to check.
+            return;
+        }
+        assert!(stdout.contains("ARGS: hi"), "{stdout}{stderr}");
+        assert!(
+            stdout.contains("\x1b]6973;agent;nonce=n1;restore-files\x07"),
+            "{stdout:?}"
+        );
+        assert!(
+            stdout.contains("\x1b]6973;agent;nonce=n1;no-hooks;claude\x07"),
+            "{stdout:?}"
+        );
+        assert!(
+            stderr.contains("Solo: claude runs without status reports in this terminal"),
+            "{stderr}"
+        );
     }
 
     #[test]
