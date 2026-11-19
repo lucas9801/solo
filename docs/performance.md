@@ -176,6 +176,41 @@ held in every run. Afterwards Solo and Zed held 2.4-3.1 GB (they open every
 file with a match), and in most runs still used 10-17 % of a core in the
 next minute.
 
+**What the time went to** (2026-11-20, a build that records the time of
+every task by where it was spawned; a release build searching a copy of
+Godot's repository, 14,000 files, for `memnew(`: 731 files, 7,112 matches;
+language servers off). The search itself (reading the files in parallel,
+skipping binary files after their first 8 KB) took a small part. Most of
+the time went to what happens to each file with a match: it's opened as a
+buffer (as Zed does), parsed with tree-sitter (about 26 ms of CPU per file,
+two parses per file), its git diff bases loaded, and blamed:
+
+- **Git blame for every result.** Inline blame (on by default) blamed
+  every buffer of the results, running `git blame` for each matching file,
+  and again for all of them each time more results came in (every 2 s of
+  streaming), although it only ever shows the line at the cursor. Fixed:
+  in a multibuffer, inline blame now blames a buffer only when it's asked
+  to show a line of it. Blame the user turns on (the blame gutter) still
+  covers every buffer.
+- **Parsing every result**, the git diff of every result, and redrawing
+  the results as they stream in remain; they are how Zed's project search
+  works (every result is an editor buffer), and changing that would be a
+  large divergence. The parsing also makes Windows' thread pool grow to
+  350-390 threads during a search (the tasks run long, so it adds threads),
+  which adds memory and context switches.
+
+The same searches before and after (release builds, 2 runs each,
+alternating; "busy" is until Solo's process uses less than 3 % of a core
+for 2 s, and doesn't include the `git` processes the blame started; the
+machine was also compiling, 2-7 of its 12 logical processors busy):
+
+| Query | Busy before | Busy after | CPU before | CPU after |
+|---|--:|--:|--:|--:|
+| `memnew(` (731 files) | 68-81 s | 48-52 s | 63-66 s | 51 s |
+| `get_singleton()` (1,287 files by `git grep`) | 51-55 s | 24-27 s | 31 s | 20 s |
+
+Memory after the search didn't change (2.1 GB and 1.5 GB).
+
 ### Terminals that print
 
 While the 10 terminals printed, nearly all of Solo's CPU was in its own
