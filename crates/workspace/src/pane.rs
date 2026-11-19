@@ -1,7 +1,7 @@
 use crate::{
-    CloseWindow, NewCenterTerminal, NewFile, NewTerminal, OpenInTerminal, OpenOptions,
-    OpenTerminal, OpenVisible, SplitDirection, ToggleFileFinder, ToggleProjectSymbols, ToggleZoom,
-    Workspace, WorkspaceItemBuilder, ZoomIn, ZoomOut,
+    CloseWindow, NewFile, OpenInTerminal, OpenOptions, OpenTerminal, OpenVisible, SplitDirection,
+    ToggleFileFinder, ToggleProjectSymbols, ToggleZoom, Workspace, WorkspaceItemBuilder, ZoomIn,
+    ZoomOut,
     focus_follows_mouse::FocusFollowsMouse as _,
     invalid_item_view::InvalidItemView,
     item::{
@@ -3231,6 +3231,8 @@ impl Pane {
         let has_items_to_right = ix < total_items - 1;
         let has_clean_items = self.items.iter().any(|item| !item.is_dirty(cx));
         let is_pinned = self.is_tab_pinned(ix);
+        // SOLO: a terminal's tab has no contents to keep or make read-only.
+        let has_document_entries = item.tab_menu_has_document_entries(cx);
 
         let pane = cx.entity().downgrade();
         let menu_context = item.item_focus_handle(cx);
@@ -3342,19 +3344,24 @@ impl Pane {
                                     })),
                             ))
                             .separator()
-                            .item(ContextMenuItem::Entry(
-                                ContextMenuEntry::new("Close Clean")
-                                    .action(Box::new(close_clean_items_action.clone()))
-                                    .disabled(!has_clean_items)
-                                    .handler(window.handler_for(&pane, move |pane, window, cx| {
-                                        pane.close_clean_items(
-                                            &close_clean_items_action,
-                                            window,
-                                            cx,
-                                        )
-                                        .detach_and_log_err(cx)
-                                    })),
-                            ))
+                            .when(has_document_entries, |menu| {
+                                menu.item(ContextMenuItem::Entry(
+                                    ContextMenuEntry::new("Close Clean")
+                                        .action(Box::new(close_clean_items_action.clone()))
+                                        .disabled(!has_clean_items)
+                                        .handler(window.handler_for(
+                                            &pane,
+                                            move |pane, window, cx| {
+                                                pane.close_clean_items(
+                                                    &close_clean_items_action,
+                                                    window,
+                                                    cx,
+                                                )
+                                                .detach_and_log_err(cx)
+                                            },
+                                        )),
+                                ))
+                            })
                             .entry(
                                 "Close All",
                                 Some(Box::new(close_all_items_action.clone())),
@@ -3386,7 +3393,7 @@ impl Pane {
                             })
                         };
 
-                        if capability != Capability::ReadOnly {
+                        if has_document_entries && capability != Capability::ReadOnly {
                             let read_only_label = if capability.editable() {
                                 "Make Tab Read-Only"
                             } else {
@@ -4499,13 +4506,9 @@ fn default_render_tab_bar_buttons(
                             .action("Open File", ToggleFileFinder::default().boxed_clone())
                             .separator()
                             .action("Search Project", DeploySearch::default().boxed_clone())
+                            // SOLO: terminals open from the terminal panel
+                            // (and the command palette), not from here.
                             .action("Search Symbols", ToggleProjectSymbols.boxed_clone())
-                            .separator()
-                            .action("New Terminal", NewTerminal::default().boxed_clone())
-                            .action(
-                                "New Center Terminal",
-                                NewCenterTerminal::default().boxed_clone(),
-                            )
                     }))
                 }),
         )

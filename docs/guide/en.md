@@ -14,21 +14,7 @@ several agents in parallel in their own git worktrees.
 
 There are two ways to install Solo; one is enough.
 
-**First choice: Solo Code from the Microsoft Store.**
-[Download Solo Code's installer](https://get.microsoft.com/installer/download/9NBW452JVWN6): it installs Solo Code for the
-current user without opening the Store app. If the link doesn't download,
-install it from [Solo Code's Store page](https://apps.microsoft.com/detail/9NBW452JVWN6). Microsoft signs the
-Store package. It has a Start menu entry, the `solo` command in Windows'
-command line, and "Open with Solo Code" in Explorer's context menu (in
-Windows 11's own menu, not only under "Show more options").
-
-To put Solo Code on another drive, choose that drive under Settings > System >
-Storage > Advanced storage settings > Where new content is saved > New apps
-will save to before installing it, or move it later from Settings > Apps >
-Installed apps (Solo Code's "..." menu, Move). (These menu names are as
-Microsoft documents them, not tested.)
-
-**Second choice: the installer on GitHub.** Download
+**The installer on GitHub.** Download
 `Solo-Setup-<version>.exe` from [GitHub Releases](https://github.com/lucas9801/solo/releases/latest) (the
 `solo-remote-server-linux-*.gz` files there are the Linux server for remote
 development, not installers).
@@ -47,6 +33,21 @@ development, not installers).
 - A Solo installed with the installer of 2.4.2 or earlier is this kind: run
   the new installer over it; settings and data stay. The portable zip is no
   longer made.
+
+**Solo Code from the Microsoft Store.**
+[Download Solo Code's installer](https://get.microsoft.com/installer/download/9NBW452JVWN6): it installs Solo Code for the
+current user without opening the Store app. If the link doesn't download,
+install it from [Solo Code's Store page](https://apps.microsoft.com/detail/9NBW452JVWN6). Microsoft signs the
+Store package; it updates through the Store and may be a version behind
+GitHub. It has a Start menu entry, the `solo` command in Windows'
+command line, and "Open with Solo Code" in Explorer's context menu (in
+Windows 11's own menu, not only under "Show more options").
+
+To put Solo Code on another drive, choose that drive under Settings > System >
+Storage > Advanced storage settings > Where new content is saved > New apps
+will save to before installing it, or move it later from Settings > Apps >
+Installed apps (Solo Code's "..." menu, Move). (These menu names are as
+Microsoft documents them, not tested.)
 
 **"Open with Solo Code"** ("Open with Solo" for the GitHub installer) is on files, folders, a folder's background and
 drives. A folder opens in Solo, started if it isn't running; a running Solo adds a
@@ -135,7 +136,7 @@ nothing to clean up there.
 | `%APPDATA%\Solo` | Settings: `settings.json`, `keymap.json`, `tasks.json`, `debug.json`, `AGENTS.md`, `workflows.json` (saved commands) |
 | `%LOCALAPPDATA%\Solo` | Data: `logs\`, `db\` (workspace and session state), `extensions\`, `languages\` (downloaded language servers), `node\`, `external_agents\`, `terminal_sessions\` (restored terminal contents, removed after 30 days), `agent_turns\` (agent turn snapshots), `terminal-host\` (the terminal host's copy), `hang_traces\` |
 | `%LOCALAPPDATA%\Solo\browser` | The built-in browser's cookies, site data and element screenshots (`picks\`, kept for a week) |
-| `%TEMP%\solo-shell-integration` | Shell integration scripts and Claude Code hook settings |
+| `%LOCALAPPDATA%\Solo\solo-shell-integration` | Shell integration scripts and the files agents get for their status hooks (Claude Code's settings, Copilot's plugin, OpenCode's and Pi's plugins, ...). Solo Code keeps them in its package folder. Solo 2.5.2 and earlier used `%TEMP%\solo-shell-integration`; Solo still writes copies there while that folder exists, for terminals an older Solo started |
 | `%TEMP%\solo-update` | Update installers downloaded by Solo installed with the GitHub installer, and their logs |
 | `.solo\` in a project | Project settings, tasks and debug scenarios (Zed's `.zed\` is read too) |
 
@@ -317,8 +318,9 @@ an agent waiting in the background; its menu lists the terminals.
   in, and its hover card says so under its directory. Nothing moves on its
   own;
 - a terminal tab's right-click menu has **Move to a New *name* Tab** (or
-  **Move to the *tab* Tab**) and **Move to Tab ›**, to move it to any tab of
-  the window at any time, or to a new tab of a folder you pick;
+  **Move to the *tab* Tab**) and **Move to Workspace ›**, to move it to any
+  workspace tab of the window at any time, or to a new workspace of a folder
+  you pick;
 - a workspace holding unrelated projects gets a **Split Workspace** dialog
   listing the folders that stay and those that get a tab of their own; the
   terminals in none of them each get a choice of where to go (by default a
@@ -597,13 +599,18 @@ To treat another program as an agent:
 
 - **Claude Code hooks apply to one session only.** In a terminal with shell
   integration, Solo defines a `claude` wrapper function that starts Claude
-  with `--settings %TEMP%\solo-shell-integration\claude-settings.json`. Claude
+  with `--settings %LOCALAPPDATA%\Solo\solo-shell-integration\claude-settings-<hash>.json`. Claude
   Code adds those settings to your own, so **your `~/.claude/settings.json` and
   your own hooks are not changed**. If you already have your own `claude`
   function or alias, Solo leaves it alone. Subcommands such as `claude mcp` or
   `claude update`, and commands where you pass `--settings` yourself, run as
   typed. To turn the hooks off: `"terminal": {"claude_code_hooks": false}`
   (takes effect in new terminals).
+- **If those files go missing** (deleted by hand or by a cleaner), Solo writes
+  them again when an agent starts, before the wrapper starts it. If it can't,
+  the wrapper prints one line saying that agent runs without status reports in
+  that terminal, and **Why This Agent Status?** says so too; a new terminal
+  fixes it.
 - **Codex hooks apply to one session only, too.** Solo's `codex` wrapper adds
   `-c hooks.<event>=...` options, which Codex adds to your own config for that
   session; **your `~/.codex/config.toml` and `hooks.json` are not changed by
@@ -616,7 +623,7 @@ To treat another program as an agent:
   without a `codex.ps1` or `codex.exe` beside it. To turn them off:
   `"terminal": {"codex_hooks": false}` (takes effect in new terminals).
 - **Copilot CLI hooks apply to one session only, too.** Solo writes a small
-  plugin with the hooks to `%TEMP%\solo-shell-integration\copilot-plugin`,
+  plugin with the hooks to `%LOCALAPPDATA%\Solo\solo-shell-integration\copilot-plugin-<hash>`,
   and its `copilot` wrapper loads it with `--plugin-dir`; **nothing is
   installed into `~/.copilot`**. Copilot runs the hooks (which run
   `solo-agent-hook.exe`) with PowerShell. Subcommands that don't start a
@@ -624,7 +631,7 @@ To treat another program as an agent:
   off: `"terminal": {"copilot_hooks": false}` (takes effect in new terminals).
 - **OpenCode's status plugin applies to one session only, too.** OpenCode
   has no command hooks, so Solo writes a small JavaScript plugin to
-  `%TEMP%\solo-shell-integration\opencode-plugin` (and, for OpenCode 1,
+  `%LOCALAPPDATA%\Solo\solo-shell-integration\opencode-<hash>\opencode-plugin` (and, for OpenCode 1,
   `opencode-config\plugins`); its `opencode` wrapper loads it for that
   session through environment variables: `OPENCODE_CLI_CONFIG_CONTENT` for
   OpenCode 2 (your `cli.json` plugins plus Solo's; your `cli.json` is read,
@@ -666,7 +673,7 @@ To treat another program as an agent:
   own file in the `agent-detection` folder of Solo's config) or its output,
   and when the last hook report came.
 - **Shell integration**: PowerShell, bash, zsh and fish started without custom
-  arguments load Solo's integration script from `%TEMP%\solo-shell-integration`,
+  arguments load Solo's integration script from `%LOCALAPPDATA%\Solo\solo-shell-integration`,
   after your own profile. PowerShell runs it with `-NoExit -Command`, which
   reads the script file; there's no `-ExecutionPolicy Bypass` and no
   `-EncodedCommand`. To turn it off: `"terminal": {"shell_integration": false}`.
@@ -803,7 +810,7 @@ Remote macOS and Windows hosts aren't supported.
 **Symptoms**: a terminal doesn't open, closes right away, or never shows a
 prompt; Claude Code's status never changes.
 
-**Why**: Solo has PowerShell run scripts from `%TEMP%`, Claude Code runs
+**Why**: Solo has PowerShell run scripts from its data folder, Claude Code runs
 `solo-agent-hook.exe` for each event. Some security software treats these as
 suspicious.
 
@@ -815,7 +822,7 @@ suspicious.
    with solo.exe,
    solo-agent-hook.exe, solo-terminal-host.exe, OpenConsole.exe and
    conpty.dll; `%LOCALAPPDATA%\Solo\terminal-host` (the terminal host's
-   copy); and `%TEMP%\solo-shell-integration`.
+   copy); and `%LOCALAPPDATA%\Solo\solo-shell-integration`.
 2. To check whether that's the cause, set
    `"terminal": {"shell_integration": false}` and open a new terminal. If it
    works now, the integration script was being blocked.

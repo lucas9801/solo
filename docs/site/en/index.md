@@ -6,7 +6,7 @@ Solo is an editor for working with AI agents, built on [Zed](https://github.com/
 
 It's made for people who still read the code and the documents themselves: after each turn of an agent, you see what it changed and whether it broke anything, keep or undo it, and send it your comments.
 
-[Download (Windows, Microsoft Store)](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)) · [User guide](../../guide/en.md) · [Compared with other tools](compare/index.md) · [中文](../zh/index.md)
+[Download the Windows x64 installer](https://github.com/lucas9801/solo/releases/latest) (unsigned: when SmartScreen warns, click "More info", then "Run anyway") · [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6); signed by Microsoft, updated through the Store, may be a version behind) · [User guide](../../guide/en.md) · [Compared with other tools](compare/index.md) · [中文](../zh/index.md)
 
 https://github.com/user-attachments/assets/85627f07-1bb5-4f68-8199-c3afbdc9fa3b
 
@@ -33,6 +33,7 @@ https://github.com/user-attachments/assets/85627f07-1bb5-4f68-8199-c3afbdc9fa3b
 - **Workspace tabs:** one tab per project, switching terminals, editors and the file tree together; each tab shows its agents' status, including those in the background.
 - **Agent board:** a sidebar listing every agent and task, those waiting for you first.
 - **Agent tasks:** each task gets its own git worktree and branch, so agents don't step on each other; merge it, open a pull request or discard it when done. A task can span several repositories in one workspace. [More →](features/parallel.md)
+- **Built-in browser:** local pages open in a tab next to the terminal; pick elements on the page, comment on them and send the comments to an agent with their selectors, HTML and screenshots. With a setting on, agents can open pages, click and take screenshots in it while you watch. [More →](features/browser.md)
 - **Agents can drive Solo:** an agent in a Solo terminal can list, wait for and message the others, or start a new task, with `solo-cli agent`.
 
 ## A good terminal, too
@@ -45,7 +46,7 @@ For the full feature list, see the [feature reference](../../reference.md).
 
 ## Where it stands
 
-- **Windows only**, installed from the [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)) or with the [installer on GitHub](https://github.com/lucas9801/solo/releases/latest) (unsigned), and updated inside Solo.
+- **Windows only**, installed with the [installer on GitHub](https://github.com/lucas9801/solo/releases/latest) (unsigned) or from the [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)), and updated inside Solo.
 - **Agents keep running when Solo closes.** Each terminal's shell runs in a small background process; quitting Solo, an update's restart or even a crash of Solo leaves terminals that are running something (an agent, a build) running, and Solo connects to them again when it opens, screen and all. Idle shells end with Solo as usual.
-- No account, no telemetry. By default Solo only checks for updates (which can be turned off); everything else happens when you use a feature. See [privacy](../../guide/en.md#9-privacy-and-network).
+- No account, no telemetry. By default Solo only checks for updates (which can be turned off); everything else happens when you use a feature. See [privacy](../../guide/en.md#9-privacy-and-network). Solo asks before downloading a language server or other tool, and an offline mode keeps it to this computer and the local network.
 - Open source, GPL-3.0.

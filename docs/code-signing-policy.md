@@ -64,7 +64,7 @@ Code) are not part of Solo and follow their own policies.
 
 ### Where this policy is linked
 
-From the README's "更多文档" list. Release notes linked it until releases
+From the README's "More docs" list (and "更多文档" in README.zh-CN.md). Release notes linked it until releases
 stopped being signed.
 
 ## 中文
@@ -99,4 +99,4 @@ Solo 是代码编辑器，它的联网大多是用户要求的：用户自己配
 
 ### 本页在哪里链接
 
-README 的"更多文档"。发布不再签名之后，release 说明里不再链接本页。
+README.zh-CN.md 的"更多文档"（英文 README 的"More docs"）。发布不再签名之后，release 说明里不再链接本页。

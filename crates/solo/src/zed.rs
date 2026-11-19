@@ -6237,6 +6237,34 @@ mod tests {
         );
     }
 
+    // SOLO: every bundled keymap binds only actions this build has, so none
+    // keeps a binding to an action of a crate Solo removed.
+    #[gpui::test]
+    fn test_bundled_keymaps_bind_existing_actions(cx: &mut gpui::TestAppContext) {
+        init_keymap_test(cx);
+        cx.update(|cx| {
+            let paths = settings::SettingsAssets::iter()
+                .filter(|path| path.starts_with("keymaps/") && path.ends_with(".json"))
+                .collect::<Vec<_>>();
+            assert!(paths.iter().any(|path| path == DEFAULT_KEYMAP_PATH));
+            assert!(paths.iter().any(|path| path == "keymaps/linux/emacs.json"));
+            let mut failures = Vec::new();
+            for path in &paths {
+                let content = util::asset_str::<settings::SettingsAssets>(path);
+                match KeymapFile::load(content.as_ref(), cx) {
+                    KeymapFileLoadResult::Success { .. } => {}
+                    KeymapFileLoadResult::SomeFailedToLoad { error_message, .. } => {
+                        failures.push(format!("{path}: {error_message}"));
+                    }
+                    KeymapFileLoadResult::JsonParseFailure { error } => {
+                        failures.push(format!("{path}: {error}"));
+                    }
+                }
+            }
+            assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+        });
+    }
+
     #[gpui::test]
     async fn test_disabled_keymap_binding(cx: &mut gpui::TestAppContext) {
         let executor = cx.executor();

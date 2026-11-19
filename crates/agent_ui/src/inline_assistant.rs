@@ -99,6 +99,31 @@ pub struct InlineAssistant {
 
 impl Global for InlineAssistant {}
 
+/// SOLO: whether inline assist can run: AI is on and the inline assistant
+/// has a model from a configured provider.
+fn inline_assist_available(cx: &App) -> bool {
+    if !AgentSettings::get_global(cx).enabled(cx) {
+        return false;
+    }
+    let registry = LanguageModelRegistry::read_global(cx);
+    registry
+        .configuration_error(registry.inline_assistant_model(), cx)
+        .is_none()
+}
+
+/// SOLO: shows or hides the terminal's inline assist entries.
+fn update_terminal_assist(workspace: &Entity<Workspace>, cx: &mut App) {
+    let Some(terminal_panel) = workspace.read(cx).panel::<TerminalPanel>(cx) else {
+        return;
+    };
+    let available = inline_assist_available(cx);
+    if terminal_panel.read(cx).assistant_enabled() != available {
+        terminal_panel.update(cx, |terminal_panel, cx| {
+            terminal_panel.set_assistant_enabled(available, cx)
+        });
+    }
+}
+
 impl InlineAssistant {
     pub fn new(fs: Arc<dyn Fs>, prompt_builder: Arc<PromptBuilder>) -> Self {
         Self {
@@ -129,31 +154,29 @@ impl InlineAssistant {
             })
             .detach();
 
+        // SOLO: the terminal offers inline assist only with a language model
+        // configured; Solo has no hosted models, so by default it doesn't.
         let workspace_weak = workspace.downgrade();
         cx.observe_global::<SettingsStore>(move |cx| {
-            let Some(workspace) = workspace_weak.upgrade() else {
-                return;
-            };
-            let Some(terminal_panel) = workspace.read(cx).panel::<TerminalPanel>(cx) else {
-                return;
-            };
-            let enabled = AgentSettings::get_global(cx).enabled(cx);
-            terminal_panel.update(cx, |terminal_panel, cx| {
-                terminal_panel.set_assistant_enabled(enabled, cx)
-            });
+            if let Some(workspace) = workspace_weak.upgrade() {
+                update_terminal_assist(&workspace, cx);
+            }
         })
         .detach();
 
+        let workspace_weak = workspace.downgrade();
+        cx.subscribe(
+            &LanguageModelRegistry::global(cx),
+            move |_, _: &language_model::Event, cx| {
+                if let Some(workspace) = workspace_weak.upgrade() {
+                    update_terminal_assist(&workspace, cx);
+                }
+            },
+        )
+        .detach();
+
         cx.observe(workspace, |workspace, cx| {
-            let Some(terminal_panel) = workspace.read(cx).panel::<TerminalPanel>(cx) else {
-                return;
-            };
-            let enabled = AgentSettings::get_global(cx).enabled(cx);
-            if terminal_panel.read(cx).assistant_enabled() != enabled {
-                terminal_panel.update(cx, |terminal_panel, cx| {
-                    terminal_panel.set_assistant_enabled(enabled, cx)
-                });
-            }
+            update_terminal_assist(&workspace, cx);
         })
         .detach();
     }

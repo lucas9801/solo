@@ -74,6 +74,23 @@ fn program_name(command: &str) -> Option<String> {
     Some(name.to_lowercase())
 }
 
+/// SOLO: a prompt's text with an `[image]` marker for each of its `images`
+/// that the text doesn't already name. Agents put an `[Image #1]` placeholder
+/// in the text where the user pasted an image; an image sent without one (or
+/// with no text at all) still shows.
+pub(crate) fn prompt_with_images(text: &str, images: usize) -> String {
+    let text = text.trim();
+    if images == 0 || text.contains("[Image #") {
+        return text.to_string();
+    }
+    let markers = vec!["[image]"; images].join(" ");
+    if text.is_empty() {
+        markers
+    } else {
+        format!("{markers} {text}")
+    }
+}
+
 /// What is known about a terminal to find the session of the agent it runs.
 #[derive(Clone, Debug, Default)]
 pub struct TerminalProbe {
@@ -302,6 +319,27 @@ pub enum TranscriptEntry {
     /// SOLO: the reasoning effort the main conversation's model runs at
     /// ("medium", "xhigh"), as the agent recorded it.
     Effort(String),
+    /// SOLO: a call to Codex's `exec` tool, which runs code that runs
+    /// commands and changes files. It shows as a command (its code) until
+    /// what it did is recorded ([`TranscriptEntry::ExecStep`]).
+    ExecCell(ToolCall),
+    /// SOLO: commands run or files changed, recorded apart from the call
+    /// that did it: the latest `exec` cell of the turn that started by
+    /// `started_at_ms`. The first step of a cell takes its place; the cell's
+    /// further steps follow.
+    ExecStep {
+        calls: Vec<ToolCall>,
+        started_at_ms: Option<i64>,
+    },
+}
+
+/// SOLO: an `exec` cell: its place in [`SessionState::tool_calls`], when it
+/// was called and whether a step took its place.
+#[derive(Clone, Debug)]
+struct ExecCell {
+    tool_call_ix: usize,
+    called_at_ms: Option<i64>,
+    replaced: bool,
 }
 
 /// SOLO: one content block of a model response, as Claude Code records it:
@@ -425,6 +463,8 @@ pub struct SessionState {
     /// SOLO: the reasoning effort of the main conversation's latest request.
     pub effort: Option<String>,
     blocked_requests: HashMap<String, BlockedRequest>,
+    /// SOLO: Codex's `exec` cells, in order.
+    exec_cells: Vec<ExecCell>,
 }
 
 impl SessionState {
@@ -445,6 +485,7 @@ impl SessionState {
             responses: ResponseTimings::default(),
             effort: None,
             blocked_requests: HashMap::default(),
+            exec_cells: Vec::new(),
         }
     }
 
@@ -477,6 +518,16 @@ impl SessionState {
     pub fn apply(&mut self, entry: TranscriptEntry) {
         match entry {
             TranscriptEntry::Message(message) => {
+                // SOLO: Codex records a prompt twice in a row (as the
+                // request's input and as an event); the second is the same
+                // prompt, not a turn of its own. The same text sent again,
+                // for a turn of its own, is one.
+                if self.agent == AgentKind::Codex
+                    && message.role == Role::User
+                    && self.is_repeated_prompt(&message)
+                {
+                    return;
+                }
                 // SOLO: Codex records no title: its first prompt is one.
                 if self.agent == AgentKind::Codex
                     && self.title.is_none()
@@ -505,20 +556,22 @@ impl SessionState {
                     self.messages.push(message);
                 }
             }
-            TranscriptEntry::ToolCall(call) => {
-                if matches!(call.kind, ToolKind::Write | ToolKind::Edit)
-                    && let Some(path) = &call.file_path
-                {
-                    self.file_changes.push(FileChange {
-                        path: path.clone(),
-                        kind: call.kind,
-                        tool_call_id: call.id.clone(),
-                    });
-                }
-                self.tool_call_ixs
-                    .insert(call.id.clone(), self.tool_calls.len());
-                self.tool_calls.push(call);
+            TranscriptEntry::ToolCall(call) => self.add_tool_call(call),
+            TranscriptEntry::ExecCell(call) => {
+                self.exec_cells.push(ExecCell {
+                    tool_call_ix: self.tool_calls.len(),
+                    called_at_ms: call
+                        .timestamp
+                        .as_deref()
+                        .and_then(response_timing::parse_timestamp_ms),
+                    replaced: false,
+                });
+                self.add_tool_call(call);
             }
+            TranscriptEntry::ExecStep {
+                calls,
+                started_at_ms,
+            } => self.add_exec_step(calls, started_at_ms),
             TranscriptEntry::ToolResult {
                 tool_call_id,
                 outcome,
@@ -589,6 +642,88 @@ impl SessionState {
             }
             TranscriptEntry::Effort(effort) => self.effort = Some(effort),
         }
+    }
+
+    fn add_tool_call(&mut self, call: ToolCall) {
+        self.record_file_change(&call);
+        self.tool_call_ixs
+            .insert(call.id.clone(), self.tool_calls.len());
+        self.tool_calls.push(call);
+    }
+
+    fn record_file_change(&mut self, call: &ToolCall) {
+        if matches!(call.kind, ToolKind::Write | ToolKind::Edit)
+            && let Some(path) = &call.file_path
+        {
+            self.file_changes.push(FileChange {
+                path: path.clone(),
+                kind: call.kind,
+                tool_call_id: call.id.clone(),
+            });
+        }
+    }
+
+    /// SOLO: what an `exec` cell did. Its first step takes the cell's place,
+    /// so the cell doesn't show as well; its result no longer applies.
+    fn add_exec_step(&mut self, calls: Vec<ToolCall>, started_at_ms: Option<i64>) {
+        let turn_start = self
+            .turn_starts
+            .last()
+            .map_or(0, |start| start.tool_call_ix);
+        let cell = self
+            .exec_cells
+            .iter_mut()
+            .rev()
+            .take_while(|cell| cell.tool_call_ix >= turn_start)
+            .find(|cell| match (cell.called_at_ms, started_at_ms) {
+                // Codex records the call before running it.
+                (Some(called), Some(started)) => called <= started,
+                _ => true,
+            })
+            .filter(|cell| !cell.replaced && !calls.is_empty())
+            .map(|cell| {
+                cell.replaced = true;
+                cell.tool_call_ix
+            });
+        let mut calls = calls.into_iter();
+        if let Some(ix) = cell
+            && let Some(first) = calls.next()
+        {
+            self.record_file_change(&first);
+            let first_id = first.id.clone();
+            if let Some(slot) = self.tool_calls.get_mut(ix) {
+                let cell = std::mem::replace(slot, first);
+                self.tool_call_ixs.remove(&cell.id);
+                self.tool_call_ixs.insert(first_id, ix);
+            }
+        }
+        for call in calls {
+            self.add_tool_call(call);
+        }
+    }
+
+    /// SOLO: whether `prompt` records the last prompt again, with nothing
+    /// recorded since: the same text for the same turn. Codex's prompts carry
+    /// their turn's id when the record tells; two without one are two turns
+    /// (the user sent the same text again), and one without one is the event
+    /// recorded next to the request's input.
+    fn is_repeated_prompt(&self, prompt: &Message) -> bool {
+        let Some(start) = self.turn_starts.last() else {
+            return false;
+        };
+        let Some(last) = self.messages.get(start.message_ix) else {
+            return false;
+        };
+        let same_turn = match (&last.id, &prompt.id) {
+            (Some(last), Some(this)) => last == this,
+            (None, None) => false,
+            _ => true,
+        };
+        same_turn
+            && start.message_ix + 1 == self.messages.len()
+            && start.tool_call_ix == self.tool_calls.len()
+            && last.text == prompt.text
+            && last.sidechain == prompt.sidechain
     }
 
     fn apply_usage(

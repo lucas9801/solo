@@ -3,7 +3,7 @@
 介绍 Solo 的页面，中文在 `zh/`，英文在 `en/`，两边内容保持一致。都是普通 Markdown，在 GitHub 上可以直接读；以后发布成网站（比如 GitHub Pages）时再加生成工具。
 
 - [首页](zh/index.md)
-- 功能：[按轮审阅](zh/features/review.md) · [文档审阅](zh/features/documents.md) · [并行任务](zh/features/parallel.md) · [终端](zh/features/terminal.md)
+- 功能：[按轮审阅](zh/features/review.md) · [文档审阅](zh/features/documents.md) · [并行任务](zh/features/parallel.md) · [终端](zh/features/terminal.md) · [内置浏览器](zh/features/browser.md)
 - 比较：[总览](zh/compare/index.md) · [Orca](zh/compare/orca.md) · [Paseo](zh/compare/paseo.md) · [Lody](zh/compare/lody.md) · [Herdr](zh/compare/herdr.md)
 - English: [home](en/index.md)
 

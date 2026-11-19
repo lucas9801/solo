@@ -10,17 +10,17 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
 
 有两种装法，装一种就够了。
 
-**首选：Microsoft Store 的 Solo Code。** [下载 Solo Code 的安装程序](https://get.microsoft.com/installer/download/9NBW452JVWN6)，运行后直接为当前用户装好，不打开商店应用；链接下载不了时，打开 [Solo Code 的商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)安装。商店版由微软签名。装好后有开始菜单项、可以在 Windows 命令行里用的 `solo` 命令，以及资源管理器右键菜单里的“通过 Solo Code 打开”（在 Windows 11 自己的菜单里，不只在“显示更多选项”里）。
-
-想把 Solo Code 装到别的盘：在“设置 → 系统 → 存储 → 高级存储设置 → 保存新内容的地方”里把“新的应用将保存到”改成那个盘再安装，或者装好后在“设置 → 应用 → 已安装的应用”里点 Solo Code 的“…”选“移动”。（这些菜单名称是按微软的说明写的，没有实测。）
-
-**其次：GitHub 上的安装程序。** 从 [GitHub Releases](https://github.com/lucas9801/solo/releases/latest) 下载 `Solo-Setup-<版本>.exe`（同一页上的 `solo-remote-server-linux-*.gz` 是远程开发用的 Linux 服务端，不是安装程序）。
+**GitHub 上的安装程序。** 从 [GitHub Releases](https://github.com/lucas9801/solo/releases/latest) 下载 `Solo-Setup-<版本>.exe`（同一页上的 `solo-remote-server-linux-*.gz` 是远程开发用的 Linux 服务端，不是安装程序）。
 
 - 安装程序**没有签名**，所以运行时 Windows 的 SmartScreen 会提示“Windows 已保护你的电脑”：点“更多信息”，再点“仍要运行”。
 - 可以**选择安装目录**（默认 `%LOCALAPPDATA%\Programs\Solo`，只为当前用户安装，不需要管理员权限）；选一个你有写权限的文件夹，比如 `D:\Apps\Solo`，不要选 `C:\Program Files`。
 - 有开始菜单项、可选的桌面图标、资源管理器右键菜单里的“通过 Solo 打开”（在 Windows 11 的“显示更多选项”里，可以在安装时取消），以及 `solo://` 链接。
 - **Solo 自己更新**：从 GitHub 下载新版本的安装程序，静默装到同一个目录（见第 3 节）。
 - 用 2.4.2 及更早的安装程序装的 Solo 就是这一种，直接用新安装程序覆盖安装即可，设置和数据不变。以前的便携 zip 不再提供。
+
+**Microsoft Store 的 Solo Code。** [下载 Solo Code 的安装程序](https://get.microsoft.com/installer/download/9NBW452JVWN6)，运行后直接为当前用户装好，不打开商店应用；链接下载不了时，打开 [Solo Code 的商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)安装。商店版由微软签名，通过商店更新，版本可能比 GitHub 晚一个。装好后有开始菜单项、可以在 Windows 命令行里用的 `solo` 命令，以及资源管理器右键菜单里的“通过 Solo Code 打开”（在 Windows 11 自己的菜单里，不只在“显示更多选项”里）。
+
+想把 Solo Code 装到别的盘：在“设置 → 系统 → 存储 → 高级存储设置 → 保存新内容的地方”里把“新的应用将保存到”改成那个盘再安装，或者装好后在“设置 → 应用 → 已安装的应用”里点 Solo Code 的“…”选“移动”。（这些菜单名称是按微软的说明写的，没有实测。）
 
 **右键菜单“通过 Solo Code 打开”**（GitHub 安装版叫“通过 Solo 打开”）：在文件、文件夹、文件夹空白处和驱动器上都有。打开文件夹时，Solo 没在运行就启动并打开它；已在运行就在现有窗口里加一个工作区标签并切过去，这个文件夹已经有标签时直接切到那个标签。打开文件时，放进包含它的那个标签，没有就放进当前标签，不会新开窗口。卸载时右键菜单会一起删掉。
 
@@ -68,7 +68,7 @@ Solo 不会修改你的 Claude Code 配置（见第 8 节），所以那边没�
 | `%APPDATA%\Solo` | 设置目录：`settings.json`、`keymap.json`、`tasks.json`、`debug.json`、`AGENTS.md`、`workflows.json`（保存的命令） |
 | `%LOCALAPPDATA%\Solo` | 数据目录：`logs\`（日志）、`db\`（工作区和会话状态）、`extensions\`、`languages\`（自动下载的语言服务器）、`node\`、`external_agents\`、`terminal_sessions\`（终端内容恢复，30 天后清理）、`agent_turns\`（agent 轮次快照）、`terminal-host\`（终端宿主进程的副本）、`hang_traces\` |
 | `%LOCALAPPDATA%\Solo\browser` | 内置浏览器的 Cookie、网站数据和元素截图（`picks\`，保留一周） |
-| `%TEMP%\solo-shell-integration` | shell 集成脚本和 Claude Code 的 hook 设置文件 |
+| `%LOCALAPPDATA%\Solo\solo-shell-integration` | shell 集成脚本，以及 agent 状态 hooks 用到的文件（Claude Code 的设置、Copilot 的插件、OpenCode 和 Pi 的插件等）。Solo Code 放在自己的包目录里。Solo 2.5.2 及更早版本用的是 `%TEMP%\solo-shell-integration`；这个文件夹还在时，Solo 会继续往里面写一份，供旧版 Solo 开的终端使用 |
 | `%TEMP%\solo-update` | GitHub 安装版下载的更新安装程序和安装日志 |
 | 项目里的 `.solo\` | 项目设置、任务和调试配置（也会读 Zed 的 `.zed\`） |
 
@@ -137,7 +137,7 @@ Solo 不会在 agent 工作时自动打开它改的文件。
 - 标签菜单（箭头或右键）列出这个工作区的终端，可以直接跳过去；
 - 重启后只加载当前工作区，其他的在第一次切换过去时才加载；
 - 终端的目录（agent 上报的目录优先）在另一个标签的项目里（它的文件夹，或同一个 git 仓库），或者不在本标签的任何文件夹里时，切到这个终端会在顶部看到提示条：“移到 <标签名>”，或者“在新标签中打开 <名字> 并移过去”（目录在 git 仓库里时用仓库的名字）。移动不会打断正在运行的程序和 agent，同一个标签里去往同一处的终端会一起移过去。选“留在这里”后不再为那里提示（Solo 重启后仍记得）；× 只关这一次。不在本标签文件夹里的终端，标签上还有一个虚线小标记写着它实际所在的文件夹，悬停卡片的“目录”下面也会注明。不会自动移动；
-- 终端标签的右键菜单里有“移到 <名字> 的新标签”（或“移到 <标签名> 的标签”）和“移到标签 ›”，可以随时把终端移到这个窗口的任何标签，或者先选文件夹再移到新标签；
+- 终端标签的右键菜单里有“移到 <名字> 的新标签”（或“移到 <标签名> 的标签”）和“移到工作区 ›”，可以随时把终端移到这个窗口的任何工作区标签，或者先选文件夹再移到新工作区；
 - 一个工作区里有互不相关的项目时，Solo 会弹出“拆分工作区”对话框：列出留下和拆出去的文件夹；不在任何文件夹里的终端逐个选去向（默认新建它自己的标签）。点“拆分”才生效，“保持现状”之后不再询问；
 - 这个版本的 Solo 第一次启动时，有标签之前留下的终端会按 git 仓库移到对应的标签，没有的话在后台打开一个。agent 任务的工作树算作它所属的仓库。开着 `follow_working_directory` 时这两项都不生效。
 
@@ -233,14 +233,15 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 
 ## 8. Solo 对你的系统做了什么
 
-- **Claude Code hooks 只对单次会话生效。** 在接入了 shell 集成的终端里，Solo 会定义一个 `claude` 包装函数，启动时给 claude 加上 `--settings %TEMP%\solo-shell-integration\claude-settings.json`。Claude Code 会把这份设置叠加在你自己的设置上，**你的 `~/.claude/settings.json` 和你自己的 hooks 都不会被修改**。如果你已经有自己的 `claude` 函数或别名，Solo 不会覆盖它。运行 `claude mcp`、`claude update` 这类子命令，或者你自己传了 `--settings` 时，命令会原样执行。关闭方法：`"terminal": {"claude_code_hooks": false}`，对新开的终端生效。
+- **Claude Code hooks 只对单次会话生效。** 在接入了 shell 集成的终端里，Solo 会定义一个 `claude` 包装函数，启动时给 claude 加上 `--settings %LOCALAPPDATA%\Solo\solo-shell-integration\claude-settings-<hash>.json`。Claude Code 会把这份设置叠加在你自己的设置上，**你的 `~/.claude/settings.json` 和你自己的 hooks 都不会被修改**。如果你已经有自己的 `claude` 函数或别名，Solo 不会覆盖它。运行 `claude mcp`、`claude update` 这类子命令，或者你自己传了 `--settings` 时，命令会原样执行。关闭方法：`"terminal": {"claude_code_hooks": false}`，对新开的终端生效。
+- **这些文件丢了也没关系**（手动删除或被清理软件删掉）：agent 启动时，Solo 会先把它们重新写出来，包装函数再启动 agent。如果写不出来，包装函数会打印一行，说明这个 agent 在这个终端里没有状态上报，**为什么是这个 agent 状态？**里也会说明；新开一个终端即可恢复。
 - **Codex hooks 也只对单次会话生效。** Solo 的 `codex` 包装函数会加上 `-c hooks.<事件>=...` 参数，Codex 把它们叠加在你自己的配置上，只对这次会话有效；**Solo 不会修改你的 `~/.codex/config.toml` 和 `hooks.json`**。Codex 只运行你信任过的 hooks，所以第一次启动时它会问你：选择信任后 Codex 会记住（由 Codex 写进它自己的配置）。这些 hooks 用完整路径运行 Solo 文件夹里的 `solo-agent-hook.exe`（Codex 在 Windows 上用 PowerShell 运行 hooks），所以 Solo 换了文件夹、或新版 Solo 改了 hooks 时，Codex 会再问一次。`codex login`、`codex mcp` 这类不启动会话的子命令原样执行；只有 `codex.cmd`、旁边没有 `codex.ps1` 或 `codex.exe` 时也原样执行。关闭方法：`"terminal": {"codex_hooks": false}`，对新开的终端生效。
-- **Copilot CLI hooks 也只对单次会话生效。** Solo 会把带 hooks 的一个小插件写到 `%TEMP%\solo-shell-integration\copilot-plugin`，`copilot` 包装函数用 `--plugin-dir` 加载它；**不会往 `~/.copilot` 里安装任何东西**。Copilot 用 PowerShell 运行这些 hooks（hooks 运行的是 `solo-agent-hook.exe`）。`copilot login`、`copilot plugin` 这类不启动会话的子命令原样执行。关闭方法：`"terminal": {"copilot_hooks": false}`，对新开的终端生效。
-- **OpenCode 的状态插件也只对单次会话生效。** OpenCode 没有命令式 hooks，所以 Solo 会把一个小的 JavaScript 插件写到 `%TEMP%\solo-shell-integration\opencode-plugin`（OpenCode 1 用的是 `opencode-config\plugins`），`opencode` 包装函数通过环境变量为这次会话加载它：OpenCode 2 用 `OPENCODE_CLI_CONFIG_CONTENT`（内容是你 `cli.json` 里的插件加上 Solo 的；Solo 只读取你的 `cli.json`，不修改它），OpenCode 1 用 `OPENCODE_CONFIG_DIR`。**不会往 `~/.config/opencode` 写任何东西**。如果你自己设置了其中某个变量，Solo 不会覆盖它（对应版本的 OpenCode 状态就改为读屏幕）。插件在一轮开始、请求权限或提问、一轮结束时运行 `solo-agent-hook.exe report`，并且只上报 OpenCode 窗口里当前显示的那个会话。重启后点“继续会话”会输入 `opencode --session <id>`。OpenCode 1 第一次运行时会往 `opencode-config` 里装它的插件依赖包。关闭方法：`"terminal": {"opencode_hooks": false}`，对新开的终端生效。
+- **Copilot CLI hooks 也只对单次会话生效。** Solo 会把带 hooks 的一个小插件写到 `%LOCALAPPDATA%\Solo\solo-shell-integration\copilot-plugin-<hash>`，`copilot` 包装函数用 `--plugin-dir` 加载它；**不会往 `~/.copilot` 里安装任何东西**。Copilot 用 PowerShell 运行这些 hooks（hooks 运行的是 `solo-agent-hook.exe`）。`copilot login`、`copilot plugin` 这类不启动会话的子命令原样执行。关闭方法：`"terminal": {"copilot_hooks": false}`，对新开的终端生效。
+- **OpenCode 的状态插件也只对单次会话生效。** OpenCode 没有命令式 hooks，所以 Solo 会把一个小的 JavaScript 插件写到 `%LOCALAPPDATA%\Solo\solo-shell-integration\opencode-<hash>\opencode-plugin`（OpenCode 1 用的是 `opencode-config\plugins`），`opencode` 包装函数通过环境变量为这次会话加载它：OpenCode 2 用 `OPENCODE_CLI_CONFIG_CONTENT`（内容是你 `cli.json` 里的插件加上 Solo 的；Solo 只读取你的 `cli.json`，不修改它），OpenCode 1 用 `OPENCODE_CONFIG_DIR`。**不会往 `~/.config/opencode` 写任何东西**。如果你自己设置了其中某个变量，Solo 不会覆盖它（对应版本的 OpenCode 状态就改为读屏幕）。插件在一轮开始、请求权限或提问、一轮结束时运行 `solo-agent-hook.exe report`，并且只上报 OpenCode 窗口里当前显示的那个会话。重启后点“继续会话”会输入 `opencode --session <id>`。OpenCode 1 第一次运行时会往 `opencode-config` 里装它的插件依赖包。关闭方法：`"terminal": {"opencode_hooks": false}`，对新开的终端生效。
 - **Pi、oh-my-pi、Kilo Code CLI、Gemini CLI、Qwen Code 也只对单次会话生效**（`more_agent_hooks`）。Pi 和 oh-my-pi：`pi`、`omp` 包装函数加上 `-e <Solo 的扩展>`（`pi install` 之类的命令照原样运行）。Kilo：Solo 的终端把 `KILO_CONFIG_DIR` 设为 Solo 的一个插件目录，Kilo 会把它加到你自己的插件之外（你自己设了 `KILO_CONFIG_DIR` 时 Solo 不动它）。Gemini CLI 和 Qwen Code：Solo 的终端把 `GEMINI_CLI_SYSTEM_DEFAULTS_PATH` / `QWEN_CODE_SYSTEM_DEFAULTS_PATH` 设为 Solo 的一个带状态 hooks 的设置文件，它们会把这些 hooks 加到你自己的 hooks 之外；管理员的系统默认设置文件（或你自己让变量指向的文件）会被复制进去，照样生效。不会往这些 agent 的目录写任何东西。Gemini CLI 和 Qwen Code 通过各自的 shell 运行 Solo 的 hook 程序，这一点还没有用真实的 agent 验证过。
 - **Kimi Code CLI 和 MastraCode 只从你自己的配置读 hooks**，所以只给你列出的 agent 加：`"terminal": {"global_agent_hooks": ["kimi", "mastracode"]}`。第一次修改前 Solo 会把文件复制成 `<文件>.solo-backup`（`~/.kimi-code/config.toml` 或 `$KIMI_CODE_HOME`；`~/.mastracode/hooks.json`），并给自己加的条目做标记；把 agent 从列表里去掉，就只删除 Solo 加的条目。这些 hooks 在 Solo 的终端以外什么都不做。卸载 Solo 之前请先把它们从列表里去掉，否则 hooks 会一直指向 Solo 的 hook 程序。
 - **为什么是这个状态？** 在运行 agent 的终端里右键，选“为什么是这个 agent 状态？”，或者运行 `solo-cli agent why <id>`（当前终端用 `self`）：会说明状态来自 agent 的 hook、屏幕规则（匹配了哪条规则，来自 Solo 内置的规则还是你放在 Solo 配置目录 `agent-detection` 下的文件）还是终端输出，以及最后一次 hook 上报是什么时候。
-- **shell 集成**：PowerShell、bash、zsh、fish 在没有自定义启动参数时会加载 Solo 的集成脚本，这些脚本写在 `%TEMP%\solo-shell-integration`。PowerShell 用 `-NoExit -Command` 读取并执行这个脚本文件，不用 `-ExecutionPolicy Bypass`，也不用 `-EncodedCommand`。脚本先加载你自己的 profile，再加载集成。关闭方法：`"terminal": {"shell_integration": false}`。
+- **shell 集成**：PowerShell、bash、zsh、fish 在没有自定义启动参数时会加载 Solo 的集成脚本，这些脚本写在 `%LOCALAPPDATA%\Solo\solo-shell-integration`。PowerShell 用 `-NoExit -Command` 读取并执行这个脚本文件，不用 `-ExecutionPolicy Bypass`，也不用 `-EncodedCommand`。脚本先加载你自己的 profile，再加载集成。关闭方法：`"terminal": {"shell_integration": false}`。
 - **hooks 跑的程序**是安装目录里的 `solo-agent-hook.exe`。它从 stdin 读事件，往终端写一个转义序列，然后退出；它不联网，也不写文件。
 - **轮次快照**存在 `%LOCALAPPDATA%\Solo\agent_turns`，不碰你仓库里的东西。
 - **agent 任务**会在你的仓库里新建分支和工作树，并往仓库的 git 配置里写 `branch.<分支>.solotask` / `solobase`（跨仓库任务还有 `sologroup`）。这些只在你新建任务时才会发生。
@@ -295,11 +296,11 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 ### 被安全软件拦截
 **症状**：终端打不开、一打开就关、提示符一直不出现；Claude Code 的状态一直不更新。
 
-**原因**：Solo 会用 PowerShell 执行 `%TEMP%` 里的脚本，Claude Code 每个事件都会运行 `solo-agent-hook.exe`。有些安全软件会把这些行为当成可疑操作。
+**原因**：Solo 会用 PowerShell 执行它数据文件夹里的脚本，Claude Code 每个事件都会运行 `solo-agent-hook.exe`。有些安全软件会把这些行为当成可疑操作。
 
 **处理**：
 
-1. 把以下位置加入安全软件的信任或白名单：安装目录（Solo Code 在 `C:\Program Files\WindowsApps` 下，GitHub 安装版默认在 `%LOCALAPPDATA%\Programs\Solo`；里面有 solo.exe、solo-agent-hook.exe、solo-terminal-host.exe、OpenConsole.exe、conpty.dll），`%LOCALAPPDATA%\Solo\terminal-host`（终端宿主进程的副本），以及 `%TEMP%\solo-shell-integration`。
+1. 把以下位置加入安全软件的信任或白名单：安装目录（Solo Code 在 `C:\Program Files\WindowsApps` 下，GitHub 安装版默认在 `%LOCALAPPDATA%\Programs\Solo`；里面有 solo.exe、solo-agent-hook.exe、solo-terminal-host.exe、OpenConsole.exe、conpty.dll），`%LOCALAPPDATA%\Solo\terminal-host`（终端宿主进程的副本），以及 `%LOCALAPPDATA%\Solo\solo-shell-integration`。
 2. 想确认是不是被拦了：在设置里写 `"terminal": {"shell_integration": false}`，再新开一个终端。如果这样能用，就说明拦的是集成脚本。
 3. 向厂商报告误报：例如 360 可以通过开放平台 open.soft.360.cn 提交（待核实）；其他厂商一般也有误报申诉入口。提交时附上版本号。
 

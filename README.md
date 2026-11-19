@@ -1,253 +1,262 @@
 # Solo
 
-**让 agent 写代码，你来读、判断和指挥。**
+English | [简体中文](README.zh-CN.md)
 
-Solo 是给 AI 编程 agent 用的编辑器，基于 [Zed](https://github.com/zed-industries/zed)：终端占满窗口，Claude Code、Codex 这些 agent 在真终端里跑，用的是你自己装的命令行工具和订阅；需要看代码时，完整的代码编辑器从右边打开，随时看 agent 改了什么。
+**Agents write the code. You read it, judge it and direct them.**
 
-[下载 Windows 版（Microsoft Store）](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)） · [用户指南](docs/guide/zh-CN.md) · [和其他工具比较](docs/site/zh/compare/index.md) · [English](docs/site/en/index.md)
+Solo is an editor for AI coding agents, built on [Zed](https://github.com/zed-industries/zed). The terminal fills the window, and agents like Claude Code and Codex run in a real terminal, with the command-line tools and subscriptions you already have. When you need to look at code, a full code editor opens on the right, so you can see what the agent changed at any time.
 
-https://github.com/user-attachments/assets/df4a53d7-075a-44b7-9874-f3f71f2eaf61
+**Download:** [Windows x64 installer (GitHub Releases)](https://github.com/lucas9801/solo/releases/latest). The installer is unsigned: when SmartScreen warns, click "More info", then "Run anyway". You can also install from the [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)): signed by Microsoft, updated through the Store, and possibly a version behind GitHub.
 
-## 功能
+[User guide](docs/guide/en.md) · [Compared with other tools](docs/site/en/compare/index.md)
 
-先看最常用的几项，[完整的功能列表](#全部功能)在后面。
+https://github.com/user-attachments/assets/85627f07-1bb5-4f68-8199-c3afbdc9fa3b
 
-### 终端和编辑器分屏
+## Features
 
-终端占满整个窗口；打开一个文件，编辑器就从右边出现，关掉最后一个文件又收回去。中间的分隔线可以拖动，比例会记住。左边一排按钮打开文件树、Git、大纲、agent 看板等侧栏。
+The ones used most come first; the [full feature list](#all-features) follows.
 
-![终端和编辑器分屏：左边 agent 在终端里工作，右边编辑器打开它改的文件](docs/media/split.png)
+### Terminal and editor side by side
 
-### agent 状态一眼看清
+The terminal fills the whole window. Open a file and the editor appears on the right; close the last file and it goes away again. The divider can be dragged, and the split is remembered. A row of buttons on the left opens the sidebars: files, git, outline, the agent board and more.
 
-运行 agent 的终端，标签上是 agent 的图标、会话名和红绿灯一样的状态点：蓝色在工作，黄色等你回复，绿色做完一轮待你看，红色出错；后面是上下文用了多少。悬停看到模型和思考强度、上下文、目录和分支、这一轮和整个会话的 token 和用时，以及首字时间和输出速度。Solo 在后台时，agent 需要你回复会发桌面通知。
+![Terminal and editor side by side: an agent works in the terminal on the left, the editor on the right shows a file it changed](docs/media/split.png)
 
-Claude Code、Codex、Copilot CLI 通过 Solo 为这次会话加的 hooks 上报状态，OpenCode 通过 Solo 加的插件，都不改它们的配置；其他 agent 按各自的屏幕规则识别。
+### Agent status at a glance
 
-![agent 状态：几个终端标签分别在工作、等你回复、做完待看，悬停卡片展开](docs/media/status.png)
+The tab of a terminal running an agent shows the agent's icon, its session name and a traffic-light status: blue working, yellow waiting for you, green done with a turn for you to look at, red failed; then how much of the context is used. Hover it for the model and reasoning effort, the context, the directory and branch, the tokens and time of the turn and the session, the time to the first token and the output speed. With Solo in the background, an agent that needs your input sends a desktop notification.
 
-### 工作区标签：按项目分开
+Claude Code, Codex and Copilot CLI report their status through hooks Solo adds for the session, and OpenCode through a plugin Solo adds, without changing their config; other agents are recognized from their screen with per-agent rules.
 
-每个项目文件夹是一个工作区，标题栏上一个标签，里面有它自己的终端、agent、编辑器和文件树；切换标签，这些一起换。标签上显示这个项目里 agent 的状态，后台项目有 agent 在等你也看得到；标签菜单列出它的终端，点一下直接跳过去。`Ctrl+Alt+1…9` 切换，重启后所有标签都回来。
+![Agent status: terminal tabs working, waiting for you and done, with a hover card open](docs/media/status.png)
 
-![工作区标签：标题栏上三个项目，一个标签的菜单展开](docs/media/workspaces.png)
+### Workspace tabs: one per project
 
-### 按轮审阅和回滚
+Each project folder is a workspace with a tab in the title bar, holding its own terminals, agents, editors and file tree; switching tabs swaps all of them. A tab shows the status of the project's agents, so you see an agent waiting in a background project too; its menu lists its terminals, and a click jumps to one. `Ctrl+Alt+1…9` switches, and all the tabs come back after a restart.
 
-agent 每做完一轮，终端标签上出现"N 个文件已修改"。点开就是这一轮的全部改动：逐块保留或拒绝，在代码行上写意见，一次发回给 agent。Solo 还会告诉你这一轮**新增**了几个错误和警告、修掉了几个。可以回滚到任意一轮之前，回滚本身也能撤销；快照存在 Solo 自己的目录里，不碰你的分支、暂存区和 stash。[详细 →](docs/site/zh/features/review.md)
+![Workspace tabs: three projects in the title bar, with one tab's menu open](docs/media/workspaces.png)
 
-![按轮审阅：一轮改了几个文件，顶部是新增的警告，一行代码上挂着审阅意见](docs/media/review.png)
+### Per-turn review and roll back
 
-### 关掉 Solo，agent 照样在跑
+When an agent finishes a turn, its terminal tab shows "N files changed". Open it to see everything the turn changed: keep or reject each hunk, comment on lines and send all the comments to the agent at once. Solo also tells you how many errors and warnings the turn **added**, and how many it fixed. You can roll back to before any turn, and undo the rollback; snapshots are kept in Solo's own folder, never touching your branch, index or stash. [More →](docs/site/en/features/review.md)
 
-每个终端的 shell 跑在一个小的后台进程里。退出 Solo、更新重启，甚至 Solo 崩溃，正在运行的 agent 和编译都会继续；Solo 再打开时自动连回去，画面和期间的输出都在。空闲的 shell 随 Solo 一起结束。没能保留下来的 agent，重启后会提示接着上次的会话。
+![Per-turn review: a turn that changed a few files, the added warnings at the top, a review comment on a line of code](docs/media/review.png)
 
-### 终端里的链接一点就开
+### Agents keep running when Solo closes
 
-终端输出里的文件路径，点一下就打开：代码在编辑器里，Markdown 在渲染好的预览里（Mermaid 图和图片都显示），图片在图片查看器里。agent 说"改了 src/app.ts:42"，点一下就跳到那一行；输出里只有行号（比如 `(:120)`）时，Solo 会到前面提到的文件里找有这一行的那个打开。
+Each terminal's shell runs in a small background process. When Solo quits, restarts for an update or even crashes, the agents and builds that are running keep going; when Solo opens again it connects to them, with the screen and the output printed meanwhile. Idle shells end with Solo. A terminal whose agent couldn't be kept offers to continue its session after a restart.
 
-![终端里的链接：点 agent 输出里的路径，编辑器打开那个文件](docs/media/links.gif)
+### Click links in the terminal
 
-### Mermaid 图和文档审阅
+A file path in the terminal's output opens with a click: code in the editor, Markdown in a rendered preview (Mermaid diagrams and images included), images in the image viewer. When the agent says "changed src/app.ts:42", a click takes you to that line; when the output only has a line number (such as `(:120)`), Solo finds the file mentioned earlier that has that line and opens it.
 
-agent 输出里的 `mermaid` 代码块，点 `mermaid` 那一行就能看图；屏幕上只显示了一部分时，Solo 从 agent 的会话记录里取完整内容。Markdown 预览里的 Mermaid 图也直接渲染。
+![Links in the terminal: clicking a path in the agent's output opens the file in the editor](docs/media/links.gif)
 
-![Mermaid 图：左边是 agent 输出的 mermaid 代码，右边是渲染出的图](docs/media/mermaid.png)
+### Mermaid diagrams and document review
 
-agent 写的计划和设计文档在预览里打开，选中文字写批注，一次发回给 agent；文档再被改时，Solo 告诉你改了哪几块。[详细 →](docs/site/zh/features/documents.md)
+Click the `mermaid` line of a `mermaid` block in an agent's output to see the diagram; when the screen only shows part of it, Solo takes the whole block from the agent's transcript. Mermaid diagrams in Markdown previews render too.
 
-![文档审阅：计划文档的预览，下方是一条批注和"发给 agent"](docs/media/documents.png)
+![Mermaid diagram: the agent's mermaid code on the left, the rendered diagram on the right](docs/media/mermaid.png)
 
-### 好几个 agent 同时干活
+Plans and designs the agent writes open in a preview: select text, comment, and send the comments to the agent at once; when the document changes again, Solo tells you which parts. [More →](docs/site/en/features/documents.md)
 
-一个任务一个 git worktree 和分支，互不干扰，做完合并、开 PR 或丢弃；工作区里有几个仓库时，一个任务可以横跨它们。左侧的 agent 看板列出所有 agent 和任务，等你回复的排在最前面。终端里的 agent 也能用 `solo-cli agent` 查看、等待别的 agent，给它们发消息，或者新开任务。[详细 →](docs/site/zh/features/parallel.md)
+![Document review: a plan in the preview, with a comment and "Send to Agent" below](docs/media/documents.png)
 
-![agent 看板：左侧列出几个 agent 的状态、分支和最后一句话](docs/media/board.png)
+### Several agents at once
 
-### 内置浏览器
+Each task gets its own git worktree and branch, so agents don't get in each other's way; merge it, open a pull request or discard it when done. In a workspace with several repositories, a task can span them. The agent board on the left lists every agent and task, with those waiting for you first. An agent in a terminal can also use `solo-cli agent` to look at and wait for the other agents, send them messages, or start a new task. [More →](docs/site/en/features/parallel.md)
 
-本机地址（localhost 等）的链接在 Solo 里打开，开发时不用切窗口。在网页上点选元素、写批注，一次发给 agent，带上选择器、HTML、样式和截图。打开设置后，Solo 终端里启动的 agent 还能在这个浏览器里打开网页、点击、填表、截图，你看着它操作。
+![Agent board: the status, branch and last message of several agents on the left](docs/media/board.png)
 
-### 好用的终端
+### Built-in browser
 
-命令块、底部的输入编辑器、边输边弹的补全、失败的命令一键把错误发给 agent，还能用一句话让你自己的 Claude Code 或 Codex 给出命令。[详细 →](docs/site/zh/features/terminal.md)
+Links to local addresses (localhost and the like) open in Solo, so you don't switch windows while developing. Pick elements on a page, comment on them, and send the comments to an agent at once, with their selectors, HTML, styles and screenshots. With a setting on, agents started in Solo's terminals can also open pages, click, fill in forms and take screenshots in this browser while you watch. [More →](docs/site/en/features/browser.md)
 
-![好用的终端：几个命令块，失败的标红，输入框正在弹出 git 子命令的补全](docs/media/terminal.png)
+![Built-in browser: a local server runs in the terminal on the left, Solo's browser shows its page on the right, with the address bar, viewports and "Pick" in the toolbar](docs/media/browser.png)
 
-### 全部功能
+### A good terminal
 
-**终端**
+Command blocks, an input editor at the bottom, completions as you type, a failed command's errors sent to an agent in one click, and a command from a sentence by your own Claude Code or Codex. [More →](docs/site/en/features/terminal.md)
 
-- **命令块**：每条命令和输出是一块，带退出码和耗时，失败的标红，正在跑的有计时，长输出滚动时命令固定在顶部。选中一块可以复制命令或输出、重新运行，或按 `Alt+Enter` 发给另一个终端里的 agent。
-- **失败了交给 agent**：命令失败时点"发给 agent"，Solo 只挑出编译错误、失败的测试和断言（cargo、tsc、gcc/clang、MSVC、pytest、go、jest），其他情况取输出的最后一段，粘贴给在同一目录里工作的 agent。
-- **输入编辑器**：命令在底部的真编辑器里输入，多光标、撤销、`Shift+Enter` 换行、语法高亮都能用。
-- **边输边补全**：约 500 个常用命令的子命令、选项和参数值（git 分支、npm 脚本、docker 容器等），另有 PowerShell 自己的补全；灰色提示来自历史和命令规格，`Ctrl+R` 模糊搜索历史。
-- **`# 想做的事`**：用一句话描述，你自己的 Claude Code 或 Codex 给出命令（生成时关掉了它们的工具），你确认后才运行；可以带上刚才失败的命令和输出。
-- **工作流**：保存带 `{{参数}}` 的常用命令，`Ctrl+Shift+R` 调出，也能从 + 菜单在新终端里运行。
-- **shell**：PowerShell、bash、zsh、fish。重启后终端按原来的目录和标题重新打开。
-- 终端栏可以隐藏，里面的 agent 照常运行；隐藏时左边的终端图标上显示有几个 agent 要你看一眼。
+![The terminal: command blocks, a failed one in red, and git subcommand completions open in the input](docs/media/terminal.png)
 
-**agent 和状态**
+### All features
 
-- 二十多种 agent 自动识别，不用配置；别的程序可以用 `agent_commands` 加进来，或者按[状态协议](docs/agent-status-protocol.md)自己上报。
-- 终端标签：agent 图标、会话名、红绿灯状态点、上下文圆环和百分比；悬停卡片和终端底部的用量栏显示模型、思考强度、token、本轮用时、首字时间和输出速度。
-- 桌面通知（Solo 在后台时）：agent 需要你回复、程序发通知、长命令跑完，以及（默认关）agent 停下；每种各有开关。
-- **agent 看板**：左侧栏列出所有 agent 终端和 agent 任务，带状态、分支、上一轮的改动、运行时长和最后一句话，点一下跳到终端。
-- **时间线**（Claude Code、Codex）：每一轮的提示词、读过和改过的文件、跑过的命令和回答。
-- **把东西发给 agent**：编辑器里 `Ctrl+Alt+K` 发送选中内容或光标位置，`Ctrl+Alt+Shift+M` 发送当前文件的诊断信息。
-- **为什么是这个状态**：终端标签右键"为什么是这个 agent 状态？"，说明状态是 hook 上报的还是读屏幕判断的、最后一次上报在什么时候；agent 也能用 `solo-cli agent why` 查。
-- 关闭正在跑 agent 的终端或窗口前先确认。
+**Terminal**
 
-**工作区**
+- **Command blocks**: each command and its output form a block, with the exit code and duration, failed ones in red, a timer while running, and the command pinned to the top while scrolling through long output. Select a block to copy the command or the output, run it again, or send it to an agent in another terminal with `Alt+Enter`.
+- **Send failures to an agent**: when a command fails, click "Send to Agent". Solo picks out only the compiler errors, failed tests and assertions (cargo, tsc, gcc/clang, MSVC, pytest, go, jest), or else the end of the output, and pastes it into the agent working in the same directory.
+- **Input editor**: commands are typed in a real editor at the bottom, with multiple cursors, undo, `Shift+Enter` for new lines and syntax highlighting.
+- **Completions as you type**: subcommands, options and argument values (git branches, npm scripts, docker containers, ...) for about 500 common commands, plus PowerShell's own completions; grey suggestions from history and command specs, and fuzzy history search on `Ctrl+R`.
+- **`# what you want`**: describe it in a sentence, and your own Claude Code or Codex (with their tools turned off) suggests a command, which runs only once you confirm it; the command that just failed and its output can go along.
+- **Workflows**: save commands you use often with `{{arguments}}`, bring them up with `Ctrl+Shift+R`, or run one in a new terminal from the + menu.
+- **Shells**: PowerShell, bash, zsh, fish. After a restart, terminals reopen in their directories and with their titles.
+- The terminal column can be hidden while its agents keep running; meanwhile the terminal icon on the left shows how many agents want a look.
 
-- 一个项目文件夹一个工作区标签，各有自己的终端、agent、编辑器和文件树；标签上显示 agent 的状态，菜单里列出终端。
-- 终端 `cd` 到了别的项目，标签上有标记，顶部提示可以把它移到对应的标签（不打断正在跑的程序）；也可以随时"移到标签"。
-- 一个工作区里有互不相关的项目时，可以拆成几个标签。
-- 在资源管理器里右键文件或文件夹"通过 Solo 打开"，放进已有的窗口和对应的标签。
+**Agents and status**
 
-**审阅和回滚**
+- More than twenty agents are recognized with no setup; other programs can be added with `agent_commands`, or report their own status through the [status protocol](docs/agent-status-protocol.md).
+- Terminal tabs: the agent's icon, its session name, a traffic-light status, and a context ring with its percentage; the hover card and the usage bar at the bottom of the terminal show the model, reasoning effort, tokens, turn time, time to first token and output speed.
+- Desktop notifications (with Solo in the background): when an agent needs your input, when a program asks for one, when a long command finishes, and (off by default) when an agent stops; each has its own switch.
+- **Agent board**: a sidebar listing every agent terminal and agent task, with its status, branch, last turn's changes, running time and last message; click one to go to its terminal.
+- **Timeline** (Claude Code, Codex): each turn's prompt, the files read and changed, the commands run and the answer.
+- **Sending things to an agent**: in the editor, `Ctrl+Alt+K` sends the selection or the cursor position, and `Ctrl+Alt+Shift+M` sends the file's diagnostics.
+- **IDE tools for agents**: Claude Code and Codex in Solo's terminals can use the language servers Solo already runs: find symbols, go to definition, find references, see diagnostics; read-only, and only in that workspace (`terminal.ide_tools` turns them off).
+- **Why this status?**: right-click a terminal tab and choose "Why This Agent Status?" to see whether the status came from a hook or from the screen, and when the last report arrived; agents can ask with `solo-cli agent why`.
+- Closing a terminal or a window while an agent runs asks first.
 
-- 每一轮的改动：逐块保留或拒绝、全部保留或拒绝；拒绝这一轮新建的文件时移到回收站。
-- 在代码行上写意见，一次发回给 agent。
-- 这一轮新增和修掉了几个错误、警告，点一下跳过去。
-- 审阅里能跳到定义、查引用、搜索，每块改动上方写着它在哪个函数里。
-- 回滚到任意一轮之前，回滚也能撤销；中途失败会保留撤销点。
-- agent 上报了自己改的文件时（Claude Code），一轮只算它改的，你自己或别的 agent 同时改的不算进来。
-- 不是 git 仓库或文件太多拍不了快照时，仍列出这一轮改了哪些文件。
+**Workspaces**
 
-**编辑器**
+- One workspace tab per project folder, each with its own terminals, agents, editors and file tree; the tab shows its agents' status, and its menu lists its terminals.
+- When a terminal `cd`s into another project, its tab gets a mark and a bar on top offers to move it to that project's tab (without interrupting what runs in it); you can also "Move to" a tab at any time.
+- A workspace holding unrelated projects can be split into several tabs.
+- "Open with Solo" on a file or folder in Explorer puts it in the open window, in the matching tab.
 
-- Zed 的编辑器：语言服务、跳到定义、查找引用、全项目搜索、多光标、Git 面板、diff 和 blame。
-- 大仓库里语言服务默认更省资源；状态栏显示它们占了多少内存，可以按项目选完整分析、只分析打开的文件或关掉；占内存多时提醒；起不来时写明原因。
+**Review and roll back**
 
-**文档、Markdown 和图**
+- Each turn's changes: keep or reject each hunk, or keep or reject all; rejecting a file the turn created moves it to the recycle bin.
+- Comment on lines and send the comments to the agent at once.
+- How many errors and warnings the turn added and fixed; click one to go there.
+- Go to definition, find references and search work in the review, and a line above each hunk names the function it's in.
+- Roll back to before any turn, and undo the rollback; a rollback that fails partway keeps the undo point.
+- When the agent reports the files it edits (Claude Code does, and Solo reads Codex's from the telemetry Codex sends it), a turn is only those files: what you or another agent changed meanwhile is listed separately, and "Reject All" leaves it alone.
+- When the folder isn't a git repository or has too many files to snapshot, the turn still lists the files it changed.
 
-- 终端输出里的路径点一下打开：代码、Markdown 预览、图片查看器；只有行号的链接也能找到对的文件。
-- agent 输出里的 Mermaid 代码块直接看图，Markdown 预览里的 Mermaid 图和图片也会显示。
-- 在 Markdown 预览里批注，一次发给 agent；文档之后又被改了，提示改了多少，"显示改动"标出改过的段落。
-- Solo 打不开的文件（比如 .apk）显示完整路径，可以"在文件资源管理器中显示"或用默认应用打开。
+**Editor**
 
-**内置浏览器**
+- Zed's editor: language servers, go to definition, find references, project-wide search, multiple cursors, the git panel, diffs and blame.
+- Language servers use fewer resources on large repositories by default; the status bar shows how much memory they take, and each project can choose full analysis, open files only, or off. Solo warns when they take a lot of memory, and says why when one fails to start.
 
-- 终端、Markdown 预览、时间线里的网页链接：本机地址默认在 Solo 里打开，其他用系统浏览器（`browser.open_links` 可改）；`Ctrl+Shift`+点击换另一种方式。
-- 工具栏：前进后退、地址栏、桌面/平板/手机视口、开发者工具、页内查找。
-- **选取**：点网页元素写批注，编号显示在页面上，"发送给 agent"粘贴到 agent 的输入里（不自动发送）。
-- **让 agent 操作浏览器**（`browser.allow_agent_control`，默认关）：Claude Code 和 Codex 自动接上 Playwright MCP（需要 Node.js），在 Solo 的浏览器里打开、读取、点击、截图。
+**Documents, Markdown and diagrams**
 
-**并行任务和 agent 命令行**
+- Paths in the terminal's output open with a click: code, Markdown previews, the image viewer; links with only a line number find the right file too.
+- `mermaid` blocks in an agent's output open as diagrams, and Mermaid diagrams and images in Markdown previews are shown.
+- Comment in a Markdown preview and send the comments to an agent at once; when the document changes later, Solo says how much changed, and "Show Changes" marks the changed blocks.
+- A file Solo can't open (an .apk, say) shows its full path, with "Reveal in File Explorer" and opening it with the default app.
 
-- **agent 任务**：一个任务一个分支和 git worktree，在里面开终端启动 agent；做完合并回原分支、开 PR 或删除；有没提交的改动时可以让 agent 自己提交。
-- 一个任务可以横跨工作区里的几个仓库。
-- 仓库里的 `.solo/worktrees.json` 决定 worktree 放在哪、复制哪些被忽略的文件（比如 `.env`）、启动前后跑什么命令、每个任务分一个端口。
-- + 菜单里可以直接"在新工作树中新建终端"，选开一个空 shell、Claude Code 或 Codex。
-- **`solo-cli agent`**：终端里的 agent 可以列出别的终端、给它们发消息、等它们做完、读它们的回答，或者新开一个任务（[说明](docs/agent-cli.md)）；`agent_control` 设置限制它能做到什么程度。
+**Built-in browser**
 
-**终端常驻**
+- Web links in the terminal, Markdown previews and the timeline: local addresses open in Solo by default and the rest in the system browser (`browser.open_links` changes it); `Ctrl+Shift`+click opens a link the other way.
+- Toolbar: back and forward, the address bar, desktop/tablet/phone viewports, developer tools, find in page.
+- **Pick**: click page elements to comment on them, numbered on the page; "Send to Agent" pastes them into the agent's prompt (without sending it).
+- **Letting agents use the browser** (`browser.allow_agent_control`, off by default): Claude Code and Codex get Playwright MCP (Node.js needed) to open pages, read them, click and take screenshots in Solo's browser.
 
-- 跑着 agent 或命令的终端在 Solo 退出、更新、崩溃后继续运行，重新打开时连回去，画面完整恢复。
-- 没能保留下来的 agent 终端，重启后提示接着上次的会话（Claude Code、Codex、Copilot CLI、OpenCode、Gemini CLI、Cursor CLI、Aider）。
+**Parallel tasks and the agent command line**
 
-**更新**
+- **Agent tasks**: each task gets a branch and a git worktree, with a terminal there running an agent; when done, merge it into the branch it started from, open a pull request or delete it; with uncommitted changes, the agent can be asked to commit them.
+- A task can span several repositories in a workspace.
+- A repository's `.solo/worktrees.json` sets where worktrees go, which ignored files they get a copy of (such as `.env`), the commands to run before and after, and a port for each task.
+- "New Terminal in New Worktree…" in the + menu opens an empty shell, Claude Code or Codex in a new worktree.
+- **`solo-cli agent`**: an agent in a terminal can list the other terminals, send them messages, wait for them to finish, read their answers, or start a new task ([details](docs/agent-cli.md)); the `agent_control` setting limits how far it can go.
 
-- 在 Solo 里更新，不打开商店；有新版本时标题栏右边出现更新按钮，不弹通知。
-- 可以"更新并重启"或"退出时安装"，有 agent 在跑时会说明现在更新会影响哪些；也可以看更新内容或跳过这个版本。
+**Terminals that keep running**
 
-**设置和其他**
+- Terminals running an agent or a command keep running when Solo quits, updates or crashes, and Solo connects to them again when it opens, with the whole screen back.
+- An agent terminal that couldn't be kept offers to continue its session after a restart (Claude Code, Codex, Copilot CLI, OpenCode, Gemini CLI, Cursor CLI, Aider).
 
-- 中文和英文界面（`ui_language`，默认跟随系统）。
-- 设置页里能改终端、通知、语言服务等；设置和数据放在 Solo 自己的目录里，和 Zed 分开。
-- 不用注册账号，不发送遥测；默认只检查更新。
+**Updates**
 
-**开发中**
+- Solo updates inside Solo, without opening the Store; a newer version shows an update button at the right of the title bar, with no notification.
+- Choose "Update and Restart" or "Install When Solo Quits"; with agents running it says which ones updating now would affect. You can also read the release notes or skip the version.
 
-- 手机端：在手机上查看和控制电脑上的 agent。
+**Settings and more**
 
-## 支持的 agent
+- Chinese and English interface (`ui_language`, following the system by default).
+- The settings page covers the terminal, notifications, language servers and more; settings and data live in Solo's own folders, apart from Zed's.
+- No account, no telemetry; by default Solo only checks for updates.
+- **Asking before downloading**: before a language server, Node.js, Prettier, a debug adapter and the like is first downloaded, Solo asks once, naming where it comes from; you can allow and remember it, skip it for now or point to a local copy (`downloads.mode`).
+- **Offline mode**: the button at the right of the status bar, or `network.offline`; Solo then only connects to this computer and the local network and installs nothing, while what's already installed keeps working.
 
-| agent | 状态从哪里来 | 按轮审阅 | 重启后接着用 |
+**In development**
+
+- A phone app: see and control the agents on your computer from your phone.
+
+## Supported agents
+
+| Agent | Where the status comes from | Per-turn review | Resume after a restart |
 |---|---|---|---|
-| Claude Code、Codex、Copilot CLI | Solo 加的 hooks，准确上报 | 支持 | 接最近一次会话 |
-| OpenCode | Solo 加的插件，准确上报 | 支持 | 接回原来的会话 |
-| Gemini CLI、Qwen Code | Solo 为这次会话加的 hooks（系统默认设置文件），准确上报 | 支持 | 接回原来的会话 |
-| Pi、oh-my-pi | Solo 用 `-e` 加载的扩展，准确上报 | 支持 | 接回原来的会话 |
-| Kilo Code CLI | Solo 的插件目录（`KILO_CONFIG_DIR`），准确上报 | 支持 | 接回原来的会话 |
-| Kimi Code CLI、MastraCode | 在设置 `global_agent_hooks` 里逐个开启后写入它们的配置（先备份，可干净移除）；未开启时读屏幕（Kimi）或终端输出 | 支持 | 开启后接回原来的会话 |
-| Cursor CLI | 读屏幕 | 支持 | 接最近一次会话 |
-| Amp、Cline、Droid 等其余有规则的 agent | 读屏幕 | 支持 | 不支持 |
-| Aider 和用 `agent_commands` 加的程序 | 终端输出 | 不支持 | Aider 恢复聊天记录，其他不支持 |
-| 其他程序 | [状态协议](docs/agent-status-protocol.md) | 支持 | 不支持 |
+| Claude Code, Codex, Copilot CLI | hooks Solo adds, exact | yes | the most recent session |
+| OpenCode | a plugin Solo adds, exact | yes | its own session |
+| Gemini CLI, Qwen Code | hooks Solo adds for the session (system defaults settings file), exact | yes | its own session |
+| Pi, oh-my-pi | an extension Solo loads with `-e`, exact | yes | its own session |
+| Kilo Code CLI | Solo's plugin folder (`KILO_CONFIG_DIR`), exact | yes | its own session |
+| Kimi Code CLI, MastraCode | written to their own config once turned on one by one in `global_agent_hooks` (backed up first, removed cleanly); otherwise their screen (Kimi) or terminal output | yes | its own session, once turned on |
+| Cursor CLI | its screen | yes | the most recent session |
+| Amp, Cline, Droid and the other agents with rules | its screen | yes | no |
+| Aider and programs added with `agent_commands` | its output | no | Aider's chat history; others no |
+| Other programs | the [status protocol](docs/agent-status-protocol.md) | yes | no |
 
-完整列表见[功能参考](docs/reference.md#supported-agents)。
+The full list is in the [feature reference](docs/reference.md#supported-agents).
 
-## 安装
+## Install
 
-Solo 目前只有 Windows x64 版，有两种装法，装一种就够了：
+Solo is Windows x64 only for now. There are two ways to install it; one is enough:
 
-1. **Microsoft Store（推荐）**：[下载 Solo Code 的安装程序](https://get.microsoft.com/installer/download/9NBW452JVWN6)，运行后直接装好 Solo Code，不打开商店应用。链接下载不了时，打开 [Solo Code 的商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)安装。商店版由微软签名。想装到别的盘：在“设置 → 系统 → 存储 → 高级存储设置 → 保存新内容的地方”里把“新的应用将保存到”改成那个盘再安装，或者装好后在“设置 → 应用”里移动 Solo Code（菜单名称按微软的说明写的，没有实测）。
-2. **GitHub 安装程序**：从 [GitHub Releases](https://github.com/lucas9801/solo/releases/latest) 下载 `Solo-Setup-<版本>.exe`。它没有签名，运行时 Windows 的 SmartScreen 会提示“Windows 已保护你的电脑”：点“更多信息”，再点“仍要运行”。安装时可以选择安装目录（默认 `%LOCALAPPDATA%\Programs\Solo`），装好后 Solo 自己更新。
+1. **GitHub installer**: download `Solo-Setup-<version>.exe` from [GitHub Releases](https://github.com/lucas9801/solo/releases/latest). It's unsigned, so Windows' SmartScreen says "Windows protected your PC" when you run it: click "More info", then "Run anyway". You can choose the install folder (by default `%LOCALAPPDATA%\Programs\Solo`), and Solo updates itself afterwards.
+2. **Microsoft Store**: [download Solo Code's installer](https://get.microsoft.com/installer/download/9NBW452JVWN6); it installs Solo Code without opening the Store app. If the link doesn't download, install it from [Solo Code's Store page](https://apps.microsoft.com/detail/9NBW452JVWN6). The Store version is signed by Microsoft, updated through the Store, and may be a version behind GitHub. To put it on another drive, choose that drive under Settings > System > Storage > Advanced storage settings > Where new content is saved > New apps will save to before installing it, or move Solo Code later from Settings > Apps (these menu names are as Microsoft documents them, not tested).
 
-**开始用**：打开 Solo，打开一个项目文件夹，在终端里运行 `claude`、`codex` 或你常用的 agent（agent 要你自己先装好）。
+**Getting started**: open Solo, open a project folder, and run `claude`, `codex` or the agent you use in the terminal (install the agent yourself first).
 
-**更新**：在 Solo 里完成：商店版通过商店更新，不打开商店；GitHub 安装版下载新版本的安装程序并静默安装。Solo 启动 30 秒后检查一次，之后每 6 小时一次。有新版本时标题栏最右边出现更新按钮（不弹通知），你同意了才会更新；有 agent 在跑时可以选"退出时安装"。不想自动检查，在设置里写 `"auto_update": false`。
+**Updating** happens inside Solo: the Store version updates through the Store without opening it; the GitHub version downloads the new installer and installs it silently. Solo checks 30 seconds after it starts and every 6 hours after that. A newer version shows an update button at the far right of the title bar (no notification), and nothing updates until you agree; with agents running you can choose "Install When Solo Quits". To turn off the automatic checks, set `"auto_update": false`.
 
-**卸载**：在"设置 → 应用"里卸载 Solo Code（商店版）或 Solo（GitHub 安装版）。卸载不会删除设置和数据，彻底清除的方法见[用户指南](docs/guide/zh-CN.md#4-卸载与彻底清除)。
+**Uninstalling**: uninstall Solo Code (Store version) or Solo (GitHub installer) from Settings > Apps. Uninstalling doesn't remove your settings and data; to remove everything, see the [user guide](docs/guide/en.md#4-uninstalling-and-removing-everything).
 
-## 从源码编译
+## Build from source
 
-**需要准备**（Windows x64）：
+**What you need** (Windows x64):
 
-- Git。
-- Rust：用 [rustup](https://rustup.rs) 安装，也可以运行 `script\install-rustup.ps1`。仓库的 `rust-toolchain.toml` 固定了编译器版本（1.98.1），第一次构建时 rustup 会自动装上。
-- Visual Studio 2022 或更新版本（或只装 Build Tools 加"使用 C++ 的桌面开发"工作负载），勾上这些组件：**MSVC x64/x86 生成工具**、**MSVC x64/x86 Spectre 缓解库**、**Windows SDK（至少 10.0.20348.0）**、**CMake**（"用于 Windows 的 C++ CMake 工具"）。只装 Build Tools 时，要在开始菜单里的"Developer PowerShell"里编译。组件 ID 和常见问题见 [Zed 的 Windows 构建说明](https://github.com/zed-industries/zed/blob/main/docs/src/development/windows.md)。
-- 磁盘空间：至少留 40 GB。实测一次发行构建占 14 GB，Rust 工具链和 cargo 下载的源码约 6 GB；调试构建的 `target\debug` 会随着反复编译越积越大。测法见[从源码构建](docs/development.md#notes-for-local-builds)。
+- Git.
+- Rust: install it with [rustup](https://rustup.rs), or run `script\install-rustup.ps1`. The repository's `rust-toolchain.toml` pins the compiler version (1.98.1), which rustup installs on the first build.
+- Visual Studio 2022 or later (or only the Build Tools with the "Desktop development with C++" workload), with these components: **MSVC x64/x86 build tools**, **MSVC x64/x86 Spectre-mitigated libs**, **Windows SDK (10.0.20348.0 or later)** and **CMake** ("C++ CMake tools for Windows"). With only the Build Tools, build from "Developer PowerShell" in the Start menu. For component IDs and common problems, see [Zed's Windows build notes](https://github.com/zed-industries/zed/blob/main/docs/src/development/windows.md).
+- Disk space: leave at least 40 GB. One release build took 14 GB, and the Rust toolchain and cargo's downloaded sources about 6 GB; a debug build's `target\debug` keeps growing as you rebuild. How this was measured is in [Building from source](docs/development.md#notes-for-local-builds).
 
-**开发构建**：
+**Development build**:
 
 ```powershell
 git clone https://github.com/lucas9801/solo
 cd solo
-cargo run -p solo        # 调试版，生成并运行 target\debug\solo.exe
+cargo run -p solo        # debug build: builds and runs target\debug\solo.exe
 ```
 
-这样只编译 `solo.exe`。agent hooks 用的 `solo-agent-hook.exe`、让终端在 Solo 关掉后继续跑的 `solo-terminal-host.exe` 和 `solo-cli.exe` 要另外编译，见[从源码构建](docs/development.md#notes-for-local-builds)；没有它们 Solo 也能用，只是这几项退回到慢一些或不保留的做法。
+This builds only `solo.exe`. `solo-agent-hook.exe` (for agent hooks), `solo-terminal-host.exe` (which keeps terminals running after Solo closes) and `solo-cli.exe` are built separately, see [Building from source](docs/development.md#notes-for-local-builds); Solo works without them, but those features fall back to slower ways or don't keep terminals running.
 
-**发行构建和打包**：
+**Release build and packaging**:
 
 ```powershell
-script\package-solo.ps1   # 优化构建，把要打包的文件放到 dist\Solo
+script\package-solo.ps1   # optimized build; stages the files to package in dist\Solo
 ```
 
-脚本会先生成依赖的许可清单（需要时自动安装 cargo-about）。可选参数：`-TargetDir`（cargo 输出目录）、`-OutDir`（输出目录，默认 `dist`）。商店包用 `script\package-solo-msix.ps1` 从 `dist\Solo` 生成；GitHub 安装程序用 `script\package-solo.ps1 -Step Installer` 生成（需要 Inno Setup 6）。见[从源码构建](docs/development.md)。
+The script first generates the license list of the dependencies (installing cargo-about if needed). Optional parameters: `-TargetDir` (cargo's output folder) and `-OutDir` (the output folder, `dist` by default). The Store package is made from `dist\Solo` with `script\package-solo-msix.ps1`; the GitHub installer with `script\package-solo.ps1 -Step Installer` (needs Inno Setup 6). See [Building from source](docs/development.md).
 
-**注意**：
+**Notes**:
 
-- 第一次构建要下载依赖、编译一千多个 crate，时间较长（几十分钟到几个小时，看机器）。编译时会同时跑很多个 rustc，每个可能占到 1 GB 以上；内存紧张时用 `cargo run -j 4 -p solo` 或环境变量 `CARGO_BUILD_JOBS` 限制并发。
-- 正式版本由 GitHub Actions 构建和打包（[Solo package](.github/workflows/solo-package.yml)），本地构建只用来开发和测试。
+- The first build downloads the dependencies and compiles more than a thousand crates, which takes a while (tens of minutes to a few hours, depending on the machine). Many rustc processes run at once, each possibly taking more than 1 GB; when memory is tight, limit them with `cargo run -j 4 -p solo` or the `CARGO_BUILD_JOBS` environment variable.
+- Releases are built and packaged by GitHub Actions ([Solo package](.github/workflows/solo-package.yml)); local builds are only for development and testing.
 
-## 现在的状态
+## Current status
 
-- **只有 Windows 版。**
-- **不用注册账号，不发送遥测。** 默认只会定期检查更新（可以关掉），其余网络访问都由你用到的功能触发，详见[隐私说明](docs/guide/zh-CN.md#9-隐私与网络)。
-- **开源**，GPL-3.0。
+- **Windows only.**
+- **No account, no telemetry.** By default Solo only checks for updates now and then (which can be turned off); any other network access comes from features you use. See [privacy](docs/guide/en.md#9-privacy-and-network).
+- **Open source**, GPL-3.0.
 
-## 更多文档
+## More docs
 
-- [用户指南](docs/guide/zh-CN.md)（[English](docs/guide/en.md)）：所有功能和设置的说明
-- [功能参考（英文）](docs/reference.md)：完整功能清单、设置项、agent 支持表
-- [agent 状态协议](docs/agent-status-protocol.md)、[给 agent 用的命令行](docs/agent-cli.md)
-- [从源码构建](docs/development.md)：构建细节，版本怎么构建和发布
-- [包里有哪些文件](docs/package-contents.md)：每个文件的来源和许可证
-- [签名、版本信息和网络访问](docs/code-signing-policy.md)：商店包由谁签名，Solo 会主动访问哪些网络
+- [User guide](docs/guide/en.md) ([中文](docs/guide/zh-CN.md)): every feature and setting explained
+- [Feature reference](docs/reference.md): the full feature list, settings and agent support table
+- [Agent status protocol](docs/agent-status-protocol.md), [the command line for agents](docs/agent-cli.md)
+- [Building from source](docs/development.md): build details, and how releases are built and published
+- [Package contents](docs/package-contents.md): where each file comes from and its license
+- [Code signing, version information and network access](docs/code-signing-policy.md): who signs the Store package, and which network addresses Solo contacts on its own
 
-## 致谢与许可
+## Credits and license
 
-Solo 基于 Zed Industries 的 [Zed](https://github.com/zed-industries/zed)。和 Zed 一样采用 GPL-3.0-or-later 许可（见 `LICENSE-GPL`）；部分 Zed crate 是 Apache-2.0（见 `LICENSE-APACHE` 和各 crate 的许可文件）。
+Solo is based on [Zed](https://github.com/zed-industries/zed) by Zed Industries. Like Zed, it's licensed under GPL-3.0-or-later (see `LICENSE-GPL`); some Zed crates are Apache-2.0 (see `LICENSE-APACHE` and each crate's license file).
 
-内置的第三方代码，本地改动都标有 `SOLO:`（见 [`vendor/README.md`](vendor/README.md)）：
+Bundled third-party code, with local changes marked `SOLO:` (see [`vendor/README.md`](vendor/README.md)):
 
-- [alacritty_terminal](https://github.com/alacritty/alacritty)（Apache-2.0），来自 Zed 的分支
-- [vte](https://github.com/alacritty/vte)（Apache-2.0 / MIT）
-- [Warp 的 command signatures](https://github.com/warpdotdev/command-signatures)（MIT，很多规格改编自 Fig，同为 MIT）
-- [Herdr 的 agent 屏幕识别规则](https://github.com/herdrdev/herdr)（Apache-2.0，未修改）
+- [alacritty_terminal](https://github.com/alacritty/alacritty) (Apache-2.0), from Zed's fork
+- [vte](https://github.com/alacritty/vte) (Apache-2.0 / MIT)
+- [Warp's command signatures](https://github.com/warpdotdev/command-signatures) (MIT; many specs are adapted from Fig, also MIT)
+- [Herdr's agent screen detection rules](https://github.com/herdrdev/herdr) (Apache-2.0, unmodified)
 
-Solo 与 Zed Industries、Warp 没有关联。没有使用 Warp 终端应用的代码（AGPL），相关功能是重新实现的。
+Solo isn't affiliated with Zed Industries or Warp. It uses no code from the Warp terminal app (AGPL); the related features were reimplemented.

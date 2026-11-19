@@ -70,6 +70,27 @@ if set -q SOLO_CLAUDE_SETTINGS; or set -q SOLO_CODEX_ARGS; or set -q SOLO_COPILO
     and set -gx SOLO_AGENT_TTY $solo_tty
 end
 
+# SOLO: Whether Solo's files an agent wrapper passes to its agent are there.
+# If one is gone (a temp or disk cleaner, by hand), Solo is asked to write its
+# files again, and this waits a moment for them; if they don't come back, it
+# says the agent runs without status reports here, and tells Solo so.
+function __solo_ensure_files
+    set -l agent $argv[1]
+    set -e argv[1]
+    for tries in (seq 0 40)
+        set -l missing
+        for path in $argv
+            test -z "$path"; or test -e "$path"; or set missing 1
+        end
+        test -z "$missing"; and return 0
+        test $tries -eq 0; and printf '\e]6973;agent;nonce=%s;restore-files\a' "$__solo_nonce"
+        sleep 0.05
+    end
+    printf '\e]6973;agent;nonce=%s;no-hooks;%s\a' "$__solo_nonce" "$agent"
+    printf '%s\n' "Solo: $agent runs without status reports in this terminal (Solo's files for it are missing). A new terminal fixes it." >&2
+    return 1
+end
+
 # Claude Code reports what it's doing through hooks in the settings file Solo
 # passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this terminal.
 # A claude function of the user's own stays.
@@ -81,7 +102,7 @@ if set -q SOLO_CLAUDE_SETTINGS; and not functions -q claude
             or contains -- --bg $argv
             or contains -- --background $argv
             or string match -q -- '--settings=*' $argv
-            or not test -r "$SOLO_CLAUDE_SETTINGS"
+            or not __solo_ensure_files claude "$SOLO_CLAUDE_SETTINGS" "$SOLO_CLAUDE_MCP_CONFIG"
             command claude $argv
         else if set -q SOLO_CLAUDE_MCP_CONFIG; and test -r "$SOLO_CLAUDE_MCP_CONFIG"
             # Solo's MCP servers: its browser, its IDE tools (before --settings,
@@ -114,7 +135,7 @@ if set -q SOLO_COPILOT_PLUGIN; and not functions -q copilot
     function copilot
         # Commands that don't run a session run as typed.
         if contains -- "$argv[1]" app login help init config update version sessions memories plugin mcp skill instruction lsp sandbox completion
-            or not test -d "$SOLO_COPILOT_PLUGIN"
+            or not __solo_ensure_files copilot "$SOLO_COPILOT_PLUGIN"
             command copilot $argv
         else
             command copilot --plugin-dir "$SOLO_COPILOT_PLUGIN" $argv
@@ -132,7 +153,7 @@ if set -q SOLO_OPENCODE_CONFIG_DIR; and not functions -q opencode
         if not set -q OPENCODE_CLI_CONFIG_CONTENT; and test -n "$SOLO_OPENCODE_CLI_CONFIG"
             set -a solo_env OPENCODE_CLI_CONFIG_CONTENT=$SOLO_OPENCODE_CLI_CONFIG
         end
-        if not set -q OPENCODE_CONFIG_DIR; and test -d "$SOLO_OPENCODE_CONFIG_DIR"
+        if not set -q OPENCODE_CONFIG_DIR; and __solo_ensure_files opencode "$SOLO_OPENCODE_CONFIG_DIR"
             set -a solo_env OPENCODE_CONFIG_DIR=$SOLO_OPENCODE_CONFIG_DIR
         end
         env $solo_env opencode $argv
@@ -146,7 +167,7 @@ function __solo_pi_like
     set -l program $argv[1]
     set -e argv[1]
     if contains -- "$argv[1]" install remove uninstall update list config plugin plugins help
-        or not test -r "$SOLO_PI_EXTENSION"
+        or not __solo_ensure_files $program "$SOLO_PI_EXTENSION"
         command $program $argv
     else
         command $program -e "$SOLO_PI_EXTENSION" $argv
