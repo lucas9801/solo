@@ -6,7 +6,7 @@ English | [简体中文](README.zh-CN.md)
 
 Solo is an editor for AI coding agents, built on [Zed](https://github.com/zed-industries/zed). The terminal fills the window, and agents like Claude Code and Codex run in a real terminal, with the command-line tools and subscriptions you already have. When you need to look at code, a full code editor opens on the right, so you can see what the agent changed at any time.
 
-**Download:** [Windows x64 installer (GitHub Releases)](https://github.com/lucas9801/solo/releases/latest). The installer is unsigned: when SmartScreen warns, click "More info", then "Run anyway". You can also install from the [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)): signed by Microsoft, updated through the Store, and possibly a version behind GitHub.
+**Download:** [Windows x64 installer](https://github.com/lucas9801/solo/releases/latest/download/Solo-Setup.exe) ([all releases](https://github.com/lucas9801/solo/releases)). The installer is unsigned: when SmartScreen warns, click "More info", then "Run anyway". You can also install from the [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)): signed by Microsoft, updated through the Store, and possibly a version behind GitHub.
 
 [User guide](docs/guide/en.md) · [Compared with other tools](docs/site/en/compare/index.md)
 
