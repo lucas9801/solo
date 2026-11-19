@@ -81,14 +81,28 @@ release with the installer, the remote servers and the notes in
 `docs/release-notes/<version>.md`. Running copies of Solo only update to
 published releases.
 
+A release's assets are:
+
+- `Solo-Setup-<version>.exe`, the installer, which Solo's updater downloads;
+- `Solo-Setup.exe`, a copy of the same file (the same SHA-256, both logged by
+  the workflow) under a fixed name, so that
+  `https://github.com/lucas9801/solo/releases/latest/download/Solo-Setup.exe`
+  always downloads the latest installer. The updater never takes it: it only
+  takes names starting with `Solo-Setup-`, hyphen included, as every
+  released version has (`is_installer_asset` in `solo_update.rs`);
+- `solo-remote-server-linux-<arch>.gz`, the Linux remote servers.
+
 The notes start with the two summary lines the update button shows (one
 sentence in Chinese, then English; `script/check-solo-release-notes.ps1`
 checks them), then the link line: both downloads, the GitHub installer first
 and then the Store, neither marked recommended (the Store can be a version
-behind), the user guide, and what the `.gz` files are, for example:
+behind), the user guide, and what the other assets are (`Solo-Setup.exe` is
+the same installer, the `.gz` files aren't installers). The installer link
+names the versioned `Solo-Setup-<version>.exe`, which stays that version's
+file, for example:
 
 ```markdown
-下载 / Download: [GitHub 安装程序 / installer `Solo-Setup-<version>.exe`](https://github.com/lucas9801/solo/releases/download/v<version>/Solo-Setup-<version>.exe)（未签名，运行时点"更多信息"→"仍要运行" / unsigned: click "More info", then "Run anyway"） · [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面 / Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)；由微软签名，可能晚一个版本 / signed by Microsoft, may be a version behind） · [用户指南](https://github.com/lucas9801/solo/blob/main/docs/guide/zh-CN.md) · [User guide](https://github.com/lucas9801/solo/blob/main/docs/guide/en.md) · `solo-remote-server-linux-*.gz` 是远程开发用的 Linux 服务端，不是安装程序 / are the Linux server for remote development, not installers.
+下载 / Download: [GitHub 安装程序 / installer `Solo-Setup-<version>.exe`](https://github.com/lucas9801/solo/releases/download/v<version>/Solo-Setup-<version>.exe)（未签名，运行时点"更多信息"→"仍要运行" / unsigned: click "More info", then "Run anyway"） · [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面 / Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)；由微软签名，可能晚一个版本 / signed by Microsoft, may be a version behind） · [用户指南](https://github.com/lucas9801/solo/blob/main/docs/guide/zh-CN.md) · [User guide](https://github.com/lucas9801/solo/blob/main/docs/guide/en.md) · `Solo-Setup.exe` 是同一个安装程序（固定文件名）/ is the same installer under a fixed name · `solo-remote-server-linux-*.gz` 是远程开发用的 Linux 服务端，不是安装程序 / are the Linux server for remote development, not installers.
 ```
 
 Nothing is signed by the workflow: the Store signs its package, and the

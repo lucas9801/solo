@@ -26,9 +26,11 @@
 #            (solo-remote-server-linux-<arch>.gz, the names
 #            crates/auto_update/src/solo_remote_server.rs downloads).
 #   release: on a tag, once the Store package and the installer are made,
-#            creates the draft release with the installer, the remote
-#            servers and the notes from docs/release-notes/<version>.md.
-#            It's published by hand.
+#            creates the draft release with the installer (also copied to
+#            Solo-Setup.exe, the fixed name README's download links use
+#            through releases/latest/download/), the remote servers and the
+#            notes from docs/release-notes/<version>.md. It's published by
+#            hand.
 #
 # Solo is installed from the Microsoft Store (Solo Code, which the Store
 # signs) or with the installer from the GitHub release. Nothing here is
@@ -410,7 +412,8 @@ jobs:
           path: dist
 
       # A draft: Solo's updater only sees published releases. Rerunning
-      # replaces the files of the draft, never of a published release.
+      # replaces the files of the draft (Solo-Setup.exe too, through
+      # --clobber), never of a published release.
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -426,7 +429,15 @@ jobs:
           tr -d '\r' < "$notes" > dist/release-notes.md
           installer="dist/Solo-Setup-$version.exe"
           [ -f "$installer" ] || { echo "::error::$installer is missing"; exit 1; }
-          files=("$installer")
+          # The same installer under a fixed name, for README links to
+          # releases/latest/download/Solo-Setup.exe. A copy, so both have
+          # the same SHA-256. Solo's updater never takes it: its
+          # INSTALLER_PREFIX is "Solo-Setup-" (with the hyphen).
+          latest="dist/Solo-Setup.exe"
+          cp "$installer" "$latest"
+          sha256sum "$installer" "$latest"
+          [ "$(sha256sum < "$installer")" = "$(sha256sum < "$latest")" ]             || { echo "::error::$latest differs from $installer"; exit 1; }
+          files=("$installer" "$latest")
           for arch in x86_64 aarch64; do
             server="dist/solo-remote-server-linux-$arch.gz"
             if [ -f "$server" ]; then
