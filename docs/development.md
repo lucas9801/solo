@@ -83,11 +83,12 @@ published releases.
 
 The notes start with the two summary lines the update button shows (one
 sentence in Chinese, then English; `script/check-solo-release-notes.ps1`
-checks them), then the link line: both downloads, the user guide, and what
-the `.gz` files are, for example:
+checks them), then the link line: both downloads, the GitHub installer first
+and then the Store, neither marked recommended (the Store can be a version
+behind), the user guide, and what the `.gz` files are, for example:
 
 ```markdown
-下载 / Download: [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面 / Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)） · [GitHub 安装程序 / installer `Solo-Setup-<version>.exe`](https://github.com/lucas9801/solo/releases/download/v<version>/Solo-Setup-<version>.exe)（未签名 / unsigned） · [用户指南](https://github.com/lucas9801/solo/blob/main/docs/guide/zh-CN.md) · [User guide](https://github.com/lucas9801/solo/blob/main/docs/guide/en.md) · `solo-remote-server-linux-*.gz` 是远程开发用的 Linux 服务端，不是安装程序 / are the Linux server for remote development, not installers.
+下载 / Download: [GitHub 安装程序 / installer `Solo-Setup-<version>.exe`](https://github.com/lucas9801/solo/releases/download/v<version>/Solo-Setup-<version>.exe)（未签名，运行时点"更多信息"→"仍要运行" / unsigned: click "More info", then "Run anyway"） · [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面 / Store page](https://apps.microsoft.com/detail/9NBW452JVWN6)；由微软签名，可能晚一个版本 / signed by Microsoft, may be a version behind） · [用户指南](https://github.com/lucas9801/solo/blob/main/docs/guide/zh-CN.md) · [User guide](https://github.com/lucas9801/solo/blob/main/docs/guide/en.md) · `solo-remote-server-linux-*.gz` 是远程开发用的 Linux 服务端，不是安装程序 / are the Linux server for remote development, not installers.
 ```
 
 Nothing is signed by the workflow: the Store signs its package, and the
