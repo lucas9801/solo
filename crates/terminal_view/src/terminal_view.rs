@@ -1055,6 +1055,12 @@ impl TerminalView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.show_agent_status_explanation(cx);
+    }
+
+    /// SOLO: Shows why the agent shows the status it does (also from the
+    /// note on its tab's card when it runs without Solo's hooks).
+    pub(crate) fn show_agent_status_explanation(&self, cx: &mut App) {
         let Some(explanation) = self.agent_status_explanation() else {
             return;
         };
@@ -2095,9 +2101,14 @@ impl Item for TerminalView {
     // its context is, where it runs and its tokens (see `agent_tab`).
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent> {
         let card = self.tab_card(cx)?;
-        Some(TabTooltipContent::Custom(Box::new(Tooltip::element(
-            move |_, cx| card.render(cx),
-        ))))
+        // SOLO: a card with a note you can click stays while you move onto it.
+        let clickable = card.explain.is_some();
+        let tooltip = Box::new(Tooltip::element(move |_, cx| card.render(cx)));
+        Some(if clickable {
+            TabTooltipContent::Hoverable(tooltip)
+        } else {
+            TabTooltipContent::Custom(tooltip)
+        })
     }
 
     fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
