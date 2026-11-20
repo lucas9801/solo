@@ -82,7 +82,9 @@ const INSTALLER_PREFIX: &str = "Solo-Setup-";
 const INSTALLER_SUFFIX: &str = ".exe";
 
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(30);
-const POLL_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+// SOLO: hourly, so a release shows on the button within the hour. GitHub's
+// unauthenticated API allows 60 requests an hour per IP address.
+const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const API_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -720,8 +722,6 @@ enum Activity {
         version: Version,
         percent: Option<u8>,
         when: InstallWhen,
-        /// Replacing an update waiting for Solo to quit, without asking.
-        quiet: bool,
     },
     Installing,
 }
@@ -1092,7 +1092,7 @@ impl SoloUpdater {
                     InstallWhen::OnQuit
                 };
                 if let Some(release) = self.release.clone() {
-                    self.install(release, when, false, cx);
+                    self.install(release, when, cx);
                 }
             }
             UpdateAction::ViewNotes => {
@@ -1103,7 +1103,7 @@ impl SoloUpdater {
             UpdateAction::Skip => self.skip(cx),
             UpdateAction::Retry => match (self.retry.take(), self.release.clone()) {
                 (Some(Retry::Install(when)), Some(release)) => {
-                    self.install(release, when, false, cx)
+                    self.install(release, when, cx)
                 }
                 _ => self.check(UpdateCheckType::Manual, cx),
             },
@@ -1174,20 +1174,19 @@ impl SoloUpdater {
             .as_ref()
             .map(|ready| ready.version.clone());
         match outcome {
-            Ok(CheckOutcome::UpdateAvailable(release)) if ready.is_some() => {
-                if ready.as_ref() == Some(&release.version) {
-                    self.offer(release, ButtonState::OnQuit, cx);
-                } else {
-                    // The user chose to update when Solo quits: they get the
-                    // newest version then, without being asked again.
-                    log::info!(
-                        "solo update: {} replaces the update waiting for Solo to quit",
-                        release.version
-                    );
-                    self.show(ButtonState::OnQuit, cx);
-                    self.install(release, InstallWhen::OnQuit, true, cx);
-                }
+            // The update waiting for Solo to quit keeps the button hidden,
+            // unless the user checks by hand (it's shown, with the same menu
+            // as any update) or it's shown already.
+            Ok(CheckOutcome::UpdateAvailable(release))
+                if ready.as_ref() == Some(&release.version)
+                    && !check_type.is_manual()
+                    && *self.entry.read(cx).state() != ButtonState::Available =>
+            {
+                self.offer(release, ButtonState::OnQuit, cx);
             }
+            // A newer version than the one waiting for Solo to quit is
+            // offered like any update; the waiting one is still installed at
+            // quit unless the user picks something for the newer one.
             Ok(CheckOutcome::UpdateAvailable(release)) => {
                 log::info!("solo update: {} is available", release.version);
                 self.offer(release, ButtonState::Available, cx);
@@ -1226,27 +1225,11 @@ impl SoloUpdater {
         }
     }
 
-    fn install(
-        &mut self,
-        release: SoloRelease,
-        when: InstallWhen,
-        quiet: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn install(&mut self, release: SoloRelease, when: InstallWhen, cx: &mut Context<Self>) {
         if !matches!(self.activity, Activity::Idle) {
             return;
         }
         let Some(installer) = release.installer.clone() else {
-            // A newer release without an installer while an older one waits
-            // for Solo to quit: that one still goes in, and the next run
-            // offers this release's page.
-            if quiet {
-                log::info!(
-                    "solo update: {} has no installer; keeping the update waiting for Solo to quit",
-                    release.version
-                );
-                return;
-            }
             cx.open_url(STORE_PAGE_URL);
             return;
         };
@@ -1264,12 +1247,9 @@ impl SoloUpdater {
             version: version.clone(),
             percent: None,
             when,
-            quiet,
         };
         cx.notify();
-        if !quiet {
-            self.show(ButtonState::Downloading { percent: None }, cx);
-        }
+        self.show(ButtonState::Downloading { percent: None }, cx);
 
         let http = cx.http_client();
         let current = self.current_version.clone();
@@ -1304,7 +1284,7 @@ impl SoloUpdater {
             }
             .await;
             this.update(cx, |this, cx| {
-                this.finish_install(result, release, when, quiet, cx)
+                this.finish_install(result, release, when, cx)
             })
             .ok();
         })
@@ -1317,7 +1297,6 @@ impl SoloUpdater {
         result: Result<InstallResult>,
         release: SoloRelease,
         when: InstallWhen,
-        quiet: bool,
         cx: &mut Context<Self>,
     ) {
         if !matches!(result, Ok(InstallResult::Quitting)) {
@@ -1333,11 +1312,6 @@ impl SoloUpdater {
             }
             Err(error) => {
                 log::error!("solo update: install failed: {error:#}");
-                if quiet {
-                    // The update already waiting for Solo to quit still is.
-                    self.show(ButtonState::OnQuit, cx);
-                    return;
-                }
                 self.retry = Some(Retry::Install(when));
                 let reason = failure_reason("", &error);
                 self.offer(release, ButtonState::Failed { reason }, cx);
@@ -1410,21 +1384,15 @@ async fn download(
 
     download_installer(http, &installer, &current, &target, move |percent| {
         this.update(&mut cx.clone(), |this, cx| {
-            if let Activity::Downloading {
-                percent: p, quiet, ..
-            } = &mut this.activity
-            {
+            if let Activity::Downloading { percent: p, .. } = &mut this.activity {
                 *p = Some(percent);
-                let quiet = *quiet;
                 cx.notify();
-                if !quiet {
-                    this.show(
-                        ButtonState::Downloading {
-                            percent: Some(percent),
-                        },
-                        cx,
-                    );
-                }
+                this.show(
+                    ButtonState::Downloading {
+                        percent: Some(percent),
+                    },
+                    cx,
+                );
             }
         })
         .ok();
@@ -1485,6 +1453,7 @@ mod tests {
     use super::*;
     use gpui::TestAppContext;
     use http_client::{FakeHttpClient, Response};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn release_json(tag: &str, prerelease: bool, assets: &str) -> String {
         format!(
@@ -2057,7 +2026,11 @@ Solo 1.29: faster."
         assert_eq!(offer.can_install, cfg!(target_os = "windows"));
         assert_eq!(
             update_button::offer_summary(&offer, true).as_deref(),
-            Some("Solo 1.29：更快。")
+            Some("更快。")
+        );
+        assert_eq!(
+            update_button::offer_summary(&offer, false).as_deref(),
+            Some("faster.")
         );
 
         // A failed automatic check keeps the offer; a failed manual one says so.
@@ -2116,22 +2089,16 @@ Solo 1.29: faster."
     async fn install_results_show_on_the_button(cx: &mut TestAppContext) {
         let (updater, entry) = button_updater(cx);
         let state = |cx: &mut TestAppContext| entry.read_with(cx, |e, _| e.state().clone());
-        let finish = |result: Result<InstallResult>, quiet: bool, cx: &mut TestAppContext| {
+        let finish = |result: Result<InstallResult>, cx: &mut TestAppContext| {
             updater.update(cx, |updater, cx| {
-                updater.finish_install(
-                    result,
-                    installable("1.29.0"),
-                    InstallWhen::OnQuit,
-                    quiet,
-                    cx,
-                )
+                updater.finish_install(result, installable("1.29.0"), InstallWhen::OnQuit, cx)
             })
         };
-        finish(Ok(InstallResult::OnQuit), false, cx);
+        finish(Ok(InstallResult::OnQuit), cx);
         assert_eq!(state(cx), ButtonState::OnQuit);
-        finish(Ok(InstallResult::QuitCancelled), false, cx);
+        finish(Ok(InstallResult::QuitCancelled), cx);
         assert_eq!(state(cx), ButtonState::Available);
-        finish(Err(anyhow::anyhow!("disk full")), false, cx);
+        finish(Err(anyhow::anyhow!("disk full")), cx);
         assert_eq!(
             state(cx),
             ButtonState::Failed {
@@ -2142,9 +2109,127 @@ Solo 1.29: faster."
             updater.read_with(cx, |updater, _| updater.retry),
             Some(Retry::Install(InstallWhen::OnQuit))
         );
-        // Replacing an update waiting for Solo to quit failed: that one stays.
-        finish(Err(anyhow::anyhow!("disk full")), true, cx);
+    }
+
+    fn ready_on_quit(text: &str) -> ReadyOnQuit {
+        ReadyOnQuit {
+            version: version(text),
+            installer: PathBuf::from("Solo-Setup.exe"),
+            install_dir: PathBuf::from("Solo"),
+            log_file: PathBuf::from("install.log"),
+        }
+    }
+
+    fn visible_label(entry: &Entity<UpdateEntry>, cx: &mut TestAppContext) -> Option<String> {
+        entry.read_with(cx, |entry, _| {
+            update_button::button_label(entry.state(), entry.offer(), true).map(|label| label.text)
+        })
+    }
+
+    #[gpui::test]
+    async fn update_waiting_for_quit_hides_the_button_until_checked_by_hand(
+        cx: &mut TestAppContext,
+    ) {
+        let (updater, entry) = button_updater(cx);
+        let state = |cx: &mut TestAppContext| entry.read_with(cx, |e, _| e.state().clone());
+        let outcome = |release: SoloRelease, check_type, cx: &mut TestAppContext| {
+            updater.update(cx, |updater, cx| {
+                updater.handle_outcome(Ok(CheckOutcome::UpdateAvailable(release)), check_type, cx)
+            })
+        };
+
+        // "Install When Solo Quits" was picked and the download finished.
+        updater.update(cx, |updater, cx| {
+            updater.ready_on_quit = Some(ready_on_quit("1.29.0"));
+            updater.finish_install(
+                Ok(InstallResult::OnQuit),
+                installable("1.29.0"),
+                InstallWhen::OnQuit,
+                cx,
+            )
+        });
         assert_eq!(state(cx), ButtonState::OnQuit);
+        assert_eq!(visible_label(&entry, cx), None);
+
+        // Hourly checks keep it hidden.
+        outcome(installable("1.29.0"), UpdateCheckType::Automatic, cx);
+        assert_eq!(visible_label(&entry, cx), None);
+
+        // "Check for updates" shows it again, with the menu of any update.
+        outcome(installable("1.29.0"), UpdateCheckType::Manual, cx);
+        assert_eq!(state(cx), ButtonState::Available);
+        assert_eq!(visible_label(&entry, cx).as_deref(), Some("更新到 1.29.0"));
+        let menu = entry.read_with(cx, |entry, _| {
+            update_button::update_menu(entry.state(), entry.offer(), None, &[], true)
+        });
+        assert_eq!(
+            menu.map(|menu| menu.items.first().cloned()),
+            Some(Some(update_button::MenuItem::Action(
+                UpdateAction::Restart,
+                "更新并重启".into()
+            )))
+        );
+        // Shown, it stays shown through the next hourly check.
+        outcome(installable("1.29.0"), UpdateCheckType::Automatic, cx);
+        assert_eq!(state(cx), ButtonState::Available);
+        // Picking "Install When Solo Quits" again: already downloaded, so it
+        // goes right away.
+        updater.update(cx, |updater, cx| {
+            updater.release = Some(installable("1.29.0"));
+            updater.ready_on_quit = Some(ReadyOnQuit {
+                installer: std::env::current_exe().unwrap(),
+                ..ready_on_quit("1.29.0")
+            });
+            updater.act(UpdateAction::OnQuit, cx)
+        });
+        assert_eq!(state(cx), ButtonState::OnQuit);
+        assert_eq!(visible_label(&entry, cx), None);
+
+        // A newer version meanwhile is offered like any update, and the one
+        // waiting for Solo to quit stays.
+        outcome(installable("1.29.1"), UpdateCheckType::Automatic, cx);
+        assert_eq!(state(cx), ButtonState::Available);
+        assert_eq!(visible_label(&entry, cx).as_deref(), Some("更新到 1.29.1"));
+        assert_eq!(
+            updater.read_with(cx, |updater, _| updater
+                .ready_on_quit
+                .as_ref()
+                .map(|ready| ready.version.clone())),
+            Some(version("1.29.0"))
+        );
+    }
+
+    #[gpui::test]
+    async fn checks_again_an_hour_after_the_first_check(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings = settings::SettingsStore::new(cx, &settings::default_settings());
+            cx.set_global(settings);
+        });
+        let (updater, _entry) = button_updater(cx);
+        let checks = Arc::new(AtomicUsize::new(0));
+        let http = {
+            let checks = checks.clone();
+            FakeHttpClient::create(move |_| {
+                checks.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(Response::builder().status(500).body(Default::default())?) }
+            })
+        };
+        cx.update(|cx| cx.set_http_client(http));
+        updater.update(cx, |updater, cx| updater.sync_polling(cx));
+
+        cx.executor().advance_clock(FIRST_CHECK_DELAY);
+        cx.run_until_parked();
+        assert_eq!(checks.load(Ordering::SeqCst), 1, "the first check, 30 seconds after start");
+        cx.executor()
+            .advance_clock(Duration::from_secs(60 * 60) - Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(checks.load(Ordering::SeqCst), 2, "checked again an hour later");
+        cx.executor().advance_clock(Duration::from_secs(60 * 60));
+        cx.run_until_parked();
+        assert_eq!(checks.load(Ordering::SeqCst), 3);
     }
 
     #[test]

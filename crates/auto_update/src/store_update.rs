@@ -3,7 +3,7 @@
 //! without opening the Store.
 //!
 //! - Checks follow Solo's own updater: 30 seconds after Solo starts, then
-//!   every 6 hours, unless `auto_update` is off; "check for updates" always
+//!   every hour, unless `auto_update` is off; "check for updates" always
 //!   checks.
 //! - When the Store allows it (the user lets the Store update apps on its
 //!   own, and the network isn't metered), a found update is downloaded in
@@ -33,7 +33,7 @@ use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
 use util::ResultExt as _;
 
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(30);
-const POLL_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const SKIPPED_VERSION_KEY: &str = "solo-store-update-skipped-version";
 
 /// An update the Store has for Solo.
@@ -110,6 +110,9 @@ pub struct StoreUpdater {
     downloaded: bool,
     /// Whether the user chose to install it when Solo quits.
     on_quit: bool,
+    /// Whether the button shows the update again although it's installed
+    /// when Solo quits: the user checked by hand, or a newer one came out.
+    on_quit_shown: bool,
     /// Whether the Store installs updates without asking, which installing
     /// when Solo quits needs (known once a background download was tried).
     silent: bool,
@@ -228,6 +231,7 @@ impl StoreUpdater {
             update: None,
             downloaded: false,
             on_quit: false,
+            on_quit_shown: false,
             silent: false,
             retry: None,
             skipped: None,
@@ -267,8 +271,8 @@ impl StoreUpdater {
     fn resting_state(&self) -> ButtonState {
         match (&self.update, self.on_quit) {
             (None, _) => ButtonState::Hidden,
-            (Some(_), true) => ButtonState::OnQuit,
-            (Some(_), false) => ButtonState::Available,
+            (Some(_), true) if !self.on_quit_shown => ButtonState::OnQuit,
+            (Some(_), _) => ButtonState::Available,
         }
     }
 
@@ -354,6 +358,12 @@ impl StoreUpdater {
                     && update.version == self.skipped;
                 if self.update.as_ref() != Some(&update) {
                     self.downloaded = false;
+                    if self.update.is_some() {
+                        self.on_quit_shown = true;
+                    }
+                }
+                if check_type.is_manual() {
+                    self.on_quit_shown = true;
                 }
                 if skipped {
                     log::info!("store update: it was skipped");
@@ -464,6 +474,7 @@ impl StoreUpdater {
             UpdateAction::OnQuit => {
                 if self.update.is_some() {
                     self.on_quit = true;
+                    self.on_quit_shown = false;
                     if self.activity == Activity::Idle {
                         self.rest(cx);
                     }
@@ -930,6 +941,7 @@ mod tests {
         cx.executor().advance_clock(POLL_INTERVAL);
         cx.run_until_parked();
         assert_eq!(store.calls(), ["find", "find"]);
+        assert_eq!(POLL_INTERVAL, Duration::from_secs(60 * 60));
     }
 
     #[gpui::test]
@@ -1067,6 +1079,34 @@ mod tests {
         cx.run_until_parked();
         act(&updater, UpdateAction::OnQuit, cx);
         assert_eq!(button(cx), ButtonState::OnQuit);
+        // The button is gone (the user chose), and hourly checks keep it so.
+        let shown = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let entry = update_button::entry(cx).unwrap().read(cx);
+                update_button::button_label(entry.state(), entry.offer(), true).is_some()
+            })
+        };
+        assert!(!shown(cx));
+        updater.update(cx, |updater, cx| {
+            updater.check(UpdateCheckType::Automatic, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(button(cx), ButtonState::OnQuit);
+        // "Check for updates" shows it again, as any update.
+        cx.update(check_manually);
+        cx.run_until_parked();
+        assert_eq!(button(cx), ButtonState::Available);
+        assert!(shown(cx));
+        act(&updater, UpdateAction::OnQuit, cx);
+        assert_eq!(button(cx), ButtonState::OnQuit);
+        // A newer version meanwhile shows as available.
+        *store.update.lock() = Some(Ok(update("2.5.1")));
+        updater.update(cx, |updater, cx| {
+            updater.check(UpdateCheckType::Automatic, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(button(cx), ButtonState::Available);
+        assert_eq!(offered_version(cx), Some(Version::new(2, 5, 1)));
         updater.update(cx, |updater, _| updater.install_at_quit());
         assert_eq!(store.calls().last().unwrap(), "install at quit");
 
