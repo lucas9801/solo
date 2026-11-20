@@ -14800,7 +14800,7 @@ dependencies = [
 
 [[package]]
 name = "solo"
-version = "2.5.2"
+version = "2.5.3"
 dependencies = [
  "acp_thread",
  "acp_tools",
