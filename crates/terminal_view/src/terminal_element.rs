@@ -1254,6 +1254,8 @@ impl TerminalElement {
                             if matches!(terminal_view.mode, TerminalMode::Standalone)
                                 || terminal_view.focus_handle.is_focused(window)
                             {
+                                // SOLO: scrolling closes the link menu.
+                                terminal_view.dismiss_link_menu(window, cx);
                                 terminal_view.scroll_wheel(e, cx);
                                 cx.notify();
                             }

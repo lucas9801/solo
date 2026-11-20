@@ -2307,6 +2307,12 @@
     // Underline file paths and URLs on hover and open them with a plain click
     // (files open in the editor), rather than only with ctrl/cmd held.
     "open_links_on_click": true,
+    // When clicking a link shows a small menu of what to do with it:
+    // "auto" for the links Solo doesn't open itself (external web addresses,
+    // files Solo can't open, a file name several files have, a file only
+    // another project tab has), "always" for every link, "never" for none.
+    // Ctrl+click does the menu's first item.
+    "link_menu": "auto",
     // Show a desktop notification when a command that ran at least this many
     // seconds finishes while Solo is in the background. 0 turns it off.
     "notify_long_commands_after_seconds": 10,

@@ -625,6 +625,9 @@ pub struct ToggleFileFinder {
     pub separate_history: bool,
     #[serde(default)]
     pub include_ignored: Option<bool>,
+    /// SOLO: what to search for, instead of the selection.
+    #[serde(default)]
+    pub query: Option<String>,
 }
 
 /// Opens a new terminal in the center.
@@ -5368,6 +5371,7 @@ impl Workspace {
             url: url.to_string(),
             alternate: modifiers.control && modifiers.shift,
             in_background: false,
+            in_solo: None,
         };
         if window.is_action_available(&action, cx) {
             window.dispatch_action(action.boxed_clone(), cx);
