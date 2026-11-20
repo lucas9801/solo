@@ -870,13 +870,25 @@ impl TerminalView {
                 (name, block.is_running(), block.exit_code)
             }
             // Without shell integration, go by the foreground process.
-            None => {
-                let command = terminal.foreground_process_command_name()?;
-                if !is_agent_command(&command, extra) {
-                    return None;
+            // SOLO: and in a terminal connected again to the host an earlier
+            // Solo left running, by what runs under its shell (see
+            // `reconnected_agent`), until the shell's next prompt.
+            None => match terminal.foreground_process_command_name() {
+                Some(command) if is_agent_command(&command, extra) => {
+                    (agent_name(&command), true, None)
                 }
-                (agent_name(&command), true, None)
-            }
+                _ => (
+                    reconnected_agent(
+                        terminal,
+                        self.reconnected_agent_hint.as_deref(),
+                        activity.reported_agent.as_deref(),
+                        activity.hook.is_some(),
+                        extra,
+                    )?,
+                    true,
+                    None,
+                ),
+            },
         };
         // SOLO: for "why this status".
         activity.hooks_check = running.then(|| {
@@ -1226,6 +1238,44 @@ fn command_program(command: Option<&str>) -> Option<String> {
 }
 
 /// The agent's program name, for display.
+/// SOLO: the agent running in a terminal connected again to the host an
+/// earlier Solo left running, before its shell's next prompt: of the programs
+/// under its shell, the first that's an agent; else the agent saved for the
+/// terminal (`hint`, its command) when a program under the shell is it
+/// (named in its command line); else the agent that reported to the
+/// terminal (with its nonce) since, `hooked`: Claude Code's hooks don't say
+/// their agent. `None` once what ran ended.
+fn reconnected_agent(
+    terminal: &terminal::Terminal,
+    hint: Option<&str>,
+    reported: Option<&str>,
+    hooked: bool,
+    extra: &[String],
+) -> Option<String> {
+    if !terminal.reconnected_to_host() || !terminal.reconnected_program_running() {
+        return None;
+    }
+    let programs = terminal.reconnected_programs();
+    if let Some(program) = programs
+        .iter()
+        .find(|program| is_agent_command(&program.command, extra))
+    {
+        return Some(agent_name(&program.command));
+    }
+    if let Some(hint) = hint.filter(|hint| is_agent_command(hint, extra)) {
+        let name = agent_name(hint).to_lowercase();
+        if programs
+            .iter()
+            .any(|program| program.command_line.to_lowercase().contains(&name))
+        {
+            return Some(agent_name(hint));
+        }
+    }
+    reported
+        .map(str::to_string)
+        .or_else(|| hooked.then(|| "claude".to_string()))
+}
+
 fn agent_name(command: &str) -> String {
     let program = command
         .split_whitespace()

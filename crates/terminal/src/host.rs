@@ -1046,7 +1046,13 @@ mod tests {
                 TerminalMode::interactive(),
                 task::Shell::WithArguments {
                     program: "cmd.exe".to_string(),
-                    args: vec!["/d".to_string(), "/q".to_string(), command.to_string()],
+                    // SOLO: one argument each, as quoted together cmd.exe
+                    // wouldn't run the command.
+                    args: ["/d", "/q"]
+                        .into_iter()
+                        .chain(command.split_whitespace())
+                        .map(str::to_string)
+                        .collect(),
                     title_override: None,
                 },
                 env,
@@ -1160,6 +1166,55 @@ mod tests {
         connected.link.end();
         drop(connected);
         assert!(ends(busy_pid), "K didn't end the program");
+    }
+
+    /// SOLO: a terminal connected again to the host an earlier Solo left
+    /// running finds what runs under its shell (the shell's marks don't come
+    /// along, and the foreground process is the shell), until it ends.
+    #[gpui::test]
+    async fn test_reconnected_terminal_finds_what_runs(cx: &mut TestAppContext) {
+        init_test(cx);
+        let busy = hosted_terminal(cx, "/c ping -n 120 127.0.0.1").await;
+        let (pipe, pid) = pipe_and_pid(&busy, cx);
+        // The console starts the program once the terminal answers it.
+        let started = Instant::now();
+        while crate::shell_programs::shell_programs(pid).is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(10), "ping didn't start");
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        busy.read_with(cx, |terminal, _| terminal.keep_running_after_quit(true));
+        cx.update(|cx| cx.shutdown());
+        drop_terminals(vec![busy], cx);
+        assert!(is_running(pid), "the busy terminal's program ended");
+        let env = HashMap::from_iter([(crate::HOST_RECONNECT_ENV.to_string(), pipe.clone())]);
+        let builder = build("/k", env, cx).await.expect("couldn't reconnect");
+        let terminal = cx.new(|cx| builder.subscribe(cx));
+        assert!(terminal.read_with(cx, |terminal, _| terminal.reconnected_to_host()));
+        let started = Instant::now();
+        while terminal.read_with(cx, |terminal, _| terminal.reconnected_programs().is_empty()) {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "found nothing running"
+            );
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let (command, name, title) = terminal.read_with(cx, |terminal, _| {
+            (
+                terminal.reconnected_programs()[0].command.clone(),
+                terminal.foreground_process_command_name(),
+                terminal.title(false),
+            )
+        });
+        assert_eq!(command, "ping -n 120 127.0.0.1");
+        assert_eq!(name.as_deref(), Some("ping"));
+        assert!(title.contains("ping -n 120"), "{title}");
+        assert!(terminal.read_with(cx, |terminal, _| terminal.reconnected_program_running()));
+
+        drop_terminals(vec![terminal], cx);
+        end_running_host(&pipe).ok();
+        assert!(ends(pid));
     }
 
     /// Hosts list themselves while they run. One whose terminal went while

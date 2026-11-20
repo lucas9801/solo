@@ -7,6 +7,9 @@ mod host;
 pub use host::{HostLink, RunningHost, end_running_host, running_hosts};
 mod mermaid;
 pub use mermaid::is_complete as mermaid_diagram_is_complete;
+// SOLO: what runs under a reconnected terminal's shell.
+pub mod shell_programs;
+pub use shell_programs::ShellProgram;
 mod pty_info;
 // SOLO: Solo's IDE tools for agents in the terminal.
 pub mod agent_integrations;
@@ -1075,6 +1078,9 @@ fn is_interrupt(input: &[u8]) -> bool {
 
 /// SOLO: how long a reconnected terminal host's replay may take at most.
 const REPLAY_TIMEOUT: Duration = Duration::from_secs(3);
+/// SOLO: how often to look whether what runs in a reconnected terminal
+/// still does.
+const RECONNECTED_PROGRAM_CHECK: Duration = Duration::from_secs(2);
 
 /// SOLO: the environment variable that has a terminal connect to the terminal
 /// host on this pipe (see [`Terminal::host_pipe`]) instead of starting a
@@ -1209,6 +1215,8 @@ impl TerminalBuilder {
             shell_integration: ShellIntegration::default(),
             host: None,
             reconnected_to_host: false,
+            reconnected_programs: None,
+            reconnected_program_running: false,
             host_failed: false,
             #[cfg(windows)]
             _host_claim: None,
@@ -1582,6 +1590,8 @@ impl TerminalBuilder {
                 shell_integration: ShellIntegration::new(shell_nonce).with_terminal_id(terminal_id),
                 host: host_link,
                 reconnected_to_host,
+                reconnected_programs: None,
+                reconnected_program_running: reconnected_to_host,
                 host_failed,
                 #[cfg(windows)]
                 _host_claim: host_claim,
@@ -1641,6 +1651,10 @@ impl TerminalBuilder {
     }
 
     pub fn subscribe(mut self, cx: &Context<Terminal>) -> Terminal {
+        // SOLO: what the shell an earlier Solo started runs.
+        if self.terminal.reconnected_to_host {
+            self.terminal.look_up_reconnected_programs(cx);
+        }
         //Event loop
         self.terminal.event_loop_task = cx.spawn(async move |terminal, cx| {
             while let Some(event) = self.events_rx.next().await {
@@ -1800,6 +1814,14 @@ pub struct Terminal {
     host: HostLinkField,
     /// SOLO: whether the console is one an earlier Solo left running.
     reconnected_to_host: bool,
+    /// SOLO: what runs under the shell of a terminal connected again to its
+    /// host (see `shell_programs`), nearest first: looked up once connected
+    /// (`None` meanwhile), until it ends or the shell shows a prompt.
+    reconnected_programs: Option<Vec<ShellProgram>>,
+    /// SOLO: whether what ran under the shell when the terminal connected
+    /// again to its host may still run: until it ended, or the shell showed
+    /// a prompt.
+    reconnected_program_running: bool,
     /// SOLO: whether a terminal host was wanted but couldn't be started, so
     /// the terminal ends with Solo.
     host_failed: bool,
@@ -2011,6 +2033,8 @@ impl Terminal {
                     cx.emit(Event::CommandFinished);
                 }
                 if prompt_started {
+                    // SOLO: what ran when the terminal connected again ended.
+                    self.reconnected_program_ended(cx);
                     cx.emit(Event::PromptStarted);
                 }
                 cx.notify();
@@ -2121,6 +2145,95 @@ impl Terminal {
     /// running, so its shell and output are already there.
     pub fn reconnected_to_host(&self) -> bool {
         self.reconnected_to_host
+    }
+
+    /// SOLO: what runs under the shell of a terminal connected again to the
+    /// host an earlier Solo left running, nearest first; empty once that
+    /// ended (or the shell showed a prompt), and before it was looked up.
+    pub fn reconnected_programs(&self) -> &[ShellProgram] {
+        self.reconnected_programs.as_deref().unwrap_or_default()
+    }
+
+    /// SOLO: as if the terminal connected again to its host, under whose
+    /// shell `programs` run.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_reconnected_programs_for_test(&mut self, programs: Vec<ShellProgram>) {
+        self.reconnected_to_host = true;
+        self.reconnected_program_running = true;
+        self.reconnected_programs = Some(programs);
+    }
+
+    /// SOLO: whether what ran under the shell when the terminal connected
+    /// again to its host may still run (also before it was looked up).
+    pub fn reconnected_program_running(&self) -> bool {
+        self.reconnected_program_running
+    }
+
+    /// SOLO: looks up what runs under the shell of a terminal that connected
+    /// again to its host, and keeps looking whether it still runs.
+    fn look_up_reconnected_programs(&self, cx: &Context<Self>) {
+        let Some(shell_pid) = self.pid().map(|pid| pid.as_u32()) else {
+            return;
+        };
+        cx.spawn(async move |terminal, cx| {
+            let programs = cx
+                .background_spawn(async move { shell_programs::shell_programs(shell_pid) })
+                .await;
+            log::info!(
+                "reconnected terminal: shell {shell_pid} runs {:?}",
+                programs
+                    .iter()
+                    .map(|program| program.command.as_str())
+                    .collect::<Vec<_>>()
+            );
+            let Some(first) = programs.first().map(|program| program.pid) else {
+                terminal
+                    .update(cx, |terminal, cx| terminal.reconnected_program_ended(cx))
+                    .ok();
+                return;
+            };
+            let found = terminal.update(cx, |terminal, cx| {
+                if !terminal.reconnected_program_running {
+                    return false;
+                }
+                terminal.reconnected_programs = Some(programs);
+                cx.emit(Event::TitleChanged);
+                cx.notify();
+                true
+            });
+            if !matches!(found, Ok(true)) {
+                return;
+            }
+            loop {
+                cx.background_executor()
+                    .timer(RECONNECTED_PROGRAM_CHECK)
+                    .await;
+                let running = cx
+                    .background_spawn(async move { shell_programs::is_running(first) })
+                    .await;
+                let watching = terminal.update(cx, |terminal, cx| {
+                    if !running {
+                        terminal.reconnected_program_ended(cx);
+                    }
+                    terminal.reconnected_program_running
+                });
+                if !matches!(watching, Ok(true)) {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn reconnected_program_ended(&mut self, cx: &mut Context<Self>) {
+        if !self.reconnected_program_running {
+            return;
+        }
+        self.reconnected_program_running = false;
+        if self.reconnected_programs.take().is_some() {
+            cx.emit(Event::TitleChanged);
+        }
+        cx.notify();
     }
 
     /// SOLO: whether a terminal host's replay may still be coming in.
@@ -3684,6 +3797,11 @@ impl Terminal {
 
     /// Normalizes the command name of the foreground process, if one is known.
     pub fn foreground_process_command_name(&self) -> Option<String> {
+        // SOLO: the foreground process of a reconnected terminal is its
+        // shell (always, on Windows); what it runs is found apart.
+        if let Some(program) = self.reconnected_programs().first() {
+            return program.command.split(' ').next().map(str::to_string);
+        }
         match &self.terminal_type {
             TerminalType::Pty { info, .. } => info
                 .current
@@ -3776,6 +3894,7 @@ impl Terminal {
                 .title_override
                 .as_ref()
                 .map(|title_override| title_override.to_string())
+                .or_else(|| self.reconnected_program_title(truncate, MAX_CHARS))
                 .unwrap_or_else(|| match &self.terminal_type {
                     TerminalType::Pty { info, .. } => info
                         .current
@@ -3816,6 +3935,29 @@ impl Terminal {
                     TerminalType::DisplayOnly => "Terminal".to_string(),
                 }),
         }
+    }
+
+    /// SOLO: the title of a reconnected terminal while the program found
+    /// running under its shell runs: its directory and the program.
+    fn reconnected_program_title(&self, truncate: bool, max_chars: usize) -> Option<String> {
+        let program = self.reconnected_programs().first()?;
+        let directory = self
+            .working_directory()
+            .and_then(|directory| {
+                directory
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_default();
+        Some(if truncate {
+            format!(
+                "{} — {}",
+                truncate_and_trailoff(&directory, max_chars),
+                truncate_and_trailoff(&program.command, max_chars)
+            )
+        } else {
+            format!("{directory} — {}", program.command)
+        })
     }
 
     pub fn kill_active_task(&mut self) {
