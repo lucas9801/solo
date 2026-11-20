@@ -80,7 +80,10 @@ $allowed = @(
     # startup; with none running, as by default, the connection is refused.
     'provider/lmstudio.rs',
     'provider/llama_cpp.rs',
-    'provider/ollama.rs'
+    'provider/ollama.rs',
+    # A GPU vendor's optional helper library Solo asks for its driver
+    # version; machines without it log this at every start.
+    'amd_ags_x64.dll'
 )
 
 $results = New-Object System.Collections.ArrayList

@@ -57,15 +57,20 @@ foreach ($project in $Projects) {
     if (-not (Test-Path (Join-Path $repo '.git'))) { throw "git init failed in $repo" }
 }
 
-# The fake agents.
+# The fake agents. Each runs as a script named after its agent
+# (agents\claude.ps1), so that what runs in a terminal shows as claude or
+# codex, as the real ones do, to Solo looking at the processes.
 Copy-Item -Force (Join-Path $PSScriptRoot 'fake-agent.ps1') $fakebin
+$agentsDir = Join-Path $fakebin 'agents'
+New-Item -ItemType Directory -Force $agentsDir | Out-Null
 # A .cmd and a .ps1 for each: Solo's PowerShell wrapper for codex runs the
 # first codex that isn't a .cmd (npm puts a .ps1 beside its .cmd), so
 # without the .ps1 here a real codex further on PATH would run.
 foreach ($agent in 'claude', 'codex') {
-    Set-Content -Encoding ASCII (Join-Path $fakebin "$agent.cmd") "@powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"%~dp0fake-agent.ps1`" $agent %*`r`n"
+    Copy-Item -Force (Join-Path $PSScriptRoot 'fake-agent.ps1') (Join-Path $agentsDir "$agent.ps1")
+    Set-Content -Encoding ASCII (Join-Path $fakebin "$agent.cmd") "@powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"%~dp0agents\$agent.ps1`" $agent %*`r`n"
     # Its own process, as the real agent is.
-    Set-Content -Encoding ASCII (Join-Path $fakebin "$agent.ps1") "& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path `$PSScriptRoot 'fake-agent.ps1') $agent @args`r`n"
+    Set-Content -Encoding ASCII (Join-Path $fakebin "$agent.ps1") "& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path `$PSScriptRoot 'agents\$agent.ps1') $agent @args`r`n"
 }
 
 # Settings: Solo's defaults (no AI model), except that the projects are
