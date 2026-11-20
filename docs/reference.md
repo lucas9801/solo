@@ -83,9 +83,11 @@ guide explains each feature in more detail.
   with Solo. Closing a terminal or a window while an agent runs asks first
   (`confirm_close`); a terminal whose agent couldn't be kept offers to
   continue its session after a restart.
-- Each agent turn's changes can be reviewed (the "N files changed" button on
-  the tab): reject or keep hunks, comment on lines and send the comments to
-  the agent, or roll back to before a turn.
+- An agent's changes are pending until accepted (the "N files to review"
+  button on the tab): each file against what was last accepted, hunks marked
+  with their turn; reject or keep hunks, comment on lines and send the
+  comments and rejections to the agent, view a turn read only, or roll back
+  to before a turn.
 - Send the selection, the cursor position or the file's diagnostics from the
   editor to an agent (ctrl-alt-k, ctrl-alt-shift-m).
 - New agent task: a git worktree with its own branch and an agent terminal,
