@@ -1554,7 +1554,7 @@ impl AgentTurns {
             self.refresh_pending(terminal_id, cx);
             return;
         };
-        let last = (last.before.clone(), last.after.clone(), last.changed.clone());
+        let last = (last.before.clone(), last.after.clone(), last.changed);
         let active = self.active_turns(terminal_id);
         let view = terminal.view.clone();
         cx.spawn(async move |this, cx| {

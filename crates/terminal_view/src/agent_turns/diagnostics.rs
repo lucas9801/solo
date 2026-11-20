@@ -82,6 +82,7 @@ pub(crate) enum TurnDiagnostics {
 
 impl TurnDiagnostics {
     /// New errors, and errors fixed, when checked.
+    #[cfg(test)]
     pub(crate) fn error_delta(&self) -> Option<(usize, usize)> {
         match self {
             TurnDiagnostics::Checked {
