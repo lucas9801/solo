@@ -5,7 +5,15 @@
 //! so only changed and untracked files get hashed) and written as a tree to a
 //! private object directory that borrows the repository's objects as
 //! alternates. Directories that aren't in a repository get a private bare
-//! repository as their git dir. Ignored files aren't part of a snapshot.
+//! repository as their git dir. Ignored files aren't part of a snapshot,
+//! and neither are untracked files over [`MAX_UNTRACKED_FILE_BYTES`] (SOLO,
+//! G51): a rollback leaves them alone.
+//!
+//! SOLO: Objects no kept snapshot needs are collected (see
+//! [`SnapshotStore::collect_garbage`]): kept are what this process's turns
+//! need, what other Solos using the store need (each lists its trees in
+//! `live/`), and the private index. All stores together are capped at
+//! [`MAX_TOTAL_BYTES`]: the least recently used are emptied first (G51).
 //!
 //! Everything here blocks on git; run it in the background.
 #![allow(
@@ -13,10 +21,11 @@
     reason = "runs git synchronously, only from background tasks"
 )]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -73,13 +82,99 @@ const LAST_USED_FILE: &str = "last-used";
 /// Locked around git commands on a store, which Solos running side by side
 /// (other channels, before and after an update) share.
 const LOCK_FILE: &str = "lock";
+/// SOLO: Untracked files bigger than this aren't snapshotted: an archive or a
+/// build output left in the work tree would make the store grow by its size
+/// (G51). Rolling back leaves them as they are.
+pub(crate) const MAX_UNTRACKED_FILE_BYTES: u64 = 50 * 1024 * 1024;
+/// SOLO: Contents bigger than this aren't shown in a review (G51).
+const MAX_SHOWN_BYTES: u64 = 16 * 1024 * 1024;
+/// SOLO: What all the stores may hold together; past this, the least
+/// recently used ones are emptied when a process first opens a store (G51).
+const MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// SOLO: Where each Solo using a store lists the trees it keeps, in
+/// `<pid>.trees`, while it holds `<pid>.lock` locked (G51).
+const LIVE_DIR: &str = "live";
+/// SOLO: Marks a store that another store reads objects from (a linked
+/// worktree's, see [`SnapshotStore::with_linked_worktrees`]): its objects
+/// aren't collected, as the other store's trees aren't known here.
+const BORROWED_FILE: &str = "borrowed";
 
 /// Git commands that share a store's index run one at a time, also within
 /// this process (file locks don't exclude threads holding other handles).
 static GIT_LOCK: Mutex<()> = Mutex::new(());
-/// Stores opened by this process, which keep their objects.
-static OPENED_STORES: LazyLock<Mutex<HashSet<PathBuf>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+/// SOLO: Stores opened by this process, and what it knows of each.
+static STORES: LazyLock<Mutex<HashMap<PathBuf, StoreState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// SOLO: Whether this process checked the stores' total size yet.
+static TOTAL_CHECKED: AtomicBool = AtomicBool::new(false);
+
+/// SOLO: What this process knows of a store it opened (G51).
+#[derive(Default)]
+struct StoreState {
+    /// The large files each snapshot left out, by tree.
+    large_files: HashMap<TreeId, Vec<LargeFile>>,
+    /// Trees kept for as long as they're pinned (to undo a rollback, say).
+    pins: HashMap<TreeId, usize>,
+    /// Trees snapshotted since the last collection, which a turn may not
+    /// have taken yet.
+    recent: HashSet<TreeId>,
+    /// The trees kept by the last collection.
+    kept: HashSet<TreeId>,
+    /// `live/<pid>.lock`, held locked while this process runs.
+    live_lock: Option<std::fs::File>,
+}
+
+fn with_state<R>(store_dir: &Path, f: impl FnOnce(&mut StoreState) -> R) -> R {
+    let mut stores = STORES.lock().unwrap_or_else(|error| error.into_inner());
+    f(stores.entry(store_dir.to_path_buf()).or_default())
+}
+
+/// SOLO: An untracked file a snapshot left out, as it was then (G51).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LargeFile {
+    /// Relative to the work tree, with `/` separators.
+    pub path: String,
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+}
+
+/// SOLO: The large files that changed from `before` to `after` (added,
+/// removed, or written), sorted. No snapshot has them.
+pub(crate) fn changed_large_files(before: &[LargeFile], after: &[LargeFile]) -> Vec<String> {
+    let mut changed: Vec<String> = after
+        .iter()
+        .filter(|file| !before.contains(file))
+        .chain(
+            before
+                .iter()
+                .filter(|file| !after.iter().any(|other| other.path == file.path)),
+        )
+        .map(|file| file.path.clone())
+        .collect();
+    changed.sort();
+    changed.dedup();
+    changed
+}
+
+/// SOLO: Keeps a tree's objects from being collected until it's dropped.
+#[derive(Debug)]
+pub(crate) struct TreePin {
+    store_dir: PathBuf,
+    tree: TreeId,
+}
+
+impl Drop for TreePin {
+    fn drop(&mut self) {
+        with_state(&self.store_dir, |state| {
+            if let Some(count) = state.pins.get_mut(&self.tree) {
+                *count -= 1;
+                if *count == 0 {
+                    state.pins.remove(&self.tree);
+                }
+            }
+        });
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FileChange {
@@ -158,6 +253,9 @@ pub(crate) struct Restored {
     /// SOLO: Files left as they are because they're inside a linked directory
     /// (a symlink or junction), which could lead out of the work tree.
     pub skipped: Vec<String>,
+    /// SOLO: Large untracked files that changed, which no snapshot has: left
+    /// as they are (G51).
+    pub large_files: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -171,12 +269,20 @@ pub(crate) struct SnapshotStore {
     store_dir: PathBuf,
     /// How many files a work tree outside a repository may have.
     max_files_outside_repository: usize,
+    /// SOLO: How big an untracked file may be to be snapshotted.
+    max_untracked_file_bytes: u64,
 }
 
 impl SnapshotStore {
     /// The store for the repository containing `directory`, or for
     /// `directory` itself when it isn't in one. Stores live in `storage_root`.
     pub(crate) fn open(directory: &Path, storage_root: &Path) -> Result<Self> {
+        Self::open_inner(directory, storage_root, false)
+    }
+
+    /// SOLO: `borrowed`: another store reads this one's objects, so they're
+    /// never collected. [`GIT_LOCK`] is held then.
+    fn open_inner(directory: &Path, storage_root: &Path, borrowed: bool) -> Result<Self> {
         // SOLO: the directory can come from a report or the shell's OSC 7;
         // git on a network share would connect to another machine.
         if !is_local_directory(directory) {
@@ -235,13 +341,36 @@ impl SnapshotStore {
         };
 
         let store_dir = storage_root.join(store_name(&work_tree));
-        let first_open = OPENED_STORES
-            .lock()
-            .map_err(|_| anyhow!("snapshot stores lock poisoned"))?
-            .insert(store_dir.clone());
+        let first_open = {
+            let mut stores = STORES
+                .lock()
+                .map_err(|_| anyhow!("snapshot stores lock poisoned"))?;
+            let first_open = !stores.contains_key(&store_dir);
+            stores.entry(store_dir.clone()).or_default();
+            first_open
+        };
         std::fs::create_dir_all(&store_dir).with_context(|| format!("creating {store_dir:?}"))?;
+        if borrowed {
+            std::fs::write(store_dir.join(BORROWED_FILE), b"")
+                .with_context(|| format!("marking {store_dir:?}"))?;
+        }
+        let borrowed = borrowed || store_dir.join(BORROWED_FILE).exists();
+        if first_open {
+            // SOLO: this process uses the store from now on (G51).
+            if let Err(error) = hold_live_lock(&store_dir) {
+                log::warn!("failed to mark {store_dir:?} as in use: {error:#}");
+            }
+            if !TOTAL_CHECKED.swap(true, Ordering::SeqCst) {
+                trim_stores(storage_root, MAX_TOTAL_BYTES);
+            }
+        }
+        // SOLO: turns live as long as the process: what earlier sessions'
+        // turns kept isn't needed anymore, unless another Solo still runs
+        // with the store (G51). A borrowed store's objects may be needed by
+        // another store's snapshots.
         if first_open
-            && (is_older_than(&store_dir.join(LAST_USED_FILE), MAX_STORE_AGE)
+            && (!borrowed
+                || is_older_than(&store_dir.join(LAST_USED_FILE), MAX_STORE_AGE)
                 || holds_more_than(&store_dir.join("objects"), MAX_STORE_BYTES))
         {
             empty_unused_store(&store_dir)?;
@@ -261,19 +390,62 @@ impl SnapshotStore {
             private
         };
 
-        Ok(Self {
+        let store = Self {
             work_tree,
             git_dir,
             alternate_objects,
             seed_index,
             store_dir,
             max_files_outside_repository: MAX_FILES_OUTSIDE_REPOSITORY,
-        })
+            max_untracked_file_bytes: MAX_UNTRACKED_FILE_BYTES,
+        };
+        // SOLO: and what only earlier sessions' turns kept goes when another
+        // Solo keeps the rest (G51).
+        if first_open
+            && !borrowed
+            && in_use_elsewhere(&store.store_dir)
+            && let Err(error) = store.collect_garbage(Vec::new())
+        {
+            log::warn!(
+                "failed to collect the snapshots in {:?}: {error:#}",
+                store.store_dir
+            );
+        }
+        Ok(store)
     }
 
     #[cfg(test)]
     pub(crate) fn set_max_files_outside_repository(&mut self, max: usize) {
         self.max_files_outside_repository = max;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_max_untracked_file_bytes(&mut self, max: u64) {
+        self.max_untracked_file_bytes = max;
+    }
+
+    /// SOLO: Where the store keeps its files.
+    pub(crate) fn store_dir(&self) -> &Path {
+        &self.store_dir
+    }
+
+    /// SOLO: Keeps `tree`'s objects until the pin is dropped (G51).
+    pub(crate) fn pin(&self, tree: &str) -> TreePin {
+        with_state(&self.store_dir, |state| {
+            *state.pins.entry(tree.to_string()).or_default() += 1;
+        });
+        TreePin {
+            store_dir: self.store_dir.clone(),
+            tree: tree.to_string(),
+        }
+    }
+
+    /// SOLO: The large untracked files `tree` left out, as far as this
+    /// process knows (G51).
+    pub(crate) fn large_files(&self, tree: &str) -> Vec<LargeFile> {
+        with_state(&self.store_dir, |state| {
+            state.large_files.get(tree).cloned().unwrap_or_default()
+        })
     }
 
     pub(crate) fn work_tree(&self) -> &Path {
@@ -291,6 +463,11 @@ impl SnapshotStore {
 
     /// Records the work tree as it is now.
     pub(crate) fn snapshot(&self) -> Result<TreeId> {
+        Ok(self.snapshot_with_large_files()?.0)
+    }
+
+    /// SOLO: [`Self::snapshot`], with the large untracked files it left out.
+    pub(crate) fn snapshot_with_large_files(&self) -> Result<(TreeId, Vec<LargeFile>)> {
         let _lock = GIT_LOCK
             .lock()
             .map_err(|_| anyhow!("snapshot lock poisoned"))?;
@@ -310,12 +487,32 @@ impl SnapshotStore {
         Ok(lock)
     }
 
-    fn snapshot_locked(&self) -> Result<TreeId> {
+    fn snapshot_locked(&self) -> Result<(TreeId, Vec<LargeFile>)> {
         if let Err(error) = std::fs::write(self.store_dir.join(LAST_USED_FILE), b"") {
             log::warn!("failed to mark {:?} as used: {error}", self.store_dir);
         }
+        let (tree, large_files) = self.snapshot_and_retry()?;
+        // SOLO: remembered for rolling back, and kept until the next
+        // collection at least (G51).
+        let trees = with_state(&self.store_dir, |state| {
+            if !large_files.is_empty() {
+                let known = state.large_files.entry(tree.clone()).or_default();
+                for file in &large_files {
+                    known.retain(|known| known.path != file.path);
+                    known.push(file.clone());
+                }
+            }
+            state.recent.insert(tree.clone()).then(|| live_trees(state))
+        });
+        if let Some(trees) = trees {
+            self.write_live_trees(&trees);
+        }
+        Ok((tree, large_files))
+    }
+
+    fn snapshot_and_retry(&self) -> Result<(TreeId, Vec<LargeFile>)> {
         match self.write_snapshot() {
-            Ok(tree) => Ok(tree),
+            Ok(snapshot) => Ok(snapshot),
             // SOLO: the private index can name objects that are gone (a blob
             // staged in the user's index, since unstaged and pruned by
             // `git gc`); git trusts the index for files that look unchanged,
@@ -338,7 +535,7 @@ impl SnapshotStore {
         }
     }
 
-    fn write_snapshot(&self) -> Result<TreeId> {
+    fn write_snapshot(&self) -> Result<(TreeId, Vec<LargeFile>)> {
         let index = self.index_path();
         if !index.exists() {
             if let Some(seed) = self.seed_index.as_ref().filter(|seed| seed.exists()) {
@@ -360,13 +557,30 @@ impl SnapshotStore {
                 }
             }
         }
+        let large_files = self.large_untracked_files()?;
         // Files that can't be read (locked, say) are left as they were in the
         // last snapshot rather than failing it.
-        let output = self
-            .command(&index)
-            .args(["add", "--all", "--ignore-errors", "--", "."])
-            .output()
-            .context("running git add")?;
+        let mut add = self.command(&index);
+        add.args(["add", "--all", "--ignore-errors"]);
+        let pathspecs = self.store_dir.join("pathspecs");
+        if large_files.is_empty() {
+            add.args(["--", "."]);
+        } else {
+            // SOLO: maybe too many to name on a command line (G51).
+            let mut list = b".\0".to_vec();
+            for file in &large_files {
+                list.extend_from_slice(b":(exclude,literal)");
+                list.extend_from_slice(file.path.as_bytes());
+                list.push(0);
+            }
+            std::fs::write(&pathspecs, list).with_context(|| format!("writing {pathspecs:?}"))?;
+            add.arg("--pathspec-from-file")
+                .arg(&pathspecs)
+                .arg("--pathspec-file-nul");
+        }
+        let output = add.output().context("running git add");
+        std::fs::remove_file(&pathspecs).ok();
+        let output = output?;
         if !output.status.success() {
             log::warn!(
                 "git add for a snapshot of {:?} reported: {}",
@@ -374,9 +588,205 @@ impl SnapshotStore {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
+        if !large_files.is_empty() {
+            // SOLO: and out of the index, if an earlier snapshot has them.
+            let paths: Vec<u8> = large_files
+                .iter()
+                .flat_map(|file| file.path.as_bytes().iter().copied().chain([0]))
+                .collect();
+            self.run_with_input(
+                &index,
+                &["update-index", "--force-remove", "-z", "--stdin"],
+                paths,
+            )?;
+            log::info!(
+                "not snapshotting {} untracked files over {} MB in {:?}",
+                large_files.len(),
+                self.max_untracked_file_bytes / (1024 * 1024),
+                self.work_tree
+            );
+        }
         let tree = run(self.command(&index).arg("write-tree"))?;
         let tree = String::from_utf8_lossy(&tree).trim().to_string();
-        self.with_linked_worktrees(tree)
+        Ok((self.with_linked_worktrees(tree)?, large_files))
+    }
+
+    /// SOLO: The untracked files (not in the user's index) bigger than
+    /// snapshots take, sorted (G51).
+    fn large_untracked_files(&self) -> Result<Vec<LargeFile>> {
+        // A missing index is an empty one: every file is untracked.
+        let user_index = self
+            .seed_index
+            .clone()
+            .unwrap_or_else(|| self.store_dir.join("no-index"));
+        let output = run(self.command(&user_index).args([
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ]))?;
+        let mut large = Vec::new();
+        for path in output.split(|byte| *byte == 0) {
+            let Ok(path) = std::str::from_utf8(path) else {
+                continue;
+            };
+            if path.is_empty() {
+                continue;
+            }
+            let Ok(metadata) = std::fs::symlink_metadata(self.abs_path(path)) else {
+                continue;
+            };
+            if metadata.is_file() && metadata.len() > self.max_untracked_file_bytes {
+                large.push(LargeFile {
+                    path: path.to_string(),
+                    size: metadata.len(),
+                    modified: metadata.modified().ok(),
+                });
+            }
+        }
+        large.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(large)
+    }
+
+    /// SOLO: Removes the objects that none of these need: `live`, the trees
+    /// pinned or snapshotted since the last collection, the trees other Solos
+    /// using the store keep, and the private index. What's kept is packed
+    /// into one pack; the repository's own objects aren't copied (G51).
+    pub(crate) fn collect_garbage(&self, live: Vec<TreeId>) -> Result<()> {
+        let _lock = GIT_LOCK
+            .lock()
+            .map_err(|_| anyhow!("snapshot lock poisoned"))?;
+        let _store_lock = self.lock_store()?;
+        self.collect_garbage_locked(live)
+    }
+
+    fn collect_garbage_locked(&self, live: Vec<TreeId>) -> Result<()> {
+        let objects = self.store_dir.join("objects");
+        if self.store_dir.join(BORROWED_FILE).exists()
+            || objects.join("info").join("alternates").exists()
+        {
+            return Ok(());
+        }
+        let started = std::time::Instant::now();
+        let mut trees: HashSet<TreeId> = live.into_iter().collect();
+        with_state(&self.store_dir, |state| {
+            trees.extend(state.pins.keys().cloned());
+            trees.extend(state.recent.iter().cloned());
+        });
+        trees.extend(other_processes_trees(&self.store_dir));
+        let index = self.index_path();
+        if index.exists() {
+            match run(self.command(&index).arg("write-tree")) {
+                Ok(tree) => {
+                    trees.insert(String::from_utf8_lossy(&tree).trim().to_string());
+                }
+                // It names objects that are gone: the next snapshot hashes
+                // the files again.
+                Err(_) => {
+                    std::fs::remove_file(&index).ok();
+                }
+            }
+        }
+
+        // Those still there.
+        let ids = |trees: &[TreeId]| -> Vec<u8> {
+            trees
+                .iter()
+                .flat_map(|tree| tree.bytes().chain([b'\n']))
+                .collect()
+        };
+        let trees: Vec<TreeId> = trees.into_iter().filter(|tree| !tree.is_empty()).collect();
+        let checked = self.run_with_input(&index, &["cat-file", "--batch-check"], ids(&trees))?;
+        let trees: Vec<TreeId> = String::from_utf8_lossy(&checked)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split(' ');
+                let id = fields.next()?;
+                (fields.next() == Some("tree")).then(|| id.to_string())
+            })
+            .collect();
+        let reachable = self.run_with_input(
+            &index,
+            &["rev-list", "--objects", "--missing=allow-any", "--stdin"],
+            ids(&trees),
+        )?;
+        let pack_dir = objects.join("pack");
+        std::fs::create_dir_all(&pack_dir).with_context(|| format!("creating {pack_dir:?}"))?;
+        let base = pack_dir.join("pack").to_string_lossy().into_owned();
+        let new_pack = self.run_with_input(
+            &index,
+            &["pack-objects", "--local", "--non-empty", "-q", &base],
+            reachable,
+        )?;
+        let new_pack = format!("pack-{}.", String::from_utf8_lossy(&new_pack).trim());
+
+        // Everything else goes. A file another git has open stays until the
+        // next time.
+        let mut left = 0usize;
+        for entry in std::fs::read_dir(&objects)?.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.len() == 2
+                && name.chars().all(|c| c.is_ascii_hexdigit())
+                && remove_tree(&entry.path()).is_err()
+            {
+                left += 1;
+            }
+        }
+        for entry in std::fs::read_dir(&pack_dir)?.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("pack-")
+                && !name.starts_with(&new_pack)
+                && remove_read_only(&entry.path()).is_err()
+            {
+                left += 1;
+            }
+        }
+        let kept = with_state(&self.store_dir, |state| {
+            state.kept = trees.iter().cloned().collect();
+            state.recent.clear();
+            let kept = &state.kept;
+            state.large_files.retain(|tree, _| kept.contains(tree));
+            live_trees(state)
+        });
+        self.write_live_trees(&kept);
+        log::info!(
+            "collected the snapshots of {:?} in {:?}: {} trees kept, {} files in use left",
+            self.work_tree,
+            started.elapsed(),
+            trees.len(),
+            left
+        );
+        Ok(())
+    }
+
+    /// Runs git on the store with `input` on its stdin.
+    fn run_with_input(&self, index: &Path, args: &[&str], input: Vec<u8>) -> Result<Vec<u8>> {
+        let mut child = self
+            .command(index)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("running git {}", args.join(" ")))?;
+        let mut stdin = child.stdin.take().context("no stdin for git")?;
+        let writer = std::thread::spawn(move || stdin.write_all(&input));
+        let output = child.wait_with_output();
+        writer.join().ok();
+        check(output?, &args.join(" "))
+    }
+
+    /// Lists this process's trees for other Solos using the store.
+    fn write_live_trees(&self, trees: &[TreeId]) {
+        let path = self
+            .store_dir
+            .join(LIVE_DIR)
+            .join(format!("{}.trees", std::process::id()));
+        let mut contents = trees.join("\n");
+        contents.push('\n');
+        if let Err(error) = std::fs::write(&path, contents) {
+            log::warn!("failed to write {path:?}: {error}");
+        }
     }
 
     /// SOLO: `tree` with the linked worktrees in this folder snapshotted in
@@ -413,12 +823,13 @@ impl SnapshotStore {
         run(self.command(&index).args(["read-tree", &tree]))?;
         for path in &worktrees {
             let directory = self.work_tree.join(path);
-            let snapshot = SnapshotStore::open(&directory, storage_root).and_then(|store| {
-                anyhow::ensure!(store.is_repository(), "{directory:?} isn't a repository");
-                let _lock = store.lock_store()?;
-                let tree = store.snapshot_locked()?;
-                Ok((store, tree))
-            });
+            let snapshot =
+                SnapshotStore::open_inner(&directory, storage_root, true).and_then(|store| {
+                    anyhow::ensure!(store.is_repository(), "{directory:?} isn't a repository");
+                    let _lock = store.lock_store()?;
+                    let (tree, _) = store.snapshot_locked()?;
+                    Ok((store, tree))
+                });
             let (store, subtree) = match snapshot {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
@@ -558,6 +969,15 @@ impl SnapshotStore {
                 contents.push(None);
                 continue;
             };
+            // SOLO: too big to show; not read into memory (G51).
+            if size as u64 > MAX_SHOWN_BYTES {
+                std::io::copy(
+                    &mut (&mut stdout).take(size as u64 + 1),
+                    &mut std::io::sink(),
+                )?;
+                contents.push(None);
+                continue;
+            }
             let mut bytes = vec![0; size + 1];
             stdout.read_exact(&mut bytes)?;
             bytes.pop();
@@ -588,7 +1008,7 @@ impl SnapshotStore {
             .lock()
             .map_err(|_| anyhow!("snapshot lock poisoned"))?;
         let _store_lock = self.lock_store()?;
-        let current = self.snapshot_locked()?;
+        let (current, current_large) = self.snapshot_locked()?;
         if shown.is_some_and(|shown| shown != current) {
             return Err(WorkTreeChanged.into());
         }
@@ -613,7 +1033,27 @@ impl SnapshotStore {
                 skipped
             );
         }
-        let is_skipped = |file: &&ChangedFile| skipped.contains(&file.path);
+        // SOLO: a large untracked file is in neither snapshot, or in one only
+        // because it was small then: restoring that would lose what it is
+        // now, which no snapshot has. It's left as it is (G51).
+        let target_large = self.large_files(target);
+        let large_paths: HashSet<&str> = current_large
+            .iter()
+            .chain(&target_large)
+            .map(|file| file.path.as_str())
+            .collect();
+        let mut large_files = changed_large_files(&target_large, &current_large);
+        large_files.extend(
+            changed
+                .iter()
+                .filter(|file| large_paths.contains(file.path.as_str()))
+                .map(|file| file.path.clone()),
+        );
+        large_files.sort();
+        large_files.dedup();
+        let is_skipped = |file: &&ChangedFile| {
+            skipped.contains(&file.path) || large_paths.contains(file.path.as_str())
+        };
 
         let to_check_out: Vec<&str> = changed
             .iter()
@@ -683,10 +1123,15 @@ impl SnapshotStore {
             .into());
         }
 
+        let changed = changed
+            .into_iter()
+            .filter(|file| !large_paths.contains(file.path.as_str()))
+            .collect();
         Ok(Restored {
             undo: current,
             changed,
             skipped,
+            large_files,
         })
     }
 
@@ -843,7 +1288,7 @@ fn empty_unused_store(store_dir: &Path) -> Result<()> {
         .write(true)
         .open(store_dir.join(LOCK_FILE))
         .context("opening the snapshot store's lock")?;
-    if lock.try_lock().is_err() {
+    if lock.try_lock().is_err() || in_use_elsewhere(store_dir) {
         return Ok(());
     }
     for name in ["objects", "repository", "index", "restore-index"] {
@@ -860,6 +1305,195 @@ fn empty_unused_store(store_dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// SOLO: The trees this process keeps in a store, for other Solos to see.
+fn live_trees(state: &StoreState) -> Vec<TreeId> {
+    let mut trees: Vec<TreeId> = state
+        .kept
+        .iter()
+        .chain(&state.recent)
+        .chain(state.pins.keys())
+        .cloned()
+        .collect();
+    trees.sort();
+    trees.dedup();
+    trees
+}
+
+/// SOLO: Locks `live/<pid>.lock` in the store for as long as this process
+/// runs, so other Solos know it uses the store (G51).
+fn hold_live_lock(store_dir: &Path) -> Result<()> {
+    let live = store_dir.join(LIVE_DIR);
+    std::fs::create_dir_all(&live)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(live.join(format!("{}.lock", std::process::id())))?;
+    file.try_lock()?;
+    with_state(store_dir, |state| state.live_lock = Some(file));
+    Ok(())
+}
+
+/// SOLO: The other Solos using the store, by the names of their files in
+/// `live/`. The files of Solos that are gone are removed.
+fn other_processes(store_dir: &Path) -> Vec<String> {
+    let live = store_dir.join(LIVE_DIR);
+    let own = std::process::id().to_string();
+    let Ok(entries) = std::fs::read_dir(&live) else {
+        return Vec::new();
+    };
+    let mut others = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "lock") {
+            continue;
+        }
+        let Some(stem) = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        if stem == own {
+            continue;
+        }
+        let Ok(file) = std::fs::OpenOptions::new().write(true).open(&path) else {
+            // Being created or removed right now: in use.
+            others.push(stem);
+            continue;
+        };
+        if file.try_lock().is_err() {
+            others.push(stem);
+        } else {
+            drop(file);
+            std::fs::remove_file(&path).ok();
+            std::fs::remove_file(live.join(format!("{stem}.trees"))).ok();
+        }
+    }
+    others
+}
+
+fn in_use_elsewhere(store_dir: &Path) -> bool {
+    !other_processes(store_dir).is_empty()
+}
+
+/// SOLO: The trees other Solos using the store keep.
+fn other_processes_trees(store_dir: &Path) -> Vec<TreeId> {
+    other_processes(store_dir)
+        .into_iter()
+        .filter_map(|stem| {
+            std::fs::read_to_string(store_dir.join(LIVE_DIR).join(format!("{stem}.trees"))).ok()
+        })
+        .flat_map(|contents| {
+            contents
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// SOLO: Empties the least recently used stores in `storage_root` that no
+/// Solo uses (this one included) until they hold `max_bytes` at most (G51).
+fn trim_stores(storage_root: &Path, max_bytes: u64) {
+    let Ok(entries) = std::fs::read_dir(storage_root) else {
+        return;
+    };
+    let mut stores: Vec<(PathBuf, u64, Option<SystemTime>)> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
+        .map(|entry| {
+            let path = entry.path();
+            let size =
+                directory_size(&path.join("objects")) + directory_size(&path.join("repository"));
+            let used = std::fs::metadata(path.join(LAST_USED_FILE))
+                .and_then(|metadata| metadata.modified())
+                .ok();
+            (path, size, used)
+        })
+        .collect();
+    let mut total: u64 = stores.iter().map(|(_, size, _)| size).sum();
+    if total <= max_bytes {
+        return;
+    }
+    stores.sort_by_key(|(_, _, used)| *used);
+    for (path, size, _) in stores {
+        if total <= max_bytes {
+            break;
+        }
+        let ours = STORES
+            .lock()
+            .map_or(true, |stores| stores.contains_key(&path));
+        if ours {
+            continue;
+        }
+        match empty_unused_store(&path) {
+            Ok(()) => {
+                let left = directory_size(&path.join("objects"))
+                    + directory_size(&path.join("repository"));
+                if left < size {
+                    log::info!(
+                        "emptied the snapshots in {path:?} ({} MB): all snapshots took more than {} MB",
+                        (size - left) / (1024 * 1024),
+                        max_bytes / (1024 * 1024)
+                    );
+                    total -= size - left;
+                }
+            }
+            Err(error) => log::warn!("failed to empty {path:?}: {error:#}"),
+        }
+    }
+}
+
+fn directory_size(directory: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut directories = vec![directory.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                directories.push(entry.path());
+            } else if file_type.is_file() {
+                total += entry.metadata().map_or(0, |metadata| metadata.len());
+            }
+        }
+    }
+    total
+}
+
+/// SOLO: Removes a file git made read-only, as it makes objects.
+fn remove_read_only(path: &Path) -> std::io::Result<()> {
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        let mut permissions = metadata.permissions();
+        if permissions.readonly() {
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            std::fs::set_permissions(path, permissions).ok();
+        }
+    }
+    std::fs::remove_file(path)
+}
+
+/// SOLO: Removes a directory of git's files, read-only ones too.
+fn remove_tree(directory: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(directory)?.flatten() {
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+            remove_tree(&path)?;
+        } else {
+            remove_read_only(&path)?;
+        }
+    }
+    std::fs::remove_dir(directory)
 }
 
 /// SOLO: whether the files under `directory` take more than `bytes`, counted
@@ -1689,6 +2323,233 @@ mod tests {
         }
         assert!(!storage.exists());
         assert!(is_local_directory(temp.path()));
+    }
+
+    /// Bytes that don't compress, as an archive's.
+    fn noise(length: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (0..length)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 33) as u8
+            })
+            .collect()
+    }
+
+    /// Collects twice: the first keeps what was snapshotted since the last.
+    fn collect(store: &SnapshotStore, live: &str) {
+        store.collect_garbage(vec![live.to_string()]).unwrap();
+        store.collect_garbage(vec![live.to_string()]).unwrap();
+    }
+
+    fn objects_size(store: &SnapshotStore) -> u64 {
+        directory_size(&store.store_dir.join("objects"))
+    }
+
+    /// Large untracked files aren't snapshotted, and rolling back leaves
+    /// them alone; tracked ones still are (G51).
+    #[test]
+    fn test_large_untracked_files_are_left_out() {
+        let (_temp, repository, storage) = repository();
+        let read = |path: &str| fs::read(repository.join(path)).ok();
+        fs::write(repository.join("tracked.bin"), noise(1000, 1)).unwrap();
+        git(&repository, &["add", "tracked.bin"]);
+        git(&repository, &["commit", "--quiet", "-m", "tracked"]);
+        fs::write(repository.join("grows.txt"), "small\n").unwrap();
+        let mut store = SnapshotStore::open(&repository, &storage).unwrap();
+        store.set_max_untracked_file_bytes(100 * 1024);
+        let (before, before_large) = store.snapshot_with_large_files().unwrap();
+        assert!(before_large.is_empty());
+        let size_before = objects_size(&store);
+
+        // The agent unpacks an archive, grows a small file past the limit,
+        // and edits a tracked file and a small one.
+        fs::create_dir_all(repository.join("out (1)")).unwrap();
+        fs::write(repository.join("out (1)/archive.zip"), noise(600 * 1024, 2)).unwrap();
+        fs::write(repository.join("grows.txt"), noise(200 * 1024, 3)).unwrap();
+        fs::write(repository.join("tracked.bin"), noise(300 * 1024, 4)).unwrap();
+        fs::write(repository.join("a.txt"), "changed\n").unwrap();
+        let (after, after_large) = store.snapshot_with_large_files().unwrap();
+        assert_eq!(
+            after_large
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["grows.txt", "out (1)/archive.zip"]
+        );
+        assert_eq!(
+            changed_large_files(&before_large, &after_large),
+            vec!["grows.txt".to_string(), "out (1)/archive.zip".to_string()]
+        );
+        assert!(store.file_contents(&after, "out (1)/archive.zip").is_err());
+        assert!(store.file_contents(&after, "grows.txt").is_err());
+        assert_eq!(
+            store.file_contents(&after, "tracked.bin").unwrap(),
+            noise(300 * 1024, 4)
+        );
+        // The tracked file is in the store; the large ones aren't.
+        let grown = objects_size(&store) - size_before;
+        assert!(grown < 400 * 1024, "the store grew by {grown} bytes");
+        // Unchanged, they're the same as before.
+        let (again, again_large) = store.snapshot_with_large_files().unwrap();
+        assert_eq!(again, after);
+        assert!(changed_large_files(&after_large, &again_large).is_empty());
+
+        // Rolling back restores the rest and leaves them as they are.
+        let restored = store.restore(&before).unwrap();
+        assert_eq!(
+            restored.large_files,
+            vec!["grows.txt".to_string(), "out (1)/archive.zip".to_string()]
+        );
+        assert_eq!(read("a.txt").unwrap(), b"one\ntwo\nthree\n");
+        assert_eq!(read("tracked.bin").unwrap(), noise(1000, 1));
+        assert_eq!(read("grows.txt").unwrap(), noise(200 * 1024, 3));
+        assert_eq!(read("out (1)/archive.zip").unwrap(), noise(600 * 1024, 2));
+        store.restore(&restored.undo).unwrap();
+        assert_eq!(read("a.txt").unwrap(), b"changed\n");
+        assert_eq!(read("tracked.bin").unwrap(), noise(300 * 1024, 4));
+
+        // Back under the limit, a file is snapshotted again.
+        fs::write(repository.join("grows.txt"), "small again\n").unwrap();
+        let (small, small_large) = store.snapshot_with_large_files().unwrap();
+        assert_eq!(small_large.len(), 1);
+        assert_eq!(
+            store.file_contents(&small, "grows.txt").unwrap(),
+            b"small again\n"
+        );
+    }
+
+    /// Outside a repository every file is untracked (G51).
+    #[test]
+    fn test_large_files_outside_a_repository_are_left_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("plain");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("a.txt"), "a\n").unwrap();
+        fs::write(directory.join("big.bin"), noise(200 * 1024, 5)).unwrap();
+        let mut store = SnapshotStore::open(&directory, &temp.path().join("storage")).unwrap();
+        store.set_max_untracked_file_bytes(100 * 1024);
+        let (tree, large) = store.snapshot_with_large_files().unwrap();
+        assert_eq!(large.len(), 1);
+        assert_eq!(large[0].path, "big.bin");
+        assert_eq!(store.file_contents(&tree, "a.txt").unwrap(), b"a\n");
+        assert!(store.file_contents(&tree, "big.bin").is_err());
+    }
+
+    /// Objects that no kept tree needs are removed; the store stops growing
+    /// however many snapshots are taken (G51).
+    #[test]
+    fn test_collect_garbage_keeps_only_live_trees() {
+        let (_temp, repository, storage) = repository();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        const SIZE: usize = 64 * 1024;
+        let mut trees = Vec::new();
+        let mut sizes = Vec::new();
+        for turn in 0..25u64 {
+            fs::write(repository.join("data.bin"), noise(SIZE, 100 + turn)).unwrap();
+            trees.push(store.snapshot().unwrap());
+            // The last 5 are kept, as turns would be.
+            let live: Vec<TreeId> = trees.iter().rev().take(5).cloned().collect();
+            store.collect_garbage(live).unwrap();
+            sizes.push(objects_size(&store));
+        }
+        // 5 kept, the index's tree (the last), and slack for the packs.
+        let last = *sizes.last().unwrap();
+        assert!(last < 6 * SIZE as u64 + 64 * 1024, "{sizes:?}");
+        assert!(last <= sizes[10] + 8 * 1024, "{sizes:?}");
+        for (ix, tree) in trees.iter().enumerate() {
+            let contents = store.file_contents(tree, "data.bin");
+            if ix >= 20 {
+                assert_eq!(contents.unwrap(), noise(SIZE, 100 + ix as u64));
+            } else {
+                assert!(contents.is_err(), "turn {ix}'s contents are kept");
+            }
+        }
+        // Files the repository has stay borrowed, not copied.
+        assert_eq!(
+            store.file_contents(&trees[24], "a.txt").unwrap(),
+            b"one\ntwo\nthree\n"
+        );
+        // The index still works: unchanged files aren't hashed again.
+        assert_eq!(store.snapshot().unwrap(), trees[24]);
+
+        // A pinned tree is kept until unpinned.
+        fs::write(repository.join("data.bin"), "pinned\n").unwrap();
+        let pinned_tree = store.snapshot().unwrap();
+        fs::write(repository.join("data.bin"), "later\n").unwrap();
+        let later = store.snapshot().unwrap();
+        let pin = store.pin(&pinned_tree);
+        collect(&store, &later);
+        assert_eq!(
+            store.file_contents(&pinned_tree, "data.bin").unwrap(),
+            b"pinned\n"
+        );
+        drop(pin);
+        collect(&store, &later);
+        assert!(store.file_contents(&pinned_tree, "data.bin").is_err());
+        assert_eq!(store.file_contents(&later, "data.bin").unwrap(), b"later\n");
+    }
+
+    /// Trees another Solo keeps are kept while it runs (G51).
+    #[test]
+    fn test_collect_garbage_keeps_other_processes_trees() {
+        let (_temp, repository, storage) = repository();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        fs::write(repository.join("theirs.txt"), "theirs\n").unwrap();
+        let theirs = store.snapshot().unwrap();
+        fs::write(repository.join("theirs.txt"), "ours\n").unwrap();
+        let ours = store.snapshot().unwrap();
+        collect(&store, &ours);
+        assert!(store.file_contents(&theirs, "theirs.txt").is_err());
+
+        fs::write(repository.join("theirs.txt"), "theirs\n").unwrap();
+        assert_eq!(store.snapshot().unwrap(), theirs);
+        fs::write(repository.join("theirs.txt"), "ours\n").unwrap();
+        store.snapshot().unwrap();
+        // Another Solo, holding its lock, keeps `theirs`.
+        let live = store.store_dir.join(LIVE_DIR);
+        fs::write(live.join("4000000001.trees"), format!("{theirs}\n")).unwrap();
+        let other = fs::File::create(live.join("4000000001.lock")).unwrap();
+        other.lock().unwrap();
+        // It counts as using the store, which isn't emptied then.
+        assert!(in_use_elsewhere(&store.store_dir));
+        collect(&store, &ours);
+        assert_eq!(
+            store.file_contents(&theirs, "theirs.txt").unwrap(),
+            b"theirs\n"
+        );
+
+        // Once it's gone, its files go and its trees aren't kept.
+        drop(other);
+        collect(&store, &ours);
+        assert!(store.file_contents(&theirs, "theirs.txt").is_err());
+        assert!(!live.join("4000000001.lock").exists());
+        assert!(!live.join("4000000001.trees").exists());
+        assert_eq!(store.file_contents(&ours, "theirs.txt").unwrap(), b"ours\n");
+    }
+
+    /// Past the total, the least recently used stores are emptied (G51).
+    #[test]
+    fn test_trim_stores_empties_the_least_recently_used() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let now = SystemTime::now();
+        for (name, age_hours) in [("old", 48u64), ("middle", 24), ("new", 1)] {
+            let store = root.join(name);
+            fs::create_dir_all(store.join("objects").join("ab")).unwrap();
+            fs::write(store.join("objects").join("ab").join("cd"), vec![0u8; 1000]).unwrap();
+            let used = fs::File::create(store.join(LAST_USED_FILE)).unwrap();
+            used.set_modified(now - Duration::from_secs(age_hours * 3600))
+                .unwrap();
+        }
+        trim_stores(root, 2500);
+        assert!(!root.join("old").join("objects").exists());
+        assert!(root.join("middle").join("objects").exists());
+        assert!(root.join("new").join("objects").exists());
+        trim_stores(root, 5000);
+        assert!(root.join("middle").join("objects").exists());
     }
 
     #[test]
