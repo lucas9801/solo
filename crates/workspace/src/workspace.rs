@@ -12688,12 +12688,26 @@ fn confirm_ending_window_programs(
     window
         .update(cx, |multi_workspace, window, cx| {
             let quits = closing_window_quits(window.window_handle(), close_intent, cx);
-            let mut items: Vec<Box<dyn ItemHandle>> = multi_workspace
+            // Each with its project tab's name, for the prompt to say where.
+            let mut items: Vec<(Box<dyn ItemHandle>, Option<SharedString>)> = multi_workspace
                 .workspaces()
-                .flat_map(|workspace| workspace.read(cx).items_with_panels(cx))
+                .flat_map(|workspace| {
+                    let workspace = workspace.read(cx);
+                    let tab = workspace
+                        .project_group_key(cx)
+                        .path_list()
+                        .ordered_paths()
+                        .next()
+                        .and_then(|path| path.file_name())
+                        .map(|name| SharedString::from(name.to_string_lossy().into_owned()));
+                    workspace
+                        .items_with_panels(cx)
+                        .into_iter()
+                        .map(move |item| (item, tab.clone()))
+                })
                 .collect();
             if quits {
-                items.retain(|item| !item.keeps_running_after_quit(cx));
+                items.retain(|(item, _)| !item.keeps_running_after_quit(cx));
             }
             let background = if quits && include_background {
                 solo_quit::background_programs(cx)

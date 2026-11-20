@@ -663,4 +663,39 @@ mod tests {
         assert!(BACKGROUND_ENDED.load(std::sync::atomic::Ordering::SeqCst));
         assert!(views.iter().all(|view| !keeps(view, cx)));
     }
+
+    /// SOLO: quitting names the project tab each program runs in.
+    #[gpui::test]
+    async fn test_quit_prompt_names_project_tabs(cx: &mut TestAppContext) {
+        let params = cx.update(workspace::AppState::test);
+        cx.update(|cx| theme_settings::init(theme::LoadThemes::JustBase, cx));
+        params
+            .fs
+            .as_fake()
+            .insert_tree(util::path!("/repos/DragonNest"), serde_json::json!({ "a.txt": "" }))
+            .await;
+        let project = project::Project::test(
+            params.fs.clone(),
+            [std::path::Path::new(util::path!("/repos/DragonNest"))],
+            cx,
+        )
+        .await;
+        let window = cx.add_window(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let views = hosted_agents(&project, window, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        assert_eq!(views.len(), 2);
+
+        let quit = prepare(window, false, cx);
+        cx.run_until_parked();
+        let (_, detail) = cx.pending_prompt().expect("quitting asks");
+        assert_eq!(detail.lines().count(), 2);
+        assert!(
+            detail.lines().all(|line| line.ends_with("in the DragonNest tab")),
+            "{detail}"
+        );
+        cx.simulate_prompt_answer("Cancel");
+        assert!(!quit.await);
+    }
 }
