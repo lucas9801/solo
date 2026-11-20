@@ -579,7 +579,8 @@ fn path_start_in_prose(path: &str, after_prose: bool) -> Option<usize> {
     let mut delimited = false;
     if !prose.is_empty()
         && let Some(after) = rest.strip_prefix([':', ',', ';'])
-        && after.starts_with(|c: char| c.is_ascii_alphanumeric() || "_./\\~".contains(c))
+        // Not a position (`（:333`).
+        && after.starts_with(|c: char| c.is_ascii_alphabetic() || "_./\\~".contains(c))
     {
         rest = after;
         prose_end += 1;
@@ -628,11 +629,16 @@ fn path_end_in_prose(path: &str) -> usize {
         let after_ascii = previous.is_some_and(|previous: char| previous.is_ascii());
         let in_directory = || before.contains(['/', '\\']);
         let punctuation = PROSE_PUNCTUATION.contains(&c);
+        // `（` and the like start something (see `path_start_in_prose`);
+        // `、` and `。` may be part of a name (`test、2.txt`).
+        let opening = matches!(c, '（' | '「' | '『' | '【' | '《' | '“' | '‘');
+        let in_names = matches!(c, '、' | '。');
         if (matches!(c, ':' | ',' | ';') && next.is_some_and(|next| !next.is_ascii()))
             || ((punctuation || !c.is_ascii()) && after_file_name())
             || (punctuation
+                && !opening
                 && after_ascii
-                && (c != '、' || in_directory() || ends_with_row(before)))
+                && (!in_names || in_directory() || ends_with_row(before)))
             || (!punctuation
                 && !c.is_ascii()
                 && previous.is_some_and(|previous: char| {
