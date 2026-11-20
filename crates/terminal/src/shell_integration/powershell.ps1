@@ -159,8 +159,11 @@ if ($env:SOLO_CODEX_ARGS -and -not (Get-Command -Name codex -CommandType Functio
         }
         # cmd.exe would expand % and treat & specially in the hooks' command
         # (the hook's path), so a .cmd shim (npm installs a .ps1 beside it)
-        # runs as typed.
-        $program = $programs | Where-Object { $_.Extension -notin @('.cmd', '.bat') } | Select-Object -First 1
+        # runs as typed. Only the .ps1 beside the codex PATH finds first: a
+        # .cmd of the user's own earlier on PATH isn't passed over for a codex
+        # further on.
+        $folder = Split-Path -Parent $programs[0].Source
+        $program = $programs | Where-Object { $_.Extension -notin @('.cmd', '.bat') -and (Split-Path -Parent $_.Source) -eq $folder } | Select-Object -First 1
         # Commands that don't run a session run as typed too.
         $hooks = @()
         if ($program -and -not ($args.Count -gt 0 -and "$($args[0])" -in @('login', 'logout', 'mcp', 'mcp-server', 'plugin', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'app', 'app-server', 'remote-control', 'exec-server', 'cloud', 'features', 'help', 'agents', 'archive', 'delete', 'unarchive', 'migrate-rollouts', 'queue'))) {
