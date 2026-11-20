@@ -400,6 +400,37 @@ fn fit(roots: &[Root], directory: &Path, repository: Option<&Path>) -> Option<us
         .max()
 }
 
+/// SOLO: of the `tabs`' roots, the index of the one that fits `directory`
+/// best; the first of those that fit as well. `None` when none fits.
+fn best_fit(tabs: &[Vec<Root>], directory: &Path, repository: Option<&Path>) -> Option<usize> {
+    let mut best: Option<(usize, usize)> = None;
+    for (ix, roots) in tabs.iter().enumerate() {
+        if let Some(fit) = fit(roots, directory, repository)
+            && best.is_none_or(|(_, best)| fit > best)
+        {
+            best = Some((ix, fit));
+        }
+    }
+    best.map(|(ix, _)| ix)
+}
+
+/// SOLO: of the `tabs`, each by its folders, the index of the one a terminal
+/// in `directory` belongs in, as for a terminal in a tab; `None` when none
+/// fits.
+pub(crate) async fn tab_for_directory(
+    fs: &dyn Fs,
+    directory: &Path,
+    tabs: &[Vec<PathBuf>],
+) -> Option<usize> {
+    let home = paths::home_dir().clone();
+    let repository = repository_root(fs, directory, &home).await;
+    let mut roots = Vec::with_capacity(tabs.len());
+    for tab in tabs {
+        roots.push(roots_of(fs, tab.clone(), &home).await);
+    }
+    best_fit(&roots, directory, repository.as_deref())
+}
+
 /// Of the `others`' roots, the index of the one that fits `directory` better
 /// than `current` does.
 fn better_fit(
@@ -1385,7 +1416,7 @@ pub(crate) fn split_workspace_now(
 
 /// The workspace of `destination`, opened if it isn't yet: in the background
 /// unless `activate`.
-fn destination_workspace(
+pub(crate) fn destination_workspace(
     multi_workspace: &Entity<MultiWorkspace>,
     destination: &Destination,
     activate: bool,
@@ -1436,6 +1467,53 @@ fn destination_workspace(
     task
 }
 
+/// SOLO: the terminal panel of `workspace` (one that just opened adds its
+/// panels a moment later), once it has restored its terminals: a terminal
+/// added meanwhile lands in the panel's placeholder pane, which the
+/// restoration then splits off to the right of the restored terminals.
+/// Counted as a terminal on its way, so the panel doesn't start a shell of
+/// its own meanwhile, until [`done_adding_terminal`].
+pub(crate) async fn panel_ready_for_terminal(
+    workspace: &Entity<Workspace>,
+    cx: &mut gpui::AsyncApp,
+) -> Option<Entity<TerminalPanel>> {
+    let started = std::time::Instant::now();
+    let panel = loop {
+        if let Some(panel) =
+            workspace.read_with(cx, |workspace, cx| workspace.panel::<TerminalPanel>(cx))
+        {
+            break panel;
+        }
+        if started.elapsed() > PANEL_TIMEOUT {
+            log::warn!("no terminal panel to add the terminal to");
+            return None;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    };
+    panel.update(cx, |panel, _| panel.pending_terminals_to_add += 1);
+    while panel.read_with(cx, |panel, _| panel.restoring) {
+        if started.elapsed() > PANEL_TIMEOUT {
+            log::warn!("terminal panel still restoring; adding the terminal anyway");
+            break;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    }
+    Some(panel)
+}
+
+/// SOLO: the terminal [`panel_ready_for_terminal`] waited for was added (or
+/// not).
+pub(crate) fn done_adding_terminal(panel: &Entity<TerminalPanel>, cx: &mut gpui::AsyncApp) {
+    panel.update(cx, |panel, cx| {
+        panel.pending_terminals_to_add = panel.pending_terminals_to_add.saturating_sub(1);
+        cx.notify();
+    });
+}
+
 /// Moves the terminal of `view` to the terminal panel of `destination`, and
 /// shows it there if `activate`.
 fn move_terminal(
@@ -1452,41 +1530,10 @@ fn move_terminal(
             let Some(workspace) = workspace.await else {
                 return;
             };
-            // A workspace that just opened adds its panels a moment later.
-            let started = std::time::Instant::now();
-            let panel = loop {
-                if let Some(panel) =
-                    workspace.read_with(cx, |workspace, cx| workspace.panel::<TerminalPanel>(cx))
-                {
-                    break panel;
-                }
-                if started.elapsed() > PANEL_TIMEOUT {
-                    log::warn!("no terminal panel to move the terminal to");
-                    return;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_millis(100))
-                    .await;
+            let Some(panel) = panel_ready_for_terminal(&workspace, cx).await else {
+                return;
             };
-            // SOLO: its terminal panel then restores its terminals; wait
-            // for that too. A terminal added meanwhile lands in the panel's
-            // placeholder pane, which the restoration then splits off to the
-            // right of the restored terminals. Counted as a terminal on its way
-            // so the panel doesn't start a shell of its own meanwhile.
-            panel.update(cx, |panel, _| panel.pending_terminals_to_add += 1);
-            while panel.read_with(cx, |panel, _| panel.restoring) {
-                if started.elapsed() > PANEL_TIMEOUT {
-                    log::warn!("terminal panel still restoring; moving the terminal anyway");
-                    break;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_millis(100))
-                    .await;
-            }
-            panel.update(cx, |panel, cx| {
-                panel.pending_terminals_to_add = panel.pending_terminals_to_add.saturating_sub(1);
-                cx.notify();
-            });
+            done_adding_terminal(&panel, cx);
             cx.update(|window, cx| {
                 move_to_panel(&view, &workspace, &multi_workspace, activate, window, cx)
             })
@@ -1512,6 +1559,35 @@ fn move_to_panel(
     let Some(panel) = destination.read(cx).panel::<TerminalPanel>(cx) else {
         return;
     };
+    // SOLO: next to its terminals, not into an empty pane of its own.
+    let destination_pane = panel.read(cx).pane_for_moved_terminal(cx);
+    // Closed meanwhile.
+    if !take_from_its_pane(view, &source_workspace, destination, window, cx) {
+        return;
+    }
+    destination_pane.update(cx, |pane, cx| {
+        pane.add_item(Box::new(view.clone()), activate, activate, None, window, cx)
+    });
+    if activate {
+        multi_workspace.update(cx, |multi_workspace, cx| {
+            multi_workspace.activate(destination.clone(), None, window, cx)
+        });
+        activate_terminal_view(destination, view, window, cx);
+        let focus_handle = view.read(cx).focus_handle.clone();
+        window.focus(&focus_handle, cx);
+    }
+    workspace::agent_activity::notify(cx);
+}
+
+/// Takes the terminal of `view` out of its pane in `source_workspace`, for
+/// `destination` to add it; `false` if it's in none (closed meanwhile).
+fn take_from_its_pane(
+    view: &Entity<TerminalView>,
+    source_workspace: &Entity<Workspace>,
+    destination: &Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
     // The pane it's in.
     let source = {
         let source_workspace = source_workspace.read(cx);
@@ -1525,13 +1601,9 @@ fn move_to_panel(
             .chain(center_panes)
             .find(|pane| pane.read(cx).index_for_item(view).is_some())
     };
-    // Closed meanwhile.
     let Some(source) = source else {
-        return;
+        return false;
     };
-    // SOLO: next to its terminals, not into an empty pane of its own.
-    let destination_pane = panel.read(cx).pane_for_moved_terminal(cx);
-
     view.update(cx, |view, cx| view.set_workspace(destination, window, cx));
     let (terminal, focus_handle) = {
         let view = view.read(cx);
@@ -1542,18 +1614,33 @@ fn move_to_panel(
     source.update(cx, |pane, cx| {
         pane.remove_item(view.entity_id(), false, true, window, cx)
     });
-    destination_pane.update(cx, |pane, cx| {
-        pane.add_item(Box::new(view.clone()), activate, activate, None, window, cx)
-    });
-    if activate {
-        multi_workspace.update(cx, |multi_workspace, cx| {
-            multi_workspace.activate(destination.clone(), None, window, cx)
-        });
-        activate_terminal_view(destination, view, window, cx);
-        let focus_handle = view.read(cx).focus_handle.clone();
-        window.focus(&focus_handle, cx);
-    }
-    workspace::agent_activity::notify(cx);
+    true
+}
+
+/// SOLO: the terminal open in another tab of the window of `workspace` that
+/// uses the terminal host `pipe`, taken out of its pane for `workspace` to
+/// add: a saved terminal of `workspace` ran in that host, so it belongs
+/// there (it was opened elsewhere before its tab was, say by an older Solo
+/// that opened hosts no terminal used in the current tab). `None` when no
+/// other tab of the window has it.
+pub(crate) fn take_open_terminal(
+    pipe: &str,
+    workspace: &Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Entity<TerminalView>> {
+    let multi_workspace = workspace.read(cx).multi_workspace()?.upgrade()?;
+    let (source_workspace, view) = multi_workspace
+        .read(cx)
+        .workspaces()
+        .filter(|candidate| *candidate != workspace)
+        .find_map(|candidate| {
+            crate::command_blocks::terminal_views(candidate, cx)
+                .into_iter()
+                .find(|view| view.read(cx).uses_host(pipe, cx))
+                .map(|view| (candidate.clone(), view))
+        })?;
+    take_from_its_pane(&view, &source_workspace, workspace, window, cx).then_some(view)
 }
 
 #[cfg(test)]
@@ -2044,6 +2131,36 @@ mod tests {
         assert_eq!(repository(path!("/home/user")).await, None);
     }
 
+    /// A host no terminal uses opens in the tab of the project it runs in.
+    #[gpui::test]
+    async fn test_tab_for_directory(cx: &mut TestAppContext) {
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/work"),
+            json!({
+                "TCFrameWork": { ".git": {} },
+                "solo": { ".git": {}, "crates": {} },
+                "Engine": { ".git": {}, "Source": { "Runtime": {} } },
+                "loose": {},
+            }),
+        )
+        .await;
+        let tabs = vec![
+            vec![PathBuf::from(path!("/work/TCFrameWork"))],
+            vec![PathBuf::from(path!("/work/solo"))],
+            vec![PathBuf::from(path!("/work/Engine/Source"))],
+        ];
+        let tab = async |directory: &str| {
+            tab_for_directory(fs.as_ref(), Path::new(directory), &tabs).await
+        };
+        assert_eq!(tab(path!("/work/solo/crates")).await, Some(1));
+        assert_eq!(tab(path!("/work/Engine/Source/Runtime")).await, Some(2));
+        // In the repository of a tab's folder, outside it.
+        assert_eq!(tab(path!("/work/Engine")).await, Some(2));
+        // In no tab's project: the first window's current tab, as before.
+        assert_eq!(tab(path!("/work/loose")).await, None);
+    }
+
     // SOLO: a terminal moved to another tab joins the terminals there.
     mod move_to_tab {
         use super::*;
@@ -2156,12 +2273,23 @@ mod tests {
             panel: &Entity<TerminalPanel>,
             cx: &mut TestAppContext,
         ) {
+            restore_saved(window, workspace, panel, WorkspaceId::default(), cx).await
+        }
+
+        /// Restores the saved terminal 12345 of `workspace_id` into `panel`.
+        async fn restore_saved(
+            window: &WindowHandle<MultiWorkspace>,
+            workspace: &Entity<Workspace>,
+            panel: &Entity<TerminalPanel>,
+            workspace_id: WorkspaceId,
+            cx: &mut TestAppContext,
+        ) {
             let restored = window
                 .update(cx, |_, window, cx| {
                     deserialize_terminal_panel(
                         workspace.downgrade(),
                         workspace.read(cx).project().clone(),
-                        WorkspaceId::default(),
+                        workspace_id,
                         SerializedTerminalPanel {
                             items: SerializedItems::WithSplits(SerializedPaneGroup::Pane(
                                 SerializedPane {
@@ -2337,6 +2465,59 @@ mod tests {
                 destination_panel.read_with(cx, |panel, _| panel.pending_terminals_to_add),
                 0
             );
+        }
+
+        /// A saved terminal already open in another tab of the window (put
+        /// there before its own tab opened) moves to its tab when that
+        /// restores it, rather than be dropped for a new shell.
+        #[gpui::test]
+        async fn test_restoring_a_terminal_open_in_another_tab_moves_it(
+            cx: &mut TestAppContext,
+        ) {
+            init(cx);
+            let tabs = tabs(cx).await;
+            let agent = add_terminal(&tabs.window, &tabs.source_panel, cx).await;
+            let shell = add_terminal(&tabs.window, &tabs.source_panel, cx).await;
+            let pipe = format!(
+                r"\\.\pipe\solo-terminal-test-moved-{}",
+                std::process::id()
+            );
+            agent.update(cx, |view, _| view.saved_host = Some(pipe.clone()));
+            let db = cx.update(|cx| crate::persistence::TerminalDb::global(cx));
+            let workspace_id = db.test_workspace().await.unwrap();
+            db.save_terminal_host(12345, workspace_id, Some(pipe.clone()))
+                .await
+                .unwrap();
+
+            let destination_panel = add_panel(&tabs.window, &tabs.destination, true, cx);
+            restore_saved(
+                &tabs.window,
+                &tabs.destination,
+                &destination_panel,
+                workspace_id,
+                cx,
+            )
+            .await;
+            settle(cx);
+
+            let destination_panes = panes(&destination_panel, cx);
+            assert_eq!(destination_panes.len(), 1);
+            assert_eq!(
+                destination_panes[0].read_with(cx, |pane, _| pane.items_len()),
+                1,
+                "no new shell next to it"
+            );
+            assert!(holds(&destination_panes[0], &agent, cx));
+            assert_eq!(
+                agent.read_with(cx, |view, _| view.workspace.upgrade()),
+                Some(tabs.destination.clone())
+            );
+            let source_panes = panes(&tabs.source_panel, cx);
+            assert!(source_panes.iter().all(|pane| !holds(pane, &agent, cx)));
+            assert!(source_panes.iter().any(|pane| holds(pane, &shell, cx)));
+            db.save_terminal_host(12345, workspace_id, None)
+                .await
+                .unwrap();
         }
 
         #[gpui::test]

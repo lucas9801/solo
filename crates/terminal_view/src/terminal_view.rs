@@ -270,6 +270,10 @@ pub struct TerminalView {
     /// SOLO: the item this terminal was restored from, whose saved contents
     /// are deleted once this one's are saved.
     restored_from: Option<workspace::ItemId>,
+    /// SOLO: the terminal host the saved terminal it was restored from ran
+    /// in (or the host it was opened for), which it holds even when that one
+    /// was gone and another started: see `uses_host`.
+    saved_host: Option<String>,
     agent_activity: agent_status::AgentActivity,
     /// SOLO: which workspace tab the terminal belongs in.
     grouping: workspace_grouping::GroupingState,
@@ -470,6 +474,7 @@ impl TerminalView {
             save_contents_scheduled: false,
             rendered_since_output: true,
             restored_from: None,
+            saved_host: None,
             agent_activity: Default::default(),
             grouping: Default::default(),
             restored_at_startup: false,
@@ -1529,6 +1534,13 @@ impl TerminalView {
             || matches!(running_program::running_command(terminal), Some((_, true)));
         terminal.keep_running_after_quit(keep);
         keep
+    }
+
+    /// SOLO: whether the terminal uses the terminal host `pipe`: its own, or
+    /// the one of the saved terminal it was restored from.
+    pub(crate) fn uses_host(&self, pipe: &str, cx: &App) -> bool {
+        self.saved_host.as_deref() == Some(pipe)
+            || self.terminal.read(cx).host_pipe() == Some(pipe)
     }
 
     /// SOLO: the terminal moves to `workspace`, another tab of the window.
@@ -2724,6 +2736,19 @@ impl SerializableItem for TerminalView {
                 .ok()
                 .unwrap_or((None, None, None, None));
 
+            // SOLO: open already in another tab of the window, where it went
+            // before its own tab was opened: it moves here rather than be
+            // dropped for a new shell (its host can't take two terminals).
+            if let Some(pipe) = host.as_deref()
+                && let Some(open) = cx.update(|window, cx| {
+                    let workspace = workspace.upgrade()?;
+                    workspace_grouping::take_open_terminal(pipe, &workspace, window, cx)
+                })?
+            {
+                log::info!("the saved terminal {pipe} is open in another tab, moving it to its own");
+                return Ok(open);
+            }
+
             let contents = if cx
                 .update(|_, cx| TerminalSettings::get_global(cx).restore_contents)?
             {
@@ -2733,6 +2758,7 @@ impl SerializableItem for TerminalView {
                 None
             };
             // SOLO: the host it ran in, if that's still running.
+            let saved_host = host.clone();
             let env = host
                 .map(|host| (terminal::HOST_RECONNECT_ENV.to_string(), host))
                 .into_iter()
@@ -2767,6 +2793,7 @@ impl SerializableItem for TerminalView {
                     if custom_title.is_some() {
                         view.custom_title = custom_title;
                     }
+                    view.saved_host = saved_host;
                     view.restored_at_startup = true;
                     // SOLO: a terminal an earlier Solo left running stays kept
                     // from now on, also if Solo crashes before its tab shows
