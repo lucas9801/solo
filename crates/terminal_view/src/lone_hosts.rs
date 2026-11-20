@@ -12,6 +12,10 @@
 //! its first window, and offers to end those it can't open.
 
 use collections::HashSet;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use gpui::{App, AppContext as _, AsyncApp, Entity, WindowHandle};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -34,18 +38,44 @@ const FIRST_LOOK: Duration = Duration::from_secs(5);
 /// Hosts a saved terminal refers to get longer: its workspace may still be
 /// opening.
 const SECOND_LOOK: Duration = Duration::from_secs(60);
+/// How long a workspace opened later (a tab opened) gets to restore its
+/// terminals before its hosts no terminal took are looked at.
+const TAB_RESTORE: Duration = Duration::from_secs(15);
 
 struct LoneTerminalHosts;
 
 /// Looks for hosts no terminal uses, once the session is restored.
 pub fn look_for_lone_terminal_hosts(cx: &mut App) {
     let db = TerminalDb::global(cx);
-    cx.spawn(async move |cx| {
-        let mut seen = HashSet::default();
-        cx.background_executor().timer(FIRST_LOOK).await;
-        look(&db, false, &mut seen, cx).await;
-        cx.background_executor().timer(SECOND_LOOK).await;
-        look(&db, true, &mut seen, cx).await;
+    let seen: Rc<RefCell<HashSet<String>>> = Rc::default();
+    let looked: Arc<AtomicBool> = Arc::default();
+    cx.spawn({
+        let db = db.clone();
+        let seen = seen.clone();
+        let looked = looked.clone();
+        async move |cx| {
+            cx.background_executor().timer(FIRST_LOOK).await;
+            look(&db, false, &seen, cx).await;
+            cx.background_executor().timer(SECOND_LOOK).await;
+            look(&db, true, &seen, cx).await;
+            looked.store(true, Ordering::SeqCst);
+        }
+    })
+    .detach();
+    // A tab opened later restores its saved terminals; a host one of them
+    // waited for that it didn't take (its record was stale, say) would
+    // wait on unseen: look again once it has restored.
+    cx.observe_new(move |_: &mut Workspace, _, cx| {
+        let db = db.clone();
+        let seen = seen.clone();
+        let looked = looked.clone();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(TAB_RESTORE).await;
+            if looked.load(Ordering::SeqCst) {
+                look(&db, true, &seen, cx).await;
+            }
+        })
+        .detach();
     })
     .detach();
 }
@@ -55,6 +85,9 @@ struct SavedHost {
     pipe: String,
     workspace_id: WorkspaceId,
     paths: PathList,
+    /// The folders of its project: for a linked git worktree, its main
+    /// repository's.
+    identity_paths: Option<PathList>,
 }
 
 fn saved_hosts(db: &TerminalDb) -> Vec<SavedHost> {
@@ -62,11 +95,19 @@ fn saved_hosts(db: &TerminalDb) -> Vec<SavedHost> {
         .log_err()
         .unwrap_or_default()
         .into_iter()
-        .map(|(pipe, workspace_id, paths, order)| SavedHost {
-            pipe,
-            workspace_id,
-            paths: PathList::deserialize(&SerializedPathList { paths, order }),
-        })
+        .map(
+            |(pipe, workspace_id, paths, order, identity_paths, identity_order)| SavedHost {
+                pipe,
+                workspace_id,
+                paths: PathList::deserialize(&SerializedPathList { paths, order }),
+                identity_paths: identity_paths.map(|paths| {
+                    PathList::deserialize(&SerializedPathList {
+                        paths,
+                        order: identity_order.unwrap_or_default(),
+                    })
+                }),
+            },
+        )
         .collect()
 }
 
@@ -87,6 +128,10 @@ enum SavedTab {
     Open(usize),
     /// In a tab not open yet, which restores it when it opens.
     NotOpenYet,
+    /// In the project of the tab of this index, not open yet, as a linked
+    /// git worktree of it: the tab opens its main repository's workspace,
+    /// which doesn't restore it, so the host is opened there.
+    Worktree(usize),
     /// In none.
     None,
 }
@@ -104,6 +149,13 @@ fn saved_tab<W>(saved: &SavedHost, tabs: &[Tab<W>]) -> SavedTab {
         .any(|tab| tab.workspace.is_none() && tab.paths == saved.paths)
     {
         return SavedTab::NotOpenYet;
+    }
+    if let Some(identity) = &saved.identity_paths
+        && let Some(ix) = tabs
+            .iter()
+            .position(|tab| tab.workspace.is_none() && tab.paths == *identity)
+    {
+        return SavedTab::Worktree(ix);
     }
     SavedTab::None
 }
@@ -168,14 +220,19 @@ fn window_tabs(cx: &App) -> Vec<WindowTab> {
     result
 }
 
-async fn look(db: &TerminalDb, with_saved: bool, seen: &mut HashSet<String>, cx: &mut AsyncApp) {
+async fn look(
+    db: &TerminalDb,
+    with_saved: bool,
+    seen: &Rc<RefCell<HashSet<String>>>,
+    cx: &mut AsyncApp,
+) {
     let saved = saved_hosts(db);
     let hosts = cx
         .background_spawn(async move { terminal::running_hosts() })
         .await;
     let lone: Vec<RunningHost> = hosts
         .into_iter()
-        .filter(|host| host.is_left_alone() && !seen.contains(&host.pipe))
+        .filter(|host| host.is_left_alone() && !seen.borrow().contains(&host.pipe))
         .collect();
     if lone.is_empty() {
         return;
@@ -186,13 +243,14 @@ async fn look(db: &TerminalDb, with_saved: bool, seen: &mut HashSet<String>, cx:
     let mut not_opened = Vec::new();
     for host in lone {
         let mut place = None;
+        // The newest record of its pipe (saved first).
         if let Some(saved) = saved.iter().find(|saved| saved.pipe == host.pipe) {
             // Its workspace may still be restoring it.
             if !with_saved {
                 continue;
             }
             match saved_tab(saved, &tabs) {
-                SavedTab::Open(ix) => place = Some(ix),
+                SavedTab::Open(ix) | SavedTab::Worktree(ix) => place = Some(ix),
                 SavedTab::NotOpenYet => {
                     log::info!(
                         "terminal host {} ({}) waits for its tab to open",
@@ -204,7 +262,7 @@ async fn look(db: &TerminalDb, with_saved: bool, seen: &mut HashSet<String>, cx:
                 SavedTab::None => {}
             }
         }
-        seen.insert(host.pipe.clone());
+        seen.borrow_mut().insert(host.pipe.clone());
         log::info!(
             "terminal host {} ({}) runs {} with no terminal, opening it",
             host.host_pid,
@@ -428,6 +486,7 @@ mod tests {
             pipe: r"\\.\pipe\solo-terminal-1-2".to_string(),
             workspace_id: WorkspaceId::from_i64(workspace_id),
             paths: PathList::new(paths),
+            identity_paths: None,
         }
     }
 
@@ -479,5 +538,12 @@ mod tests {
             saved_tab(&saved(4, &["/repos/gone"]), &tabs),
             SavedTab::None
         );
+        // A linked worktree of a tab's project: that tab opens the main
+        // repository, which doesn't restore it; opened in that tab.
+        let worktree = SavedHost {
+            identity_paths: Some(PathList::new(&["/repos/engine"])),
+            ..saved(5, &["/worktrees/engine-fix"])
+        };
+        assert_eq!(saved_tab(&worktree, &tabs), SavedTab::Worktree(2));
     }
 }

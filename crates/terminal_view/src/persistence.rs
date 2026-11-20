@@ -626,14 +626,17 @@ impl TerminalDb {
     }
 
     // SOLO: the hosts' pipes of the saved terminals of local workspaces,
-    // with their workspace and its folders (`paths`, `paths_order`).
+    // with their workspace and its folders (`paths`, `paths_order`), and
+    // those of its project (`identity_paths`: a linked git worktree's main
+    // repository), the most recently used workspace first.
     query! {
-        pub fn terminal_hosts_with_workspaces() -> Result<Vec<(String, WorkspaceId, String, String)>> {
-            SELECT terminals.terminal_host, terminals.workspace_id, workspaces.paths, workspaces.paths_order
+        pub fn terminal_hosts_with_workspaces() -> Result<Vec<(String, WorkspaceId, String, String, Option<String>, Option<String>)>> {
+            SELECT terminals.terminal_host, terminals.workspace_id, workspaces.paths, workspaces.paths_order, workspaces.identity_paths, workspaces.identity_paths_order
             FROM terminals
             JOIN workspaces ON workspaces.workspace_id = terminals.workspace_id
             WHERE workspaces.remote_connection_id IS NULL
                 AND terminals.terminal_host IS NOT NULL AND length(terminals.terminal_host) > 0
+            ORDER BY workspaces.timestamp DESC
         }
     }
 

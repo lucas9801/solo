@@ -399,7 +399,8 @@ pub(crate) fn open(
         tries += 1;
         match start(options, window_size, nonce, terminal_id, solo_going.clone()) {
             Ok(connected) => return Some((connected, false)),
-            Err(error) if tries < START_TRIES => {
+            // Not while Solo is going: it would wait for the host again.
+            Err(error) if tries < START_TRIES && !solo_going.is_set() => {
                 log::warn!("failed to start a terminal host, trying again: {error:#}");
             }
             Err(error) => {
