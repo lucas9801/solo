@@ -208,6 +208,35 @@ impl TerminalView {
 
     /// A command finished: if it was the saved agent, it exited by itself
     /// and there's nothing to continue.
+    /// SOLO: the agent saved for the terminal it was restored from runs on
+    /// in the host it connected to again: it tells which program under the
+    /// shell is the agent (see `reconnected_agent`), and stays saved for
+    /// this terminal, so that after another restart it does again.
+    pub(crate) fn keep_reconnected_agent_session(
+        &mut self,
+        session: AgentSession,
+        cx: &mut Context<Self>,
+    ) {
+        self.reconnected_agent_hint = Some(session.command.clone());
+        self.agent_resume.current = Some(session.clone());
+        self.save_agent_session(Some(session), cx);
+    }
+
+    /// SOLO: what ran when the terminal connected again to its host ended
+    /// (or its shell showed a prompt): its agent is no longer saved.
+    pub(crate) fn forget_reconnected_agent_session(&mut self, cx: &mut Context<Self>) {
+        if self.reconnected_agent_hint.is_none()
+            || self.terminal.read(cx).reconnected_program_running()
+        {
+            return;
+        }
+        self.reconnected_agent_hint = None;
+        if self.agent_resume.recorded.is_none() {
+            self.agent_resume.current = None;
+            self.save_agent_session(None, cx);
+        }
+    }
+
     pub(crate) fn clear_finished_agent_session(&mut self, cx: &mut Context<Self>) {
         let Some(recorded) = self.agent_resume.recorded else {
             return;

@@ -11,6 +11,9 @@ use std::path::Path;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShellProgram {
     pub pid: u32,
+    /// When it started, in seconds since the epoch: a pid is reused once
+    /// its process ended.
+    pub start_time: u64,
     /// What it runs, as a command line starting with the program's name:
     /// `claude --resume` for `node …\claude-code\cli.js --resume`, or for
     /// `cmd /c "…\claude.cmd" --resume`.
@@ -40,7 +43,7 @@ pub fn shell_programs(shell_pid: u32) -> Vec<ShellProgram> {
             .with_exe(UpdateKind::Always)
             .without_tasks(),
     );
-    let processes: Vec<(u32, u32, Vec<String>)> = system
+    let processes: Vec<Process> = system
         .processes()
         .values()
         .filter_map(|process| {
@@ -55,10 +58,23 @@ pub fn shell_programs(shell_pid: u32) -> Vec<ShellProgram> {
             } else {
                 argv
             };
-            Some((process.pid().as_u32(), parent, argv))
+            Some(Process {
+                pid: process.pid().as_u32(),
+                parent,
+                start_time: process.start_time(),
+                argv,
+            })
         })
         .collect();
     descendants(shell_pid, &processes)
+}
+
+/// A process, as [`descendants`] takes it.
+struct Process {
+    pid: u32,
+    parent: u32,
+    start_time: u64,
+    argv: Vec<String>,
 }
 
 #[cfg(not(windows))]
@@ -66,52 +82,83 @@ pub fn shell_programs(_shell_pid: u32) -> Vec<ShellProgram> {
     Vec::new()
 }
 
-/// Whether the process `pid` still runs.
+/// Whether `program` still runs: a process with its pid that started when
+/// it did (not a later one given its pid).
 #[cfg(windows)]
-pub fn is_running(pid: u32) -> bool {
-    use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+pub fn is_running(program: &ShellProgram) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, FILETIME, WAIT_TIMEOUT};
     use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        WaitForSingleObject,
     };
     unsafe {
-        let Ok(process) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
+        let Ok(process) = OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            false,
+            program.pid,
+        ) else {
             return false;
         };
         let running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+        let mut times = [FILETIME::default(); 4];
+        let [creation, exit, kernel, user] = &mut times;
+        let started = GetProcessTimes(process, creation, exit, kernel, user)
+            .is_ok()
+            .then(|| {
+                let ticks = (u64::from(times[0].dwHighDateTime) << 32)
+                    | u64::from(times[0].dwLowDateTime);
+                // 100 ns ticks since 1601 to seconds since 1970.
+                (ticks / 10_000_000).saturating_sub(11_644_473_600)
+            });
         CloseHandle(process).ok();
-        running
+        running && started.is_none_or(|started| started.abs_diff(program.start_time) <= 1)
     }
 }
 
 #[cfg(not(windows))]
-pub fn is_running(_pid: u32) -> bool {
+pub fn is_running(_program: &ShellProgram) -> bool {
     false
 }
 
-/// Of `processes` (pid, parent pid, argv), those below `root`, nearest first.
-fn descendants(root: u32, processes: &[(u32, u32, Vec<String>)]) -> Vec<ShellProgram> {
+/// Of `processes`, those below `root`, nearest first. A process whose
+/// parent's pid is that of a process started after it isn't that one's
+/// child: its parent ended, and the pid went to the later one.
+fn descendants(root: u32, processes: &[Process]) -> Vec<ShellProgram> {
+    let started = |pid: u32| {
+        processes
+            .iter()
+            .find(|process| process.pid == pid)
+            .map(|process| process.start_time)
+    };
     let mut found = Vec::new();
-    let mut level = vec![root];
+    let mut level = vec![(root, started(root).unwrap_or(0))];
     for _ in 0..MAX_DEPTH {
         let mut next = Vec::new();
-        for (pid, parent, argv) in processes {
-            // A pid is reused only once its process is gone, which a parent
-            // that's still running isn't; its own pid can't be its parent.
-            if !level.contains(parent) || *pid == *parent || *pid == root {
-                continue;
-            }
-            let Some(command) = program_command(argv) else {
+        for process in processes {
+            let Some((_, parent_started)) =
+                level.iter().find(|(pid, _)| *pid == process.parent)
+            else {
                 continue;
             };
-            next.push(*pid);
+            if process.pid == process.parent
+                || process.pid == root
+                || process.start_time < *parent_started
+            {
+                continue;
+            }
+            let Some(command) = program_command(&process.argv) else {
+                continue;
+            };
+            next.push((process.pid, process.start_time));
             let name = command.split(' ').next().unwrap_or_default();
             if CONSOLE_PROGRAMS.contains(&name) {
                 continue;
             }
             found.push(ShellProgram {
-                pid: *pid,
+                pid: process.pid,
+                start_time: process.start_time,
                 command,
-                command_line: argv.join(" "),
+                command_line: process.argv.join(" "),
             });
         }
         if next.is_empty() {
@@ -256,16 +303,28 @@ mod tests {
         assert_eq!(command(&[]), None);
     }
 
+    fn process(pid: u32, parent: u32, start_time: u64, args: &[&str]) -> Process {
+        Process {
+            pid,
+            parent,
+            start_time,
+            argv: argv(args),
+        }
+    }
+
     #[test]
     fn test_descendants() {
         let processes = vec![
-            (10, 1, argv(&["pwsh.exe", "-NoLogo"])),
-            (11, 10, argv(&["conhost.exe", "0x4"])),
-            (12, 10, argv(&["cmd.exe", "/c", r#""C:\bin\claude.cmd" -c"#])),
-            (13, 12, argv(&["powershell", "-File", r"C:\bin\fake.ps1", "claude"])),
-            (14, 13, argv(&["ping", "127.0.0.1"])),
-            (15, 14, argv(&["too-deep"])),
-            (20, 2, argv(&["unrelated"])),
+            process(10, 1, 100, &["pwsh.exe", "-NoLogo"]),
+            process(11, 10, 100, &["conhost.exe", "0x4"]),
+            process(12, 10, 101, &["cmd.exe", "/c", r#""C:\bin\claude.cmd" -c"#]),
+            process(13, 12, 102, &["powershell", "-File", r"C:\bin\fake.ps1", "claude"]),
+            process(14, 13, 103, &["ping", "127.0.0.1"]),
+            process(15, 14, 104, &["too-deep"]),
+            process(20, 2, 50, &["unrelated"]),
+            // Started before the shell: its parent was an earlier process
+            // with the shell's pid.
+            process(30, 10, 90, &["orphan"]),
         ];
         let commands: Vec<String> = descendants(10, &processes)
             .into_iter()

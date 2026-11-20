@@ -2776,11 +2776,11 @@ impl SerializableItem for TerminalView {
             // SOLO: reconnected, the shell and what ran in it are still there,
             // with their output: nothing to restore or resume.
             let mut contents = contents;
-            let mut reconnected_agent_hint = None;
+            let mut reconnected_session = None;
             if terminal.read_with(cx, |terminal, _| terminal.reconnected_to_host()) {
                 contents = None;
                 // SOLO: not offered to resume, but it tells what runs.
-                reconnected_agent_hint = agent_session.take().map(|session| session.command);
+                reconnected_session = agent_session.take();
             }
             // SOLO: written before the shell prints, which it does below them.
             let had_contents = contents.is_some();
@@ -2801,7 +2801,11 @@ impl SerializableItem for TerminalView {
                         view.custom_title = custom_title;
                     }
                     view.saved_host = saved_host;
-                    view.reconnected_agent_hint = reconnected_agent_hint;
+                    // SOLO: kept for the next restart too, under this
+                    // terminal, until what runs ends.
+                    if let Some(session) = reconnected_session {
+                        view.keep_reconnected_agent_session(session, cx);
+                    }
                     view.restored_at_startup = true;
                     // SOLO: a terminal an earlier Solo left running stays kept
                     // from now on, also if Solo crashes before its tab shows

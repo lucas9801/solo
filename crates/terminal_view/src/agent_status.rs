@@ -613,6 +613,7 @@ impl TerminalView {
     }
 
     pub(crate) fn update_agent_status(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.forget_reconnected_agent_session(cx);
         let now = Instant::now();
         let mut status = self.compute_agent_status(now, cx);
         if status.is_none() {

@@ -2186,12 +2186,12 @@ impl Terminal {
                     .map(|program| program.command.as_str())
                     .collect::<Vec<_>>()
             );
-            let Some(first) = programs.first().map(|program| program.pid) else {
+            if programs.is_empty() {
                 terminal
                     .update(cx, |terminal, cx| terminal.reconnected_program_ended(cx))
                     .ok();
                 return;
-            };
+            }
             let found = terminal.update(cx, |terminal, cx| {
                 if !terminal.reconnected_program_running {
                     return false;
@@ -2204,17 +2204,27 @@ impl Terminal {
             if !matches!(found, Ok(true)) {
                 return;
             }
+            // Each program is watched: one that ends (a helper the agent
+            // started, say) leaves the others, the agent among them.
             loop {
                 cx.background_executor()
                     .timer(RECONNECTED_PROGRAM_CHECK)
                     .await;
-                let running = cx
-                    .background_spawn(async move { shell_programs::is_running(first) })
+                let Ok(programs) =
+                    terminal.read_with(cx, |terminal, _| terminal.reconnected_programs().to_vec())
+                else {
+                    return;
+                };
+                let still = cx
+                    .background_spawn(async move {
+                        programs
+                            .into_iter()
+                            .filter(shell_programs::is_running)
+                            .collect::<Vec<_>>()
+                    })
                     .await;
                 let watching = terminal.update(cx, |terminal, cx| {
-                    if !running {
-                        terminal.reconnected_program_ended(cx);
-                    }
+                    terminal.reconnected_programs_still_running(still, cx);
                     terminal.reconnected_program_running
                 });
                 if !matches!(watching, Ok(true)) {
@@ -2223,6 +2233,38 @@ impl Terminal {
             }
         })
         .detach();
+    }
+
+    /// SOLO: as if, of what runs under the reconnected shell, only `still`
+    /// still ran.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_reconnected_programs_still_running_for_test(
+        &mut self,
+        still: Vec<ShellProgram>,
+        cx: &mut Context<Self>,
+    ) {
+        self.reconnected_programs_still_running(still, cx);
+    }
+
+    /// SOLO: of what ran under the shell, `still` runs.
+    fn reconnected_programs_still_running(
+        &mut self,
+        still: Vec<ShellProgram>,
+        cx: &mut Context<Self>,
+    ) {
+        if still.is_empty() {
+            self.reconnected_program_ended(cx);
+            return;
+        }
+        if !self.reconnected_program_running || self.reconnected_programs() == still.as_slice() {
+            return;
+        }
+        let first_changed = self.reconnected_programs().first() != still.first();
+        self.reconnected_programs = Some(still);
+        if first_changed {
+            cx.emit(Event::TitleChanged);
+        }
+        cx.notify();
     }
 
     fn reconnected_program_ended(&mut self, cx: &mut Context<Self>) {
