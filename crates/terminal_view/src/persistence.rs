@@ -634,8 +634,9 @@ impl TerminalDb {
             SELECT terminals.terminal_host, terminals.workspace_id, workspaces.paths, workspaces.paths_order, workspaces.identity_paths, workspaces.identity_paths_order
             FROM terminals
             JOIN workspaces ON workspaces.workspace_id = terminals.workspace_id
-            WHERE workspaces.remote_connection_id IS NULL
-                AND terminals.terminal_host IS NOT NULL AND length(terminals.terminal_host) > 0
+            WHERE length(terminals.terminal_host) > (0)
+                AND terminals.terminal_host IS NOT NULL
+                AND workspaces.remote_connection_id IS NULL
             ORDER BY workspaces.timestamp DESC
         }
     }
