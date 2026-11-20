@@ -114,7 +114,7 @@ A newer version shows an update button at the right of the title bar, with no no
 - **Completions as you type**: subcommands, options and argument values (git branches, npm scripts, docker containers, ...) for about 500 common commands, plus PowerShell's own completions; grey suggestions from history and command specs, and fuzzy history search on `Ctrl+R`.
 - **`# what you want`**: describe it in a sentence, and your own Claude Code or Codex (with their tools turned off) suggests a command, which runs only once you confirm it; the command that just failed and its output can go along.
 - **Workflows**: save commands you use often with `{{arguments}}`, bring them up with `Ctrl+Shift+R`, or run one in a new terminal from the + menu.
-- **Shells**: PowerShell, bash, zsh, fish. After a restart, terminals reopen in their directories and with their titles.
+- **Shells**: PowerShell, bash, zsh, fish. After a restart, terminals reopen in their directories and with their titles. Like Windows Terminal, a new terminal takes `PATH` and the other environment variables from the system's current settings, so a program installed while Solo was open (or one Solo's launcher didn't pass on) is found without restarting Solo.
 - The terminal column can be hidden while its agents keep running; meanwhile the terminal icon on the left shows how many agents want a look.
 
 **Agents and status**
