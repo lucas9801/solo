@@ -64,6 +64,10 @@ pub const TERMINAL_ID_ENV: &str = "SOLO_TERMINAL_ID";
 /// The environment variable with the path of `solo-cli`, for agents to drive
 /// Solo with (`solo-cli agent ...`).
 pub const CLI_ENV: &str = "SOLO_CLI";
+/// SOLO: the environment variable with the single-instance name of the Solo
+/// the terminal is in, for `solo-cli` there to reach that Solo when its data
+/// folder isn't the default one (see `release_channel::instance_identifier`).
+pub const INSTANCE_ENV: &str = "SOLO_INSTANCE";
 
 /// SOLO: Gives a local terminal its id and the path of `solo-cli`.
 ///
@@ -74,6 +78,11 @@ pub const CLI_ENV: &str = "SOLO_CLI";
 /// package can't.
 pub fn add_terminal_env(env: &mut HashMap<String, String>) {
     env.insert(TERMINAL_ID_ENV.to_string(), new_nonce()[..8].to_string());
+    #[cfg(windows)]
+    env.insert(
+        INSTANCE_ENV.to_string(),
+        release_channel::instance_identifier(paths::custom_data_dir().map(|dir| dir.as_path())),
+    );
     if let Some(cli) = crate::stable_programs::program_path("solo-cli") {
         if util::packaged::is_packaged()
             && let Some(dir) = cli.parent()

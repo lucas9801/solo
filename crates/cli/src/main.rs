@@ -1220,7 +1220,27 @@ mod flatpak {
 #[cfg(target_os = "windows")]
 mod windows {
     use anyhow::Context;
-    use release_channel::app_identifier;
+
+    /// SOLO: the single-instance name of the Solo to reach: that of the data
+    /// folder `--user-data-dir` names; else, in a Solo terminal, that of the
+    /// terminal's Solo (`SOLO_INSTANCE`); else that of the default data
+    /// folder. Solos with different data folders don't hand off to each
+    /// other.
+    fn instance() -> String {
+        instance_name(
+            paths::custom_data_dir().map(|dir| dir.as_path()),
+            std::env::var("SOLO_INSTANCE").ok(),
+        )
+    }
+
+    pub(crate) fn instance_name(custom_data_dir: Option<&Path>, from_terminal: Option<String>) -> String {
+        if let Some(dir) = custom_data_dir {
+            return release_channel::instance_identifier(Some(dir));
+        }
+        from_terminal
+            .filter(|name| release_channel::is_instance_identifier(name))
+            .unwrap_or_else(|| release_channel::instance_identifier(None))
+    }
     use windows::{
         Win32::{
             Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GENERIC_WRITE, GetLastError},
@@ -1242,7 +1262,7 @@ mod windows {
             CreateMutexW(
                 None,
                 false,
-                &HSTRING::from(format!("{}-Instance-Mutex", app_identifier())),
+                &HSTRING::from(format!("{}-Instance-Mutex", instance())),
             )
             .expect("Unable to create instance sync event")
         };
@@ -1258,7 +1278,7 @@ mod windows {
         }
         unsafe {
             let pipe = CreateFileW(
-                &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", app_identifier())),
+                &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", instance())),
                 GENERIC_WRITE.0,
                 FILE_SHARE_MODE::default(),
                 None,
@@ -1308,7 +1328,7 @@ mod windows {
             } else {
                 unsafe {
                     let pipe = CreateFileW(
-                        &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", app_identifier())),
+                        &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", instance())),
                         GENERIC_WRITE.0,
                         FILE_SHARE_MODE::default(),
                         None,
@@ -1369,6 +1389,36 @@ mod windows {
             };
 
             Ok(App(path))
+        }
+    }
+
+    #[cfg(test)]
+    mod instance_tests {
+        use super::instance_name;
+        use std::path::Path;
+
+        /// SOLO: a Solo with its own data folder has its own instance, and
+        /// solo-cli in its terminals reaches it.
+        #[test]
+        fn test_instance_name() {
+            let default = release_channel::instance_identifier(None);
+            let test_dir = Path::new(r"E:\solo-test\data");
+            let test = release_channel::instance_identifier(Some(test_dir));
+            assert_ne!(test, default);
+            assert_eq!(instance_name(None, None), default);
+            assert_eq!(instance_name(Some(test_dir), None), test);
+            // From a terminal of the test Solo.
+            assert_eq!(instance_name(None, Some(test.clone())), test);
+            // --user-data-dir wins over the terminal's.
+            assert_eq!(
+                instance_name(Some(test_dir), Some(default.clone())),
+                test
+            );
+            // Not a name of Solo's: the default.
+            assert_eq!(
+                instance_name(None, Some(r"..\other-pipe".to_string())),
+                default
+            );
         }
     }
 }
