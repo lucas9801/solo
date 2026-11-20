@@ -62,7 +62,10 @@ function Write-Step([string]$message) {
 # A stable Solo shares its single-instance pipe with any other stable Solo
 # (an installed one): with one running, ours would hand its folders to it,
 # and solo-cli would ask it. So none may run but ours.
+# A build whose Solo with --user-data-dir has its own single instance (since
+# that change) may run beside another Solo: set $script:IsolatedSolo for it.
 function Assert-NoOtherSolo {
+    if ($script:IsolatedSolo) { return }
     $ours = @($script:SoloStarted | ForEach-Object { $_.Id })
     $others = @(Get-Process -Name solo -ErrorAction SilentlyContinue | Where-Object { $ours -notcontains $_.Id })
     if ($others.Count -gt 0) {
@@ -84,7 +87,8 @@ function Set-ScenarioEnvironment([string]$Root, [string]$Language) {
 
 # Starts Solo from $Exe with its data in $DataDir (opening $Path if given),
 # and waits for its window. Returns the process.
-function Start-Solo([string]$Exe, [string]$DataDir, [string]$Path = '') {
+function Start-Solo([string]$Exe, [string]$DataDir, [string]$Path = '', [switch]$Isolated) {
+    $script:IsolatedSolo = [bool]$Isolated
     Assert-NoOtherSolo
     $arguments = @('--user-data-dir', "`"$DataDir`"")
     if ($Path) { $arguments += "`"$Path`"" }
@@ -111,6 +115,7 @@ function Start-Solo([string]$Exe, [string]$DataDir, [string]$Path = '') {
 # Opens $Path in the running Solo, as opening a folder from outside does: a
 # second solo.exe hands it over and exits. Opens (or shows) its tab.
 function Open-InSolo([string]$Exe, [string]$DataDir, [string]$Path) {
+    Assert-NoOtherSolo
     $p = Start-Process -FilePath $Exe -WorkingDirectory (Split-Path $Exe) -ArgumentList @('--user-data-dir', "`"$DataDir`"", "`"$Path`"") -WindowStyle Minimized -PassThru
     if (-not $p.WaitForExit(30000)) { throw "the second solo.exe for $Path didn't hand over" }
 }
