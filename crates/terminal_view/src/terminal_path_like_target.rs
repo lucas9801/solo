@@ -404,6 +404,7 @@ mod tests {
         )
         .await;
 
+        app_cx.run_until_parked();
         let (multi_workspace, cx) = app_cx
             .add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
         let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
@@ -508,8 +509,11 @@ mod tests {
             return;
         };
 
+        // SOLO: when files of the name rank the same, the tooltip says how
+        // many there are ("(1 of 2 files with this name)").
         assert_eq!(
-            hover_target.tooltip, tooltip,
+            hover_target.tooltip.split(" (1 of ").next().unwrap_or_default(),
+            tooltip,
             "Tooltip mismatch at {file}:{line}:"
         );
         assert_eq!(
@@ -1163,7 +1167,8 @@ mod tests {
 
         // See https://github.com/zed-industries/zed/issues/34027
         #[gpui::test]
-        #[should_panic(expected = "Tooltip mismatch")]
+        // SOLO: fixed by ranking files of a name (the shorter path and the
+        // one in the terminal's folder win), so no longer expected to fail.
         async fn issue_34027_gaps(cx: &mut TestAppContext) {
             test_path_likes!(
                 cx,
@@ -1182,8 +1187,13 @@ mod tests {
                 )],
                 vec![path!("/project")],
                 {
-                    test!("main.rs", "/project/src/main.rs", "/project");
-                    test!("main.rs", "/project/lib/src/main.rs", "/project/lib");
+                    test!("main.rs", "/project/src/main.rs", "/project", WorktreeScan);
+                    test!(
+                        "main.rs",
+                        "/project/lib/src/main.rs",
+                        "/project/lib",
+                        WorktreeScan
+                    );
                 }
             )
         }
@@ -1464,8 +1474,11 @@ mod tests {
 
     /// SOLO: the five `Array.h` of Unreal Engine (case as on disk), in the
     /// order a traversal meets them, with as many lines as each roughly has.
+    /// (A git repository: outside one, folders deeper than
+    /// `file_scan_depth` aren't indexed.)
     fn unreal_array_headers() -> serde_json::Value {
         json!({
+            ".git": {},
             "Extras": { "ThirdPartyNotUE": { "libimobiledevice": { "src": {
                 "libimobiledevice-vs": { "libplist": { "include": { "plist": {
                     "Array.h": lines(100),
@@ -1476,6 +1489,7 @@ mod tests {
                     "Core": { "Public": { "Containers": { "Array.h": lines(3500) } } },
                     "Experimental": { "ChaosCore": { "Public": { "Chaos": {
                         "Array.h": lines(300),
+                        "Vector.h": "",
                     } } } },
                     "Solaris": { "uLangCore": { "Public": { "uLang": { "Common": {
                         "Containers": { "Array.h": lines(1500) },

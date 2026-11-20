@@ -476,6 +476,8 @@ fn resolve_open_target_internal(
     }
 
     let project = workspace.read(cx).project().clone();
+    let siblings = (matching == PathMatching::Heuristic && project.read(cx).is_local())
+        .then(|| (sibling_paths(&potential_paths, cwd), project.read(cx).fs().clone()));
     // SOLO: a terminal (or the agent in it) working in a folder no worktree
     // holds has its bare file names (`object.h:163`) looked for there too.
     let outside_folder_search = (matching == PathMatching::Heuristic
@@ -613,6 +615,29 @@ fn resolve_open_target_internal(
         .await;
         if in_worktrees.is_some() {
             return in_worktrees;
+        }
+        if let Some((siblings, fs)) = siblings {
+            let found = cx
+                .background_spawn(async move {
+                    for mut path in siblings {
+                        if let Ok(canonical) = fs.canonicalize(&path.path).await
+                            && let Some(metadata) = fs.metadata(&canonical).await.ok().flatten()
+                        {
+                            path.path = canonical;
+                            return Some(OpenTarget::Path(
+                                path,
+                                metadata.is_dir,
+                                #[cfg(any(test, feature = "test-support"))]
+                                OpenTargetFoundBy::BackgroundPathResolution,
+                            ));
+                        }
+                    }
+                    None
+                })
+                .await;
+            if let Some(found) = found {
+                return Some(ResolvedLink::single(found));
+            }
         }
         let (cwd, names, fs) = outside_folder_search?;
         cx.background_spawn(async move { find_under(fs.as_ref(), &cwd, &names).await })
@@ -885,6 +910,26 @@ fn looks_like_a_path(path: &Path) -> bool {
 /// relative to the folders next to it.
 const SIBLING_FOLDER_LEVELS: usize = 3;
 
+/// SOLO: a path written relative to a folder next to the terminal's, or
+/// next to one a few levels up (`DBBench_GodotTestbed/main.gd` in a
+/// terminal in `godot_engine`). Only paths with a folder: a bare file name
+/// there would be a guess. Tried after the worktrees, which come first.
+fn sibling_paths(potential_paths: &[PathWithPosition], cwd: Option<&Path>) -> Vec<PathWithPosition> {
+    cwd.into_iter()
+        .flat_map(|cwd| cwd.ancestors().skip(1).take(SIBLING_FOLDER_LEVELS))
+        .flat_map(|folder| {
+            potential_paths.iter().filter_map(move |path_to_check| {
+                (path_to_check.path.is_relative() && path_to_check.path.components().count() > 1)
+                    .then(|| PathWithPosition {
+                        path: folder.join(&path_to_check.path),
+                        row: path_to_check.row,
+                        column: path_to_check.column,
+                    })
+            })
+        })
+        .collect()
+}
+
 fn local_paths_to_check(
     potential_paths: &[PathWithPosition],
     matching: PathMatching,
@@ -902,28 +947,6 @@ fn local_paths_to_check(
                 })
             })
         })
-        // SOLO: a path written relative to a folder next to the terminal's,
-        // or next to one a few levels up (`DBBench_GodotTestbed/main.gd`
-        // in a terminal in `godot_engine`). Only paths with a folder: a bare
-        // file name there would be a guess.
-        .chain(
-            (matching == PathMatching::Heuristic)
-                .then_some(cwd)
-                .flatten()
-                .into_iter()
-                .flat_map(|cwd| cwd.ancestors().skip(1).take(SIBLING_FOLDER_LEVELS))
-                .flat_map(|folder| {
-                    potential_paths.iter().filter_map(move |path_to_check| {
-                        (path_to_check.path.is_relative()
-                            && path_to_check.path.components().count() > 1)
-                            .then(|| PathWithPosition {
-                                path: folder.join(&path_to_check.path),
-                                row: path_to_check.row,
-                                column: path_to_check.column,
-                            })
-                    })
-                }),
-        )
         .chain(potential_paths.iter().flat_map(|path_to_check| {
             let mut paths_to_check = Vec::new();
             let maybe_path = &path_to_check.path;

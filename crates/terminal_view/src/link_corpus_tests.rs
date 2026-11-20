@@ -106,7 +106,8 @@ impl CorpusEntry {
 
     /// The line the reference names, if any.
     fn row(&self) -> Option<u32> {
-        PathWithPosition::parse_str(self.reference.trim_start_matches(':')).row
+        PathWithPosition::parse_str(without_range_end(&self.reference).trim_start_matches(':'))
+            .row
     }
 }
 
@@ -222,8 +223,20 @@ fn reference_cells(probe: &LinkProbe, reference: &str) -> Option<Vec<(i32, usize
     )
 }
 
+/// `text` without the end of a line range (`-34` of `a.h:12-34`).
+fn without_range_end(text: &str) -> &str {
+    let digits = text.trim_end_matches(|c: char| c.is_ascii_digit());
+    match digits.strip_suffix('-') {
+        Some(rest) if digits.len() < text.len() && rest.ends_with(|c: char| c.is_ascii_digit()) => {
+            rest
+        }
+        _ => text,
+    }
+}
+
 /// The file name a link or reference ends with, without a position.
 fn file_name(text: &str) -> String {
+    let text = without_range_end(text);
     let path = PathWithPosition::parse_str(text.trim_start_matches(':')).path;
     path.to_string_lossy()
         .rsplit(['/', '\\'])
@@ -286,6 +299,9 @@ impl Harness {
             fs.create_dir(&entry.working_directory).await.ok();
         }
         for (path, count) in lines {
+            if let Some(parent) = path.parent() {
+                fs.create_dir(parent).await.ok();
+            }
             // A reference without an extension is to a folder.
             if path.extension().is_none() {
                 fs.create_dir(&path).await.ok();
@@ -295,6 +311,13 @@ impl Harness {
             }
         }
         let roots = project_roots(entries);
+        // Each project a git repository (outside one, folders deeper than
+        // `file_scan_depth` aren't indexed), unless SOLO_LINK_CORPUS_GIT=0.
+        if std::env::var("SOLO_LINK_CORPUS_GIT").as_deref() != Ok("0") {
+            for root in &roots {
+                fs.create_dir(&root.join(".git")).await.ok();
+            }
+        }
         let mut projects = Vec::new();
         for root in &roots {
             projects.push(Project::test(fs.clone(), [root.as_path()], cx).await);
