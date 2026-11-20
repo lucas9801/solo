@@ -59,15 +59,24 @@ foreach ($project in $Projects) {
 
 # The fake agents.
 Copy-Item -Force (Join-Path $PSScriptRoot 'fake-agent.ps1') $fakebin
+# A .cmd and a .ps1 for each: Solo's PowerShell wrapper for codex runs the
+# first codex that isn't a .cmd (npm puts a .ps1 beside its .cmd), so
+# without the .ps1 here a real codex further on PATH would run.
 foreach ($agent in 'claude', 'codex') {
     Set-Content -Encoding ASCII (Join-Path $fakebin "$agent.cmd") "@powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"%~dp0fake-agent.ps1`" $agent %*`r`n"
+    # Its own process, as the real agent is.
+    Set-Content -Encoding ASCII (Join-Path $fakebin "$agent.ps1") "& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path `$PSScriptRoot 'fake-agent.ps1') $agent @args`r`n"
 }
 
-# Settings: Solo's defaults (no AI model), nothing else.
+# Settings: Solo's defaults (no AI model), except that the projects are
+# trusted, as a user's own projects are: Solo would otherwise ask about each
+# one it opens, over its terminal.
 $config = Join-Path $dataDir 'config'
 New-Item -ItemType Directory -Force $config | Out-Null
 $settings = Join-Path $config 'settings.json'
-if (-not (Test-Path $settings)) { Set-Content -Encoding ASCII $settings "{`n}`n" }
+if (-not (Test-Path $settings)) {
+    Set-Content -Encoding ASCII $settings "{`n  `"session`": { `"trust_all_worktrees`": true }`n}`n"
+}
 
 Write-Step "prepared $Root (projects: $($Projects -join ', '); data: $dataDir)"
 

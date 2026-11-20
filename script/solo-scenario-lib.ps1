@@ -199,8 +199,26 @@ function Save-SoloShot($process, [string]$file) {
     $graphics.Dispose(); $bitmap.Dispose()
 }
 
-# `solo-cli agent ls --json` of the running Solo, as objects.
-function Get-SoloTerminals([string]$Cli) {
+# The single-instance name of a Solo whose data is in $DataDir, for builds
+# that give each data folder its own instance (the app identifier and a
+# 48-bit FNV-1a hash of the folder, lowercase, as release_channel's
+# instance_identifier makes it): solo-cli reaches it through SOLO_INSTANCE.
+function Get-SoloInstanceName([string]$DataDir) {
+    $path = (Resolve-Path $DataDir).Path.ToLowerInvariant().TrimEnd([char]92, [char]47)
+    $hash = [System.Numerics.BigInteger]::Parse('14695981039346656037')
+    $prime = [System.Numerics.BigInteger]::Parse('1099511628211')
+    $modulus = [System.Numerics.BigInteger]::Pow(2, 64)
+    foreach ($byte in [Text.Encoding]::UTF8.GetBytes($path)) {
+        $hash = (($hash -bxor $byte) * $prime) % $modulus
+    }
+    $low = $hash % [System.Numerics.BigInteger]::Pow(2, 48)
+    'Solo-Terminal-Stable-' + ([UInt64]$low).ToString('x12')
+}
+
+# `solo-cli agent ls --json` of the running Solo, as objects: that of
+# $DataDir's instance when $script:IsolatedSolo, else the default one.
+function Get-SoloTerminals([string]$Cli, [string]$DataDir = '') {
+    $env:SOLO_INSTANCE = if ($script:IsolatedSolo -and $DataDir) { Get-SoloInstanceName $DataDir } else { $null }
     $output = & $Cli agent ls --json 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) { throw "solo-cli agent ls failed: $output" }
     $parsed = $output | ConvertFrom-Json
@@ -249,4 +267,38 @@ function Stop-ScenarioLeftovers([string]$Root) {
     Get-Process -Name solo-terminal-host -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($hostDir, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object {
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
     }
+}
+
+# Restarts Solo the way Solo restarts itself (as for an update): the
+# command palette's "workspace: reload", opened from the Go menu (Solo takes
+# no key combinations from outside). The menu positions are those of the
+# English interface. Returns the new Solo process.
+function Invoke-SoloRestart($process, [string]$Exe) {
+    $before = Get-Date
+    $hwnd = Get-SoloWindow $process
+    Send-SoloClick $process 800 400
+    Start-Sleep -Milliseconds 600
+    Send-SoloClick $process 27 15
+    Start-Sleep -Milliseconds 800
+    [SoloScenario.W]::PostMessage($hwnd, 0x0200, [IntPtr]0, [IntPtr]((15 -shl 16) -bor 231)) | Out-Null
+    Start-Sleep -Milliseconds 800
+    Send-SoloClick $process 283 103
+    Start-Sleep -Seconds 1
+    Send-SoloText $process 'workspace: reload'
+    Start-Sleep -Seconds 1
+    Send-SoloEnter $process
+    if (-not $process.WaitForExit(60000)) { throw 'Solo didn''t quit to restart' }
+    for ($i = 0; $i -lt 120; $i++) {
+        Start-Sleep -Milliseconds 500
+        $new = Get-Process -Name solo -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Exe -and $_.StartTime -ge $before.AddSeconds(-1) } | Select-Object -First 1
+        if ($new -and [SoloScenario.W]::Find([uint32]$new.Id, 'Zed::Window') -ne [IntPtr]::Zero) {
+            $new | Add-Member -NotePropertyName ScenarioStart -NotePropertyValue $before -Force
+            $script:SoloStarted += $new
+            $hwnd = [SoloScenario.W]::Find([uint32]$new.Id, 'Zed::Window')
+            [SoloScenario.W]::SetWindowPos($hwnd, [IntPtr]::Zero, -3000, 40, 1400, 900, 0x0014) | Out-Null
+            Write-Step "Solo restarted as $($new.Id)"
+            return $new
+        }
+    }
+    throw 'Solo didn''t start again after restarting'
 }

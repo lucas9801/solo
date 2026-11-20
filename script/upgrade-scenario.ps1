@@ -45,10 +45,16 @@
 # ASCII only (Windows PowerShell reads scripts in the ANSI code page).
 
 param(
-    [Parameter(Mandatory = $true)][string]$OldDir,
+    # The previous release's program files; without it, the new build is
+    # set up too, and "updated" by restarting itself (Restart, the path
+    # "Update and Restart" takes, without installing).
+    [string]$OldDir = '',
     [Parameter(Mandatory = $true)][string]$NewDir,
     [Parameter(Mandatory = $true)][string]$Root,
     [int]$WaitSeconds = 90,
+    # The new build gives a Solo with --user-data-dir its own single
+    # instance, so it may run beside another Solo (an installed one).
+    [switch]$IsolatedNewBuild,
     [ValidateSet('zh', 'en')][string]$Language = 'en',
     [switch]$SkipCrash,
     [switch]$SkipQuit
@@ -59,6 +65,8 @@ $ErrorActionPreference = 'Stop'
 
 $projects = @('alpha', 'beta', 'gamma')
 $agents = @{ alpha = 'claude'; beta = 'codex'; gamma = 'claude' }
+$sameBuild = -not $OldDir
+if ($sameBuild) { $OldDir = $NewDir }
 $oldExe = Join-Path $OldDir 'solo.exe'
 $newExe = Join-Path $NewDir 'solo.exe'
 $newCli = Join-Path $NewDir 'solo-cli.exe'
@@ -101,7 +109,7 @@ function Wait-Until([scriptblock]$condition, [int]$seconds) {
 
 # Opens each tab not opened yet, then checks every terminal.
 function Test-Restored([string]$phase, $solo, $expectedAgents, [long]$logOffset) {
-    $before = @(Get-SoloTerminals $newCli)
+    $before = @(Get-SoloTerminals $newCli $dataDir)
     $shown = @($before | Where-Object { $_.tab } | ForEach-Object { $_.tab } | Sort-Object -Unique)
     Add-Result $phase "before opening other tabs: terminals of tabs not opened yet weren't moved in" (@($before | Where-Object { $_.directory -and $_.tab -and -not ($_.directory -like "*\$($_.tab)*") }).Count -eq 0) (($before | ForEach-Object { "$($_.tab):$($_.directory)" }) -join '; ')
     Save-SoloShot $solo (Join-Path $out "$phase-before-tabs.png")
@@ -112,7 +120,7 @@ function Test-Restored([string]$phase, $solo, $expectedAgents, [long]$logOffset)
     }
     Open-InSolo $newExe $dataDir (Join-Path $reposDir $projects[0])
     Start-Sleep -Seconds 4
-    $terminals = @(Get-SoloTerminals $newCli)
+    $terminals = @(Get-SoloTerminals $newCli $dataDir)
     ($terminals | ConvertTo-Json -Depth 4) | Set-Content -Encoding UTF8 (Join-Path $out "$phase-agent-ls.json")
     foreach ($project in $projects) {
         $repo = Join-Path $reposDir $project
@@ -152,7 +160,9 @@ $solo = $null
 try {
     # 1. The previous release, with an agent in each of 3 tabs.
     Write-Step "1. the previous release ($oldExe)"
-    $solo = Start-Solo $oldExe $dataDir (Join-Path $reposDir $projects[0])
+    # A new build has its own single instance for its data folder, and may
+    # run beside another Solo; the previous release may not.
+    $solo = Start-Solo $oldExe $dataDir (Join-Path $reposDir $projects[0]) -Isolated:($sameBuild -and $IsolatedNewBuild)
     Start-Sleep -Seconds 10
     for ($ix = 0; $ix -lt $projects.Count; $ix++) {
         $project = $projects[$ix]
@@ -171,16 +181,23 @@ try {
     $agentsBefore = @(Get-FakeAgents $Root | Where-Object { $_.alive })
 
     # 2. "Update": the old release quits keeping its agents; the new one starts.
-    Write-Step '2. update: quitting the previous release, starting the new build'
-    Close-SoloWindow $solo
-    if (-not $solo.WaitForExit(30000)) {
-        Save-SoloShot $solo (Join-Path $out 'old-quit-prompt.png')
-        throw 'the previous release asked before quitting; this script expects it to keep its agents (up to 2.5.3)'
-    }
-    Start-Sleep -Seconds 3
-    Add-Result 'update' 'the agents outlived the old Solo' (@(Get-FakeAgents $Root | Where-Object { $_.alive }).Count -eq $agentsBefore.Count)
     $offset = Get-SoloLogLength $dataDir
-    $solo = Start-Solo $newExe $dataDir
+    if ($sameBuild) {
+        Write-Step '2. update: the new build restarts itself (workspace: reload)'
+        $solo = Invoke-SoloRestart $solo $newExe
+        Add-Result 'update' 'the agents outlived the restart' (@(Get-FakeAgents $Root | Where-Object { $_.alive }).Count -eq $agentsBefore.Count)
+    } else {
+        Write-Step '2. update: quitting the previous release, starting the new build'
+        Close-SoloWindow $solo
+        if (-not $solo.WaitForExit(30000)) {
+            Save-SoloShot $solo (Join-Path $out 'old-quit-prompt.png')
+            throw 'the previous release asked before quitting; this script expects it to keep its agents (up to 2.5.3)'
+        }
+        Start-Sleep -Seconds 3
+        Add-Result 'update' 'the agents outlived the old Solo' (@(Get-FakeAgents $Root | Where-Object { $_.alive }).Count -eq $agentsBefore.Count)
+        $offset = Get-SoloLogLength $dataDir
+        $solo = Start-Solo $newExe $dataDir -Isolated:$IsolatedNewBuild
+    }
 
     # 3. Not opening the other tabs for a while.
     Write-Step "3. waiting $WaitSeconds seconds in the first tab"
@@ -194,7 +211,7 @@ try {
         Start-Sleep -Seconds 3
         Add-Result 'crash' 'the agents outlived the crash' (@(Get-FakeAgents $Root | Where-Object { $_.alive }).Count -eq $agentsBefore.Count)
         $offset = Get-SoloLogLength $dataDir
-        $solo = Start-Solo $newExe $dataDir
+        $solo = Start-Solo $newExe $dataDir -Isolated:$IsolatedNewBuild
         Start-Sleep -Seconds $WaitSeconds
         Test-Restored 'crash' $solo $agentsBefore $offset
     }

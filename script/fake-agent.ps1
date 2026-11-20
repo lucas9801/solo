@@ -11,8 +11,10 @@
 #
 # ASCII only.
 
-param([Parameter(Position = 0)][string]$Agent)
-$rest = @($args)
+# No param() block: PowerShell would take the agent's own options
+# (--settings, --mcp-config) as parameters of this script.
+$Agent = [string]$args[0]
+$rest = @($args | Select-Object -Skip 1)
 $ErrorActionPreference = 'Continue'
 $root = $env:SOLO_SCENARIO_ROOT
 if (-not $root) { $root = Split-Path -Parent $PSScriptRoot }
