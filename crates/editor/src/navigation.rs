@@ -1509,11 +1509,11 @@ impl Editor {
                     .unique()
                     .take(3)
                     .join(", ");
-                let title = if target.is_empty() {
-                    "References".to_owned()
-                } else {
-                    format!("References to {target}")
-                };
+                let title = navigation_results_title(
+                    NavigationResults::References,
+                    &target,
+                    util::i18n::is_chinese(),
+                );
                 let allow_preview = PreviewTabsSettings::get_global(cx)
                     .enable_preview_multibuffer_from_code_navigation;
                 Self::open_locations_in_multibuffer(
@@ -1774,10 +1774,10 @@ impl Editor {
 
             if num_locations > 1 {
                 let tab_kind = match kind {
-                    Some(GotoDefinitionKind::Implementation) => "Implementations",
-                    Some(GotoDefinitionKind::Symbol) | None => "Definitions",
-                    Some(GotoDefinitionKind::Declaration) => "Declarations",
-                    Some(GotoDefinitionKind::Type) => "Types",
+                    Some(GotoDefinitionKind::Implementation) => NavigationResults::Implementations,
+                    Some(GotoDefinitionKind::Symbol) | None => NavigationResults::Definitions,
+                    Some(GotoDefinitionKind::Declaration) => NavigationResults::Declarations,
+                    Some(GotoDefinitionKind::Type) => NavigationResults::Types,
                 };
                 let title = editor
                     .update_in(cx, |_, _, cx| {
@@ -1794,11 +1794,7 @@ impl Editor {
                             .unique()
                             .take(3)
                             .join(", ");
-                        if target.is_empty() {
-                            tab_kind.to_owned()
-                        } else {
-                            format!("{tab_kind} for {target}")
-                        }
+                        navigation_results_title(tab_kind, &target, util::i18n::is_chinese())
                     })
                     .context("buffer title")?;
 
@@ -2551,5 +2547,81 @@ impl Editor {
                 s.select_ranges([destination..destination]);
             });
         }
+    }
+}
+
+/// SOLO: what a tab of code navigation results lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NavigationResults {
+    References,
+    Definitions,
+    Implementations,
+    Declarations,
+    Types,
+}
+
+/// SOLO: the title of a tab of code navigation results, in the interface's
+/// language: "References to add" / "add 的引用", or just what it lists when
+/// the symbols' names aren't known.
+pub(crate) fn navigation_results_title(
+    results: NavigationResults,
+    target: &str,
+    chinese: bool,
+) -> String {
+    let (english, english_with, zh) = match results {
+        NavigationResults::References => ("References", "References to", "引用"),
+        NavigationResults::Definitions => ("Definitions", "Definitions for", "定义"),
+        NavigationResults::Implementations => ("Implementations", "Implementations for", "实现"),
+        NavigationResults::Declarations => ("Declarations", "Declarations for", "声明"),
+        NavigationResults::Types => ("Types", "Types for", "类型定义"),
+    };
+    match (target.is_empty(), chinese) {
+        (true, false) => english.to_string(),
+        (true, true) => zh.to_string(),
+        (false, false) => format!("{english_with} {target}"),
+        (false, true) => format!("{target} 的{zh}"),
+    }
+}
+
+/// SOLO: the title of the tab listing selections of `title`.
+pub(crate) fn selections_title(title: &str, chinese: bool) -> String {
+    if chinese {
+        format!("“{title}”的选区")
+    } else {
+        format!("Selections for '{title}'")
+    }
+}
+
+#[cfg(test)]
+mod navigation_title_tests {
+    use super::*;
+
+    #[test]
+    fn titles_in_english_and_chinese() {
+        use NavigationResults::*;
+        assert_eq!(
+            navigation_results_title(References, "add", false),
+            "References to add"
+        );
+        assert_eq!(navigation_results_title(References, "add", true), "add 的引用");
+        assert_eq!(navigation_results_title(References, "", false), "References");
+        assert_eq!(navigation_results_title(References, "", true), "引用");
+        assert_eq!(
+            navigation_results_title(Definitions, "a, b", false),
+            "Definitions for a, b"
+        );
+        assert_eq!(navigation_results_title(Definitions, "a, b", true), "a, b 的定义");
+        assert_eq!(
+            navigation_results_title(Implementations, "Foo", true),
+            "Foo 的实现"
+        );
+        assert_eq!(
+            navigation_results_title(Declarations, "Foo", false),
+            "Declarations for Foo"
+        );
+        assert_eq!(navigation_results_title(Declarations, "", true), "声明");
+        assert_eq!(navigation_results_title(Types, "Foo", true), "Foo 的类型定义");
+        assert_eq!(selections_title("x", false), "Selections for 'x'");
+        assert_eq!(selections_title("x", true), "“x”的选区");
     }
 }

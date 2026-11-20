@@ -379,7 +379,7 @@ impl Editor {
 
                     let capability = workspace.project().read(cx).capability();
                     let excerpt_buffer =
-                        cx.new(|_cx| MultiBuffer::new(capability).with_title("Bookmarks".into()));
+                        cx.new(|_cx| MultiBuffer::new(capability).with_title(util::i18n::tr("Bookmarks", "书签").into()));
                     let bookmarks_tab_state = cx.new(|cx| {
                         BookmarksTabState::new(
                             excerpt_buffer.clone(),
