@@ -6,7 +6,7 @@
 
 Solo 是给 AI 编程 agent 用的编辑器，基于 [Zed](https://github.com/zed-industries/zed)：终端占满窗口，Claude Code、Codex 这些 agent 在真终端里跑，用的是你自己装的命令行工具和订阅；需要看代码时，完整的代码编辑器从右边打开，随时看 agent 改了什么。
 
-**下载**：[Windows x64 安装程序（GitHub Releases）](https://github.com/lucas9801/solo/releases/latest)。安装程序没有签名，SmartScreen 提示时点"更多信息"，再点"仍要运行"。也可以从 [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)）安装：由微软签名，通过商店更新，版本可能比 GitHub 晚一个。
+**下载**：[Windows x64 安装程序](https://github.com/lucas9801/solo/releases/latest/download/Solo-Setup.exe)（[所有版本](https://github.com/lucas9801/solo/releases)）。安装程序没有签名，SmartScreen 提示时点"更多信息"，再点"仍要运行"。也可以从 [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)）安装：由微软签名，通过商店更新，版本可能比 GitHub 晚一个。
 
 [用户指南](docs/guide/zh-CN.md) · [和其他工具比较](docs/site/zh/compare/index.md)
 

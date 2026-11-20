@@ -6,7 +6,7 @@ Solo is an editor for working with AI agents, built on [Zed](https://github.com/
 
 It's made for people who still read the code and the documents themselves: after each turn of an agent, you see what it changed and whether it broke anything, keep or undo it, and send it your comments.
 
-[Download the Windows x64 installer](https://github.com/lucas9801/solo/releases/latest) (unsigned: when SmartScreen warns, click "More info", then "Run anyway") · [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6); signed by Microsoft, updated through the Store, may be a version behind) · [User guide](../../guide/en.md) · [Compared with other tools](compare/index.md) · [中文](../zh/index.md)
+[Download the Windows x64 installer](https://github.com/lucas9801/solo/releases/latest/download/Solo-Setup.exe) ([all releases](https://github.com/lucas9801/solo/releases); unsigned: when SmartScreen warns, click "More info", then "Run anyway") · [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6) ([Store page](https://apps.microsoft.com/detail/9NBW452JVWN6); signed by Microsoft, updated through the Store, may be a version behind) · [User guide](../../guide/en.md) · [Compared with other tools](compare/index.md) · [中文](../zh/index.md)
 
 https://github.com/user-attachments/assets/85627f07-1bb5-4f68-8199-c3afbdc9fa3b
 

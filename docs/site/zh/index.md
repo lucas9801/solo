@@ -6,7 +6,7 @@ Solo 是一个给 AI agent 用的编辑器，基于 [Zed](https://github.com/zed
 
 它是给还要自己读代码、读文档的人做的：agent 每做完一轮，你能马上看清它改了什么、有没有引入新错误，留下或者撤回，再把意见发回给它。
 
-[下载 Windows x64 安装程序](https://github.com/lucas9801/solo/releases/latest)（未签名，SmartScreen 提示时点"更多信息"，再点"仍要运行"） · [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)；由微软签名，通过商店更新，版本可能比 GitHub 晚一个） · [用户指南](../../guide/zh-CN.md) · [和其他工具比较](compare/index.md) · [English](../en/index.md)
+[下载 Windows x64 安装程序](https://github.com/lucas9801/solo/releases/latest/download/Solo-Setup.exe)（[所有版本](https://github.com/lucas9801/solo/releases)；未签名，SmartScreen 提示时点"更多信息"，再点"仍要运行"） · [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)；由微软签名，通过商店更新，版本可能比 GitHub 晚一个） · [用户指南](../../guide/zh-CN.md) · [和其他工具比较](compare/index.md) · [English](../en/index.md)
 
 ---
 
