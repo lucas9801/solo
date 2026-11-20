@@ -38,7 +38,10 @@ use crate::{
 };
 use diagnostics::{DiagnosticsBefore, TurnDiagnostics};
 pub(crate) use review::AgentTurnReview;
-use snapshot::{ChangedFile, FileChange, SnapshotStore, SnapshotUnavailable, TreeId};
+use snapshot::{
+    ChangedFile, FileChange, LargeFile, SnapshotStore, SnapshotUnavailable, TreeId,
+    changed_large_files,
+};
 
 actions!(
     terminal,
@@ -141,6 +144,8 @@ pub(crate) struct AgentTurn {
     pub prompt: Option<String>,
     pub store: Arc<SnapshotStore>,
     pub before: TreeId,
+    /// SOLO: The large untracked files the first snapshot left out (G51).
+    pub before_large: Arc<Vec<LargeFile>>,
     /// The work tree when the turn ended, to tell the agent's changes from
     /// ones made since.
     pub after: TreeId,
@@ -159,6 +164,10 @@ pub(crate) struct AgentTurn {
     pub edited_before_snapshot: Vec<PathBuf>,
     /// What the turn did to the language servers' diagnostics.
     pub diagnostics: TurnDiagnostics,
+    /// SOLO: Large untracked files that changed during the turn, which no
+    /// snapshot has: the review can't show them, nor a rollback restore
+    /// them (G51).
+    pub large_files: Vec<String>,
 }
 
 /// A finished turn whose directory couldn't be snapshotted: only which files
@@ -177,6 +186,7 @@ pub(crate) struct UnsnapshottedTurn {
 struct StartedTurn {
     store: Arc<SnapshotStore>,
     before: TreeId,
+    before_large: Arc<Vec<LargeFile>>,
 }
 
 /// A turn's snapshot, or why there's none.
@@ -254,6 +264,9 @@ pub(crate) struct AgentTurns {
     /// snapshotted, if not the usual.
     #[cfg(test)]
     max_files_outside_repository: Option<usize>,
+    /// How big an untracked file may be to be snapshotted, if not the usual.
+    #[cfg(test)]
+    max_untracked_file_bytes: Option<u64>,
 }
 
 struct GlobalAgentTurns(Entity<AgentTurns>);
@@ -371,6 +384,8 @@ impl AgentTurns {
         let terminal_id = terminal_view.entity_id();
         #[cfg(test)]
         let max_files_outside_repository = self.max_files_outside_repository;
+        #[cfg(test)]
+        let max_untracked_file_bytes = self.max_untracked_file_bytes;
         let storage_root = self
             .storage_root
             .clone()
@@ -398,17 +413,25 @@ impl AgentTurns {
                             if let Some(max) = max_files_outside_repository {
                                 store.set_max_files_outside_repository(max);
                             }
+                            #[cfg(test)]
+                            if let Some(max) = max_untracked_file_bytes {
+                                store.set_max_untracked_file_bytes(max);
+                            }
                             Arc::new(store)
                         }
                     };
                     let started = std::time::Instant::now();
-                    let before = store.snapshot()?;
+                    let (before, before_large) = store.snapshot_with_large_files()?;
                     log::debug!(
                         "snapshotted {:?} for an agent turn in {:?}",
                         store.work_tree(),
                         started.elapsed()
                     );
-                    anyhow::Ok(Arc::new(StartedTurn { store, before }))
+                    anyhow::Ok(Arc::new(StartedTurn {
+                        store,
+                        before,
+                        before_large: Arc::new(before_large),
+                    }))
                 }
             })
             .map(|result| result.map_err(|error| snapshot_unavailable_reason(&error)))
@@ -550,14 +573,15 @@ impl AgentTurns {
                 .background_spawn({
                     let started = started.clone();
                     async move {
-                        let after = started.store.snapshot()?;
+                        let (after, after_large) = started.store.snapshot_with_large_files()?;
                         let changed = started.store.changed_files(&started.before, &after)?;
-                        anyhow::Ok((after, changed))
+                        let large_files = changed_large_files(&started.before_large, &after_large);
+                        anyhow::Ok((after, changed, large_files))
                     }
                 })
                 .await
                 .log_err();
-            let Some((after, changed)) = after else {
+            let Some((after, changed, large_files)) = after else {
                 return;
             };
             // SOLO: the files Codex's patches edited, from its log events,
@@ -622,7 +646,9 @@ impl AgentTurns {
                     return false;
                 };
                 terminal.offer_last_turn = !changed.is_empty();
-                let recorded = !changed.is_empty() || !others.is_empty();
+                let recorded =
+                    !changed.is_empty() || !others.is_empty() || !large_files.is_empty();
+                let mut evicted = false;
                 if recorded {
                     terminal.turns.push_back(AgentTurn {
                         number: pending.number,
@@ -631,16 +657,23 @@ impl AgentTurns {
                         prompt,
                         store: started.store.clone(),
                         before: started.before.clone(),
+                        before_large: started.before_large.clone(),
                         after,
                         changed,
                         attributed,
                         others,
                         edited_before_snapshot: pending.edited_before_snapshot,
                         diagnostics: TurnDiagnostics::Checking,
+                        large_files,
                     });
                     if terminal.turns.len() > MAX_TURNS {
                         terminal.turns.pop_front();
+                        evicted = true;
                     }
+                }
+                // SOLO: the objects only the forgotten turn needed go (G51).
+                if evicted {
+                    this.collect_garbage(&started.store, cx);
                 }
                 cx.notify();
                 update_tab(&terminal_view, cx);
@@ -736,6 +769,45 @@ impl AgentTurns {
             terminal.offer_last_turn = true;
         }
         true
+    }
+
+    /// SOLO: The trees of `store_dir`'s store that turns of any terminal
+    /// still need (G51).
+    fn live_trees(&self, store_dir: &Path) -> Vec<TreeId> {
+        let mut trees = Vec::new();
+        for terminal in self.terminals.values() {
+            for turn in &terminal.turns {
+                if turn.store.store_dir() == store_dir {
+                    trees.push(turn.before.clone());
+                    trees.push(turn.after.clone());
+                }
+            }
+            if let Some(Ok(started)) = terminal
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.snapshot.peek())
+                && started.store.store_dir() == store_dir
+            {
+                trees.push(started.before.clone());
+            }
+        }
+        trees
+    }
+
+    /// SOLO: Removes the objects of `store` that no turn needs, in the
+    /// background (G51).
+    fn collect_garbage(&self, store: &Arc<SnapshotStore>, cx: &mut Context<Self>) {
+        let live = self.live_trees(store.store_dir());
+        let store = store.clone();
+        cx.background_spawn(async move {
+            if let Err(error) = store.collect_garbage(live) {
+                log::warn!(
+                    "failed to collect the snapshots of {:?}: {error:#}",
+                    store.work_tree()
+                );
+            }
+        })
+        .detach();
     }
 
     fn stop_watching(&mut self, terminal: EntityId, number: usize) -> Option<TurnWatch> {
@@ -1433,6 +1505,144 @@ mod tests {
         );
         assert!(!repository.join("b.txt").exists());
         assert!(repository.join("new.txt").exists());
+    }
+
+    /// A large untracked archive isn't snapshotted, and the turn says so;
+    /// past the turns kept, the store stops growing (G51).
+    #[gpui::test]
+    async fn test_large_files_and_old_turns_dont_grow_the_store(cx: &mut TestAppContext) {
+        crate::tests::init_test(cx).await;
+        cx.executor().allow_parking();
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        std::fs::create_dir_all(&repository).unwrap();
+        git(&repository, &["init", "--quiet"]);
+        std::fs::write(repository.join("a.txt"), "before\n").unwrap();
+        git(&repository, &["add", "."]);
+        git(&repository, &["commit", "--quiet", "-m", "initial"]);
+
+        let terminal_view = cx.add_window(|window, cx| {
+            let terminal = cx.new(|cx| {
+                terminal::TerminalBuilder::new_display_only(
+                    Default::default(),
+                    terminal::terminal_settings::AlternateScroll::On,
+                    None,
+                    0,
+                    cx.background_executor(),
+                    util::paths::PathStyle::local(),
+                )
+                .subscribe(cx)
+            });
+            TerminalView::new(
+                terminal,
+                WeakEntity::new_invalid(),
+                None,
+                WeakEntity::new_invalid(),
+                window,
+                cx,
+            )
+        });
+        let terminal_view = terminal_view.root(cx).unwrap();
+        let turns = cx.update(|cx| AgentTurns::global(cx));
+        let storage = temp.path().join("storage");
+        turns.update(cx, |turns, _| {
+            turns.storage_root = Some(storage.clone());
+            turns.max_untracked_file_bytes = Some(100 * 1024);
+        });
+        let terminal_id = terminal_view.entity_id();
+        let run_turn = |edit: &dyn Fn(), cx: &mut TestAppContext| {
+            turns.update(cx, |turns, cx| {
+                turns.start_turn(
+                    terminal_view.clone(),
+                    Some(repository.clone()),
+                    None,
+                    WeakEntity::new_invalid(),
+                    DiagnosticsBefore::default(),
+                    cx,
+                )
+            });
+            cx.run_until_parked();
+            edit();
+            turns.update(cx, |turns, cx| {
+                turns.end_turn(terminal_view.clone(), None, cx)
+            });
+            cx.run_until_parked();
+        };
+        // Bytes that don't compress.
+        let noise = |length: usize, seed: u64| -> Vec<u8> {
+            let mut state = seed;
+            (0..length)
+                .map(|_| {
+                    state = state
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    (state >> 33) as u8
+                })
+                .collect()
+        };
+        let store_size = || {
+            let mut total = 0;
+            let mut directories = vec![storage.clone()];
+            while let Some(directory) = directories.pop() {
+                for entry in std::fs::read_dir(&directory).unwrap().flatten() {
+                    if entry.file_type().unwrap().is_dir() {
+                        directories.push(entry.path());
+                    } else {
+                        total += entry.metadata().unwrap().len();
+                    }
+                }
+            }
+            total
+        };
+
+        // The agent only unpacks an archive: the turn is recorded all the
+        // same, with the archive named and not stored.
+        run_turn(
+            &|| std::fs::write(repository.join("build (1).zip"), noise(600 * 1024, 1)).unwrap(),
+            cx,
+        );
+        turns.read_with(cx, |turns, _| {
+            let turn = turns.turn(terminal_id, 1).expect("the turn is recorded");
+            assert!(turn.changed.is_empty());
+            assert_eq!(turn.large_files, vec!["build (1).zip".to_string()]);
+        });
+        assert!(store_size() < 100 * 1024, "{}", store_size());
+
+        // 25 turns that each write 32 KB that doesn't compress.
+        const SIZE: usize = 32 * 1024;
+        let mut sizes = Vec::new();
+        for turn in 0..25u64 {
+            run_turn(
+                &|| std::fs::write(repository.join("data.bin"), noise(SIZE, 100 + turn)).unwrap(),
+                cx,
+            );
+            sizes.push(store_size());
+        }
+        turns.read_with(cx, |turns, _| {
+            assert_eq!(turns.turns(terminal_id).count(), MAX_TURNS);
+            assert!(turns.turn(terminal_id, 1).is_none());
+        });
+        // What the 20 turns kept need: 21 versions of the file, and slack.
+        let last = *sizes.last().unwrap();
+        assert!(
+            last < 21 * SIZE as u64 + 200 * 1024,
+            "the store keeps growing: {sizes:?}"
+        );
+        assert!(
+            last <= sizes[20] + 64 * 1024,
+            "the store keeps growing: {sizes:?}"
+        );
+        // The oldest turn kept can still be shown and rolled back.
+        let oldest = turns.read_with(cx, |turns, _| {
+            turns.turns(terminal_id).next().cloned().unwrap()
+        });
+        assert_eq!(
+            oldest
+                .store
+                .file_contents(&oldest.after, "data.bin")
+                .unwrap(),
+            noise(SIZE, 100 + oldest.number as u64 - 2)
+        );
     }
 
     /// A turn reported by an agent's hooks in a directory that can't be

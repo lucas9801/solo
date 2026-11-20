@@ -145,6 +145,7 @@ A newer version shows an update button at the right of the title bar, with no no
 - Roll back to before any turn, and undo the rollback; a rollback that fails partway keeps the undo point.
 - When the agent reports the files it edits (Claude Code does, and Solo reads Codex's from the telemetry Codex sends it), a turn is only those files: what you or another agent changed meanwhile is listed separately, and "Reject All" leaves it alone.
 - When the folder isn't a git repository or has too many files to snapshot, the turn still lists the files it changed.
+- Untracked files over 50 MB aren't snapshotted: the review says so, and a rollback leaves them alone. Old snapshots are cleaned up automatically, 4 GB at most in all.
 
 **Editor**
 

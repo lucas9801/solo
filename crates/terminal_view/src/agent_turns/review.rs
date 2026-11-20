@@ -36,8 +36,8 @@ use workspace::{
 
 use super::diagnostics::{TurnDiagnostic, TurnDiagnostics};
 use super::snapshot::{
-    ChangedFile, FileChange, PartlyRestored, SnapshotStore, TreeId, WorkTreeChanged,
-    linked_ancestor,
+    ChangedFile, FileChange, MAX_UNTRACKED_FILE_BYTES, PartlyRestored, SnapshotStore, TreeId,
+    TreePin, WorkTreeChanged, changed_large_files, linked_ancestor,
 };
 use super::{AgentTurn, AgentTurns};
 use crate::TerminalView;
@@ -54,6 +54,8 @@ enum Mode {
         number: usize,
         store: Arc<SnapshotStore>,
         undo: TreeId,
+        /// SOLO: Keeps `undo`'s objects (G51).
+        _undo_pin: Arc<TreePin>,
         file_count: usize,
         /// SOLO: Rolling back failed partway: some files are rolled back
         /// and some aren't, until it's undone (R3 M2).
@@ -105,6 +107,9 @@ pub(crate) struct AgentTurnReview {
     files: Vec<ReviewFile>,
     /// Files not shown because they aren't text.
     skipped_files: usize,
+    /// SOLO: Large untracked files that changed, which no snapshot has: not
+    /// shown, and not rolled back (G51).
+    large_files: Vec<String>,
     mode: Mode,
     loading: bool,
     status: Option<SharedString>,
@@ -206,6 +211,7 @@ impl AgentTurnReview {
             focus_handle: cx.focus_handle(),
             files: Vec::new(),
             skipped_files: 0,
+            large_files: Vec::new(),
             mode: Mode::Turn(number.unwrap_or_default()),
             loading: false,
             status: None,
@@ -246,11 +252,13 @@ impl AgentTurnReview {
         let number = match &self.mode {
             Mode::Turn(number) | Mode::ConfirmRollback(number) => *number,
             Mode::RolledBack { .. } => {
+                self.large_files.clear();
                 self.set_files(Vec::new(), 0, cx);
                 return;
             }
         };
         let Some(turn) = self.turn(number, cx) else {
+            self.large_files.clear();
             self.set_files(Vec::new(), 0, cx);
             self.status = Some(tr("This turn is no longer available.", "这一轮已不可用。").into());
             return;
@@ -259,6 +267,11 @@ impl AgentTurnReview {
         self.work_tree = Some(turn.store.work_tree().to_path_buf());
         let confirming = matches!(self.mode, Mode::ConfirmRollback(_));
         self.confirmed_tree = None;
+        self.large_files = if confirming {
+            Vec::new()
+        } else {
+            turn.large_files.clone()
+        };
         self.loading = true;
         let project = self.project.clone();
         self.load_task = cx.spawn_in(window, async move |this, cx| {
@@ -268,20 +281,32 @@ impl AgentTurnReview {
                 .background_spawn(async move {
                     // Rolling back discards everything since the turn started,
                     // not only what the turn changed.
-                    let (after, changed) = if confirming {
-                        let now = store.snapshot()?;
+                    let (after, changed, large_files) = if confirming {
+                        let (now, now_large) = store.snapshot_with_large_files()?;
                         let changed = store.changed_files(&before, &now)?;
-                        (now, changed)
+                        // SOLO: and the large files it can't restore (G51).
+                        let large_files = changed_large_files(&turn.before_large, &now_large);
+                        (now, changed, Some(large_files))
                     } else {
-                        (turn.after.clone(), turn.changed.clone())
+                        (turn.after.clone(), turn.changed.clone(), None)
                     };
                     let shown = confirming.then(|| after.clone());
-                    anyhow::Ok((load_bases(&store, &before, &after, changed), shown))
+                    anyhow::Ok((
+                        load_bases(&store, &before, &after, changed),
+                        shown,
+                        large_files,
+                    ))
                 })
                 .await;
             let loaded = match loaded {
-                Ok((loaded, shown)) => {
-                    this.update(cx, |this, _| this.confirmed_tree = shown).ok();
+                Ok((loaded, shown, large_files)) => {
+                    this.update(cx, |this, _| {
+                        this.confirmed_tree = shown;
+                        if let Some(large_files) = large_files {
+                            this.large_files = large_files;
+                        }
+                    })
+                    .ok();
                     Ok(loaded)
                 }
                 Err(error) => Err(error),
@@ -735,29 +760,36 @@ impl AgentTurnReview {
             this.update_in(cx, |this, window, cx| match result {
                 Ok(restored) => {
                     let file_count = restored.changed.len();
+                    let pin = Arc::new(store.pin(&restored.undo));
                     this.set_mode(
                         Mode::RolledBack {
                             number,
                             store,
                             undo: restored.undo,
+                            _undo_pin: pin,
                             file_count,
                             stopped_partway: false,
                         },
                         window,
                         cx,
                     );
-                    this.status = skipped_message(&restored.skipped);
+                    this.status = join_messages([
+                        skipped_message(&restored.skipped),
+                        large_files_message(&restored.large_files),
+                    ]);
                 }
                 Err(error) if error.downcast_ref::<PartlyRestored>().is_some() => {
                     let Ok(partly) = error.downcast::<PartlyRestored>() else {
                         return;
                     };
                     // SOLO: keep the way back: the files are half rolled back.
+                    let pin = Arc::new(store.pin(&partly.undo));
                     this.set_mode(
                         Mode::RolledBack {
                             number,
                             store,
                             undo: partly.undo,
+                            _undo_pin: pin,
                             file_count: 0,
                             stopped_partway: true,
                         },
@@ -816,10 +848,11 @@ impl AgentTurnReview {
                         .unwrap_or_default();
                     this.set_mode(Mode::Turn(latest), window, cx);
                     let undone = tr("The rollback was undone.", "已撤销回滚。");
-                    this.status = Some(match skipped_message(&restored.skipped) {
-                        Some(skipped) => format!("{undone} {skipped}").into(),
-                        None => undone.into(),
-                    });
+                    this.status = join_messages([
+                        Some(undone.into()),
+                        skipped_message(&restored.skipped),
+                        large_files_message(&restored.large_files),
+                    ]);
                 }
                 Err(error) => {
                     // SOLO: the way back is kept, to try again (R3 M2).
@@ -1392,6 +1425,16 @@ impl AgentTurnReview {
                     .size(LabelSize::Small)
                     .color(Color::Warning)
             }))
+            .when(
+                !matches!(self.mode, Mode::RolledBack { .. }) && !self.large_files.is_empty(),
+                |this| {
+                    this.children(large_files_message(&self.large_files).map(|message| {
+                        Label::new(message)
+                            .size(LabelSize::Small)
+                            .color(Color::Warning)
+                    }))
+                },
+            )
             .when(self.skipped_files > 0, |this| {
                 let count = self.skipped_files;
                 this.child(
@@ -1495,6 +1538,46 @@ fn reject_all_label(file_count: usize) -> String {
 /// SOLO: What to tell about files a rollback left alone because they're in
 /// a linked folder (a junction or symlink), or are repositories nested in the
 /// work tree.
+/// SOLO: Says which large untracked files no snapshot has, so a rollback
+/// leaves them as they are (G51).
+fn large_files_message(large_files: &[String]) -> Option<SharedString> {
+    if large_files.is_empty() {
+        return None;
+    }
+    const MAX_NAMED: usize = 3;
+    let mut names = large_files
+        .iter()
+        .take(MAX_NAMED)
+        .cloned()
+        .collect::<Vec<_>>();
+    if large_files.len() > MAX_NAMED {
+        names.push("…".to_string());
+    }
+    let count = large_files.len();
+    let megabytes = MAX_UNTRACKED_FILE_BYTES / (1024 * 1024);
+    Some(if is_chinese() {
+        format!(
+            "{count} 个大文件（超过 {megabytes} MB）没有快照，回滚不会还原它们：{}",
+            names.join("、")
+        )
+        .into()
+    } else {
+        format!(
+            "{count} large files (over {megabytes} MB) have no snapshot. Rolling back won't restore them: {}",
+            names.join(", ")
+        )
+        .into()
+    })
+}
+
+fn join_messages(messages: impl IntoIterator<Item = Option<SharedString>>) -> Option<SharedString> {
+    let messages: Vec<SharedString> = messages.into_iter().flatten().collect();
+    (!messages.is_empty()).then(|| {
+        let messages: Vec<&str> = messages.iter().map(|message| message.as_ref()).collect();
+        messages.join(" ").into()
+    })
+}
+
 fn skipped_message(skipped: &[String]) -> Option<SharedString> {
     if skipped.is_empty() {
         return None;

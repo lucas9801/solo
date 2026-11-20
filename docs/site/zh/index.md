@@ -20,7 +20,7 @@ Solo 是一个给 AI agent 用的编辑器，基于 [Zed](https://github.com/zed
 
 ## 判：留下、撤回，都有底
 
-- 快照存在 Solo 自己的目录里，不碰你的分支、暂存区和 stash。
+- 快照存在 Solo 自己的目录里，不碰你的分支、暂存区和 stash。超过 50 MB 的未跟踪文件不进快照，旧快照自动清理。
 - 可以**回滚到任意一轮之前**，回滚本身也能撤销；中途失败会保留撤销点。
 - agent 上报了自己改的文件时（Claude Code），一轮只算它改的，你自己或别的 agent 同时改的不会被撤回。
 - 支持 Claude Code、Codex、Copilot CLI、OpenCode 等二十多种 agent：前四个通过 Solo 为每次会话加的 hooks 或插件准确上报（不改它们的配置），其余按各自的屏幕规则识别。
