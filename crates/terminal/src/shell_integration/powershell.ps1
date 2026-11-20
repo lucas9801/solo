@@ -104,6 +104,16 @@ function Global:__SoloEnsureFiles {
     return $false
 }
 
+# A wrapped agent that isn't installed: one short red line on stderr, not
+# Write-Error's CategoryInfo block, and a failed exit status for the prompt's
+# command mark and for $LASTEXITCODE.
+function Global:__SoloNotOnPath {
+    param([string]$Name)
+    $Host.UI.WriteErrorLine("${Name}: command not found (it isn't on PATH)")
+    $Global:LASTEXITCODE = 1
+    $Global:__SoloWrappedExitCode = 1
+}
+
 # Claude Code reports what it's doing through hooks in the settings file Solo
 # passes it (see SOLO_CLAUDE_SETTINGS); the hooks write to this console.
 # A claude function or alias of the user's own stays.
@@ -111,7 +121,7 @@ if ($env:SOLO_CLAUDE_SETTINGS -and -not (Get-Command -Name claude -CommandType F
     function Global:claude {
         $program = Get-Command -Name claude -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $program) {
-            Write-Error "claude: command not found"
+            __SoloNotOnPath -Name claude
             return
         }
         # Subcommands, background sessions and the user's own --settings run as typed.
@@ -144,7 +154,7 @@ if ($env:SOLO_CODEX_ARGS -and -not (Get-Command -Name codex -CommandType Functio
     function Global:codex {
         $programs = @(Get-Command -Name codex -CommandType Application, ExternalScript -All -ErrorAction SilentlyContinue)
         if ($programs.Count -eq 0) {
-            Write-Error "codex: command not found"
+            __SoloNotOnPath -Name codex
             return
         }
         # cmd.exe would expand % and treat & specially in the hooks' command
@@ -176,7 +186,7 @@ if ($env:SOLO_COPILOT_PLUGIN -and -not (Get-Command -Name copilot -CommandType F
     function Global:copilot {
         $program = Get-Command -Name copilot -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $program) {
-            Write-Error "copilot: command not found"
+            __SoloNotOnPath -Name copilot
             return
         }
         # Commands that don't run a session run as typed.
@@ -202,7 +212,7 @@ if ($env:SOLO_OPENCODE_CONFIG_DIR -and -not (Get-Command -Name opencode -Command
     function Global:opencode {
         $program = Get-Command -Name opencode -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $program) {
-            Write-Error "opencode: command not found"
+            __SoloNotOnPath -Name opencode
             return
         }
         $setCliConfig = $env:SOLO_OPENCODE_CLI_CONFIG -and -not (Test-Path Env:OPENCODE_CLI_CONFIG_CONTENT)
@@ -232,7 +242,7 @@ if ($env:SOLO_PI_EXTENSION) {
         param([string]$Name, [object[]]$Arguments, $Pipeline, [bool]$HasInput)
         $program = Get-Command -Name $Name -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $program) {
-            Write-Error "${Name}: command not found"
+            __SoloNotOnPath -Name $Name
             return
         }
         $extension = @()

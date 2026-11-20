@@ -191,7 +191,11 @@ impl LmStudioLanguageModelProvider {
             state: cx.new(|cx| {
                 let subscription = cx.observe_global::<SettingsStore>({
                     let mut settings = AllLanguageModelSettings::get_global(cx).lmstudio.clone();
+                    let mut was_configured = Self::user_configured(cx);
                     move |this: &mut State, cx| {
+                        let configured = Self::user_configured(cx);
+                        let newly_configured = configured && !was_configured;
+                        was_configured = configured;
                         let new_settings =
                             AllLanguageModelSettings::get_global(cx).lmstudio.clone();
                         if settings != new_settings {
@@ -206,6 +210,9 @@ impl LmStudioLanguageModelProvider {
                             settings = new_settings;
                             this.restart_fetch_models_task(cx);
                             cx.notify();
+                        } else if newly_configured && !this.is_authenticated() {
+                            // Settings load after the provider is created.
+                            this.restart_fetch_models_task(cx);
                         }
                     }
                 });
@@ -225,9 +232,22 @@ impl LmStudioLanguageModelProvider {
             }),
             request_limiters: ModelRateLimiters::default(),
         };
-        this.state
-            .update(cx, |state, cx| state.restart_fetch_models_task(cx));
+        // Discover eagerly so a running server is picked up without opening
+        // settings, once the user has set this provider up (see
+        // `user_settings_name_provider`).
+        if Self::user_configured(cx) {
+            this.state
+                .update(cx, |state, cx| state.restart_fetch_models_task(cx));
+        }
         this
+    }
+
+    fn user_configured(cx: &App) -> bool {
+        crate::provider::user_settings_name_provider(
+            PROVIDER_ID.0.as_ref(),
+            |language_models| language_models.lmstudio.is_some(),
+            cx,
+        )
     }
 
     fn api_url(cx: &App) -> String {
@@ -624,6 +644,13 @@ impl ConfigurationView {
             cx.notify();
         })
         .detach();
+        // SOLO: Solo no longer looks for the server at startup unless it's set
+        // up (see `user_settings_name_provider`); opening this page does.
+        state.update(cx, |state, cx| {
+            if !state.is_authenticated() {
+                state.restart_fetch_models_task(cx);
+            }
+        });
 
         Self {
             state,
@@ -985,6 +1012,63 @@ mod tests {
         credentials.assert_reads(&[LMSTUDIO_API_URL]);
     }
 
+    fn set_user_settings(json: &str, cx: &mut TestAppContext) {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.set_user_settings(json, cx).result().unwrap();
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn startup_probes_the_server_only_once_the_user_set_it_up(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+        });
+        let requests = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+        let http_client = FakeHttpClient::create({
+            let requests = requests.clone();
+            move |request| {
+                let requests = requests.clone();
+                async move {
+                    requests.lock().push(request.uri().to_string());
+                    Ok(Response::builder().status(404).body(AsyncBody::default())?)
+                }
+            }
+        });
+
+        // Solo's default: no AI model, nothing about LM Studio in settings.
+        let _provider = cx.update(|cx| {
+            LmStudioLanguageModelProvider::new(
+                http_client.clone(),
+                Arc::new(FakeCredentialsProvider::default()),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(*requests.lock(), Vec::<String>::new());
+
+        // The user's settings load (or change) with an LM Studio section.
+        set_user_settings(r#"{"language_models":{"lmstudio":{}}}"#, cx);
+        assert_eq!(*requests.lock(), [format!("{LMSTUDIO_API_URL}/models")]);
+
+        // Created after the user picked an LM Studio model.
+        set_user_settings(
+            r#"{"agent":{"default_model":{"provider":"lmstudio","model":"m"}}}"#,
+            cx,
+        );
+        requests.lock().clear();
+        let _configured = cx.update(|cx| {
+            LmStudioLanguageModelProvider::new(
+                http_client,
+                Arc::new(FakeCredentialsProvider::default()),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(*requests.lock(), [format!("{LMSTUDIO_API_URL}/models")]);
+    }
+
     #[gpui::test]
     async fn restart_fetch_models_task_records_error_on_failure(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -1004,6 +1088,9 @@ mod tests {
                 cx,
             )
         });
+        provider
+            .state
+            .update(cx, |state, cx| state.restart_fetch_models_task(cx));
         cx.run_until_parked();
 
         let error = cx.read(|cx| provider.state.read(cx).last_fetch_models_error.clone());

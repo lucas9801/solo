@@ -14,6 +14,8 @@ pub mod packaged;
 #[cfg(not(target_family = "wasm"))]
 pub mod process;
 #[cfg(not(target_family = "wasm"))]
+pub mod registry_environment;
+#[cfg(not(target_family = "wasm"))]
 pub mod shell;
 #[cfg(not(target_family = "wasm"))]
 pub mod shell_builder;

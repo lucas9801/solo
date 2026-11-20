@@ -2110,6 +2110,43 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
+    #[allow(clippy::disallowed_methods, reason = "a test running a short script")]
+    fn powershell_wrapper_says_briefly_that_an_agent_is_not_on_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("integration.ps1");
+        std::fs::write(&script, POWERSHELL_SCRIPT).unwrap();
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+            ])
+            .arg("-Command")
+            .arg(format!(
+                "{}; $Global:LASTEXITCODE = 0; claude hi; Write-Output \"exit=$LASTEXITCODE wrapped=$__SoloWrappedExitCode\"",
+                powershell_load_command(&script.to_string_lossy().replace('\\', "/"))
+            ))
+            // No claude anywhere on PATH.
+            .env("PATH", format!(r"{system}\System32"))
+            .env(SHELL_NONCE_ENV, "n1")
+            .env("SOLO_CLAUDE_SETTINGS", dir.path().join("settings.json"))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.trim(),
+            "claude: command not found (it isn't on PATH)",
+            "{stdout}"
+        );
+        assert!(stdout.contains("exit=1 wrapped=1"), "{stdout}{stderr}");
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn powershell_wrapper_says_when_hook_settings_cant_be_restored() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("claude-settings-gone.json");

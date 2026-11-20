@@ -476,11 +476,16 @@ impl LlamaCppLanguageModelProvider {
             state: cx.new(|cx| {
                 cx.observe_global::<SettingsStore>({
                     let mut last_settings = LlamaCppLanguageModelProvider::settings(cx).clone();
+                    let mut was_configured = Self::user_configured(cx);
                     move |this: &mut State, cx| {
+                        let configured = Self::user_configured(cx);
+                        let newly_configured = configured && !was_configured;
+                        was_configured = configured;
                         let current_settings = LlamaCppLanguageModelProvider::settings(cx);
                         let settings_changed = current_settings != &last_settings;
+                        let mut url_changed = false;
                         if settings_changed {
-                            let url_changed = last_settings.api_url != current_settings.api_url;
+                            url_changed = last_settings.api_url != current_settings.api_url;
                             last_settings = current_settings.clone();
                             if url_changed {
                                 let credentials_provider = this.credentials_provider.clone();
@@ -500,6 +505,10 @@ impl LlamaCppLanguageModelProvider {
                             }
                             cx.notify();
                         }
+                        // Settings load after the provider is created.
+                        if newly_configured && !url_changed && !this.is_authenticated() {
+                            this.restart_fetch_models_task(cx);
+                        }
                     }
                 })
                 .detach();
@@ -517,10 +526,22 @@ impl LlamaCppLanguageModelProvider {
                 }
             }),
         };
-        // Discover eagerly so a running server is picked up without opening settings.
-        this.state
-            .update(cx, |state, cx| state.restart_fetch_models_task(cx));
+        // Discover eagerly so a running server is picked up without opening
+        // settings, once the user has set this provider up (see
+        // `user_settings_name_provider`).
+        if Self::user_configured(cx) {
+            this.state
+                .update(cx, |state, cx| state.restart_fetch_models_task(cx));
+        }
         this
+    }
+
+    fn user_configured(cx: &App) -> bool {
+        crate::provider::user_settings_name_provider(
+            PROVIDER_ID.0.as_ref(),
+            |language_models| language_models.llama_cpp.is_some(),
+            cx,
+        )
     }
 
     fn settings(cx: &App) -> &LlamaCppSettings {
@@ -1040,6 +1061,13 @@ impl ConfigurationView {
             cx.notify();
         })
         .detach();
+        // SOLO: Solo no longer looks for the server at startup unless it's set
+        // up (see `user_settings_name_provider`); opening this page does.
+        state.update(cx, |state, cx| {
+            if !state.is_authenticated() {
+                state.restart_fetch_models_task(cx);
+            }
+        });
 
         Self {
             api_key_editor,
@@ -1888,6 +1916,10 @@ mod tests {
                     },
                 );
             });
+            // A discovery before the credentials load (the server isn't ready).
+            provider
+                .state
+                .update(cx, |state, cx| state.restart_fetch_models_task(cx));
             provider
         });
         cx.run_until_parked();
@@ -1982,6 +2014,10 @@ mod tests {
             .insert(LLAMA_CPP_API_URL.to_string(), b"loaded-key".to_vec());
         let provider = cx
             .update(|cx| LlamaCppLanguageModelProvider::new(http_client, credentials_provider, cx));
+        // A discovery before the API key loads (the server isn't ready).
+        provider
+            .state
+            .update(cx, |state, cx| state.restart_fetch_models_task(cx));
 
         cx.run_until_parked();
 
@@ -1994,6 +2030,75 @@ mod tests {
             &*model_request_authorizations.lock(),
             &[None, Some("Bearer loaded-key".to_string())]
         );
+    }
+
+    fn counting_http_client(requests: Arc<Mutex<Vec<String>>>) -> Arc<dyn HttpClient> {
+        FakeHttpClient::create(move |request| {
+            let requests = requests.clone();
+            async move {
+                requests.lock().push(request.uri().to_string());
+                Ok(http_client::Response::builder()
+                    .status(404)
+                    .body(http_client::AsyncBody::default())?)
+            }
+        })
+    }
+
+    fn set_user_settings(json: &str, cx: &mut TestAppContext) {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.set_user_settings(json, cx).result().unwrap();
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn startup_probes_the_server_only_once_the_user_set_it_up(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+        });
+        let requests = Arc::new(Mutex::new(Vec::new()));
+
+        // Solo's default: no AI model, nothing about llama.cpp in settings.
+        let _provider = cx.update(|cx| {
+            LlamaCppLanguageModelProvider::new(
+                counting_http_client(requests.clone()),
+                Arc::new(FakeCredentialsProvider::default()),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(*requests.lock(), Vec::<String>::new());
+
+        // Other providers' settings don't start it either.
+        set_user_settings(
+            r#"{"agent":{"default_model":{"provider":"lmstudio","model":"m"}}}"#,
+            cx,
+        );
+        assert_eq!(*requests.lock(), Vec::<String>::new());
+
+        // The user's settings load (or change) and pick a llama.cpp model.
+        set_user_settings(
+            r#"{"agent":{"default_model":{"provider":"llama.cpp","model":"m"}}}"#,
+            cx,
+        );
+        assert_eq!(*requests.lock(), [format!("{LLAMA_CPP_API_URL}/v1/models")]);
+
+        // Created with a llama.cpp section already in the settings.
+        set_user_settings(
+            r#"{"language_models":{"llama.cpp":{"api_url":"http://127.0.0.1:9999"}}}"#,
+            cx,
+        );
+        requests.lock().clear();
+        let _configured = cx.update(|cx| {
+            LlamaCppLanguageModelProvider::new(
+                counting_http_client(requests.clone()),
+                Arc::new(FakeCredentialsProvider::default()),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(*requests.lock(), ["http://127.0.0.1:9999/v1/models"]);
     }
 
     #[gpui::test]
