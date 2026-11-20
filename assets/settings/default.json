@@ -2378,11 +2378,13 @@
     // agents off the list before uninstalling Solo.
     "global_agent_hooks": [],
     // On Windows, terminals run their shell in a small background process
-    // (solo-terminal-host). When Solo quits, or restarts for an update,
-    // terminals that are running a command or an agent keep running there,
-    // and Solo connects to them again when it reopens them. Takes effect in
-    // new terminals.
-    "keep_running_on_quit": true,
+    // (solo-terminal-host). When Solo restarts for an update, or even
+    // crashes, terminals that are running a command or an agent keep running
+    // there, and Solo connects to them again when it reopens them. This
+    // setting is about quitting Solo (Quit, closing its last window): when
+    // false, quitting asks first (see `confirm_close`) and then ends the
+    // agents and commands; when true, they keep running, as after an update.
+    "keep_running_on_quit": false,
     // Where an agent's token and context usage shows: "always", in a thin
     // bar at the bottom of its terminal and as a context percentage on its
     // tab, or "tooltip", only in its tab's tooltip.

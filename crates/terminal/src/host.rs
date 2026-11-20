@@ -9,7 +9,10 @@
 //! (quits, closes its last window, restarts for an update, or crashes) while
 //! the terminal isn't running anything: Solo keeps telling the host whether
 //! it is ([`HostLink::set_keep_running`]), so the host knows even when Solo
-//! can't say goodbye.
+//! can't say goodbye. So restarting for an update, and even a crash, doesn't
+//! end the agent or command a terminal runs. Quitting does, after asking
+//! (closing the last window too): the terminal views then tell their hosts
+//! not to keep running (unless `terminal.keep_running_on_quit` is on).
 //!
 //! Solo doesn't end the host's program itself (as it does a console it holds
 //! when the terminal goes): when Solo goes, terminals are dropped while Solo
@@ -807,6 +810,8 @@ struct RunningEntry {
     clients: u32,
     #[serde(default)]
     connected: bool,
+    #[serde(default)]
+    child_pid: Option<u32>,
 }
 
 /// A host that runs, listed in this Solo's data folder.
@@ -824,6 +829,8 @@ pub struct RunningHost {
     /// for its first one was just started, and ends by itself if none
     /// comes.
     pub had_client: bool,
+    /// SOLO: the program it runs (the shell).
+    pub child_pid: Option<u32>,
 }
 
 impl RunningHost {
@@ -908,6 +915,7 @@ fn list_running(dir: &Path, host_dirs: &[PathBuf]) -> Vec<RunningHost> {
             working_directory: running.working_directory.map(PathBuf::from),
             connected: running.connected,
             had_client: running.clients > 0,
+            child_pid: running.child_pid,
         });
     }
     hosts.sort_by_key(|host| host.host_pid);

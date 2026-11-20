@@ -491,4 +491,176 @@ mod tests {
         });
         assert_eq!(agent(&view, cx), None);
     }
+
+    /// Two terminals in terminal hosts running claude, as after an update.
+    fn hosted_agents(
+        project: &Entity<project::Project>,
+        window: gpui::WindowHandle<workspace::MultiWorkspace>,
+        cx: &mut TestAppContext,
+    ) -> Vec<Entity<TerminalView>> {
+        let views: Vec<_> = (0..2)
+            .map(|ix| add_display_only_terminal(project, window, ix == 1, false, cx))
+            .collect();
+        let vcx = &mut VisualTestContext::from_window(window.into(), cx);
+        // The default, whatever default settings the test reads.
+        vcx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.terminal.get_or_insert_default().keep_running_on_quit = Some(false);
+                });
+            })
+        });
+        views
+            .into_iter()
+            .map(|(_, terminal, view)| {
+                write(&terminal, PROMPT, vcx);
+                write(&terminal, RUN_CLAUDE, vcx);
+                view.update(vcx, |view, _| view.hosted_for_test = true);
+                view
+            })
+            .collect()
+    }
+
+    fn prepare(
+        window: gpui::WindowHandle<workspace::MultiWorkspace>,
+        restart: bool,
+        cx: &mut VisualTestContext,
+    ) -> gpui::Task<bool> {
+        cx.update(|_, cx| {
+            cx.spawn(async move |cx| {
+                if restart {
+                    workspace::prepare_windows_to_restart(&[window], cx).await
+                } else {
+                    workspace::prepare_windows_to_quit(&[window], cx).await
+                }
+            })
+        })
+    }
+
+    fn keeps(view: &Entity<TerminalView>, cx: &mut VisualTestContext) -> bool {
+        view.update(cx, |view, cx| view.update_keep_running(cx))
+    }
+
+    /// SOLO: quitting Solo asks about agents in terminal hosts too, as closing
+    /// a window does, once for all; confirmed, they end with Solo; cancelled,
+    /// nothing changes.
+    #[gpui::test]
+    async fn test_quitting_asks_and_ends_kept_agents(cx: &mut TestAppContext) {
+        let (project, _workspace, window) = init_test_with_window(cx).await;
+        let views = hosted_agents(&project, window, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        assert!(views.iter().all(|view| keeps(view, cx)));
+
+        let quit = prepare(window, false, cx);
+        cx.run_until_parked();
+        let (message, detail) = cx.pending_prompt().expect("quitting asks");
+        assert_eq!(message, "Closing will end the programs running in 2 tabs.");
+        assert_eq!(detail.lines().count(), 2);
+        cx.simulate_prompt_answer("Cancel");
+        assert!(!quit.await);
+        assert!(!cx.update(|_, cx| workspace::solo_quit::is_user_quitting(cx)));
+        assert!(views.iter().all(|view| keeps(view, cx)));
+
+        let quit = prepare(window, false, cx);
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("Quit and End 2 Programs");
+        assert!(quit.await);
+        // Asked once, not again for each tab.
+        assert!(!cx.has_pending_prompt());
+        assert!(cx.update(|_, cx| workspace::solo_quit::is_user_quitting(cx)));
+        assert!(views.iter().all(|view| !keeps(view, cx)));
+    }
+
+    /// SOLO: restarting for an update neither asks nor ends them.
+    #[gpui::test]
+    async fn test_restarting_keeps_agents_running(cx: &mut TestAppContext) {
+        let (project, _workspace, window) = init_test_with_window(cx).await;
+        let views = hosted_agents(&project, window, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+
+        let restart = prepare(window, true, cx);
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        assert!(restart.await);
+        assert!(!cx.update(|_, cx| workspace::solo_quit::is_user_quitting(cx)));
+        assert!(views.iter().all(|view| keeps(view, cx)));
+    }
+
+    /// SOLO: with `keep_running_on_quit`, quitting doesn't ask, and they keep
+    /// running, as before.
+    #[gpui::test]
+    async fn test_keep_running_on_quit(cx: &mut TestAppContext) {
+        let (project, _workspace, window) = init_test_with_window(cx).await;
+        let views = hosted_agents(&project, window, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.terminal.get_or_insert_default().keep_running_on_quit = Some(true);
+                });
+            })
+        });
+
+        let quit = prepare(window, false, cx);
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        assert!(quit.await);
+        assert!(views.iter().all(|view| keeps(view, cx)));
+    }
+
+    /// SOLO: `confirm_close` "never": quitting doesn't ask, and ends them.
+    #[gpui::test]
+    async fn test_quitting_without_asking(cx: &mut TestAppContext) {
+        let (project, _workspace, window) = init_test_with_window(cx).await;
+        let views = hosted_agents(&project, window, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        set_confirm_close(TerminalConfirmClose::Never, cx);
+
+        let quit = prepare(window, false, cx);
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        assert!(quit.await);
+        assert!(views.iter().all(|view| !keeps(view, cx)));
+    }
+
+    static BACKGROUND_ENDED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    /// SOLO: a terminal left running whose tab isn't open yet is in the
+    /// prompt, by its tab, and ends with the others.
+    #[gpui::test]
+    async fn test_quitting_asks_about_tabs_not_open(cx: &mut TestAppContext) {
+        let (project, _workspace, window) = init_test_with_window(cx).await;
+        let views = hosted_agents(&project, window, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        cx.update(|_, cx| {
+            cx.set_global(workspace::solo_quit::BackgroundPrograms {
+                list: |_| {
+                    vec![workspace::solo_quit::BackgroundProgram {
+                        tab: "DragonNest".into(),
+                        program: RunningProgram {
+                            name: "codex".into(),
+                            status: None,
+                        },
+                    }]
+                },
+                end: |_| BACKGROUND_ENDED.store(true, std::sync::atomic::Ordering::SeqCst),
+            })
+        });
+
+        let quit = prepare(window, false, cx);
+        cx.run_until_parked();
+        let (message, detail) = cx.pending_prompt().expect("quitting asks");
+        assert_eq!(message, "Closing will end the programs running in 3 tabs.");
+        assert!(
+            detail.contains("codex in the DragonNest tab (not opened)"),
+            "{detail}"
+        );
+        assert!(!BACKGROUND_ENDED.load(std::sync::atomic::Ordering::SeqCst));
+        cx.simulate_prompt_answer("Quit and End 3 Programs");
+        assert!(quit.await);
+        assert!(BACKGROUND_ENDED.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(views.iter().all(|view| !keeps(view, cx)));
+    }
 }

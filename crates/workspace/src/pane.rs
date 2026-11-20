@@ -1974,11 +1974,31 @@ impl Pane {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<impl Future<Output = bool> + use<>> {
+        Self::confirm_ending_programs_and(items, &[], close_label, window, cx)
+    }
+
+    /// SOLO: [`Self::confirm_ending_programs`], also asking about programs
+    /// running in tabs not open yet (when quitting).
+    pub(crate) fn confirm_ending_programs_and(
+        items: &[Box<dyn ItemHandle>],
+        background: &[crate::solo_quit::BackgroundProgram],
+        close_label: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<impl Future<Output = bool> + use<>> {
+        let chinese = util::i18n::is_chinese();
         let running = items
             .iter()
             .filter_map(|item| Some((item.tab_content_text(0, cx), item.running_program(cx)?)))
+            .chain(background.iter().map(|background| {
+                let tab: SharedString = if chinese {
+                    format!("{} 标签（未打开）", background.tab).into()
+                } else {
+                    format!("the {} tab (not opened)", background.tab).into()
+                };
+                (tab, background.program.clone())
+            }))
             .collect::<Vec<_>>();
-        let chinese = util::i18n::is_chinese();
         let (message, detail) = match running.as_slice() {
             [] => return None,
             [(_, program)] => (

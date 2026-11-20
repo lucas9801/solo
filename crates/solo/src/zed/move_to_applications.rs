@@ -314,7 +314,7 @@ async fn restart_into(app_path: PathBuf, cx: &mut AsyncWindowContext) -> Result<
                 .collect::<Vec<_>>()
         })
         .context("collecting workspace windows before restarting")?;
-    if !workspace::prepare_windows_to_quit(&workspace_windows, cx).await {
+    if !workspace::prepare_windows_to_restart(&workspace_windows, cx).await {
         return Ok(());
     }
     cx.update(|_window, cx| {

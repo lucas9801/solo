@@ -390,12 +390,15 @@ pub struct TerminalSettingsContent {
     /// Default: []
     pub global_agent_hooks: Option<Vec<String>>,
     /// On Windows, terminals run their shell in a small background process
-    /// (`solo-terminal-host`). When Solo quits, or restarts for an update,
-    /// terminals that are running a command or an agent keep running there,
-    /// and Solo connects to them again when it reopens them. Takes effect in
-    /// new terminals.
+    /// (`solo-terminal-host`). When Solo restarts for an update, or even
+    /// crashes, terminals that are running a command or an agent keep
+    /// running there, and Solo connects to them again when it reopens them.
+    /// This setting is about quitting Solo (Quit, closing its last window):
+    /// when false, quitting asks first (see `confirm_close`) and then ends
+    /// the agents and commands; when true, they keep running, as after an
+    /// update.
     ///
-    /// Default: true
+    /// Default: false
     pub keep_running_on_quit: Option<bool>,
     /// When to ask before closing a terminal (its tab, its window or Solo)
     /// would end the program running in it.

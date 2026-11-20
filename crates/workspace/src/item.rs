@@ -299,9 +299,17 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     fn running_program(&self, _: &App) -> Option<RunningProgram> {
         None
     }
-    /// SOLO: whether what runs in the item carries on when Solo quits (a
-    /// terminal whose console a terminal host holds), so quitting needn't ask.
+    /// SOLO: whether what runs in the item carries on when Solo quits now
+    /// (a terminal whose console a terminal host holds, when Solo restarts,
+    /// or the user quits with `terminal.keep_running_on_quit` on), so
+    /// quitting needn't ask.
     fn keeps_running_after_quit(&self, _: &App) -> bool {
+        false
+    }
+    /// SOLO: whether what runs in the item carries on when Solo restarts (to
+    /// install an update), as a terminal whose console a terminal host holds
+    /// does.
+    fn keeps_running_after_restart(&self, _: &App) -> bool {
         false
     }
     fn capability(&self, _: &App) -> Capability {
@@ -580,6 +588,7 @@ pub trait ItemHandle: 'static + Send {
     fn is_dirty(&self, cx: &App) -> bool;
     fn running_program(&self, cx: &App) -> Option<RunningProgram>;
     fn keeps_running_after_quit(&self, cx: &App) -> bool;
+    fn keeps_running_after_restart(&self, cx: &App) -> bool;
     fn capability(&self, cx: &App) -> Capability;
     fn toggle_read_only(&self, window: &mut Window, cx: &mut App);
     fn has_deleted_file(&self, cx: &App) -> bool;
@@ -1109,6 +1118,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn keeps_running_after_quit(&self, cx: &App) -> bool {
         self.read(cx).keeps_running_after_quit(cx)
+    }
+
+    fn keeps_running_after_restart(&self, cx: &App) -> bool {
+        self.read(cx).keeps_running_after_restart(cx)
     }
 
     fn capability(&self, cx: &App) -> Capability {

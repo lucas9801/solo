@@ -10,6 +10,10 @@
 //! the tab of its project (by its directory, as a terminal's tab goes; that
 //! tab opens in the background if it isn't open), else in the current tab of
 //! its first window, and offers to end those it can't open.
+//!
+//! Hosts restarting Solo (for an update) or a crash left running keep
+//! running until their tab opens. Quitting Solo asks about them too, naming
+//! their tabs, and ends them (unless `terminal.keep_running_on_quit` is on).
 
 use collections::HashSet;
 use std::cell::RefCell;
@@ -25,6 +29,10 @@ use util::i18n::tr;
 use util::path_list::{PathList, SerializedPathList};
 use workspace::notifications::NotificationId;
 use workspace::notifications::simple_message_notification::MessageNotification;
+use settings::Settings as _;
+use terminal::terminal_settings::TerminalSettings;
+use workspace::item::RunningProgram;
+use workspace::solo_quit::{BackgroundProgram, BackgroundPrograms};
 use workspace::{MultiWorkspace, ProjectGroupKey, Workspace, WorkspaceId};
 
 use crate::TerminalView;
@@ -43,6 +51,83 @@ const SECOND_LOOK: Duration = Duration::from_secs(60);
 const TAB_RESTORE: Duration = Duration::from_secs(15);
 
 struct LoneTerminalHosts;
+
+/// Lets quitting ask about, and end, the hosts no terminal uses.
+pub(crate) fn init(cx: &mut App) {
+    cx.set_global(BackgroundPrograms {
+        list: background_programs,
+        end: end_background_programs,
+    });
+}
+
+/// Whether quitting Solo now leaves what runs in terminals running.
+fn quitting_keeps_running(cx: &App) -> bool {
+    workspace::solo_quit::is_restarting(cx)
+        || (cx.has_global::<settings::SettingsStore>()
+            && TerminalSettings::get_global(cx).keep_running_on_quit)
+}
+
+/// The programs hosts no terminal uses run, by their tab, which quitting
+/// would end.
+fn background_programs(cx: &App) -> Vec<BackgroundProgram> {
+    if quitting_keeps_running(cx) {
+        return Vec::new();
+    }
+    let lone: Vec<RunningHost> = terminal::running_hosts()
+        .into_iter()
+        .filter(|host| host.is_left_alone())
+        .collect();
+    if lone.is_empty() {
+        return Vec::new();
+    }
+    let saved = saved_hosts(&TerminalDb::global(cx));
+    let extra = &TerminalSettings::get_global(cx).agent_commands;
+    lone.into_iter()
+        .map(|host| {
+            let tab = saved
+                .iter()
+                .find(|saved| saved.pipe == host.pipe)
+                .and_then(|saved| saved.paths.ordered_paths().next().cloned())
+                .or_else(|| host.working_directory.clone())
+                .map(|path| workspace_grouping::folder_name(&path))
+                .unwrap_or_default();
+            let programs = host
+                .child_pid
+                .map(terminal::shell_programs::shell_programs)
+                .unwrap_or_default();
+            let command = programs
+                .iter()
+                .find(|program| crate::command_blocks::is_agent_command(&program.command, extra))
+                .or(programs.first())
+                .map(|program| program.command.clone());
+            let name = command
+                .as_deref()
+                .and_then(|command| command.split(' ').next())
+                .map(str::to_string)
+                .unwrap_or_else(|| tr("a program", "一个程序").to_string());
+            BackgroundProgram {
+                tab: tab.into(),
+                program: RunningProgram {
+                    name: name.into(),
+                    status: None,
+                },
+            }
+        })
+        .collect()
+}
+
+/// Ends the hosts no terminal uses: the user quit Solo.
+fn end_background_programs(cx: &mut App) {
+    if quitting_keeps_running(cx) {
+        return;
+    }
+    // Now: Solo is about to go.
+    for host in terminal::running_hosts() {
+        if host.is_left_alone() {
+            terminal::end_running_host(&host.pipe).log_err();
+        }
+    }
+}
 
 /// Looks for hosts no terminal uses, once the session is restored.
 pub fn look_for_lone_terminal_hosts(cx: &mut App) {

@@ -59,7 +59,7 @@ the menu.
 Both hold `solo.exe`, `solo-cli.exe` (the command line agents use),
 `solo-agent-hook.exe` (which Claude Code runs to report its status),
 `solo-update-helper.exe`, `solo-terminal-host.exe` (which runs a terminal's
-shell, so it can outlive Solo), `OpenConsole.exe` and `conpty.dll` (the
+shell, so it can outlive Solo restarting for an update), `OpenConsole.exe` and `conpty.dll` (the
 terminal runtime), and license files.
 
 ## 3. Updating
@@ -420,20 +420,29 @@ finds the port can do the same**, so turn it on only while you need it.
   ask the agent to use the tab that is already open. At least one browser tab
   must be open for the agent to find the browser.
 
-### Agents keep running when Solo closes
+### Updates, even crashes, don't stop your agents
 Each terminal's shell runs in a small background process,
-`solo-terminal-host.exe`. When Solo quits, restarts for an update, or even
-crashes, terminals that are running something (an agent, or a command such as
-a build) keep running there; when Solo opens their workspace again, it
-connects to them, with the output they printed meanwhile. Idle shells end
-with Solo as before, and closing a terminal's tab ends what runs in it.
+`solo-terminal-host.exe`. When Solo restarts for an update ("Update and
+Restart", or the Store's update), or even crashes, terminals that are running
+something (an agent, or a command such as a build) keep running there; when
+Solo opens their workspace again, it connects to them, with the output they
+printed meanwhile, and recognizes the agent again (its status light, its name
+in the tab). Idle shells end with Solo as before, and closing a terminal's tab
+ends what runs in it.
 
-- So quitting and updating don't ask about agents in terminals; closing a tab
-  or a window still does. Closing Solo's last window counts as quitting.
+- Updating doesn't ask about agents in terminals. Quitting Solo yourself
+  (Quit, closing its last window, Alt+F4) asks first, as closing a tab or a
+  window does: "Quit and End N Programs" ends them, Cancel leaves everything
+  open. Terminals left running in workspace tabs you haven't opened since
+  the restart are in the list too, by their tab.
+- With `"terminal": {"confirm_close": "never"}`, quitting doesn't ask and
+  ends them.
+- To keep them running when you quit too, as after an update:
+  `"terminal": {"keep_running_on_quit": true}`.
+- A terminal left running whose workspace tab you haven't opened yet waits
+  for that tab and shows up in it when you open it.
 - Each background process logs what Solo told it and why it ended, in
   `terminal-host-<date>.log` in Solo's logs folder (kept for a week).
-- To turn it off: `"terminal": {"keep_running_on_quit": false}` (new
-  terminals then run inside Solo and end with it).
 - If a background process itself fails, its terminal ends; after a restart
   the terminal offers to continue the agent's session as below.
 
@@ -883,7 +892,7 @@ Solo's own settings, under `"terminal"`:
 | `ide_tools` | `true` | give Claude Code and Codex Solo's read-only IDE tools (symbols, definitions, references, diagnostics) as an MCP server |
 | `more_agent_hooks` | `true` | status reporting for Pi, oh-my-pi, Kilo Code CLI, Gemini CLI and Qwen Code, for each session |
 | `global_agent_hooks` | `[]` | agents (`"kimi"`, `"mastracode"`) whose own config Solo may add status hooks to |
-| `keep_running_on_quit` | `true` | terminals running something keep running when Solo quits, updates or crashes, and reconnect |
+| `keep_running_on_quit` | `false` | terminals running something keep running when you quit Solo too (they always do when it restarts for an update or crashes); false asks first and ends them |
 | `agent_usage_display` | `"always"` | a running agent's context, model and effort, first token and speed, turn time and tokens in a bar at the bottom of its terminal (when narrow, whole parts go: the session's tokens first, then the turn's, then the first token and speed, then the model, leaving the context's bar and percentage) and its context on the tab; `"tooltip"` shows them only in the tab's tooltip |
 | `agent_commands` | `[]` | more programs to treat as agents |
 | `agent_task_command` | `"claude"` | what a new agent task runs |
