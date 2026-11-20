@@ -68,20 +68,11 @@ foreach ($file in $oldExe, $newExe, $newCli) {
 
 # Log lines that are allowed: known, harmless messages.
 $allowed = @(
-    'no language server',
-    'Failed to fetch',
-    'failed to fetch',
-    'could not resolve',
-    'auto-update',
-    'auto_update',
-    'update check',
-    'telemetry',
-    'GPU',
-    'DirectX',
-    'zeta',
-    'extension',
-    'Extension',
-    'copilot'
+    # Solo looks for local model servers (LM Studio, llama.cpp, Ollama) at
+    # startup; with none running, as by default, the connection is refused.
+    'provider/lmstudio.rs',
+    'provider/llama_cpp.rs',
+    'provider/ollama.rs'
 )
 
 $results = New-Object System.Collections.ArrayList
@@ -147,7 +138,8 @@ function Test-Restored([string]$phase, $solo, $expectedAgents, [long]$logOffset)
     }
     $log = @(Get-SoloLogSince $dataDir $logOffset)
     $log | Set-Content -Encoding UTF8 (Join-Path $out "$phase-Solo.log")
-    $bad = @($log | Where-Object { $_ -match '\b(ERROR|WARN)\b' } | Where-Object { $line = $_; -not ($allowed | Where-Object { $line -like "*$_*" }) })
+    # The level after the time: "error 2" in a message isn't one.
+    $bad = @($log | Where-Object { $_ -cmatch '^\S+\s+(ERROR|WARN)\s' } | Where-Object { $line = $_; -not ($allowed | Where-Object { $line -like "*$_*" }) })
     Add-Result $phase 'Solo.log has no ERROR or WARN outside the allowed list' ($bad.Count -eq 0) (($bad | Select-Object -First 5) -join ' | ')
     $moved = @($log | Where-Object { $_ -match 'already open in this Solo' })
     Add-Result $phase "no saved terminal was 'already open in this Solo'" ($moved.Count -eq 0) "$($moved.Count) line(s)"
@@ -168,8 +160,7 @@ try {
             Open-InSolo $oldExe $dataDir (Join-Path $reposDir $project)
             Start-Sleep -Seconds 8
         }
-        Send-SoloText $solo $agents[$project]
-        Send-SoloEnter $solo
+        Send-SoloCommand $solo $agents[$project]
         Start-Sleep -Seconds 4
     }
     Open-InSolo $oldExe $dataDir (Join-Path $reposDir $projects[0])

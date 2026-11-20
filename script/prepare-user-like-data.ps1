@@ -43,12 +43,18 @@ New-Item -ItemType Directory -Force $dataDir, $reposDir, $fakebin, (Join-Path $R
 foreach ($project in $Projects) {
     $repo = Join-Path $reposDir $project
     if (Test-Path (Join-Path $repo '.git')) { continue }
-    New-Item -ItemType Directory -Force (Join-Path $repo 'src') | Out-Null
+    # No source files of a language with a language server: Solo would ask
+    # whether to trust the project (and download the server) first.
+    New-Item -ItemType Directory -Force (Join-Path $repo 'notes') | Out-Null
     Set-Content -Encoding ASCII (Join-Path $repo 'README.md') "# $project`n`nA test project.`n"
-    Set-Content -Encoding ASCII (Join-Path $repo 'src\main.rs') "fn main() {`n    println!(`"$project`");`n}`n"
+    Set-Content -Encoding ASCII (Join-Path $repo 'notes\todo.txt') "Things to do in $project.`n"
+    # git writes warnings to stderr, which mustn't stop the script.
+    $ErrorActionPreference = 'Continue'
     & git -C $repo init -q -b main 2>&1 | Out-Null
-    & git -C $repo -c user.name=test -c user.email=test@example.com add -A 2>&1 | Out-Null
-    & git -C $repo -c user.name=test -c user.email=test@example.com commit -q -m "Start $project" 2>&1 | Out-Null
+    & git -C $repo -c core.autocrlf=false -c user.name=test -c user.email=test@example.com add -A 2>&1 | Out-Null
+    & git -C $repo -c core.autocrlf=false -c user.name=test -c user.email=test@example.com commit -q -m "Start $project" 2>&1 | Out-Null
+    $ErrorActionPreference = 'Stop'
+    if (-not (Test-Path (Join-Path $repo '.git'))) { throw "git init failed in $repo" }
 }
 
 # The fake agents.
@@ -77,8 +83,7 @@ if ($Exe) {
             Start-Sleep -Seconds 8
         }
         $agent = if ($ix % 2 -eq 0) { 'claude' } else { 'codex' }
-        Send-SoloText $solo $agent
-        Send-SoloEnter $solo
+        Send-SoloCommand $solo $agent
         Write-Step "started $agent in $($Projects[$ix])"
         Start-Sleep -Seconds 3
     }

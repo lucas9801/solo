@@ -27,13 +27,20 @@ public static class W {
   [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int cmd);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  // The process's largest window of the class: its main window, not a
+  // popup or the taskbar's preview of the same class.
   public static IntPtr Find(uint pid, string cls) {
     IntPtr found = IntPtr.Zero;
+    long best = 0;
     EnumWindows((h, l) => {
       uint p; GetWindowThreadProcessId(h, out p);
       if (p == pid) {
         var sb = new StringBuilder(256); GetClassName(h, sb, 256);
-        if (sb.ToString() == cls) { found = h; return false; }
+        RECT r;
+        if (sb.ToString() == cls && GetWindowRect(h, out r)) {
+          long area = (long)(r.R - r.L) * (r.B - r.T);
+          if (area > best) { best = area; found = h; }
+        }
       }
       return true;
     }, IntPtr.Zero);
@@ -139,6 +146,23 @@ function Send-SoloClick($process, [int]$x, [int]$y, [switch]$Right) {
     [SoloScenario.W]::PostMessage($hwnd, $down, [IntPtr]$flag, $lParam) | Out-Null
     Start-Sleep -Milliseconds 60
     [SoloScenario.W]::PostMessage($hwnd, $up, [IntPtr]0, $lParam) | Out-Null
+}
+
+# Types a command into the current tab's terminal: clicks its command input
+# at the bottom first (the window, off screen and not active, has no focused
+# element otherwise), then types it and presses Enter.
+function Send-SoloCommand($process, [string]$command) {
+    $r = New-Object SoloScenario.W+RECT
+    [SoloScenario.W]::GetWindowRect((Get-SoloWindow $process), [ref]$r) | Out-Null
+    # The first click goes to the window, which Windows doesn't activate;
+    # the second focuses the input.
+    Send-SoloClick $process 800 400
+    Start-Sleep -Milliseconds 700
+    Send-SoloClick $process 700 ($r.B - $r.T - 57)
+    Start-Sleep -Milliseconds 500
+    Send-SoloText $process $command
+    Start-Sleep -Milliseconds 200
+    Send-SoloEnter $process
 }
 
 # Closes Solo's window as its title bar's x does (WM_CLOSE).
