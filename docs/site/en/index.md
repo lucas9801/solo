@@ -22,7 +22,7 @@ https://github.com/user-attachments/assets/85627f07-1bb5-4f68-8199-c3afbdc9fa3b
 
 ## Judge: keep or undo, safely
 
-- Snapshots live in Solo's own folder; your branch, index and stash are never touched.
+- Snapshots live in Solo's own folder; your branch, index and stash are never touched. Untracked files over 50 MB are left out, and old snapshots are cleaned up automatically.
 - **Roll back to before any turn**, and undo the rollback if you change your mind; a rollback that fails partway keeps the undo point.
 - When the agent reports the files it edits (Claude Code does), a turn is only those files: what you or another agent changed meanwhile isn't undone.
 - Works with more than twenty agents: Claude Code, Codex, Copilot CLI and OpenCode report through hooks or a plugin Solo adds for each session (their config is left alone); the others are recognized from their screen.
