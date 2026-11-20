@@ -81,7 +81,7 @@ pub fn add_terminal_env(env: &mut HashMap<String, String>) {
     #[cfg(windows)]
     env.insert(
         INSTANCE_ENV.to_string(),
-        release_channel::instance_identifier(paths::custom_data_dir().map(|dir| dir.as_path())),
+        release_channel::instance_identifier(paths::instance_data_dir().map(|dir| dir.as_path())),
     );
     if let Some(cli) = crate::stable_programs::program_path("solo-cli") {
         if util::packaged::is_packaged()

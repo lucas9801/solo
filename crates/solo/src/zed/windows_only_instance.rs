@@ -28,7 +28,7 @@ use crate::{Args, OpenListener, RawOpenRequest};
 /// folder (`--user-data-dir`), so it never hands what it opens to a Solo
 /// with another data folder (see `release_channel::instance_identifier`).
 fn instance_identifier() -> String {
-    release_channel::instance_identifier(paths::custom_data_dir().map(|dir| dir.as_path()))
+    release_channel::instance_identifier(paths::instance_data_dir().map(|dir| dir.as_path()))
 }
 
 #[inline]

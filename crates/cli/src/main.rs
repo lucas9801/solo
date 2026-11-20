@@ -1228,7 +1228,7 @@ mod windows {
     /// other.
     fn instance() -> String {
         instance_name(
-            paths::custom_data_dir().map(|dir| dir.as_path()),
+            paths::instance_data_dir().map(|dir| dir.as_path()),
             std::env::var("SOLO_INSTANCE").ok(),
         )
     }
@@ -1274,7 +1274,9 @@ mod windows {
     /// SOLO: hands `url` to the Solo that's running, without starting one.
     pub(crate) fn send_to_running_instance(url: &str) -> anyhow::Result<()> {
         if check_single_instance() {
-            anyhow::bail!("Solo isn't running");
+            // SOLO: which Solo it looked for: with SOLO_INSTANCE or
+            // --user-data-dir, that of another data folder.
+            anyhow::bail!("Solo isn't running (no instance {})", instance());
         }
         unsafe {
             let pipe = CreateFileW(
