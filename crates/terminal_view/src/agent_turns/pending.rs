@@ -63,7 +63,14 @@ pub(crate) struct PendingFile {
     pub first_turn: usize,
     /// When that turn started, if known.
     pub since: Option<SystemTime>,
+    /// What changed while Solo was closed, in a terminal that kept running:
+    /// the file as it was last recorded, and as Solo found it again. Its
+    /// agent's, as far as can be told (G59).
+    pub while_closed: Option<(Version, Version)>,
 }
+
+/// The turn number that stands for "while Solo was closed".
+pub(crate) const WHILE_CLOSED: usize = usize::MAX;
 
 impl PendingFile {
     /// Whether it has nothing pending as it was last left.
@@ -257,6 +264,7 @@ pub(crate) fn end_turn(
                 left: after.clone(),
                 first_turn: turn.number,
                 since: Some(turn.started_at),
+                while_closed: None,
             },
         };
         file.accepted = keep_committed_version(&file.accepted, &after, committed.as_ref());
@@ -392,6 +400,10 @@ pub(crate) struct RecordedFile {
     pub left: Option<RecordedVersion>,
     /// Milliseconds since the epoch.
     pub since: Option<u64>,
+    /// What changed while Solo was closed: from, and to (absent files are
+    /// `None`).
+    #[serde(default)]
+    pub while_closed: Option<(Option<RecordedVersion>, Option<RecordedVersion>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -414,34 +426,43 @@ pub(crate) fn save(
         lock.remove_record(key);
         return Ok(Vec::new());
     }
-    let texts: Vec<&[u8]> = files
-        .values()
-        .flat_map(|file| [&file.accepted, &file.left])
+    // Each file's versions: accepted, left, and from and to while closed.
+    let versions_of = |file: &PendingFile| -> [Option<Version>; 4] {
+        let (from, to) = match &file.while_closed {
+            Some((from, to)) => (Some(from.clone()), Some(to.clone())),
+            None => (None, None),
+        };
+        [Some(file.accepted.clone()), Some(file.left.clone()), from, to]
+    };
+    let all: Vec<[Option<Version>; 4]> = files.values().map(versions_of).collect();
+    let texts: Vec<&[u8]> = all
+        .iter()
+        .flatten()
+        .flatten()
         .filter_map(|version| match version {
             Version::Text(text) => Some(text.as_bytes()),
             _ => None,
         })
         .collect();
     let mut blobs = lock.write_blobs(&texts)?.into_iter();
+    let mut entries: [Vec<(String, String)>; 4] = Default::default();
     let mut recorded = Vec::new();
-    let mut accepted_entries = Vec::new();
-    let mut left_entries = Vec::new();
-    let mut record_version = |version: &Version,
-                              path: &str,
-                              entries: &mut Vec<(String, String)>|
-     -> Result<Option<RecordedVersion>> {
-        let (blob, binary) = match version {
-            Version::Absent => return Ok(None),
-            Version::Text(_) => (blobs.next().context("a blob is missing")?, false),
-            Version::Binary(blob) if blob.is_empty() => return Ok(None),
-            Version::Binary(blob) => (blob.clone(), true),
-        };
-        entries.push((path.to_string(), blob.clone()));
-        Ok(Some(RecordedVersion { blob, binary }))
-    };
-    for (path, file) in files {
-        let accepted = record_version(&file.accepted, path, &mut accepted_entries)?;
-        let left = record_version(&file.left, path, &mut left_entries)?;
+    for ((path, file), versions) in files.iter().zip(&all) {
+        let mut out: [Option<RecordedVersion>; 4] = Default::default();
+        for (kind, version) in versions.iter().enumerate() {
+            let Some(version) = version else {
+                continue;
+            };
+            let (blob, binary) = match version {
+                Version::Absent => continue,
+                Version::Text(_) => (blobs.next().context("a blob is missing")?, false),
+                Version::Binary(blob) if blob.is_empty() => continue,
+                Version::Binary(blob) => (blob.clone(), true),
+            };
+            entries[kind].push((path.clone(), blob.clone()));
+            out[kind] = Some(RecordedVersion { blob, binary });
+        }
+        let [accepted, left, from, to] = out;
         recorded.push(RecordedFile {
             path: path.clone(),
             accepted,
@@ -452,12 +473,15 @@ pub(crate) fn save(
                     .ok()
                     .map(|since| since.as_millis() as u64)
             }),
+            while_closed: file.while_closed.as_ref().map(|_| (from, to)),
         });
     }
-    let trees = vec![
-        lock.write_tree(&accepted_entries)?,
-        lock.write_tree(&left_entries)?,
-    ];
+    let mut trees = Vec::new();
+    for kind in &entries {
+        if !kind.is_empty() {
+            trees.push(lock.write_tree(kind)?);
+        }
+    }
     let record = Record {
         version: 1,
         directory: directory.to_path_buf(),
@@ -473,10 +497,24 @@ pub(crate) fn load(
     store: &SnapshotStore,
     record: &Record,
 ) -> Result<BTreeMap<String, PendingFile>> {
+    let recorded = |file: &RecordedFile| -> Vec<Option<RecordedVersion>> {
+        let clone = |version: &Option<RecordedVersion>| {
+            version.as_ref().map(|version| RecordedVersion {
+                blob: version.blob.clone(),
+                binary: version.binary,
+            })
+        };
+        let mut versions = vec![clone(&file.accepted), clone(&file.left)];
+        if let Some((from, to)) = &file.while_closed {
+            versions.push(clone(from));
+            versions.push(clone(to));
+        }
+        versions
+    };
     let mut objects = Vec::new();
     for file in &record.files {
-        for version in [&file.accepted, &file.left].into_iter().flatten() {
-            objects.push(version.blob.clone());
+        for version in recorded(file).into_iter().flatten() {
+            objects.push(version.blob);
         }
     }
     let mut contents = store.objects_contents(&objects)?.into_iter();
@@ -493,8 +531,14 @@ pub(crate) fn load(
     };
     let mut files = BTreeMap::new();
     for file in &record.files {
-        let accepted = read(&file.accepted)?;
-        let left = read(&file.left)?;
+        let versions = recorded(file);
+        let accepted = read(&versions[0])?;
+        let left = read(&versions[1])?;
+        let while_closed = if versions.len() == 4 {
+            Some((read(&versions[2])?, read(&versions[3])?))
+        } else {
+            None
+        };
         files.insert(
             file.path.clone(),
             PendingFile {
@@ -504,12 +548,33 @@ pub(crate) fn load(
                 since: file
                     .since
                     .map(|since| SystemTime::UNIX_EPOCH + Duration::from_millis(since)),
+                while_closed,
             },
         );
     }
     Ok(files)
 }
 
+/// The pending changes restored after Solo was closed, with what changed on
+/// disk meanwhile: in a terminal that kept running, that's its agent's, so
+/// it's pending (not taken in as the user's) and marked as changed while
+/// Solo was closed.
+pub(crate) fn changed_while_closed(
+    store: &SnapshotStore,
+    files: BTreeMap<String, PendingFile>,
+) -> BTreeMap<String, PendingFile> {
+    files
+        .into_iter()
+        .map(|(path, mut file)| {
+            let current = current_version(store, &store.abs_path(&path));
+            if current != file.left {
+                file.while_closed = Some((file.left.clone(), current.clone()));
+                file.left = current;
+            }
+            (path, file)
+        })
+        .collect()
+}
 /// Rows `old` of one text became rows `new` of another.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LineEdit {

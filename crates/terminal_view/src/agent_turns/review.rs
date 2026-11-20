@@ -174,6 +174,10 @@ pub(crate) struct AgentTurnReview {
     /// SOLO: Whether it's in a pane, counted as open: earlier turns'
     /// changes aren't accepted while it is (G59).
     counted_open: std::cell::Cell<bool>,
+    /// SOLO: Whether it's the page of the pending changes, not of a turn.
+    pending_page: bool,
+    /// SOLO: The store of the pending changes shown.
+    store_dir: Option<PathBuf>,
 }
 
 /// SOLO: What the pending changes shown were loaded from.
@@ -198,18 +202,79 @@ impl AgentTurnReview {
         let terminal_id = terminal_view.entity_id();
         AgentTurns::global(cx).update(cx, |turns, cx| turns.dismiss_offer(terminal_id, cx));
         workspace.update(cx, |workspace, cx| {
-            let existing = workspace
-                .items_of_type::<AgentTurnReview>(cx)
-                .find(|review| review.read(cx).terminal_id == terminal_id);
+            let existing = workspace.items_of_type::<AgentTurnReview>(cx).find(|review| {
+                let review = review.read(cx);
+                review.terminal_id == terminal_id && review.pending_page
+            });
             if let Some(existing) = existing {
                 workspace.activate_item(&existing, true, true, window, cx);
-                existing.update(cx, |review, cx| review.set_mode(Mode::Pending, window, cx));
+                existing.update(cx, |review, cx| review.load(window, cx));
                 return;
             }
             let project = workspace.project().clone();
             let review =
                 cx.new(|cx| AgentTurnReview::new(terminal_view, project, true, window, cx));
             workspace.add_item_to_active_pane(Box::new(review), None, true, window, cx);
+        });
+    }
+
+    /// SOLO: Shows a turn of `terminal_view`'s agent (what it changed, or
+    /// what rolling back to before it discards) in a page of its own, so
+    /// the pending changes' page keeps its comments (G59).
+    fn open_turn(&self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(terminal_view) = self.terminal_view.upgrade() else {
+            return;
+        };
+        let Some(workspace) = terminal_view.read(cx).workspace.upgrade() else {
+            return;
+        };
+        let terminal_id = self.terminal_id;
+        window.defer(cx, move |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                let existing = workspace.items_of_type::<AgentTurnReview>(cx).find(|review| {
+                    let review = review.read(cx);
+                    review.terminal_id == terminal_id && !review.pending_page
+                });
+                if let Some(existing) = existing {
+                    workspace.activate_item(&existing, true, true, window, cx);
+                    existing.update(cx, |review, cx| review.set_mode(mode, window, cx));
+                    return;
+                }
+                let project = workspace.project().clone();
+                let review = cx.new(|cx| {
+                    let mut review = AgentTurnReview::new(terminal_view, project, false, window, cx);
+                    review.pending_page = false;
+                    review.set_mode(mode, window, cx);
+                    review
+                });
+                workspace.add_item_to_active_pane(Box::new(review), None, true, window, cx);
+            });
+        });
+    }
+
+    /// SOLO: Back from a turn's page to the pending changes' page, closing
+    /// the turn's.
+    fn back_to_pending(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_page {
+            self.set_mode(Mode::Pending, window, cx);
+            return;
+        }
+        let Some(terminal_view) = self.terminal_view.upgrade() else {
+            return;
+        };
+        let Some(workspace) = terminal_view.read(cx).workspace.upgrade() else {
+            return;
+        };
+        let item_id = cx.entity_id();
+        window.defer(cx, move |window, cx| {
+            AgentTurnReview::open(terminal_view, workspace.clone(), window, cx);
+            let panes = workspace.read(cx).panes().to_vec();
+            for pane in panes {
+                pane.update(cx, |pane, cx| {
+                    pane.close_item_by_id(item_id, workspace::SaveIntent::Skip, window, cx)
+                        .detach_and_log_err(cx)
+                });
+            }
         });
     }
 
@@ -287,6 +352,8 @@ impl AgentTurnReview {
             rejected: Vec::new(),
             shown: None,
             counted_open: std::cell::Cell::new(false),
+            pending_page: true,
+            store_dir: None,
         };
         if load {
             this.load(window, cx);
@@ -502,9 +569,9 @@ impl AgentTurnReview {
             return;
         };
         self.work_tree = Some(changes.store.work_tree().to_path_buf());
+        self.store_dir = Some(changes.store.store_dir().to_path_buf());
         self.loading = true;
         let project = self.project.clone();
-        let terminal_id = self.terminal_id;
         self.load_task = cx.spawn_in(window, async move |this, cx| {
             let store = changes.store.clone();
             let files = changes.files.clone();
@@ -609,7 +676,15 @@ impl AgentTurnReview {
                         _ => None,
                     },
                     buffer,
-                    turn_versions: Arc::new(turn_versions.remove(path).unwrap_or_default()),
+                    turn_versions: Arc::new({
+                        let mut versions = turn_versions.remove(path).unwrap_or_default();
+                        // Before this session's turns: what changed while Solo
+                        // was closed.
+                        if let Some((from, to)) = &file.while_closed {
+                            versions.push((pending::WHILE_CLOSED, from.clone(), to.clone()));
+                        }
+                        versions
+                    }),
                     pending: Some(file),
                 });
             }
@@ -629,9 +704,7 @@ impl AgentTurnReview {
                     })
                     .collect();
                 if !updates.is_empty() {
-                    AgentTurns::global(cx).update(cx, |turns, cx| {
-                        turns.update_pending_files(terminal_id, updates, cx)
-                    });
+                    this.model_update(updates, cx);
                 }
                 this.set_files(loaded_files, skipped, cx);
                 if this.filter != TurnFilter::All
@@ -745,8 +818,18 @@ impl AgentTurnReview {
         cx.notify();
     }
 
-    fn file_index(&self, buffer_id: language::BufferId, cx: &App) -> Option<usize> {
-        self.files
+    /// SOLO: Tells the pending changes what the page changed of them.
+    fn model_update(&self, updates: Vec<(String, Option<PendingFile>, bool)>, cx: &mut App) {
+        let Some(store_dir) = self.store_dir.clone() else {
+            return;
+        };
+        let terminal_id = self.terminal_id;
+        AgentTurns::global(cx).update(cx, |turns, cx| {
+            turns.update_pending_files(terminal_id, &store_dir, updates, cx)
+        });
+    }
+
+    fn file_index(&self, buffer_id: language::BufferId, cx: &App) -> Option<usize> {        self.files
             .iter()
             .position(|file| file.buffer.read(cx).remote_id() == buffer_id)
     }
@@ -809,10 +892,7 @@ impl AgentTurnReview {
         };
         file.pending = Some(updated.clone());
         let has_changes = updated.accepted != current;
-        let terminal_id = self.terminal_id;
-        AgentTurns::global(cx).update(cx, |turns, cx| {
-            turns.update_pending_files(terminal_id, vec![(path, Some(updated), has_changes)], cx)
-        });
+        self.model_update(vec![(path, Some(updated), has_changes)], cx);
         true
     }
 
@@ -1164,9 +1244,7 @@ impl AgentTurnReview {
                 .detach_and_log_err(cx);
         }
         if !updates.is_empty() {
-            AgentTurns::global(cx).update(cx, |turns, cx| {
-                turns.update_pending_files(self.terminal_id, updates, cx)
-            });
+            self.model_update(updates, cx);
         }
         self.status = if unsaved.is_empty() {
             None
@@ -1252,9 +1330,7 @@ impl AgentTurnReview {
                     });
                 }
                 if !updates.is_empty() {
-                    AgentTurns::global(cx).update(cx, |turns, cx| {
-                        turns.update_pending_files(this.terminal_id, updates, cx)
-                    });
+                    this.model_update(updates, cx);
                 }
                 if !kept.is_empty() {
                     let message = if is_chinese() {
@@ -1319,9 +1395,7 @@ impl AgentTurnReview {
             self.update_diff(ix, cx);
         }
         if !updates.is_empty() {
-            AgentTurns::global(cx).update(cx, |turns, cx| {
-                turns.update_pending_files(self.terminal_id, updates, cx)
-            });
+            self.model_update(updates, cx);
         }
         cx.notify();
     }
@@ -1344,10 +1418,12 @@ impl AgentTurnReview {
             })
             .map(|(path, _)| path.clone())
             .collect();
-        if !binary.is_empty() {
+        if !binary.is_empty()
+            && let Some(store_dir) = self.store_dir.clone()
+        {
             let terminal_id = self.terminal_id;
             AgentTurns::global(cx).update(cx, |turns, cx| {
-                turns.accept_as_they_are(terminal_id, binary, cx)
+                turns.accept_as_they_are(terminal_id, &store_dir, binary, cx)
             });
         }
     }
@@ -1373,8 +1449,7 @@ impl AgentTurnReview {
         let previous = AgentTurns::try_global(cx).and_then(|turns| {
             turns
                 .read(cx)
-                .pending_changes(self.terminal_id)
-                .filter(|changes| changes.store.store_dir() == store.store_dir())
+                .pending_changes_in(self.terminal_id, store.store_dir())
                 .map(|changes| changes.files.clone())
         });
         self.status = Some(tr("Rolling back…", "正在回滚…").into());
@@ -1393,8 +1468,9 @@ impl AgentTurnReview {
                     let paths: Vec<String> =
                         restored.changed.iter().map(|file| file.path.clone()).collect();
                     let terminal_id = this.terminal_id;
+                    let store_dir = store.store_dir().to_path_buf();
                     AgentTurns::global(cx).update(cx, |turns, cx| {
-                        turns.accept_as_they_are(terminal_id, paths, cx)
+                        turns.accept_as_they_are(terminal_id, &store_dir, paths, cx)
                     });
                     this.set_mode(
                         Mode::RolledBack {
@@ -1479,6 +1555,7 @@ impl AgentTurnReview {
             return;
         };
         self.status = Some(tr("Undoing the rollback…", "正在撤销回滚…").into());
+        let store_dir = store.store_dir().to_path_buf();
         self.action_task = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_spawn(async move { store.restore(&undo) })
@@ -1489,10 +1566,10 @@ impl AgentTurnReview {
                     if let Some(previous) = previous {
                         let terminal_id = this.terminal_id;
                         AgentTurns::global(cx).update(cx, |turns, cx| {
-                            turns.replace_pending_files(terminal_id, previous, cx)
+                            turns.replace_pending_files(terminal_id, &store_dir, previous, cx)
                         });
                     }
-                    this.set_mode(Mode::Pending, window, cx);
+                    this.back_to_pending(window, cx);
                     let undone = tr("The rollback was undone.", "已撤销回滚。");
                     this.status = join_messages([
                         Some(undone.into()),
@@ -2040,7 +2117,7 @@ impl AgentTurnReview {
                         .child(
                             Button::new("back-to-pending", tr("Back to Pending", "返回待审"))
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.set_mode(Mode::Pending, window, cx)
+                                    this.back_to_pending(window, cx)
                                 })),
                         )
                         .into_any_element();
@@ -2060,7 +2137,7 @@ impl AgentTurnReview {
                         .child(
                             Button::new("cancel-rollback", tr("Cancel", "取消")).on_click(
                                 cx.listener(move |this, _, window, cx| {
-                                    this.set_mode(Mode::Pending, window, cx)
+                                    this.back_to_pending(window, cx)
                                 }),
                             ),
                         )
@@ -2103,7 +2180,7 @@ impl AgentTurnReview {
                         .child(
                             Button::new("back-to-pending", tr("Back to Pending", "返回待审"))
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.set_mode(Mode::Pending, window, cx)
+                                    this.back_to_pending(window, cx)
                                 })),
                         )
                         .into_any_element();
@@ -2257,6 +2334,15 @@ impl AgentTurnReview {
         });
         for source in sources {
             match source {
+                TurnFilter::Turn(pending::WHILE_CLOSED) => {
+                    chips.push(chip(
+                        "turn-filter-while-closed".into(),
+                        while_closed_label().to_string(),
+                        *source,
+                        false,
+                        cx,
+                    ));
+                }
                 TurnFilter::Turn(number) => {
                     let time = self
                         .turn(*number, cx)
@@ -2397,7 +2483,7 @@ impl AgentTurnReview {
                                         "只读：这一轮自己改了什么",
                                     )))
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.set_mode(Mode::Turn(number), window, cx)
+                                        this.open_turn(Mode::Turn(number), window, cx)
                                     })),
                             )
                             .child(
@@ -2412,7 +2498,7 @@ impl AgentTurnReview {
                                 )))
                                 .on_click(cx.listener(
                                     move |this, _, window, cx| {
-                                        this.set_mode(Mode::ConfirmRollback(number), window, cx)
+                                        this.open_turn(Mode::ConfirmRollback(number), window, cx)
                                     },
                                 )),
                             ),
@@ -2445,15 +2531,35 @@ fn turns_label(turns: &BTreeSet<usize>) -> Option<String> {
     if turns.is_empty() {
         return None;
     }
-    let numbers: Vec<String> = turns.iter().map(usize::to_string).collect();
-    Some(if is_chinese() {
-        format!("第 {} 轮", numbers.join("、"))
-    } else if numbers.len() == 1 {
-        format!("Turn {}", numbers[0])
+    let while_closed = turns.contains(&pending::WHILE_CLOSED);
+    let numbers: Vec<String> = turns
+        .iter()
+        .filter(|number| **number != pending::WHILE_CLOSED)
+        .map(usize::to_string)
+        .collect();
+    if numbers.is_empty() {
+        return Some(while_closed_label().to_string());
+    }
+    let closed = if while_closed {
+        format!("{}{}", tr(", ", "、"), while_closed_label())
     } else {
-        format!("Turns {}", numbers.join(", "))
+        String::new()
+    };
+    Some(if is_chinese() {
+        format!("第 {} 轮{closed}", numbers.join("、"))
+    } else if numbers.len() == 1 {
+        format!("Turn {}{closed}", numbers[0])
+    } else {
+        format!("Turns {}{closed}", numbers.join(", "))
     })
 }
+
+/// SOLO: What changed while Solo was closed, in a terminal that kept
+/// running (G59).
+fn while_closed_label() -> &'static str {
+    tr("While Solo was closed", "Solo 关闭期间")
+}
+
 
 /// SOLO: The version of a file its buffer holds: absent when the file isn't
 /// on disk and the buffer is empty.
@@ -2933,7 +3039,7 @@ impl Item for AgentTurnReview {
             editor.added_to_workspace(workspace, window, cx)
         });
         // SOLO: open while it's in a pane (G59).
-        if !self.counted_open.replace(true) {
+        if self.pending_page && !self.counted_open.replace(true) {
             let terminal_id = self.terminal_id;
             AgentTurns::global(cx).update(cx, |turns, _| turns.review_opened(terminal_id));
         }
@@ -3239,6 +3345,7 @@ mod tests {
                     left: version(after.as_deref()),
                     first_turn: 1,
                     since: Some(SystemTime::now()),
+                    while_closed: None,
                 }),
                 turn_versions: Arc::default(),
             });
@@ -4356,6 +4463,27 @@ mod tests {
         );
         review.update(test.cx, |review, cx| review.set_filter(TurnFilter::All, cx));
 
+        // Viewing a turn opens a page of its own: the pending changes' page
+        // (and the comments in it) stays as it is.
+        review.update_in(test.cx, |review, window, cx| {
+            review.open_turn(Mode::Turn(1), window, cx)
+        });
+        test.cx.run_until_parked();
+        let pages = test.workspace.read_with(test.cx, |workspace, cx| {
+            workspace
+                .items_of_type::<AgentTurnReview>(cx)
+                .map(|page| {
+                    let page = page.read(cx);
+                    (page.pending_page, matches!(page.mode, Mode::Turn(1)))
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(pages.len(), 2, "{pages:?}");
+        assert!(pages.contains(&(false, true)), "{pages:?}");
+        review.read_with(test.cx, |review, _| {
+            assert!(matches!(review.mode, Mode::Pending));
+            assert_eq!(review.files.len(), 3);
+        });
         // Rejecting turn 1's hunk works, and leaves turn 2's.
         let first = hunks[0].2.clone();
         review.update(test.cx, |review, cx| review.reject_hunks(vec![first], cx));

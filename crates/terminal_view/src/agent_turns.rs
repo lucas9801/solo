@@ -272,11 +272,12 @@ struct TerminalTurns {
     /// are only those (R3 M5).
     reports_edits: bool,
     _end_task: Option<Task<()>>,
-    /// SOLO: What the agent changed that the user hasn't accepted (G59).
-    changes: Option<PendingChanges>,
-    /// SOLO: The turn whose end is being recorded: the files it changed
-    /// stay locked until its changes are pending.
-    ending: Option<ActiveTurn>,
+    /// SOLO: What the agent changed that the user hasn't accepted, in each
+    /// folder it worked in (G59).
+    changes: Vec<PendingChanges>,
+    /// SOLO: The turns whose ends are being recorded, one after another:
+    /// the files they changed stay locked until their changes are pending.
+    ending: Vec<ActiveTurn>,
     /// SOLO: The terminal's id (`SOLO_TERMINAL_ID`), which its pending
     /// changes are recorded by.
     key: Option<String>,
@@ -307,6 +308,9 @@ pub(crate) struct PendingChanges {
     trees: Vec<TreeId>,
     /// Counts the changes, for views to reload.
     pub revision: usize,
+    /// When the agent last worked in its folder, by the terminal's count:
+    /// the latest is the one the review shows.
+    used: usize,
 }
 
 /// SOLO: A turn under way or ending, whose files are locked (G59).
@@ -328,6 +332,27 @@ impl TerminalTurns {
     /// While the last finished turn's changes are offered on the tab.
     fn offering(&self) -> bool {
         self.offer_last_turn && self.pending.is_none()
+    }
+
+    /// SOLO: The pending changes in the folder the agent worked in last.
+    fn current_changes(&self) -> Option<&PendingChanges> {
+        self.changes.iter().max_by_key(|changes| changes.used)
+    }
+
+    fn changes_in(&self, store_dir: &Path) -> Option<&PendingChanges> {
+        self.changes
+            .iter()
+            .find(|changes| changes.store.store_dir() == store_dir)
+    }
+
+    fn changes_in_mut(&mut self, store_dir: &Path) -> Option<&mut PendingChanges> {
+        self.changes
+            .iter_mut()
+            .find(|changes| changes.store.store_dir() == store_dir)
+    }
+
+    fn next_use(&self) -> usize {
+        self.changes.iter().map(|changes| changes.used).max().unwrap_or(0) + 1
     }
 }
 
@@ -629,7 +654,7 @@ impl AgentTurns {
         };
         let reports_edits = terminal.reports_edits;
         // SOLO: its files stay locked until its changes are pending (G59).
-        terminal.ending = Some(ActiveTurn {
+        terminal.ending.push(ActiveTurn {
             number: pending.number,
             before: match pending.snapshot.peek() {
                 Some(Ok(started)) => Some((started.store.clone(), started.before.clone())),
@@ -645,12 +670,14 @@ impl AgentTurns {
         };
         let codex_session =
             codex_session.filter(|_| agent_sessions::codex_otel::running_receiver().is_some());
-        // Earlier turns' watches belong to end tasks this one replaces.
-        terminal
-            .watches
-            .retain(|watch| watch.number == pending.number);
         let terminal_view = terminal_view.downgrade();
+        // SOLO: after the earlier turn's end is recorded, not in place of
+        // it: its changes would skip the review (G59).
+        let earlier = terminal._end_task.take();
         terminal._end_task = Some(cx.spawn(async move |this, cx| {
+            if let Some(earlier) = earlier {
+                earlier.await;
+            }
             let started = match pending.snapshot.await {
                 Ok(started) => started,
                 Err(reason) => {
@@ -937,10 +964,10 @@ impl AgentTurns {
             }
             // SOLO: and what the user accepted of files with pending
             // changes (G59).
-            if let Some(changes) = &terminal.changes
-                && changes.store.store_dir() == store_dir
-            {
-                trees.extend(changes.trees.iter().cloned());
+            for changes in &terminal.changes {
+                if changes.store.store_dir() == store_dir {
+                    trees.extend(changes.trees.iter().cloned());
+                }
             }
         }
         trees
@@ -1036,30 +1063,33 @@ impl AgentTurns {
             let restored = cx
                 .background_spawn(async move { restore_pending(&storage_root, &key) })
                 .await;
-            let Some((store, directory, files)) = restored else {
+            if restored.is_empty() {
                 return;
-            };
+            }
             this.update(cx, |this, cx| {
                 let Some(terminal) = this.terminals.get_mut(&terminal_id) else {
                     return;
                 };
-                // A turn ended meanwhile: its changes are newer.
-                if terminal.changes.is_some() {
-                    return;
+                for (store, directory, files, modified) in restored {
+                    // A turn there ended meanwhile: its changes are newer.
+                    if terminal.changes_in(store.store_dir()).is_some() {
+                        continue;
+                    }
+                    log::info!(
+                        "restored the pending changes of {} files in {directory:?}",
+                        files.len()
+                    );
+                    terminal.stores.insert(directory.clone(), store.clone());
+                    terminal.changes.push(PendingChanges {
+                        store,
+                        directory,
+                        pending: files.keys().cloned().collect(),
+                        files,
+                        trees: Vec::new(),
+                        revision: 1,
+                        used: modified,
+                    });
                 }
-                log::info!(
-                    "restored the pending changes of {} files in {directory:?}",
-                    files.len()
-                );
-                terminal.stores.insert(directory.clone(), store.clone());
-                terminal.changes = Some(PendingChanges {
-                    store,
-                    directory,
-                    pending: files.keys().cloned().collect(),
-                    files,
-                    trees: Vec::new(),
-                    revision: 1,
-                });
                 this.save_pending(terminal_id, cx);
                 this.watch_pending_files(terminal_id, cx);
                 this.refresh_pending(terminal_id, cx);
@@ -1081,10 +1111,17 @@ impl AgentTurns {
         }
         let terminal = self.terminals.remove(&terminal_id);
         cx.notify();
-        let (Some(key), Some(changes)) = (key, terminal.and_then(|terminal| terminal.changes))
-        else {
+        let (Some(key), Some(terminal)) = (key, terminal) else {
             return;
         };
+        let stores: Vec<Arc<SnapshotStore>> = terminal
+            .changes
+            .into_iter()
+            .map(|changes| changes.store)
+            .collect();
+        if stores.is_empty() {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(FORGET_CLOSED_TERMINAL_DELAY)
@@ -1096,9 +1133,11 @@ impl AgentTurns {
                 return;
             }
             cx.background_spawn(async move {
-                match changes.store.lock() {
-                    Ok(lock) => lock.remove_record(&key),
-                    Err(error) => log::warn!("failed to forget pending changes: {error:#}"),
+                for store in stores {
+                    match store.lock() {
+                        Ok(lock) => lock.remove_record(&key),
+                        Err(error) => log::warn!("failed to forget pending changes: {error:#}"),
+                    }
                 }
             })
             .await;
@@ -1107,15 +1146,30 @@ impl AgentTurns {
     }
 
     /// SOLO: What the terminal's agent changed that the user hasn't
-    /// accepted (G59).
+    /// accepted, in the folder it worked in last (G59).
     pub(crate) fn pending_changes(&self, terminal: EntityId) -> Option<&PendingChanges> {
-        self.terminals.get(&terminal)?.changes.as_ref()
+        self.terminals.get(&terminal)?.current_changes()
     }
 
-    /// SOLO: How many files have changes to review.
+    /// SOLO: The terminal's pending changes in the store at `store_dir`.
+    pub(crate) fn pending_changes_in(
+        &self,
+        terminal: EntityId,
+        store_dir: &Path,
+    ) -> Option<&PendingChanges> {
+        self.terminals.get(&terminal)?.changes_in(store_dir)
+    }
+
+    /// SOLO: How many files have changes to review, in all the folders the
+    /// terminal's agent worked in.
     pub(crate) fn pending_file_count(&self, terminal: EntityId) -> usize {
-        self.pending_changes(terminal)
-            .map_or(0, |changes| changes.pending.len())
+        self.terminals.get(&terminal).map_or(0, |terminal| {
+            terminal
+                .changes
+                .iter()
+                .map(|changes| changes.pending.len())
+                .sum()
+        })
     }
 
     /// SOLO: The terminal's turns under way or ending, whose files are
@@ -1132,11 +1186,15 @@ impl AgentTurns {
             },
             edited: turns.reports_edits.then(|| pending.edited.clone()),
         });
-        running.into_iter().chain(turns.ending.clone()).collect()
+        running
+            .into_iter()
+            .chain(turns.ending.iter().cloned())
+            .collect()
     }
 
     /// SOLO: The input to update the pending changes at the end of turn
-    /// `number`; `None` when there's nothing to do.
+    /// `number`: those in the turn's folder. Other folders' are left as
+    /// they are.
     fn turn_end_input(
         &mut self,
         terminal_id: EntityId,
@@ -1152,21 +1210,11 @@ impl AgentTurns {
     )> {
         let terminal = self.terminals.get_mut(&terminal_id)?;
         let auto_keep = terminal.reviews_open == 0;
-        let files = match &terminal.changes {
-            Some(changes) if changes.store.store_dir() == started.store.store_dir() => {
-                changes.files.clone()
-            }
-            Some(changes) => {
-                // One folder's pending changes at a time.
-                log::info!(
-                    "the agent moved from {:?}: accepting what was pending there",
-                    changes.directory
-                );
-                BTreeMap::new()
-            }
-            None => BTreeMap::new(),
-        };
-        if files.is_empty() && changed.is_empty() && terminal.changes.is_none() {
+        let existing = terminal.changes_in(started.store.store_dir());
+        let files = existing
+            .map(|changes| changes.files.clone())
+            .unwrap_or_default();
+        if files.is_empty() && changed.is_empty() && existing.is_none() {
             return None;
         }
         if !auto_keep && !files.is_empty() {
@@ -1190,19 +1238,18 @@ impl AgentTurns {
     /// SOLO: Turn `number`'s end is recorded: its files aren't locked
     /// anymore.
     fn turn_ended(&mut self, terminal_id: EntityId, number: usize, cx: &mut Context<Self>) {
-        if let Some(terminal) = self.terminals.get_mut(&terminal_id)
-            && terminal
-                .ending
-                .as_ref()
-                .is_some_and(|ending| ending.number == number)
-        {
-            terminal.ending = None;
-            cx.notify();
+        if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
+            let before = terminal.ending.len();
+            terminal.ending.retain(|ending| ending.number != number);
+            if terminal.ending.len() != before {
+                cx.notify();
+            }
         }
     }
 
-    /// SOLO: The terminal's pending changes are now `files`, in `store`:
-    /// recorded, and views reload them.
+    /// SOLO: The terminal's pending changes in `store` are now `files`:
+    /// recorded, and views reload them. It's the folder its agent worked in
+    /// last.
     fn set_pending_files(
         &mut self,
         terminal_id: EntityId,
@@ -1218,39 +1265,46 @@ impl AgentTurns {
         if terminal.key.is_none() {
             terminal.key = key;
         }
-        let (revision, trees) = match &terminal.changes {
-            Some(changes) if changes.store.store_dir() == store.store_dir() => {
-                (changes.revision + 1, changes.trees.clone())
+        let used = terminal.next_use();
+        let pending = files.keys().cloned().collect();
+        match terminal.changes_in_mut(store.store_dir()) {
+            Some(changes) => {
+                changes.directory = directory.to_path_buf();
+                changes.files = files;
+                changes.pending = pending;
+                changes.revision += 1;
+                changes.used = used;
             }
-            Some(changes) => (changes.revision + 1, Vec::new()),
-            None => (1, Vec::new()),
-        };
-        terminal.changes = Some(PendingChanges {
-            store,
-            directory: directory.to_path_buf(),
-            pending: files.keys().cloned().collect(),
-            files,
-            trees,
-            revision,
-        });
+            None => terminal.changes.push(PendingChanges {
+                store,
+                directory: directory.to_path_buf(),
+                files,
+                pending,
+                trees: Vec::new(),
+                revision: 1,
+                used,
+            }),
+        }
         self.save_pending(terminal_id, cx);
         self.watch_pending_files(terminal_id, cx);
         cx.notify();
     }
 
-    /// SOLO: The review changed some of the terminal's pending files: each
-    /// `(path, file, whether it still has changes to review)`; `None`
-    /// forgets one (G59). Views don't reload for it.
+    /// SOLO: The review changed some of the terminal's pending files in the
+    /// store at `store_dir`: each `(path, file, whether it still has
+    /// changes to review)`; `None` forgets one (G59). Views don't reload
+    /// for it.
     pub(crate) fn update_pending_files(
         &mut self,
         terminal_id: EntityId,
+        store_dir: &Path,
         updates: Vec<(String, Option<PendingFile>, bool)>,
         cx: &mut Context<Self>,
     ) {
         let Some(changes) = self
             .terminals
             .get_mut(&terminal_id)
-            .and_then(|terminal| terminal.changes.as_mut())
+            .and_then(|terminal| terminal.changes_in_mut(store_dir))
         else {
             return;
         };
@@ -1276,18 +1330,19 @@ impl AgentTurns {
         cx.notify();
     }
 
-    /// SOLO: Puts the terminal's pending files back as they were (undoing a
-    /// rollback, say); views reload them.
+    /// SOLO: Puts the terminal's pending files in the store at `store_dir`
+    /// back as they were (undoing a rollback, say); views reload them.
     pub(crate) fn replace_pending_files(
         &mut self,
         terminal_id: EntityId,
+        store_dir: &Path,
         files: BTreeMap<String, PendingFile>,
         cx: &mut Context<Self>,
     ) {
         let Some(changes) = self
             .terminals
             .get_mut(&terminal_id)
-            .and_then(|terminal| terminal.changes.as_mut())
+            .and_then(|terminal| terminal.changes_in_mut(store_dir))
         else {
             return;
         };
@@ -1315,34 +1370,36 @@ impl AgentTurns {
             let input = this
                 .read_with(cx, |this, _| {
                     let terminal = this.terminals.get(&terminal_id)?;
-                    Some((terminal.key.clone()?, terminal.changes.clone()?))
+                    Some((terminal.key.clone()?, terminal.changes.clone()))
                 })
                 .ok()
                 .flatten();
-            let Some((key, changes)) = input else {
+            let Some((key, all_changes)) = input else {
                 return;
             };
-            let store = changes.store.clone();
-            let saved = cx
-                .background_spawn(async move {
-                    pending::save(&changes.store, &key, &changes.directory, &changes.files)
-                })
-                .await;
-            match saved {
-                Ok(trees) => {
-                    this.update(cx, |this, _| {
-                        if let Some(changes) = this
-                            .terminals
-                            .get_mut(&terminal_id)
-                            .and_then(|terminal| terminal.changes.as_mut())
-                            .filter(|changes| changes.store.store_dir() == store.store_dir())
-                        {
-                            changes.trees = trees;
-                        }
+            for changes in all_changes {
+                let store = changes.store.clone();
+                let key = key.clone();
+                let saved = cx
+                    .background_spawn(async move {
+                        pending::save(&changes.store, &key, &changes.directory, &changes.files)
                     })
-                    .ok();
+                    .await;
+                match saved {
+                    Ok(trees) => {
+                        this.update(cx, |this, _| {
+                            if let Some(changes) = this
+                                .terminals
+                                .get_mut(&terminal_id)
+                                .and_then(|terminal| terminal.changes_in_mut(store.store_dir()))
+                            {
+                                changes.trees = trees;
+                            }
+                        })
+                        .ok();
+                    }
+                    Err(error) => log::warn!("failed to record pending changes: {error:#}"),
                 }
-                Err(error) => log::warn!("failed to record pending changes: {error:#}"),
             }
         }));
     }
@@ -1360,48 +1417,52 @@ impl AgentTurns {
             let input = this
                 .read_with(cx, |this, _| {
                     let terminal = this.terminals.get(&terminal_id)?;
-                    let changes = terminal.changes.clone()?;
                     let active = this.active_turns(terminal_id);
                     let take_in = terminal.reviews_open == 0 && active.is_empty();
-                    Some((changes, active, take_in))
+                    Some((terminal.changes.clone(), active, take_in))
                 })
                 .ok()
                 .flatten();
-            let Some((changes, active, take_in)) = input else {
+            let Some((all_changes, active, take_in)) = input else {
                 return;
             };
-            let store = changes.store.clone();
-            let files = changes.files.clone();
-            let (files, pending) = cx
-                .background_spawn(async move {
-                    let locked = locked_files(&store, files.keys(), &active);
-                    pending::reconcile(&store, &files, &locked, take_in)
+            for changes in all_changes {
+                let store = changes.store.clone();
+                let files = changes.files.clone();
+                let active = active.clone();
+                let (files, pending) = cx
+                    .background_spawn(async move {
+                        let locked = locked_files(&store, files.keys(), &active);
+                        pending::reconcile(&store, &files, &locked, take_in)
+                    })
+                    .await;
+                this.update(cx, |this, cx| {
+                    let Some(terminal) = this.terminals.get_mut(&terminal_id) else {
+                        return;
+                    };
+                    let Some(current) = terminal.changes_in_mut(changes.store.store_dir()) else {
+                        return;
+                    };
+                    // Changed meanwhile: checked again then.
+                    if current.files != changes.files || current.revision != changes.revision {
+                        return;
+                    }
+                    let changed = current.files != files;
+                    current.pending = pending;
+                    if changed {
+                        current.files = files;
+                        current.revision += 1;
+                        this.save_pending(terminal_id, cx);
+                    }
+                    if let Some(view) =
+                        this.terminals.get(&terminal_id).and_then(|t| t.view.clone())
+                    {
+                        update_tab(&view, cx);
+                    }
+                    cx.notify();
                 })
-                .await;
-            this.update(cx, |this, cx| {
-                let Some(terminal) = this.terminals.get_mut(&terminal_id) else {
-                    return;
-                };
-                let Some(current) = terminal.changes.as_mut() else {
-                    return;
-                };
-                // Changed meanwhile: checked again then.
-                if current.files != changes.files || current.revision != changes.revision {
-                    return;
-                }
-                let changed = current.files != files;
-                current.pending = pending;
-                if changed {
-                    current.files = files;
-                    current.revision += 1;
-                    this.save_pending(terminal_id, cx);
-                }
-                if let Some(view) = this.terminals.get(&terminal_id).and_then(|t| t.view.clone()) {
-                    update_tab(&view, cx);
-                }
-                cx.notify();
-            })
-            .ok();
+                .ok();
+            }
         }));
     }
 
@@ -1424,24 +1485,24 @@ impl AgentTurns {
             let project::Event::WorktreeUpdatedEntries(worktree_id, updates) = event else {
                 return;
             };
-            let Some(changes) = this
-                .terminals
-                .get(&terminal_id)
-                .and_then(|terminal| terminal.changes.as_ref())
-                .filter(|changes| !changes.files.is_empty())
-            else {
+            let Some(terminal) = this.terminals.get(&terminal_id) else {
                 return;
             };
+            if terminal.changes.iter().all(|changes| changes.files.is_empty()) {
+                return;
+            }
             let Some(worktree) = project.read(cx).worktree_for_id(*worktree_id, cx) else {
                 return;
             };
             let worktree = worktree.read(cx);
             let touched = updates.iter().any(|(path, _, _)| {
                 let abs_path = worktree.absolutize(path);
-                changes
-                    .files
-                    .keys()
-                    .any(|path| is_same_path(&changes.store.abs_path(path), &abs_path))
+                terminal.changes.iter().any(|changes| {
+                    changes
+                        .files
+                        .keys()
+                        .any(|path| is_same_path(&changes.store.abs_path(path), &abs_path))
+                })
             });
             if touched {
                 this.refresh_pending(terminal_id, cx);
@@ -1473,21 +1534,27 @@ impl AgentTurns {
     }
 
     /// SOLO: Accepts what only turns before the last finished one changed
-    /// (see [`pending::auto_keep`]), as that turn's end would have.
+    /// (see [`pending::auto_keep`]), as that turn's end would have, in the
+    /// folder that turn was in.
     fn auto_keep(&mut self, terminal_id: EntityId, cx: &mut Context<Self>) {
         let Some(terminal) = self.terminals.get(&terminal_id) else {
             return;
         };
-        let Some(changes) = terminal.changes.clone() else {
-            return;
-        };
         let finished = terminal.finished_turns();
-        let last = terminal
+        let Some(last) = terminal
             .turns
             .back()
             .filter(|turn| turn.number == finished)
-            .filter(|turn| turn.store.store_dir() == changes.store.store_dir())
-            .map(|turn| (turn.before.clone(), turn.after.clone(), turn.changed.clone()));
+            .cloned()
+        else {
+            self.refresh_pending(terminal_id, cx);
+            return;
+        };
+        let Some(changes) = terminal.changes_in(last.store.store_dir()).cloned() else {
+            self.refresh_pending(terminal_id, cx);
+            return;
+        };
+        let last = (last.before.clone(), last.after.clone(), last.changed.clone());
         let active = self.active_turns(terminal_id);
         let view = terminal.view.clone();
         cx.spawn(async move |this, cx| {
@@ -1496,7 +1563,7 @@ impl AgentTurns {
             let kept = cx
                 .background_spawn(async move {
                     let locked = locked_files(&store, files.keys(), &active);
-                    pending::auto_keep_now(&store, &files, &locked, last.as_ref())
+                    pending::auto_keep_now(&store, &files, &locked, Some(&last))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1505,7 +1572,7 @@ impl AgentTurns {
                         let Some(current) = this
                             .terminals
                             .get_mut(&terminal_id)
-                            .and_then(|terminal| terminal.changes.as_mut())
+                            .and_then(|terminal| terminal.changes_in_mut(changes.store.store_dir()))
                         else {
                             return;
                         };
@@ -1530,18 +1597,20 @@ impl AgentTurns {
         .detach();
     }
 
-    /// SOLO: The files at `paths` (relative to the work tree) are accepted
-    /// as they are now: rolled back, say.
+    /// SOLO: The files at `paths` (relative to the work tree of the store
+    /// at `store_dir`) are accepted as they are now: rolled back, say.
     pub(crate) fn accept_as_they_are(
         &mut self,
         terminal_id: EntityId,
+        store_dir: &Path,
         paths: Vec<String>,
         cx: &mut Context<Self>,
     ) {
         let Some(changes) = self
             .terminals
             .get(&terminal_id)
-            .and_then(|terminal| terminal.changes.clone())
+            .and_then(|terminal| terminal.changes_in(store_dir))
+            .cloned()
         else {
             return;
         };
@@ -1566,11 +1635,12 @@ impl AgentTurns {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.update_pending_files(terminal_id, updates, cx);
+                let store_dir = changes.store.store_dir();
+                this.update_pending_files(terminal_id, store_dir, updates, cx);
                 if let Some(changes) = this
                     .terminals
                     .get_mut(&terminal_id)
-                    .and_then(|terminal| terminal.changes.as_mut())
+                    .and_then(|terminal| terminal.changes_in_mut(store_dir))
                 {
                     changes.revision += 1;
                 }
@@ -1593,40 +1663,53 @@ fn terminal_key(view: &TerminalView, cx: &App) -> Option<String> {
         .map(str::to_string)
 }
 
-/// SOLO: The pending changes recorded for the terminal `key`: its store,
-/// the agent's folder and the files (G59).
+/// SOLO: The pending changes recorded for the terminal `key`, in each
+/// folder its agent worked in: the store, the folder, the files (with what
+/// changed while Solo was closed marked as such) and when the record was
+/// written, newest first (G59).
 fn restore_pending(
     storage_root: &Path,
     key: &str,
-) -> Option<(Arc<SnapshotStore>, PathBuf, BTreeMap<String, PendingFile>)> {
-    let mut records = SnapshotStore::find_pending_records(storage_root, key).into_iter();
-    let (path, contents) = records.next()?;
-    // Only the newest counts.
-    for (older, _) in records {
-        std::fs::remove_file(&older).ok();
-    }
-    let record: pending::Record = match serde_json::from_slice(&contents) {
-        Ok(record) => record,
-        Err(error) => {
-            log::warn!("ignoring the unreadable record {path:?}: {error}");
-            return None;
+) -> Vec<(
+    Arc<SnapshotStore>,
+    PathBuf,
+    BTreeMap<String, PendingFile>,
+    usize,
+)> {
+    let records = SnapshotStore::find_pending_records(storage_root, key);
+    let count = records.len();
+    let mut restored = Vec::new();
+    for (ix, (path, contents)) in records.into_iter().enumerate() {
+        let record: pending::Record = match serde_json::from_slice(&contents) {
+            Ok(record) => record,
+            Err(error) => {
+                log::warn!("ignoring the unreadable record {path:?}: {error}");
+                continue;
+            }
+        };
+        let Some(store) = SnapshotStore::open(&record.directory, storage_root)
+            .context("opening the snapshots")
+            .log_err()
+        else {
+            continue;
+        };
+        if !path.starts_with(store.store_dir()) {
+            log::warn!("the record {path:?} isn't in its folder's store");
+            continue;
         }
-    };
-    let store = SnapshotStore::open(&record.directory, storage_root)
-        .context("opening the snapshots")
-        .log_err()?;
-    if !path.starts_with(store.store_dir()) {
-        log::warn!("the record {path:?} isn't in its folder's store");
-        return None;
-    }
-    match pending::load(&store, &record) {
-        Ok(files) => Some((Arc::new(store), record.directory, files)),
-        Err(error) => {
-            log::warn!("failed to read the pending changes in {path:?}: {error:#}");
-            std::fs::remove_file(&path).ok();
-            None
+        match pending::load(&store, &record) {
+            Ok(files) => {
+                let files = pending::changed_while_closed(&store, files);
+                // Newest first: the folder worked in last counts as used last.
+                restored.push((Arc::new(store), record.directory, files, count - ix));
+            }
+            Err(error) => {
+                log::warn!("failed to read the pending changes in {path:?}: {error:#}");
+                std::fs::remove_file(&path).ok();
+            }
         }
     }
+    restored
 }
 
 /// SOLO: Which of `paths` (relative to `store`'s work tree) a turn under
@@ -1899,27 +1982,9 @@ pub(crate) fn render_tab_entry(view: &TerminalView, cx: &App) -> Option<AnyEleme
         let turn = turns.offered_unsnapshotted_turn(terminal_id)?;
         return Some(render_unsnapshotted_tab_entry(terminal_view, turn.clone()));
     }
-    let chinese = util::i18n::is_chinese();
-    let mut label = pending_files_label(count);
-    // What the last turn did to the errors, once the language servers
-    // checked.
-    let finished = turns
-        .terminals
-        .get(&terminal_id)
-        .map_or(0, TerminalTurns::finished_turns);
-    if let Some((added, fixed)) = turns
-        .turns(terminal_id)
-        .last()
-        .filter(|turn| turn.number == finished)
-        .and_then(|turn| turn.diagnostics.error_delta())
-        && (added > 0 || fixed > 0)
-    {
-        label.push_str(&if chinese {
-            format!(" · 错误 +{added} / −{fixed}")
-        } else {
-            format!(" · errors +{added} / −{fixed}")
-        });
-    }
+    // Only the count, as designed: what the last turn did to the errors is
+    // on the review page.
+    let label = pending_files_label(count);
     // As the title bar's update button: a pill of the accent color.
     let tint = cx.theme().colors().text_accent;
     Some(
@@ -2629,7 +2694,9 @@ mod tests {
         // Recorded, for after a restart.
         cx.executor().advance_clock(Duration::from_millis(200));
         cx.run_until_parked();
-        let (_, _, restored) = restore_pending(&storage, KEY).expect("recorded");
+        let mut restored = restore_pending(&storage, KEY);
+        assert_eq!(restored.len(), 1, "recorded");
+        let (_, _, restored, _) = restored.remove(0);
         let versions = |files: BTreeMap<String, PendingFile>| {
             files
                 .into_iter()
@@ -2640,6 +2707,11 @@ mod tests {
             turns.pending_changes(terminal_id).unwrap().files.clone()
         });
         assert_eq!(versions(restored), versions(files));
+
+        // While Solo is closed, the agent in the terminal (which kept
+        // running) changes another line.
+        let closed_left = lines(&[(2, "TWO"), (5, "FIVE"), (9, "mine")]);
+        std::fs::write(repository.join("a.txt"), &closed_left).unwrap();
 
         // A new Solo: the terminal's view comes back with its id.
         let restarted = cx.new(|_| AgentTurns {
@@ -2665,8 +2737,177 @@ mod tests {
         }
         cx.executor().advance_clock(PENDING_REFRESH_DELAY);
         cx.run_until_parked();
+        // That's pending, as the agent's, not taken in as the user's.
         restarted.read_with(cx, |turns, _| {
             assert_eq!(turns.pending_file_count(terminal_id), 1);
+            let file = &turns.pending_changes(terminal_id).unwrap().files["a.txt"];
+            assert_eq!(
+                file.accepted,
+                pending::Version::Text(lines(&[(9, "mine")]).into())
+            );
+            assert_eq!(file.left, pending::Version::Text(closed_left.as_str().into()));
+            assert_eq!(
+                file.while_closed,
+                Some((
+                    pending::Version::Text(lines(&[(2, "TWO"), (9, "mine")]).into()),
+                    pending::Version::Text(closed_left.as_str().into()),
+                ))
+            );
+        });
+    }
+
+    fn display_terminal(cx: &mut TestAppContext) -> Entity<TerminalView> {
+        let window = cx.add_window(|window, cx| {
+            let terminal = cx.new(|cx| {
+                terminal::TerminalBuilder::new_display_only(
+                    Default::default(),
+                    terminal::terminal_settings::AlternateScroll::On,
+                    None,
+                    0,
+                    cx.background_executor(),
+                    util::paths::PathStyle::local(),
+                )
+                .subscribe(cx)
+            });
+            TerminalView::new(
+                terminal,
+                WeakEntity::new_invalid(),
+                None,
+                WeakEntity::new_invalid(),
+                window,
+                cx,
+            )
+        });
+        window.root(cx).unwrap()
+    }
+
+    fn committed_repository(directory: &Path, files: &[(&str, &str)]) {
+        std::fs::create_dir_all(directory).unwrap();
+        git(directory, &["init", "--quiet"]);
+        git(directory, &["config", "core.autocrlf", "false"]);
+        for (name, text) in files {
+            std::fs::write(directory.join(name), text).unwrap();
+        }
+        git(directory, &["add", "."]);
+        git(directory, &["commit", "--quiet", "-m", "initial"]);
+    }
+
+    /// SOLO: Two turns that end close together: the second's end waits for
+    /// the first's, and both turns' changes are pending (G59).
+    #[gpui::test]
+    async fn test_turn_ends_close_together_both_count(cx: &mut TestAppContext) {
+        crate::tests::init_test(cx).await;
+        cx.executor().allow_parking();
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        committed_repository(&repository, &[("a.txt", "a\n"), ("b.txt", "b\n")]);
+        let terminal_view = display_terminal(cx);
+        let terminal_id = terminal_view.entity_id();
+        let turns = cx.update(|cx| AgentTurns::global(cx));
+        turns.update(cx, |turns, _| {
+            turns.storage_root = Some(temp.path().join("storage"))
+        });
+        let start = |cx: &mut TestAppContext| {
+            turns.update(cx, |turns, cx| {
+                turns.start_turn(
+                    terminal_view.clone(),
+                    Some(repository.clone()),
+                    None,
+                    WeakEntity::new_invalid(),
+                    DiagnosticsBefore::default(),
+                    cx,
+                )
+            });
+            let started = std::time::Instant::now();
+            while !turns.read_with(cx, |turns, _| turns.start_snapshot_taken(terminal_id)) {
+                assert!(started.elapsed() < Duration::from_secs(30));
+                cx.run_until_parked();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+
+        // A review is open, so turn 1's changes aren't accepted at turn 2's
+        // end.
+        turns.update(cx, |turns, _| turns.review_opened(terminal_id));
+        start(cx);
+        std::fs::write(repository.join("a.txt"), "A\n").unwrap();
+        std::fs::write(repository.join("b.txt"), "B\n").unwrap();
+        // Turn 1 ends, and turn 2 starts and ends, before anything of turn
+        // 1's end is recorded: turn 2's end must not cancel it.
+        turns.update(cx, |turns, cx| {
+            turns.end_turn(terminal_view.clone(), None, cx);
+            turns.start_turn(
+                terminal_view.clone(),
+                Some(repository.clone()),
+                None,
+                WeakEntity::new_invalid(),
+                DiagnosticsBefore::default(),
+                cx,
+            );
+            turns.end_turn(terminal_view.clone(), None, cx);
+        });
+        let started = std::time::Instant::now();
+        while !turns.read_with(cx, |turns, _| turns.active_turns(terminal_id).is_empty()) {
+            assert!(started.elapsed() < Duration::from_secs(30));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        turns.read_with(cx, |turns, _| {
+            let numbers: Vec<usize> = turns.turns(terminal_id).map(|turn| turn.number).collect();
+            assert_eq!(numbers, vec![1]);
+            let changes = turns.pending_changes(terminal_id).unwrap();
+            let paths: Vec<&String> = changes.files.keys().collect();
+            assert_eq!(paths, vec!["a.txt", "b.txt"]);
+        });
+    }
+
+    /// SOLO: The agent works in another folder: what's pending in the first
+    /// stays, the tab counts both, and the review shows the latest (G59).
+    #[gpui::test]
+    async fn test_pending_changes_in_two_folders(cx: &mut TestAppContext) {
+        crate::tests::init_test(cx).await;
+        cx.executor().allow_parking();
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        committed_repository(&first, &[("a.txt", "a\n")]);
+        committed_repository(&second, &[("x.txt", "x\n")]);
+        let terminal_view = display_terminal(cx);
+        let terminal_id = terminal_view.entity_id();
+        let turns = cx.update(|cx| AgentTurns::global(cx));
+        turns.update(cx, |turns, _| {
+            turns.storage_root = Some(temp.path().join("storage"))
+        });
+        for (directory, name) in [(&first, "a.txt"), (&second, "x.txt")] {
+            turns.update(cx, |turns, cx| {
+                turns.start_turn(
+                    terminal_view.clone(),
+                    Some(directory.clone()),
+                    None,
+                    WeakEntity::new_invalid(),
+                    DiagnosticsBefore::default(),
+                    cx,
+                )
+            });
+            cx.run_until_parked();
+            std::fs::write(directory.join(name), "changed\n").unwrap();
+            turns.update(cx, |turns, cx| {
+                turns.end_turn(terminal_view.clone(), None, cx)
+            });
+            cx.run_until_parked();
+        }
+        turns.read_with(cx, |turns, _| {
+            assert_eq!(turns.pending_file_count(terminal_id), 2);
+            let current = turns.pending_changes(terminal_id).unwrap();
+            assert_eq!(current.directory, second);
+            assert_eq!(current.files.keys().collect::<Vec<_>>(), vec!["x.txt"]);
+            let terminal = &turns.terminals[&terminal_id];
+            let first_changes = terminal
+                .changes
+                .iter()
+                .find(|changes| changes.directory == first)
+                .expect("the first folder's changes stay");
+            assert_eq!(first_changes.files.keys().collect::<Vec<_>>(), vec!["a.txt"]);
         });
     }
 
