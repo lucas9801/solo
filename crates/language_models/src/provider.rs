@@ -68,6 +68,40 @@ pub(crate) fn resolve_custom_headers(
     CustomHeaders::new(headers)
 }
 
+/// SOLO: Local servers (llama.cpp, LM Studio) used to be probed on their
+/// default localhost ports at every start, logging a connection error for
+/// everyone who doesn't run one (Solo's default: no AI model). They now look
+/// for models on their own only when the user's settings name the provider: a
+/// `language_models` section for it, or an agent model picked from it. Without
+/// that, discovery waits for something that needs the models to authenticate
+/// the provider (the agent, the settings page, commit messages), as Ollama does.
+pub(crate) fn user_settings_name_provider(
+    provider_id: &str,
+    has_section: impl FnOnce(&settings::AllLanguageModelSettingsContent) -> bool,
+    cx: &gpui::App,
+) -> bool {
+    let Some(user_settings) = cx.global::<settings::SettingsStore>().raw_user_settings() else {
+        return false;
+    };
+    let content = &user_settings.content;
+    if content.language_models.as_ref().is_some_and(has_section) {
+        return true;
+    }
+    content.agent.as_ref().is_some_and(|agent| {
+        agent
+            .default_model
+            .iter()
+            .chain(agent.subagent_model.iter())
+            .chain(agent.inline_assistant_model.iter())
+            .chain(agent.commit_message_model.iter())
+            .chain(agent.thread_summary_model.iter())
+            .chain(agent.compaction_model.iter())
+            .chain(agent.inline_alternatives.iter().flatten())
+            .chain(agent.favorite_models.iter())
+            .any(|selection| selection.provider.0 == provider_id)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
