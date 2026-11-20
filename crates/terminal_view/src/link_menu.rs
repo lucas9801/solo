@@ -841,6 +841,7 @@ mod view_tests {
 
     fn engine() -> serde_json::Value {
         json!({
+            ".git": {},
             "Source": {
                 "Runtime": { "Core": { "Containers": { "Array.h": "x\n".repeat(900) } } },
                 "ThirdParty": { "Eigen": { "Array.h": "x\n".repeat(900) } },
