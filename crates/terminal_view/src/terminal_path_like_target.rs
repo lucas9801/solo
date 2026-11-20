@@ -3,15 +3,15 @@ use anyhow::Result;
 use editor::items::open_resolved_target;
 use gpui::{App, AppContext as _, AsyncApp, Context, Entity, Task, TaskExt, WeakEntity, Window};
 use project::Project;
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 use terminal::PathLikeTarget;
-use workspace::path_link::PathMatching;
 #[cfg(not(test))]
-use workspace::path_link::resolve_open_target_near;
+use workspace::path_link::resolve_link_near;
 #[cfg(test)]
 use workspace::path_link::{
-    BackgroundPathChecks, OpenTargetFoundBy, resolve_open_target_with_fs_checks,
+    BackgroundPathChecks, OpenTargetFoundBy, resolve_link_with_fs_checks,
 };
+use workspace::path_link::{OtherTabTarget, PathMatching, ResolvedLink, find_in_other_tabs};
 use workspace::{Workspace, path_link::OpenTarget};
 
 pub(super) fn hover_path_like_target(
@@ -43,33 +43,49 @@ fn possible_hover_target(
     cx: &mut Context<TerminalView>,
     #[cfg(test)] background_path_checks: BackgroundPathChecks,
 ) -> Task<()> {
-    let file_to_open_task = resolve_path_like_target(
+    let resolution_task = resolve_path_like_target(
         workspace,
         path_like_target,
+        LinkPurpose::Hover,
         cx,
         #[cfg(test)]
         background_path_checks,
     );
     cx.spawn(async move |terminal_view, cx| {
-        let file_to_open = file_to_open_task.await;
+        let resolution = resolution_task.await;
         terminal_view
             .update(cx, |terminal_view, cx| {
-                match file_to_open {
-                    Some(OpenTarget::Path(path, ..) | OpenTarget::Worktree(path, ..)) => {
-                        terminal_view.hover = Some(HoverTarget {
-                            tooltip: path
-                                .to_string(&|path: &PathBuf| path.to_string_lossy().into_owned()),
-                            hovered_word,
-                        });
-                    }
-                    None => {
-                        terminal_view.hover = None;
-                    }
+                terminal_view.hover = match &resolution {
+                    Some(PathLinkResolution::Here(link)) => Some(HoverTarget {
+                        tooltip: link_tooltip(link),
+                        hovered_word,
+                    }),
+                    // SOLO: shown once the link menu can offer the other
+                    // tabs' files; until then, no link, as before.
+                    Some(PathLinkResolution::InOtherTabs(_)) | None => None,
                 };
                 cx.notify();
             })
             .ok();
     })
+}
+
+/// SOLO: the tooltip of a path link: the full path of the file it opens,
+/// and how many files of its name there are when which one is a guess.
+fn link_tooltip(link: &ResolvedLink) -> String {
+    let path = link
+        .target
+        .path()
+        .to_string(&|path: &PathBuf| path.to_string_lossy().into_owned());
+    if !link.ambiguous {
+        return path;
+    }
+    let count = link.candidates.len();
+    if util::i18n::is_chinese() {
+        format!("{path} 等 {count} 个同名文件")
+    } else {
+        format!("{path} (1 of {count} files with this name)")
+    }
 }
 
 pub(super) fn open_path_like_target(
@@ -98,54 +114,86 @@ pub(super) fn open_path_like_target(
     }
 }
 
+/// SOLO: a click resolves the link itself, the same way hovering does
+/// ([`resolve_path_like_target`]), instead of relying on the hover having
+/// found it: a click right after the mouse arrived, or on a link whose
+/// hover gave up, still opens it.
 fn possibly_open_target(
     workspace: &WeakEntity<Workspace>,
-    terminal_view: &mut TerminalView,
+    _terminal_view: &mut TerminalView,
     path_like_target: &PathLikeTarget,
     window: &mut Window,
     cx: &mut Context<TerminalView>,
     #[cfg(test)] background_path_checks: BackgroundPathChecks,
 ) -> Task<Result<Option<OpenTarget>>> {
-    if terminal_view.hover.is_none() {
-        return Task::ready(Ok(None));
-    }
     let workspace = workspace.clone();
     let path_like_target = path_like_target.clone();
     cx.spawn_in(window, async move |terminal_view, cx| {
-        let Some(open_target) = terminal_view
+        let resolution = terminal_view
             .update(cx, |_, cx| {
                 resolve_path_like_target(
                     &workspace,
                     &path_like_target,
+                    LinkPurpose::Click,
                     cx,
                     #[cfg(test)]
                     background_path_checks,
                 )
             })?
-            .await
-        else {
+            .await;
+        // SOLO: a guess (`ambiguous`) still opens the first file, and a file
+        // only other tabs have opens nothing, until the link menu can ask.
+        let Some(PathLinkResolution::Here(link)) = resolution else {
             return Ok(None);
         };
-
+        let open_target = link.target;
         let opened = open_resolved_target(&workspace, &open_target, cx).await?;
         Ok(opened.then_some(open_target))
     })
 }
 
-/// SOLO: what a path link opens, for its tooltip and its click alike. A bare
+/// SOLO: what a path link is resolved for: hovering gives up on the other
+/// project tabs after a moment; a click waits for them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LinkPurpose {
+    Hover,
+    Click,
+}
+
+/// SOLO: how long hovering a path link searches the other project tabs.
+const HOVER_OTHER_TABS_BUDGET: Duration = Duration::from_millis(50);
+/// SOLO: how many of the files of a link's name are checked for the line it
+/// names, to rank them.
+const MAX_ROW_CHECKS: usize = 8;
+
+/// SOLO: what a path link means.
+#[derive(Clone, Debug)]
+pub(crate) enum PathLinkResolution {
+    /// Files in this tab's folders, the terminal's folder or elsewhere on
+    /// disk, best first; [`ResolvedLink::ambiguous`] when which one is a
+    /// guess.
+    Here(ResolvedLink),
+    /// Files only other (loaded) project tabs have.
+    InOtherTabs(Vec<OtherTabTarget>),
+}
+
+/// SOLO: what a path link means, for its tooltip and its click alike. A bare
 /// position (`:3788`) put in the file named nearest before it is tried in
 /// the other files named before it too, nearest first, and goes to the first
 /// that exists and has that line; when none does, to the nearest that exists.
-fn resolve_path_like_target(
+/// Several files of the link's name are ranked, the line it names counting
+/// too; when none is found here, the other project tabs are searched.
+pub(crate) fn resolve_path_like_target(
     workspace: &WeakEntity<Workspace>,
     path_like_target: &PathLikeTarget,
-    cx: &App,
+    purpose: LinkPurpose,
+    cx: &mut App,
     #[cfg(test)] background_path_checks: BackgroundPathChecks,
-) -> Task<Option<OpenTarget>> {
-    let resolve = |maybe_path: &str| {
+) -> Task<Option<PathLinkResolution>> {
+    let resolve = |maybe_path: &str, cx: &App| {
         #[cfg(not(test))]
         {
-            resolve_open_target_near(
+            resolve_link_near(
                 workspace,
                 PathMatching::Heuristic,
                 maybe_path,
@@ -156,7 +204,7 @@ fn resolve_path_like_target(
         }
         #[cfg(test)]
         {
-            resolve_open_target_with_fs_checks(
+            resolve_link_with_fs_checks(
                 workspace,
                 PathMatching::Heuristic,
                 maybe_path,
@@ -167,36 +215,83 @@ fn resolve_path_like_target(
             )
         }
     };
-    let nearest = resolve(&path_like_target.maybe_path);
-    if path_like_target.position_files.is_empty() {
-        return nearest;
-    }
     let Some(project) = workspace
         .upgrade()
         .map(|workspace| workspace.read(cx).project().clone())
     else {
-        return nearest;
+        return Task::ready(None);
     };
     // All are resolved at once, so hovering waits for the slowest one, not
     // for all of them in turn.
-    let candidates = std::iter::once(nearest)
+    let candidates = std::iter::once(resolve(&path_like_target.maybe_path, cx))
         .chain(
             path_like_target
                 .position_files
                 .iter()
-                .map(|maybe_path| resolve(maybe_path)),
+                .map(|maybe_path| resolve(maybe_path, cx)),
         )
         .collect::<Vec<_>>();
+    let has_position_files = !path_like_target.position_files.is_empty();
+    let workspace = workspace.clone();
+    let maybe_path = path_like_target.maybe_path.clone();
     cx.spawn(async move |cx| {
         let candidates = futures::future::join_all(candidates).await;
-        for candidate in candidates.iter().flatten() {
-            if has_row(candidate, &project, cx).await {
-                return Some(candidate.clone());
+        let link = if has_position_files {
+            let mut with_row = None;
+            for candidate in candidates.iter().flatten() {
+                if has_row(&candidate.target, &project, cx).await {
+                    with_row = Some(candidate.clone());
+                    break;
+                }
+            }
+            // None has the line: the nearest that exists, rather than no
+            // link when the nearest isn't a file at all (`classes.getptr`).
+            with_row.or_else(|| candidates.into_iter().flatten().next())
+        } else {
+            candidates.into_iter().flatten().next()
+        };
+        match link {
+            Some(link) if link.candidates.len() > 1 => Some(PathLinkResolution::Here(
+                rank_by_rows(link, &project, cx).await,
+            )),
+            Some(link) => Some(PathLinkResolution::Here(link)),
+            None => {
+                let budget = (purpose == LinkPurpose::Hover).then_some(HOVER_OTHER_TABS_BUDGET);
+                let in_other_tabs = cx
+                    .update(|cx| find_in_other_tabs(&workspace, &maybe_path, budget, cx))
+                    .await;
+                (!in_other_tabs.is_empty())
+                    .then_some(PathLinkResolution::InOtherTabs(in_other_tabs))
             }
         }
-        // None has the line: the nearest that exists, rather than no link
-        // when the nearest isn't a file at all (e.g. `classes.getptr`).
-        candidates.into_iter().flatten().next()
+    })
+}
+
+/// SOLO: ranks several files of a link's name again, now knowing whether
+/// the first few have the line it names.
+async fn rank_by_rows(
+    link: ResolvedLink,
+    project: &Entity<Project>,
+    cx: &mut AsyncApp,
+) -> ResolvedLink {
+    let mut candidates = link.candidates;
+    if candidates
+        .first()
+        .is_none_or(|candidate| candidate.target.path().row.is_none())
+    {
+        return ResolvedLink::from_candidates(candidates).unwrap_or(ResolvedLink {
+            target: link.target,
+            candidates: Vec::new(),
+            ambiguous: link.ambiguous,
+        });
+    }
+    for candidate in candidates.iter_mut().take(MAX_ROW_CHECKS) {
+        candidate.rank.has_row = Some(has_row(&candidate.target, project, cx).await);
+    }
+    ResolvedLink::from_candidates(candidates).unwrap_or(ResolvedLink {
+        target: link.target,
+        candidates: Vec::new(),
+        ambiguous: link.ambiguous,
     })
 }
 
@@ -1367,6 +1462,374 @@ mod tests {
         assert!(has_row(&target, &project, &mut async_cx).await);
     }
 
+    /// SOLO: the five `Array.h` of Unreal Engine (case as on disk), in the
+    /// order a traversal meets them, with as many lines as each roughly has.
+    fn unreal_array_headers() -> serde_json::Value {
+        json!({
+            "Extras": { "ThirdPartyNotUE": { "libimobiledevice": { "src": {
+                "libimobiledevice-vs": { "libplist": { "include": { "plist": {
+                    "Array.h": lines(100),
+                } } } }
+            } } } },
+            "Source": {
+                "Runtime": {
+                    "Core": { "Public": { "Containers": { "Array.h": lines(3500) } } },
+                    "Experimental": { "ChaosCore": { "Public": { "Chaos": {
+                        "Array.h": lines(300),
+                    } } } },
+                    "Solaris": { "uLangCore": { "Public": { "uLang": { "Common": {
+                        "Containers": { "Array.h": lines(1500) },
+                    } } } } },
+                },
+                "ThirdParty": { "Eigen": { "Eigen": { "src": { "Core": {
+                    "Array.h": lines(400),
+                } } } } },
+            },
+        })
+    }
+
+    async fn resolve_in(
+        cx: &mut gpui::VisualTestContext,
+        workspace: &gpui::WeakEntity<Workspace>,
+        target: &PathLikeTarget,
+        purpose: LinkPurpose,
+    ) -> Option<PathLinkResolution> {
+        cx.update(|_, cx| {
+            resolve_path_like_target(
+                workspace,
+                target,
+                purpose,
+                cx,
+                BackgroundPathChecks::LocalFileSystem,
+            )
+        })
+        .await
+    }
+
+    fn target_at(maybe_path: &str, working_directory: &str) -> PathLikeTarget {
+        PathLikeTarget {
+            maybe_path: maybe_path.to_string(),
+            working_directory: Some(PathBuf::from(working_directory)),
+            context_paths: Vec::new(),
+            position_files: Vec::new(),
+        }
+    }
+
+    // SOLO: "UE 的 TArray 明确会变成空数组（Array.h:883）" in the Engine tab,
+    // with no other path written nearby, opened libplist's Array.h (the first
+    // one a traversal meets). The engine's own Containers/Array.h comes first
+    // now, and since only tie-breakers put it there, it's marked as a guess.
+    #[gpui::test]
+    async fn test_same_name_files_are_ranked(cx: &mut TestAppContext) {
+        let mut test_path_like = init_test(
+            cx,
+            vec![(path!("/Engine"), unreal_array_headers())],
+            vec![path!("/Engine")],
+        )
+        .await;
+        let core = path!("/Engine/Source/Runtime/Core/Public/Containers/Array.h");
+        let (hover_target, open_target) = test_path_like(
+            HoveredWord {
+                word: "Array.h:883".to_string(),
+                word_match: Range::new(Point::new(0, 0), Point::new(0, 0)),
+                id: 0,
+            },
+            target_at("Array.h:883", path!("/Engine")),
+            BackgroundPathChecks::LocalFileSystem,
+        )
+        .await;
+        let open_target = open_target.expect("a target should open");
+        assert_eq!(open_target.path().path, Path::new(core));
+        assert_eq!(open_target.path().row, Some(883));
+        assert_eq!(
+            hover_target.expect("a tooltip should show").tooltip,
+            format!("{core}:883 (1 of 5 files with this name)")
+        );
+
+        // In the terminal's own folder: the one there, no guess.
+        let (hover_target, open_target) = test_path_like(
+            HoveredWord {
+                word: "Array.h:883".to_string(),
+                word_match: Range::new(Point::new(0, 0), Point::new(0, 0)),
+                id: 0,
+            },
+            target_at("Array.h:883", path!("/Engine/Source/Runtime/Experimental")),
+            BackgroundPathChecks::LocalFileSystem,
+        )
+        .await;
+        let chaos = path!("/Engine/Source/Runtime/Experimental/ChaosCore/Public/Chaos/Array.h");
+        assert_eq!(open_target.unwrap().path().path, Path::new(chaos));
+        assert_eq!(hover_target.unwrap().tooltip, format!("{chaos}:883"));
+    }
+
+    // SOLO: the ranking and the guess flag the link menu shows.
+    #[gpui::test]
+    async fn test_same_name_candidates_and_their_order(cx: &mut TestAppContext) {
+        let fs = cx.update(AppState::test).fs.as_fake().clone();
+        cx.update(|cx| {
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        fs.insert_tree(path!("/Engine"), unreal_array_headers()).await;
+        let project = Project::test(fs, [Path::new(path!("/Engine"))], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().downgrade());
+        cx.run_until_parked();
+
+        let Some(PathLinkResolution::Here(link)) = resolve_in(
+            cx,
+            &workspace,
+            &target_at("Array.h:883", path!("/Engine")),
+            LinkPurpose::Hover,
+        )
+        .await
+        else {
+            panic!("Array.h should resolve here");
+        };
+        let order = link
+            .candidates
+            .iter()
+            .map(|candidate| {
+                candidate
+                    .target
+                    .path()
+                    .path
+                    .strip_prefix(path!("/Engine"))
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            [
+                // Its own code, long enough, shortest path.
+                "Source/Runtime/Core/Public/Containers/Array.h",
+                "Source/Runtime/Solaris/uLangCore/Public/uLang/Common/Containers/Array.h",
+                // Too short for line 883.
+                "Source/Runtime/Experimental/ChaosCore/Public/Chaos/Array.h",
+                // Someone else's code.
+                "Source/ThirdParty/Eigen/Eigen/src/Core/Array.h",
+                "Extras/ThirdPartyNotUE/libimobiledevice/src/libimobiledevice-vs/libplist/include/plist/Array.h",
+            ]
+        );
+        assert!(link.ambiguous);
+        assert_eq!(link.candidates[1].rank.has_row, Some(true));
+        assert_eq!(link.candidates[2].rank.has_row, Some(false));
+        assert!(link.candidates[3].rank.third_party);
+
+        // A path written nearby decides it: no guess.
+        let mut near_chaos = target_at("Array.h:12", path!("/Engine"));
+        near_chaos.context_paths =
+            vec!["Source/Runtime/Experimental/ChaosCore/Public/Chaos/Vector.h".to_string()];
+        let Some(PathLinkResolution::Here(link)) =
+            resolve_in(cx, &workspace, &near_chaos, LinkPurpose::Click).await
+        else {
+            panic!("Array.h should resolve here");
+        };
+        assert!(!link.ambiguous);
+        assert!(
+            link.target
+                .path()
+                .path
+                .ends_with("ChaosCore/Public/Chaos/Array.h")
+        );
+    }
+
+    // SOLO: hovering and clicking resolve a link the same way, and a click
+    // opens it even when the hover hasn't found it (yet).
+    #[gpui::test]
+    async fn test_click_resolves_without_a_hover(cx: &mut TestAppContext) {
+        let fs = cx.update(AppState::test).fs.as_fake().clone();
+        cx.update(|cx| {
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        fs.insert_tree(path!("/Engine"), unreal_array_headers()).await;
+        let project = Project::test(fs, [Path::new(path!("/Engine"))], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let terminal = cx.new(|cx| {
+            TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        let terminal_view = cx.update(|window, cx| {
+            cx.new(|cx| {
+                TerminalView::new(
+                    terminal,
+                    workspace.downgrade(),
+                    None,
+                    project.downgrade(),
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.run_until_parked();
+        let target = target_at("Array.h:883", path!("/Engine"));
+        let hovered = resolve_in(cx, &workspace.downgrade(), &target, LinkPurpose::Hover).await;
+        let clicked = resolve_in(cx, &workspace.downgrade(), &target, LinkPurpose::Click).await;
+        let path_of = |resolution: Option<PathLinkResolution>| match resolution {
+            Some(PathLinkResolution::Here(link)) => Some(link.target.path().clone()),
+            _ => None,
+        };
+        assert_eq!(path_of(hovered), path_of(clicked));
+
+        assert!(terminal_view.read_with(cx, |view, _| view.hover.is_none()));
+        let opened = terminal_view
+            .update_in(cx, |terminal_view, window, cx| {
+                possibly_open_target(
+                    &workspace.downgrade(),
+                    terminal_view,
+                    &target,
+                    window,
+                    cx,
+                    BackgroundPathChecks::LocalFileSystem,
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            opened.map(|target| target.path().path.clone()),
+            Some(PathBuf::from(path!(
+                "/Engine/Source/Runtime/Core/Public/Containers/Array.h"
+            )))
+        );
+    }
+
+    // SOLO: paths written relative to a folder next to the terminal's, in a
+    // Godot project as `res://`, and under `%APPDATA%`.
+    #[gpui::test]
+    async fn test_paths_outside_the_terminal_folder(cx: &mut TestAppContext) {
+        let app_data = std::env::var("APPDATA").ok();
+        let mut trees = vec![
+            (path!("/work/godot_engine"), json!({ "core": { "a.cpp": "" } })),
+            (
+                path!("/work/DBBench_GodotTestbed"),
+                json!({
+                    "project.godot": "",
+                    "scripts": { "bench.gd": lines(50) },
+                    "scenes": { "main.tscn": "" },
+                }),
+            ),
+        ];
+        if let Some(app_data) = &app_data {
+            trees.push((app_data.as_str(), json!({ "Solo": { "settings.json": "" } })));
+        }
+        let mut test_path_like = init_test(cx, trees, vec![path!("/work/godot_engine")]).await;
+        let mut cases = vec![
+            (
+                "DBBench_GodotTestbed/scripts/bench.gd:12",
+                path!("/work/godot_engine"),
+                PathBuf::from(path!("/work/DBBench_GodotTestbed/scripts/bench.gd")),
+            ),
+            (
+                "DBBench_GodotTestbed/scripts/bench.gd",
+                path!("/work/godot_engine/core"),
+                PathBuf::from(path!("/work/DBBench_GodotTestbed/scripts/bench.gd")),
+            ),
+            (
+                "res://scenes/main.tscn",
+                path!("/work/DBBench_GodotTestbed/scripts"),
+                PathBuf::from(path!("/work/DBBench_GodotTestbed/scenes/main.tscn")),
+            ),
+        ];
+        if let Some(app_data) = &app_data {
+            cases.push((
+                "%APPDATA%\\Solo\\settings.json",
+                path!("/work/godot_engine"),
+                PathBuf::from(app_data).join("Solo").join("settings.json"),
+            ));
+        }
+        for (maybe_path, working_directory, expected) in cases {
+            let (hover_target, open_target) = test_path_like(
+                HoveredWord {
+                    word: maybe_path.to_string(),
+                    word_match: Range::new(Point::new(0, 0), Point::new(0, 0)),
+                    id: 0,
+                },
+                target_at(maybe_path, working_directory),
+                BackgroundPathChecks::LocalFileSystem,
+            )
+            .await;
+            assert!(hover_target.is_some(), "{maybe_path}: no tooltip");
+            assert_eq!(
+                open_target.map(|target| target.path().path.clone()),
+                Some(expected),
+                "{maybe_path}"
+            );
+        }
+
+        // A bare file name isn't looked for next to the terminal's folder.
+        let (hover_target, _) = test_path_like(
+            HoveredWord {
+                word: "project.godot".to_string(),
+                word_match: Range::new(Point::new(0, 0), Point::new(0, 0)),
+                id: 0,
+            },
+            target_at("project.godot", path!("/work/godot_engine")),
+            BackgroundPathChecks::LocalFileSystem,
+        )
+        .await;
+        assert!(hover_target.is_none());
+    }
+
+    // SOLO: a file only another (loaded) project tab has: found there, from
+    // its file list, but not shown as a link until the link menu can offer it.
+    #[gpui::test]
+    async fn test_files_in_other_tabs(cx: &mut TestAppContext) {
+        let fs = cx.update(AppState::test).fs.as_fake().clone();
+        cx.update(|cx| {
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        fs.insert_tree(path!("/godot"), json!({ "core": { "a.cpp": "" } }))
+            .await;
+        fs.insert_tree(
+            path!("/unity"),
+            json!({ "Assets": { "UI": { "CSSpriteDamageLabel.cs": lines(300) } } }),
+        )
+        .await;
+        let godot = Project::test(fs.clone(), [Path::new(path!("/godot"))], cx).await;
+        let unity = Project::test(fs, [Path::new(path!("/unity"))], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(godot.clone(), window, cx));
+        let godot_workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().downgrade());
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.test_add_workspace(unity, window, cx);
+        });
+        cx.run_until_parked();
+
+        let target = target_at("CSSpriteDamageLabel.cs:225", path!("/godot"));
+        for purpose in [LinkPurpose::Hover, LinkPurpose::Click] {
+            let Some(PathLinkResolution::InOtherTabs(found)) =
+                resolve_in(cx, &godot_workspace, &target, purpose).await
+            else {
+                panic!("the file should be found in the unity tab ({purpose:?})");
+            };
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].tab_name, "unity");
+            assert_eq!(found[0].relative_folder, "Assets/UI");
+            assert_eq!(found[0].target.path().row, Some(225));
+        }
+        // Nothing anywhere: nothing.
+        let missing = target_at("Missing.cs:1", path!("/godot"));
+        assert!(
+            resolve_in(cx, &godot_workspace, &missing, LinkPurpose::Click)
+                .await
+                .is_none()
+        );
+    }
+
     // SOLO: how long resolving a bare position for its tooltip takes
     // (a click resolves it the same way, then opens the file) in a project
     // of Godot's size, with and without the files named further up. Run
@@ -1425,6 +1888,7 @@ mod tests {
                     resolve_path_like_target(
                         &workspace,
                         &target,
+                        LinkPurpose::Click,
                         cx,
                         BackgroundPathChecks::LocalFileSystem,
                     )

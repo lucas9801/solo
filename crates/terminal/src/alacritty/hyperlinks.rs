@@ -8,7 +8,7 @@ use alacritty_terminal::{
         search::{Match, RegexIter, RegexSearch},
     },
 };
-use log::{info, warn};
+use log::warn;
 use regex::Regex;
 use std::{
     ops::{Index, Range as StdRange},
@@ -29,6 +29,18 @@ pub(crate) struct RegexSearches {
     path_hyperlink_regexes: Vec<Regex>,
     path_hyperlink_timeout: Duration,
 }
+
+/// SOLO: what a link is looked for: hovering, which runs on every mouse
+/// move and must stay quick, or a click, which may take longer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LinkSearch {
+    Hover,
+    Click,
+}
+
+/// SOLO: the least time a click gets to find the path under it: a click
+/// happens once, and a link missed there can't be clicked at all.
+const CLICK_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct HyperlinkMatch {
@@ -74,6 +86,16 @@ impl RegexSearches {
         }
     }
 
+    /// SOLO: how long finding a path link may take. `0` (the setting's way
+    /// to turn path links off) stays off for clicks too.
+    fn timeout(&self, search: LinkSearch) -> Duration {
+        match search {
+            LinkSearch::Hover => self.path_hyperlink_timeout,
+            LinkSearch::Click if self.path_hyperlink_timeout.is_zero() => Duration::ZERO,
+            LinkSearch::Click => self.path_hyperlink_timeout.max(CLICK_TIMEOUT),
+        }
+    }
+
     fn path_hyperlink_regexes(
         path_hyperlink_regexes: impl IntoIterator<Item: AsRef<str>>,
     ) -> Vec<Regex> {
@@ -97,11 +119,24 @@ impl RegexSearches {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn find_from_grid_point<T: EventListener>(
     term: &Term<T>,
     point: AlacPoint,
     regex_searches: &mut RegexSearches,
     path_style: PathStyle,
+) -> Option<HyperlinkMatch> {
+    find_link_at(term, point, regex_searches, path_style, LinkSearch::Hover)
+}
+
+/// The link at `point`: an OSC 8 link, a URL, or a path, found (SOLO)
+/// within the time `search` allows.
+pub(crate) fn find_link_at<T: EventListener>(
+    term: &Term<T>,
+    point: AlacPoint,
+    regex_searches: &mut RegexSearches,
+    path_style: PathStyle,
+    search: LinkSearch,
 ) -> Option<HyperlinkMatch> {
     let grid = term.grid();
     let link = grid.index(point).hyperlink();
@@ -144,23 +179,15 @@ pub(crate) fn find_from_grid_point<T: EventListener>(
         if let Some((url, url_match)) = url_match {
             Some((url, true, url_match))
         } else {
-            joined_path_match(
+            let timeout = regex_searches.timeout(search);
+            find_path(
                 term,
                 line_start,
                 line_end,
                 point,
-                &mut regex_searches.path_hyperlink_regexes,
-                regex_searches.path_hyperlink_timeout,
+                &regex_searches.path_hyperlink_regexes,
+                timeout,
             )
-            .or_else(|| {
-                path_match(
-                    term,
-                    &[(line_start, line_end)],
-                    point,
-                    &mut regex_searches.path_hyperlink_regexes,
-                    regex_searches.path_hyperlink_timeout,
-                )
-            })
             .map(|(path, path_match)| (path, false, path_match))
         }
     };
@@ -176,6 +203,47 @@ pub(crate) fn find_from_grid_point<T: EventListener>(
         hyperlink.position_files = position_files;
         hyperlink
     })
+}
+
+/// SOLO: the path at `hovered` on the line from `line_start` to `line_end`.
+/// Every regex runs on the hovered line, however long that takes: one that
+/// didn't get to run would leave the path without a link. Within `timeout`,
+/// a path the program broke across the line's edge is looked for as well
+/// (see [`joined_path_match`]); past it, the hovered line's path is kept and
+/// the time is logged with the line's length (never its text).
+fn find_path<T>(
+    term: &Term<T>,
+    line_start: AlacPoint,
+    line_end: AlacPoint,
+    hovered: AlacPoint,
+    path_hyperlink_regexes: &[Regex],
+    timeout: Duration,
+) -> Option<(String, Match)> {
+    if path_hyperlink_regexes.is_empty() || timeout.is_zero() {
+        return None;
+    }
+    let started = Instant::now();
+    let on_line = path_match(
+        term,
+        &[(line_start, line_end)],
+        hovered,
+        path_hyperlink_regexes,
+    );
+    let joined = if started.elapsed() <= timeout {
+        joined_path_match(term, line_start, line_end, hovered, path_hyperlink_regexes)
+    } else {
+        None
+    };
+    let elapsed = started.elapsed();
+    if elapsed > timeout {
+        let line_length = term.bounds_to_string(line_start, line_end).chars().count();
+        warn!(
+            "Path hyperlink regexes took {}ms on a line of {line_length} characters ({}ms allowed)",
+            elapsed.as_millis(),
+            timeout.as_millis()
+        );
+    }
+    joined.or(on_line)
 }
 
 /// SOLO: how many lines above a bare position (`:403-405`) to look for the
@@ -504,12 +572,25 @@ fn path_start_in_prose(path: &str, after_prose: bool) -> Option<usize> {
         .find(|(_, c)| c.is_ascii())
         .map_or(path.len(), |(ix, _)| ix);
     let prose = &path[..prose_end];
-    let rest = &path[prose_end..];
+    let mut rest = &path[prose_end..];
+    let mut prose_end = prose_end;
+    // `已改的代码:Runtime/Core/A.cs`, `见,src/a.rs`: a half-width colon or
+    // comma between prose and a path belongs to neither.
+    let mut delimited = false;
+    if !prose.is_empty()
+        && let Some(after) = rest.strip_prefix([':', ',', ';'])
+        && after.starts_with(|c: char| c.is_ascii_alphanumeric() || "_./\\~".contains(c))
+    {
+        rest = after;
+        prose_end += 1;
+        delimited = true;
+    }
     let starts_name = rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
     let starts_path = starts_name || rest.starts_with(['/', '\\', '.', '~']);
     let mut start = if !prose.is_empty()
         && starts_path
-        && (prose.ends_with(PROSE_PUNCTUATION)
+        && (delimited
+            || prose.ends_with(PROSE_PUNCTUATION)
             || (starts_name && (rest.contains(['/', '\\']) || (after_prose && rest.contains('.')))))
     {
         prose_end
@@ -525,27 +606,61 @@ fn path_start_in_prose(path: &str, after_prose: bool) -> Option<usize> {
 }
 
 /// SOLO: how much of `path` to keep when it runs into prose that the regexes
-/// take as part of it, as in `object.h：先看`, `object.h:先看` or `object.h中的`:
-/// it ends before a colon followed by non-ASCII text, and before full-width
-/// punctuation or non-ASCII text that follows an ASCII file name with an
-/// extension. Non-ASCII names (`docs/渲染.md`, `test、2.txt`) are kept whole.
+/// take as part of it, as in `object.h：先看`, `object.h:先看`, `object.h中的`,
+/// `WORKPLAN.md,里面`, `editor/renderdoc_helper，但` or `_append_bone，a.cpp`:
+/// it ends before a half-width colon, comma or semicolon followed by
+/// non-ASCII text; before full-width punctuation that follows ASCII text
+/// (for `、`, only after a directory, a file name or a line number, as
+/// `test、2.txt` may be a name); and before non-ASCII text that follows an
+/// ASCII file name with an extension, or an ASCII directory name that the
+/// text doesn't go on as a name in (`docs/Godot渲染.md` and
+/// `Reborn/解包/a.xml` are kept whole).
 fn path_end_in_prose(path: &str) -> usize {
     let mut previous = None;
     let mut chars = path.char_indices().peekable();
     while let Some((ix, c)) = chars.next() {
         let next = chars.peek().map(|&(_, c)| c);
+        let before = &path[..ix];
         let after_file_name = || {
             previous.is_some_and(|previous: char| previous.is_ascii_alphanumeric())
-                && has_extension(&path[..ix])
+                && has_extension(before)
         };
-        if (c == ':' && next.is_some_and(|next| !next.is_ascii()))
-            || ((PROSE_PUNCTUATION.contains(&c) || !c.is_ascii()) && after_file_name())
+        let after_ascii = previous.is_some_and(|previous: char| previous.is_ascii());
+        let in_directory = || before.contains(['/', '\\']);
+        let punctuation = PROSE_PUNCTUATION.contains(&c);
+        if (matches!(c, ':' | ',' | ';') && next.is_some_and(|next| !next.is_ascii()))
+            || ((punctuation || !c.is_ascii()) && after_file_name())
+            || (punctuation
+                && after_ascii
+                && (c != '、' || in_directory() || ends_with_row(before)))
+            || (!punctuation
+                && !c.is_ascii()
+                && previous.is_some_and(|previous: char| {
+                    previous.is_ascii_alphanumeric() || previous == '_'
+                })
+                && in_directory()
+                && !name_goes_on(&path[ix..]))
         {
             return ix;
         }
         previous = Some(c);
     }
     path.len()
+}
+
+/// SOLO: whether `text` ends in a line number (`a.h:12`) or the end of a
+/// line range (`-34` of `a.h:12-34`).
+fn ends_with_row(text: &str) -> bool {
+    let digits = text.trim_end_matches(|c: char| c.is_ascii_digit());
+    digits.len() < text.len() && digits.ends_with([':', '-'])
+}
+
+/// SOLO: whether non-ASCII text right after an ASCII name in a directory is
+/// still part of a name: it goes on to a directory (`解包/`) or a file name
+/// with an extension (`渲染.md`), without prose punctuation on the way.
+fn name_goes_on(rest: &str) -> bool {
+    let name = rest.split(['/', '\\']).next().unwrap_or(rest);
+    !name.contains(PROSE_PUNCTUATION) && (name.len() < rest.len() || has_extension(name))
 }
 
 /// SOLO: the file name at the end of `text` has an extension, as in
@@ -583,8 +698,7 @@ fn joined_path_match<T>(
     line_start: AlacPoint,
     line_end: AlacPoint,
     hovered: AlacPoint,
-    path_hyperlink_regexes: &mut Vec<Regex>,
-    path_hyperlink_timeout: Duration,
+    path_hyperlink_regexes: &[Regex],
 ) -> Option<(String, Match)> {
     let joins = [
         (line_start.line > term.topmost_line()).then(|| {
@@ -612,13 +726,8 @@ fn joined_path_match<T>(
             continue;
         };
         let segments = [(first_start, first_end), (second_start, second_end)];
-        if let Some((path, found)) = path_match(
-            term,
-            &segments,
-            hovered,
-            path_hyperlink_regexes,
-            path_hyperlink_timeout,
-        ) && !path.is_empty()
+        if let Some((path, found)) = path_match(term, &segments, hovered, path_hyperlink_regexes)
+            && !path.is_empty()
             && *found.start() <= first_end
             && *found.end() >= second_start
         {
@@ -682,25 +791,14 @@ fn broken_path_ends<T>(
 }
 
 /// Finds the path at `hovered` in the text of `segments`, searched as one
-/// line (SOLO: two of them for a path broken across lines).
+/// line (SOLO: two of them for a path broken across lines). SOLO: the
+/// regexes are tried in turn until one finds a path there.
 fn path_match<T>(
     term: &Term<T>,
     segments: &[(AlacPoint, AlacPoint)],
     hovered: AlacPoint,
-    path_hyperlink_regexes: &mut Vec<Regex>,
-    path_hyperlink_timeout: Duration,
+    path_hyperlink_regexes: &[Regex],
 ) -> Option<(String, Match)> {
-    if path_hyperlink_regexes.is_empty() || path_hyperlink_timeout.as_millis() == 0 {
-        return None;
-    }
-    let search_start_time = Instant::now();
-
-    let timed_out = || {
-        let elapsed_time = Instant::now().saturating_duration_since(search_start_time);
-        (elapsed_time > path_hyperlink_timeout)
-            .then_some((elapsed_time.as_millis(), path_hyperlink_timeout.as_millis()))
-    };
-
     // A cell accurate string of the segments (`term.bounds_to_string` would
     // compress tabs into a single space), with where each character is.
     let mut line = String::new();
@@ -761,13 +859,10 @@ fn path_match<T>(
     };
 
     for regex in path_hyperlink_regexes {
-        let mut path_found = false;
-
         for (line_start_offset, captures) in regex
             .captures_iter(&line)
             .map(|captures| (0usize, captures))
         {
-            path_found = true;
             let match_range = captures.get(0).unwrap().range();
             let (mut path_range, line_column) = if let Some(path) = captures.name("path") {
                 let parse = |name: &str| {
@@ -800,6 +895,20 @@ fn path_match<T>(
             if let Some(trim) = first_unbalanced_open_paren(&line[path_range.clone()]) {
                 path_range.start += trim;
                 link_range.start = link_range.start.max(path_range.start);
+            }
+
+            // SOLO: a line range (`a.h:12-34`) is linked whole, to its first
+            // line.
+            if link_range.end == path_range.end
+                && (line_column.is_some() || ends_with_row(&line[path_range.clone()]))
+                && let Some(range_end) = line[link_range.end..].strip_prefix('-')
+            {
+                let digits = range_end
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(range_end.len());
+                if digits > 0 {
+                    link_range.end += 1 + digits;
+                }
             }
 
             // SOLO: a match written into Chinese prose can hold several paths, as in
@@ -850,16 +959,6 @@ fn path_match<T>(
                 start = end;
                 after_prose = true;
             }
-        }
-
-        if path_found {
-            return None;
-        }
-
-        if let Some((timed_out_ms, timeout_ms)) = timed_out() {
-            warn!("Timed out processing path hyperlink regexes after {timed_out_ms}ms");
-            info!("{timeout_ms}ms time out specified in `terminal.path_hyperlink_timeout_ms`");
-            return None;
         }
     }
 
@@ -1403,6 +1502,52 @@ mod tests {
             );
             test_path!("gdscript.cpp、‹«gdscript_v👉m.cpp»›");
             test_path!("core/object/object.h:先👉看");
+
+            // A directory followed by full-width punctuation or prose.
+            test_path!("看 ‹«modules/tcframework/editor/renderdoc_👉helper»›，但");
+            test_path!("1 ‹«build\\re👉sults\\»›。");
+            test_path!("‹«modules/tcframework/edi👉tor»›但是");
+            // Two directories joined by `、`.
+            test_path!("‹«modules/a👉aa»›、modules/bbb");
+            test_path!("modules/aaa、‹«modules/b👉bb»›");
+            // An identifier or a line range, full-width punctuation, a path.
+            test_path!("_append_bone，‹«dynamic_bone_3👉d.cpp»:«152»›");
+            test_path!("‹«obj👉ect.cpp»:«1838»-1876›、core_bind.cpp:1854-1876");
+            test_path!("‹«object.cpp»:«1838»-18👉76›、core_bind.cpp:1854-1876");
+            test_path!("object.cpp:1838-1876、‹«core_b👉ind.cpp»:«1854»-1876›");
+            test_path!("object.cpp:1838-1876、‹«core_bind.cpp»:«1854»-187👉6›");
+            // Prose, a half-width colon or comma, a path; a path, a comma,
+            // prose.
+            test_path!("已改的代码:‹«Runtime/Core/DnEff👉ect.cs»›");
+            test_path!("见,‹«src/ma👉in.rs»›");
+            test_path!("‹«WORK👉PLAN.md»›,里面写清了");
+            // Directories with Chinese names are part of the path.
+            test_path!("‹«Reborn/解包/resource/uistring/uistri👉ng.xml»›");
+            test_path!("‹«Reborn/解包/resou👉rce»›，但");
+        }
+
+        #[test]
+        fn path_end_in_chinese_prose_for_directories() {
+            fn kept(path: &str) -> &str {
+                &path[..super::super::path_end_in_prose(path)]
+            }
+            assert_eq!(
+                kept("modules/tcframework/editor/renderdoc_helper，但"),
+                "modules/tcframework/editor/renderdoc_helper"
+            );
+            assert_eq!(kept("E:\\work\\results\\。"), "E:\\work\\results\\");
+            assert_eq!(kept("modules/a、modules/b"), "modules/a");
+            assert_eq!(kept("modules/editor但是"), "modules/editor");
+            assert_eq!(
+                kept("Reborn/解包/resource/uistring/uistring.xml"),
+                "Reborn/解包/resource/uistring/uistring.xml"
+            );
+            assert_eq!(kept("docs/Godot渲染.md"), "docs/Godot渲染.md");
+            assert_eq!(kept("_append_bone，dynamic.cpp"), "_append_bone");
+            assert_eq!(kept("-1876、core_bind.cpp"), "-1876");
+            assert_eq!(kept("WORKPLAN.md,里面"), "WORKPLAN.md");
+            // `、` in a plain name stays.
+            assert_eq!(kept("test、2.txt"), "test、2.txt");
         }
 
         #[test]
@@ -2653,6 +2798,178 @@ mod tests {
                     )
                 }
             }
+        }
+    }
+}
+
+/// SOLO: finds links in text rendered into a terminal of a given width, with
+/// the default settings' regexes, as hovering or clicking does. For tests
+/// that measure link detection on real agent output (see `terminal_view`'s
+/// link corpus test).
+#[cfg(any(test, feature = "test-support"))]
+pub mod link_probe {
+    use super::*;
+    use crate::terminal_settings::TerminalSettings;
+    use alacritty_terminal::{
+        event::VoidListener,
+        term::{Config, test::TermSize},
+        vte::ansi::Handler as _,
+    };
+    use settings::Settings as _;
+
+    /// A link found under a cell.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ProbedLink {
+        pub text: String,
+        pub is_url: bool,
+        /// First and last cell, as (line, column).
+        pub start: (i32, usize),
+        pub end: (i32, usize),
+        pub context_paths: Vec<String>,
+        pub position_files: Vec<String>,
+    }
+
+    pub struct LinkProbe {
+        term: Term<VoidListener>,
+        searches: RegexSearches,
+    }
+
+    impl LinkProbe {
+        /// `lines` written into a terminal `columns` wide, each on its own
+        /// row (wrapped by the terminal when longer).
+        pub fn new(lines: &[String], columns: usize) -> Self {
+            let content = settings::parse_json_with_comments(&settings::default_settings())
+                .expect("the default settings parse");
+            let settings = TerminalSettings::from_settings(&content);
+            let searches = RegexSearches::new(
+                &settings.path_hyperlink_regexes,
+                Duration::from_millis(settings.path_hyperlink_timeout_ms),
+            );
+            let rows = lines
+                .iter()
+                .map(|line| 1 + line.chars().count() * 2 / columns.max(1))
+                .sum::<usize>()
+                + 1;
+            let mut term = Term::new(
+                Config::default(),
+                &TermSize::new(columns, rows),
+                VoidListener,
+            );
+            for line in lines {
+                for c in line.chars() {
+                    term.input(c);
+                }
+                term.carriage_return();
+                term.linefeed();
+            }
+            Self { term, searches }
+        }
+
+        /// Each row's cells, as (column, character), skipping wide
+        /// characters' spacers.
+        pub fn rows(&self) -> Vec<Vec<(usize, char)>> {
+            let grid = self.term.grid();
+            (0..grid.screen_lines() as i32)
+                .map(|line| {
+                    let row = &grid[Line(line)];
+                    (0..grid.columns())
+                        .filter(|column| !row[Column(*column)].flags.intersects(WIDE_CHAR_SPACERS))
+                        .map(|column| (column, row[Column(column)].c))
+                        .collect()
+                })
+                .collect()
+        }
+
+        /// The link under the cell at `line`, `column`.
+        pub fn link_at(&mut self, line: i32, column: usize, click: bool) -> Option<ProbedLink> {
+            let search = if click {
+                LinkSearch::Click
+            } else {
+                LinkSearch::Hover
+            };
+            let found = find_link_at(
+                &self.term,
+                AlacPoint::new(Line(line), Column(column)),
+                &mut self.searches,
+                PathStyle::local(),
+                search,
+            )?;
+            Some(ProbedLink {
+                text: found.text,
+                is_url: found.is_url,
+                start: (found.range.start.line, found.range.start.column),
+                end: (found.range.end.line, found.range.end.column),
+                context_paths: found.context_paths,
+                position_files: found.position_files,
+            })
+        }
+    }
+}
+
+/// SOLO: how long finding the link under each cell of long agent output
+/// takes (long Chinese paragraphs, tables, lines over 200 columns): median
+/// and 95th percentile, hovering. Run in release with
+/// `cargo test --release -p terminal path_link_timing -- --ignored --nocapture`.
+#[cfg(test)]
+mod path_link_timing {
+    use super::link_probe::LinkProbe;
+    use std::time::Instant;
+
+    fn samples() -> Vec<(&'static str, Vec<String>, usize)> {
+        let chinese = "这一轮把 core/object/object.cpp:1838-1876 和 core/core_bind.cpp:1854 的检查合并了，\
+            另外 modules/gdscript/gdscript_vm.cpp、scene/main/node.cpp:412 也改了，\
+            目录 modules/tcframework/editor/renderdoc_helper，但还没有接上；详见 WORKPLAN.md,里面写清了。"
+            .repeat(4);
+        let table = (0..20)
+            .map(|row| {
+                format!(
+                    "│ {row:>3} │ src/module_{row}/file_{row}.rs:{row}{} │ 修改了 {row} 处 │ ok │",
+                    " ".repeat(40)
+                )
+            })
+            .collect::<Vec<_>>();
+        let wide = vec![
+            format!(
+                "{} Source/Runtime/Core/Public/Containers/Array.h:883 {}",
+                "x".repeat(150),
+                "y/".repeat(60)
+            );
+            10
+        ];
+        vec![
+            ("long Chinese paragraph, 120 columns", vec![chinese.clone()], 120),
+            ("long Chinese paragraph, 80 columns", vec![chinese], 80),
+            ("table, 120 columns", table, 120),
+            ("lines over 200 columns, 240 columns", wide, 240),
+        ]
+    }
+
+    #[test]
+    #[ignore]
+    fn path_link_timing() {
+        for (label, lines, columns) in samples() {
+            let mut probe = LinkProbe::new(&lines, columns);
+            let rows = probe.rows();
+            let mut times = Vec::new();
+            for (line, row) in rows.iter().enumerate() {
+                for (column, character) in row {
+                    if *character == ' ' {
+                        continue;
+                    }
+                    let started = Instant::now();
+                    probe.link_at(line as i32, *column, false);
+                    times.push(started.elapsed());
+                }
+            }
+            times.sort();
+            let at = |fraction: f64| times[((times.len() - 1) as f64 * fraction) as usize];
+            eprintln!(
+                "{label}: {} cells, median {:?}, p95 {:?}, max {:?}",
+                times.len(),
+                at(0.5),
+                at(0.95),
+                at(1.0)
+            );
         }
     }
 }

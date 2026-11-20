@@ -1,6 +1,8 @@
 mod mappings;
 
 mod alacritty;
+#[cfg(any(test, feature = "test-support"))]
+pub use alacritty::link_probe;
 #[cfg(windows)]
 mod host;
 #[cfg(windows)]
@@ -82,7 +84,7 @@ use crate::alacritty::current_child_signal_mask;
 use crate::alacritty::window_size_from_terminal_bounds;
 use crate::alacritty::{
     AlacrittyCell, AlacrittyGridIterator, AlacrittyHyperlink, AlacrittySearch, AlacrittyTerm,
-    AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
+    AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, LinkSearch, PtySender, RegexSearches,
     append_text_to_term, apply_config, clear_saved_screen, content_text, cursor_line,
     detection_text, display_offset, display_only_term_config, find_from_terminal_point,
     full_content_range, grid_columns, history_size, is_blank, last_non_empty_lines, lines_text,
@@ -2746,6 +2748,11 @@ impl Terminal {
                     point,
                     &mut self.hyperlink_regex_searches,
                     self.path_style,
+                    if *open {
+                        LinkSearch::Click
+                    } else {
+                        LinkSearch::Hover
+                    },
                 ) {
                     Some(hyperlink) => {
                         let history_size = term.history_size();
@@ -2816,6 +2823,7 @@ impl Terminal {
         }
     }
 
+    /// The link under a click in a program that takes the mouse.
     fn find_hyperlink_at_point(&mut self, point: Point) -> Option<HyperlinkMatch> {
         let term_lock = self.term.lock();
         find_from_terminal_point(
@@ -2823,6 +2831,7 @@ impl Terminal {
             point,
             &mut self.hyperlink_regex_searches,
             self.path_style,
+            LinkSearch::Click,
         )
     }
 

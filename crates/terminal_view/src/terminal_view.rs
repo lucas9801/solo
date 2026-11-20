@@ -15,6 +15,8 @@ mod failures;
 mod follow_working_directory;
 pub mod input;
 #[cfg(windows)]
+#[cfg(test)]
+mod link_corpus_tests;
 mod lone_hosts;
 mod mermaid_preview;
 mod mermaid_viewer;

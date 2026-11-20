@@ -2437,11 +2437,11 @@
     // A `"..."` line inside a multiline entry is always regex text. Invalid regexes are logged
     // and ignored.
     //
-    // Processing stops at the first regex with a match, even if no link is
-    // produced which is the case when the cursor is not over the hyperlinked text. For best
-    // performance it is recommended to order regexes from most common to least common. For
-    // readability and documentation, each regex may be an array of strings which are joined
-    // with newlines into one regex string for use in terminal path hyperlink detection.
+    // Processing stops at the first regex that finds a path under the cursor; every regex
+    // runs until one does. For best performance it is recommended to order regexes from most
+    // common to least common. For readability and documentation, each regex may be an array
+    // of strings which are joined with newlines into one regex string for use in terminal
+    // path hyperlink detection.
     "path_hyperlink_regexes": [
       // Python-style diagnostics
       "File \"(?<path>[^\"]+)\", line (?<line>[0-9]+)",
@@ -2466,9 +2466,11 @@
         ")",
       ],
     ],
-    // Timeout for hover and Cmd-click path hyperlink discovery in milliseconds. Specifying a
-    // timeout of `0` will disable path hyperlinking in terminal.
-    "path_hyperlink_timeout_ms": 1,
+    // Time for path hyperlink discovery on hover, in milliseconds. The regexes always all run
+    // on the hovered line; past this time, a path broken across lines isn't looked for, and
+    // the time taken is logged. A click gets at least 100 milliseconds. Specifying a timeout
+    // of `0` will disable path hyperlinking in terminal.
+    "path_hyperlink_timeout_ms": 5,
     // Whether to show a badge on the terminal panel icon with the count of open terminals.
     "show_count_badge": false,
     // Whether to invoke the OS-specific alert sound when the terminal bell (BEL character) is printed.
