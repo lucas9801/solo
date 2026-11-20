@@ -811,18 +811,14 @@ fn review(id: &str, caller: Option<&str>, cx: &mut App) -> AgentCliOutput {
         Ok(found) => found,
         Err(error) => return AgentCliOutput::error(error),
     };
-    let last_turn = AgentTurns::try_global(cx).and_then(|turns| {
-        turns
-            .read(cx)
-            .turns(found.view.entity_id())
-            .last()
-            .map(|turn| turn.number)
-    });
-    let Some(number) = last_turn else {
+    // SOLO: its pending changes, or its turns (G59).
+    let has_changes = AgentTurns::try_global(cx)
+        .is_some_and(|turns| turns.read(cx).has_something_to_review(found.view.entity_id()));
+    if !has_changes {
         return AgentCliOutput::error(format!(
             "the agent in terminal {id} has no turn with changes to review"
         ));
-    };
+    }
     let Found {
         window,
         workspace,
@@ -830,7 +826,7 @@ fn review(id: &str, caller: Option<&str>, cx: &mut App) -> AgentCliOutput {
     } = found;
     let opened = window.update(cx, |_, window, cx| {
         window.activate_window();
-        AgentTurnReview::open(view, number, workspace, window, cx);
+        AgentTurnReview::open(view, workspace, window, cx);
     });
     match opened {
         Ok(()) => AgentCliOutput::ok(String::new()),
