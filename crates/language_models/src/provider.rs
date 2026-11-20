@@ -75,6 +75,9 @@ pub(crate) fn resolve_custom_headers(
 /// `language_models` section for it, or an agent model picked from it. Without
 /// that, discovery waits for something that needs the models to authenticate
 /// the provider (the agent, the settings page, commit messages), as Ollama does.
+/// Only the user's settings file's own content counts (not its release-channel,
+/// platform or profile overrides, nor project settings); a provider set up only
+/// there still finds its models on demand.
 pub(crate) fn user_settings_name_provider(
     provider_id: &str,
     has_section: impl FnOnce(&settings::AllLanguageModelSettingsContent) -> bool,

@@ -10,19 +10,21 @@
 //! How the values merge:
 //! - Every `REG_SZ`/`REG_EXPAND_SZ` variable of
 //!   `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` and
-//!   then `HKCU\Environment` is read, `REG_EXPAND_SZ` values expanded
-//!   (`%NAME%`, from the values read so far, then Solo's environment). A user
-//!   variable replaces the machine one, except `Path`, `LIBPATH` and
-//!   `Os2LibPath`, which are the machine value followed by the user's, as at
-//!   logon. That's also how Windows Terminal builds a new tab's environment.
-//! - `PATH` is the registry's entries (machine, then user) followed by the
-//!   entries of Solo's own `PATH` that the registry doesn't have (what its
-//!   launcher or Solo itself added), without duplicates (compared ignoring
-//!   case and a trailing `\`). Windows Terminal drops those; Solo keeps them,
-//!   after the registry's.
-//! - Variables of the logon session (`USERNAME`, `USERPROFILE`, ...; the
-//!   machine key has `USERNAME=SYSTEM`) and Solo's own `SOLO_*` variables keep
-//!   Solo's values.
+//!   then `HKCU\Environment` is read. As at logon, each key's `REG_SZ` values
+//!   come first and its `REG_EXPAND_SZ` values after them, expanded (`%NAME%`,
+//!   from the values read so far, then Solo's environment), so a `Path` of
+//!   `%JAVA_HOME%\bin` sees a `JAVA_HOME` the key has too. A user variable
+//!   replaces the machine one, except `Path`, `LIBPATH` and `Os2LibPath`,
+//!   which are the machine value followed by the user's, as at logon. That's
+//!   also how Windows Terminal builds a new tab's environment.
+//! - `PATH` is Solo's own `PATH`, as it was (so a Solo started from an
+//!   activated conda, venv or nvm shell keeps that order), followed by the
+//!   registry's entries it lacks, machine then user, without duplicates
+//!   (compared ignoring case and a trailing `\`). Windows Terminal replaces
+//!   it with the registry's; Solo only adds what's missing.
+//! - Variables of the logon session (`USERNAME`, `USERPROFILE`, `TEMP`, ...;
+//!   the machine key has `USERNAME=SYSTEM`, and `TEMP` can be per session)
+//!   and Solo's own `SOLO_*` variables keep Solo's values.
 //! - Variables a terminal is given explicitly (a task's or the settings' `env`,
 //!   the environment passed by `solo` on the command line, Solo's
 //!   integrations) win over all of this: see [`apply`].
@@ -50,8 +52,10 @@ pub struct RegistryEnvironment {
 const CONCATENATED: [&str; 3] = ["PATH", "LIBPATH", "OS2LIBPATH"];
 
 /// Variables the logon session sets, which keep Solo's values.
-const SESSION_VARIABLES: [&str; 13] = [
+const SESSION_VARIABLES: [&str; 15] = [
     "USERNAME",
+    "TEMP",
+    "TMP",
     "USERDOMAIN",
     "USERDOMAIN_ROAMINGPROFILE",
     "USERDNSDOMAIN",
@@ -87,7 +91,13 @@ pub fn fresh_variables(
     };
 
     for (values, is_user) in [(&registry.machine, false), (&registry.user, true)] {
-        for value in values {
+        // A key's REG_SZ values first, then its REG_EXPAND_SZ ones, which
+        // may use them.
+        let ordered = values
+            .iter()
+            .filter(|value| !value.expand)
+            .chain(values.iter().filter(|value| value.expand));
+        for value in ordered {
             if value.name.is_empty() || is_kept_from_process(&value.name) {
                 continue;
             }
@@ -124,16 +134,16 @@ pub fn fresh_variables(
 
     if let Some(&ix) = index.get("PATH") {
         let process_path = process_value("PATH").unwrap_or_default();
-        variables[ix].1 = merge_paths(&variables[ix].1, &process_path);
+        variables[ix].1 = merge_paths(&process_path, &variables[ix].1);
     }
     variables
 }
 
-/// `registry`'s entries, then `process`'s that aren't among them, each once.
-pub fn merge_paths(registry: &str, process: &str) -> String {
+/// `first`'s entries, then `second`'s that aren't among them, each once.
+pub fn merge_paths(first: &str, second: &str) -> String {
     let mut seen = std::collections::HashSet::new();
     let mut entries = Vec::new();
-    for entry in registry.split(';').chain(process.split(';')) {
+    for entry in first.split(';').chain(second.split(';')) {
         let entry = entry.trim();
         if entry.is_empty() {
             continue;
@@ -298,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn path_is_machine_then_user_then_what_solo_has_besides() {
+    fn path_is_solos_then_what_the_registry_adds() {
         let registry = RegistryEnvironment {
             machine: vec![
                 value(
@@ -328,7 +338,23 @@ mod tests {
         assert_eq!(
             get(&fresh, "PATH"),
             Some(
-                r"C:\WINDOWS\system32;C:\WINDOWS;C:\Program Files\Git\cmd;C:\Users\Admin\.local\bin;C:\Users\Admin\AppData\Roaming\npm\;E:\Solo\bin"
+                r"C:\WINDOWS\system32;C:\WINDOWS;C:\Program Files\Git\cmd;E:\Solo\bin;C:\Users\Admin\.local\bin;C:\Users\Admin\AppData\Roaming\npm\"
+            )
+        );
+        // An activated environment in front stays in front.
+        let solo = process(&[
+            (
+                "PATH",
+                r"C:\envs\py\Scripts;C:\WINDOWS\system32;C:\Users\Admin\.local\bin",
+            ),
+            ("SystemRoot", r"C:\WINDOWS"),
+            ("USERPROFILE", r"C:\Users\Admin"),
+        ]);
+        let fresh = fresh_variables(&registry, &solo);
+        assert_eq!(
+            get(&fresh, "PATH"),
+            Some(
+                r"C:\envs\py\Scripts;C:\WINDOWS\system32;C:\Users\Admin\.local\bin;C:\Windows;C:\Program Files\Git\cmd;C:\Users\Admin\AppData\Roaming\npm\"
             )
         );
     }
@@ -367,6 +393,7 @@ mod tests {
         let registry = RegistryEnvironment {
             machine: vec![
                 value("TEMP", r"%SystemRoot%\TEMP", true),
+                value("BUILD_DIR", r"%SystemRoot%\build", true),
                 value("PATHEXT", ".COM;.EXE;.BAT;.CMD", false),
                 value("USERNAME", "SYSTEM", false),
                 value("LITERAL", "%NOT_EXPANDED%", false),
@@ -374,7 +401,8 @@ mod tests {
             ],
             user: vec![
                 value("TEMP", r"%USERPROFILE%\AppData\Local\Temp", true),
-                value("TOOL_HOME", r"%TEMP%\tool;%UNKNOWN%;100%", true),
+                value("BUILD_DIR", r"%USERPROFILE%\AppData\Local\build", true),
+                value("TOOL_HOME", r"%BUILD_DIR%\tool;%UNKNOWN%;100%", true),
                 value("LIBPATH", r"C:\user", false),
                 value("SOLO_SOMETHING", "from registry", false),
             ],
@@ -387,21 +415,50 @@ mod tests {
         ]);
         let fresh = fresh_variables(&registry, &solo);
         assert_eq!(
-            get(&fresh, "TEMP"),
-            Some(r"C:\Users\Admin\AppData\Local\Temp")
+            get(&fresh, "BUILD_DIR"),
+            Some(r"C:\Users\Admin\AppData\Local\build")
         );
         assert_eq!(get(&fresh, "PATHEXT"), Some(".COM;.EXE;.BAT;.CMD"));
         assert_eq!(get(&fresh, "LITERAL"), Some("%NOT_EXPANDED%"));
         assert_eq!(
             get(&fresh, "TOOL_HOME"),
-            Some(r"C:\Users\Admin\AppData\Local\Temp\tool;%UNKNOWN%;100%")
+            Some(r"C:\Users\Admin\AppData\Local\build\tool;%UNKNOWN%;100%")
         );
+        // Per session: Solo's stays.
+        assert_eq!(get(&fresh, "TEMP"), None);
         assert_eq!(get(&fresh, "LIBPATH"), Some(r"C:\machine;C:\user"));
         // Session and Solo variables keep Solo's values.
         assert_eq!(get(&fresh, "USERNAME"), None);
         assert_eq!(get(&fresh, "SOLO_SOMETHING"), None);
         // Without a Path in the registry, Solo's stays.
         assert_eq!(get(&fresh, "PATH"), None);
+    }
+
+    #[test]
+    fn expandable_values_see_plain_ones_listed_after_them() {
+        // In RegEnumValue's order Path comes before the JAVA_HOME it uses,
+        // which was added later; Solo's own JAVA_HOME is stale.
+        let registry = RegistryEnvironment {
+            machine: vec![value("Path", r"C:\Windows", false)],
+            user: vec![
+                value("Path", r"%JAVA_HOME%\bin;%TOOLS%\bin", true),
+                value("JAVA_HOME", r"C:\jdk-21", false),
+                value("TOOLS", r"%USERPROFILE%\tools", true),
+            ],
+        };
+        let solo = process(&[
+            ("PATH", r"C:\Windows"),
+            ("JAVA_HOME", r"C:\jdk-8"),
+            ("USERPROFILE", r"C:\Users\Admin"),
+        ]);
+        let fresh = fresh_variables(&registry, &solo);
+        assert_eq!(get(&fresh, "JAVA_HOME"), Some(r"C:\jdk-21"));
+        // Expandable values among themselves keep the registry's order, as
+        // at logon: TOOLS comes after Path, so Path doesn't see it.
+        assert_eq!(
+            get(&fresh, "PATH"),
+            Some(r"C:\Windows;C:\jdk-21\bin;%TOOLS%\bin")
+        );
     }
 
     #[test]

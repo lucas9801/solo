@@ -135,6 +135,15 @@ impl Project {
         cx.spawn(async move |project, cx| {
             let mut env = env_task.await.unwrap_or_default();
             env.extend(settings.env);
+            // SOLO: a local terminal on Windows gets the registry's current
+            // environment (see `util::registry_environment`), read off the
+            // main thread.
+            let fresh_environment = if remote_client.is_none() {
+                cx.background_spawn(async { util::registry_environment::current_fresh_variables() })
+                    .await
+            } else {
+                Vec::new()
+            };
 
             let activation_script = maybe!(async {
                 for toolchain in toolchains {
@@ -170,11 +179,8 @@ impl Project {
                         let to_run =
                             (!activation_script.is_empty()).then(|| format_to_run(&spawn_task));
                         env.extend(spawn_task.env);
-                        // SOLO: a local terminal on Windows gets the registry's
-                        // current environment (see `util::registry_environment`).
-                        if remote_client.is_none() {
-                            util::registry_environment::refresh(&mut env);
-                        }
+                        // SOLO: after the task's own variables, which win.
+                        util::registry_environment::apply(&mut env, fresh_environment);
                         match remote_client {
                             Some(remote_client) => match activation_script.clone() {
                                 activation_script if !activation_script.is_empty() => {
@@ -436,6 +442,15 @@ impl Project {
             let mut env = env_task.await.unwrap_or_default();
             env.extend(settings.env);
             env.extend(extra_env);
+            // SOLO: a local terminal on Windows gets the registry's current
+            // environment (see `util::registry_environment`), read off the
+            // main thread.
+            let fresh_environment = if remote_client.is_none() {
+                cx.background_spawn(async { util::registry_environment::current_fresh_variables() })
+                    .await
+            } else {
+                Vec::new()
+            };
 
             let activation_script = maybe!(async {
                 for toolchain in toolchains {
@@ -474,9 +489,8 @@ impl Project {
                             None if settings.shell_integration => {
                                 let mut env = env;
                                 // SOLO: before Solo's own variables, which may
-                                // put a folder on `PATH`; see
-                                // `util::registry_environment`.
-                                util::registry_environment::refresh(&mut env);
+                                // put a folder on `PATH`.
+                                util::registry_environment::apply(&mut env, fresh_environment);
                                 terminal::shell_integration::add_terminal_env(&mut env);
                                 if settings.input_editor && settings.compact_prompt {
                                     env.insert("SOLO_COMPACT_PROMPT".to_string(), "1".to_string());
@@ -527,9 +541,8 @@ impl Project {
                             None => {
                                 let mut env = env;
                                 // SOLO: before Solo's own variables, which may
-                                // put a folder on `PATH`; see
-                                // `util::registry_environment`.
-                                util::registry_environment::refresh(&mut env);
+                                // put a folder on `PATH`.
+                                util::registry_environment::apply(&mut env, fresh_environment);
                                 terminal::shell_integration::add_terminal_env(&mut env);
                                 terminal::shell_integration::integrate_browser(
                                     path_style.is_windows(),
