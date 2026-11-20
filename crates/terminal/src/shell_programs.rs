@@ -32,6 +32,27 @@ const CONSOLE_PROGRAMS: &[&str] = &["conhost", "openconsole"];
 /// The programs running under the process `shell_pid`, nearest first.
 #[cfg(windows)]
 pub fn shell_programs(shell_pid: u32) -> Vec<ShellProgram> {
+    descendants(shell_pid, &all_processes())
+}
+
+/// SOLO: the programs running under each of `shell_pids`, nearest first,
+/// from one look at the processes.
+#[cfg(windows)]
+pub fn programs_under(shell_pids: &[u32]) -> collections::HashMap<u32, Vec<ShellProgram>> {
+    let processes = all_processes();
+    shell_pids
+        .iter()
+        .map(|pid| (*pid, descendants(*pid, &processes)))
+        .collect()
+}
+
+#[cfg(not(windows))]
+pub fn programs_under(_shell_pids: &[u32]) -> collections::HashMap<u32, Vec<ShellProgram>> {
+    Default::default()
+}
+
+#[cfg(windows)]
+fn all_processes() -> Vec<Process> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
     let mut system = System::new();
@@ -43,7 +64,7 @@ pub fn shell_programs(shell_pid: u32) -> Vec<ShellProgram> {
             .with_exe(UpdateKind::Always)
             .without_tasks(),
     );
-    let processes: Vec<Process> = system
+    system
         .processes()
         .values()
         .filter_map(|process| {
@@ -65,8 +86,7 @@ pub fn shell_programs(shell_pid: u32) -> Vec<ShellProgram> {
                 argv,
             })
         })
-        .collect();
-    descendants(shell_pid, &processes)
+        .collect()
 }
 
 /// A process, as [`descendants`] takes it.

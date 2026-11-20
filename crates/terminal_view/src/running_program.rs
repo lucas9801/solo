@@ -104,6 +104,25 @@ impl TerminalView {
                 status: Some(status.label().into()),
             });
         }
+        // SOLO: a terminal connected again to the host an earlier Solo left
+        // running, whose program isn't recognized (yet): it was kept for an
+        // update or a crash, so closing (quitting) doesn't end it unseen.
+        let terminal = self.terminal.read(cx);
+        if terminal.reconnected_to_host()
+            && terminal.reconnected_program_running()
+            && terminal.shell_integration().blocks().is_empty()
+        {
+            let name = terminal
+                .reconnected_programs()
+                .first()
+                .and_then(|program| program.command.split(' ').next())
+                .map(str::to_string)
+                .unwrap_or_else(|| util::i18n::tr("A program", "一个程序").to_string());
+            return Some(RunningProgram {
+                name: name.into(),
+                status: None,
+            });
+        }
         if settings.confirm_close != TerminalConfirmClose::Commands || !is_command {
             return None;
         }
@@ -585,6 +604,16 @@ mod tests {
         assert!(restart.await);
         assert!(!cx.update(|_, cx| workspace::solo_quit::is_user_quitting(cx)));
         assert!(views.iter().all(|view| keeps(view, cx)));
+
+        // The restart didn't happen (the installer couldn't start, the
+        // Store's dialog was cancelled): quitting later asks again.
+        cx.update(|_, cx| workspace::solo_quit::restart_cancelled(cx));
+        assert!(!cx.update(|_, cx| workspace::solo_quit::is_restarting(cx)));
+        let quit = prepare(window, false, cx);
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt(), "quitting after a cancelled restart asks");
+        cx.simulate_prompt_answer("Cancel");
+        assert!(!quit.await);
     }
 
     /// SOLO: with `keep_running_on_quit`, quitting doesn't ask, and they keep
@@ -637,13 +666,13 @@ mod tests {
         cx.update(|_, cx| {
             cx.set_global(workspace::solo_quit::BackgroundPrograms {
                 list: |_| {
-                    vec![workspace::solo_quit::BackgroundProgram {
+                    gpui::Task::ready(vec![workspace::solo_quit::BackgroundProgram {
                         tab: "DragonNest".into(),
                         program: RunningProgram {
                             name: "codex".into(),
                             status: None,
                         },
-                    }]
+                    }])
                 },
                 end: |_| BACKGROUND_ENDED.store(true, std::sync::atomic::Ordering::SeqCst),
             })
@@ -697,5 +726,67 @@ mod tests {
         );
         cx.simulate_prompt_answer("Cancel");
         assert!(!quit.await);
+    }
+
+    /// SOLO: a reconnected terminal whose program isn't recognized as an
+    /// agent is still named when closing (quitting) would end it.
+    #[gpui::test]
+    async fn test_unrecognized_reconnected_program_is_asked_about(cx: &mut TestAppContext) {
+        let (project, _workspace, window) = init_test_with_window(cx).await;
+        let (_, terminal, view) = add_display_only_terminal(&project, window, false, false, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        terminal.update(cx, |terminal, _| {
+            terminal.set_reconnected_programs_for_test(vec![program(
+                "launcher --run",
+                r"C:\tools\launcher.exe --run",
+            )])
+        });
+        assert_eq!(agent(&view, cx), None);
+        let closing = view.read_with(cx, |view, cx| view.program_ending_on_close(cx));
+        assert_eq!(closing.map(|program| program.name), Some("launcher".into()));
+        // Not yet looked up: "a program".
+        terminal.update(cx, |terminal, _| terminal.set_reconnected_programs_for_test(Vec::new()));
+        let closing = view.read_with(cx, |view, cx| view.program_ending_on_close(cx));
+        assert!(closing.is_some());
+        set_confirm_close(TerminalConfirmClose::Never, cx);
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.program_ending_on_close(cx)),
+            None
+        );
+    }
+
+    /// SOLO: a terminal left running in a tab not open yet is named in the
+    /// quit prompt by the same rules as those of open tabs: agents, and with
+    /// "commands" any program; with "never", none.
+    #[test]
+    fn test_background_rows_follow_confirm_close() {
+        let host = |pipe: &str, pid: u32| terminal::RunningHost {
+            pipe: pipe.to_string(),
+            host_pid: pid + 1000,
+            terminal_id: None,
+            command_line: "powershell.exe".to_string(),
+            working_directory: Some(std::path::PathBuf::from(util::path!("/repos/DragonNest"))),
+            connected: false,
+            had_client: true,
+            child_pid: Some(pid),
+        };
+        let programs = || {
+            collections::HashMap::from_iter([
+                (1, vec![program("codex resume", "node codex.js resume")]),
+                (2, vec![program("cargo build", "cargo build")]),
+            ])
+        };
+        let hosts = || vec![host(r"\.\pipe\solo-terminal-1-a", 1), host(r"\.\pipe\solo-terminal-1-b", 2)];
+        let names = |confirm_close| {
+            crate::lone_hosts::background_rows_for_test(hosts(), &mut programs(), confirm_close)
+                .into_iter()
+                .map(|row| format!("{} @ {}", row.program.name, row.tab))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(TerminalConfirmClose::Agents), ["codex @ DragonNest"]);
+        assert_eq!(
+            names(TerminalConfirmClose::Commands),
+            ["codex @ DragonNest", "cargo @ DragonNest"]
+        );
     }
 }

@@ -5287,7 +5287,7 @@ fn project_tab_title(tab: &str, not_opened: bool, chinese: bool) -> String {
 }
 
 /// SOLO: a program the prompt says closing would end, and where it runs.
-fn ending_program_row(program: &RunningProgram, title: &str, chinese: bool) -> String {
+fn ending_program_row(program: &crate::item::RunningProgram, title: &str, chinese: bool) -> String {
     match (&program.status, chinese) {
         (Some(status), true) => format!("{}（{status}），位于 {title}", program.name),
         (None, true) => format!("{}，位于 {title}", program.name),
@@ -5304,15 +5304,15 @@ mod ending_program_tests {
     /// in, opened or not, in Chinese and in English.
     #[test]
     fn test_ending_program_rows() {
-        let codex = RunningProgram {
+        let codex = crate::item::RunningProgram {
             name: "codex".into(),
             status: None,
         };
-        let claude = RunningProgram {
+        let claude = crate::item::RunningProgram {
             name: "claude".into(),
             status: Some("Working".into()),
         };
-        let row = |program: &RunningProgram, tab: &str, not_opened: bool, chinese: bool| {
+        let row = |program: &crate::item::RunningProgram, tab: &str, not_opened: bool, chinese: bool| {
             ending_program_row(program, &project_tab_title(tab, not_opened, chinese), chinese)
         };
         assert_eq!(row(&codex, "DragonNest", false, true), "codex，位于 DragonNest 标签");

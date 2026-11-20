@@ -1465,7 +1465,13 @@ async fn install_and_restart(
 
     // Installing now: not again at quit.
     this.update(cx, |this, _| this.ready_on_quit = None).ok();
-    spawn_installer_helper(&ready.installer, &ready.install_dir, &ready.log_file, true)?;
+    if let Err(error) =
+        spawn_installer_helper(&ready.installer, &ready.install_dir, &ready.log_file, true)
+    {
+        // SOLO: Solo doesn't restart after all.
+        cx.update(|cx| workspace::solo_quit::restart_cancelled(cx));
+        return Err(error);
+    }
     log::info!(
         "solo update: helper started; installing into {}",
         ready.install_dir.display()

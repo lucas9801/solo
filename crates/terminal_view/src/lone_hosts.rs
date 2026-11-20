@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use gpui::{App, AppContext as _, AsyncApp, Entity, WindowHandle};
+use gpui::{App, AppContext as _, AsyncApp, Entity, Task, WindowHandle};
 use std::path::PathBuf;
 use std::time::Duration;
 use terminal::RunningHost;
@@ -30,7 +30,7 @@ use util::path_list::{PathList, SerializedPathList};
 use workspace::notifications::NotificationId;
 use workspace::notifications::simple_message_notification::MessageNotification;
 use settings::Settings as _;
-use terminal::terminal_settings::TerminalSettings;
+use terminal::terminal_settings::{TerminalConfirmClose, TerminalSettings};
 use workspace::item::RunningProgram;
 use workspace::solo_quit::{BackgroundProgram, BackgroundPrograms};
 use workspace::{MultiWorkspace, ProjectGroupKey, Workspace, WorkspaceId};
@@ -68,22 +68,55 @@ fn quitting_keeps_running(cx: &App) -> bool {
 }
 
 /// The programs hosts no terminal uses run, by their tab, which quitting
-/// would end.
-fn background_programs(cx: &App) -> Vec<BackgroundProgram> {
+/// would end and the quit prompt is to name, by the same rules as those of
+/// open tabs (`terminal.confirm_close`). Looked up in the background: the
+/// hosts' list, the saved terminals and the processes.
+fn background_programs(cx: &App) -> Task<Vec<BackgroundProgram>> {
     if quitting_keeps_running(cx) {
-        return Vec::new();
+        return Task::ready(Vec::new());
     }
-    let lone: Vec<RunningHost> = terminal::running_hosts()
-        .into_iter()
-        .filter(|host| host.is_left_alone())
-        .collect();
-    if lone.is_empty() {
-        return Vec::new();
+    let settings = TerminalSettings::get_global(cx);
+    let confirm_close = settings.confirm_close;
+    if confirm_close == TerminalConfirmClose::Never {
+        return Task::ready(Vec::new());
     }
-    let saved = saved_hosts(&TerminalDb::global(cx));
-    let extra = &TerminalSettings::get_global(cx).agent_commands;
+    let extra = settings.agent_commands.clone();
+    let db = TerminalDb::global(cx);
+    cx.background_spawn(async move {
+        let lone: Vec<RunningHost> = terminal::running_hosts()
+            .into_iter()
+            .filter(|host| host.is_left_alone())
+            .collect();
+        if lone.is_empty() {
+            return Vec::new();
+        }
+        let saved = saved_hosts(&db);
+        let shells: Vec<u32> = lone.iter().filter_map(|host| host.child_pid).collect();
+        let mut programs = terminal::shell_programs::programs_under(&shells);
+        background_rows(lone, &saved, &mut programs, confirm_close, &extra)
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn background_rows_for_test(
+    lone: Vec<RunningHost>,
+    programs: &mut collections::HashMap<u32, Vec<terminal::ShellProgram>>,
+    confirm_close: TerminalConfirmClose,
+) -> Vec<BackgroundProgram> {
+    background_rows(lone, &[], programs, confirm_close, &[])
+}
+
+/// The quit prompt's rows for the hosts no terminal uses, given what runs
+/// under each one's shell.
+fn background_rows(
+    lone: Vec<RunningHost>,
+    saved: &[SavedHost],
+    programs: &mut collections::HashMap<u32, Vec<terminal::ShellProgram>>,
+    confirm_close: TerminalConfirmClose,
+    extra: &[String],
+) -> Vec<BackgroundProgram> {
     lone.into_iter()
-        .map(|host| {
+        .filter_map(|host| {
             let tab = saved
                 .iter()
                 .find(|saved| saved.pipe == host.pipe)
@@ -93,25 +126,27 @@ fn background_programs(cx: &App) -> Vec<BackgroundProgram> {
                 .unwrap_or_default();
             let programs = host
                 .child_pid
-                .map(terminal::shell_programs::shell_programs)
+                .and_then(|pid| programs.remove(&pid))
                 .unwrap_or_default();
-            let command = programs
+            let agent = programs
                 .iter()
-                .find(|program| crate::command_blocks::is_agent_command(&program.command, extra))
+                .find(|program| crate::command_blocks::is_agent_command(&program.command, extra));
+            // As in open tabs: agents, and with "commands" any command.
+            if agent.is_none() && confirm_close != TerminalConfirmClose::Commands {
+                return None;
+            }
+            let name = agent
                 .or(programs.first())
-                .map(|program| program.command.clone());
-            let name = command
-                .as_deref()
-                .and_then(|command| command.split(' ').next())
+                .and_then(|program| program.command.split(' ').next())
                 .map(str::to_string)
                 .unwrap_or_else(|| tr("a program", "一个程序").to_string());
-            BackgroundProgram {
+            Some(BackgroundProgram {
                 tab: tab.into(),
                 program: RunningProgram {
                     name: name.into(),
                     status: None,
                 },
-            }
+            })
         })
         .collect()
 }

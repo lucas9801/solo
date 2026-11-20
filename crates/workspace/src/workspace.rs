@@ -12682,7 +12682,7 @@ pub(crate) fn closing_window_quits(
 fn confirm_ending_window_programs(
     window: WindowHandle<MultiWorkspace>,
     close_intent: CloseIntent,
-    include_background: bool,
+    background: Vec<solo_quit::BackgroundProgram>,
     cx: &mut AsyncApp,
 ) -> Option<impl Future<Output = bool> + use<>> {
     window
@@ -12709,11 +12709,6 @@ fn confirm_ending_window_programs(
             if quits {
                 items.retain(|(item, _)| !item.keeps_running_after_quit(cx));
             }
-            let background = if quits && include_background {
-                solo_quit::background_programs(cx)
-            } else {
-                Vec::new()
-            };
             let close_label = match close_intent {
                 CloseIntent::Quit => util::i18n::tr("Quit", "退出"),
                 CloseIntent::CloseWindow => util::i18n::tr("Close Window", "关闭窗口"),
@@ -12731,9 +12726,16 @@ pub(crate) async fn prepare_window_to_close(
     include_background: bool,
     cx: &mut AsyncApp,
 ) -> Result<bool> {
-    // SOLO: once for the window's tabs, rather than once for each.
+    // SOLO: once for the window's tabs, rather than once for each; when it
+    // quits Solo, with those of tabs not open yet, looked up first.
+    let quits = cx.update(|cx| closing_window_quits(window.into(), close_intent, cx));
+    let background = if quits && include_background {
+        cx.update(|cx| solo_quit::background_programs(cx)).await
+    } else {
+        Vec::new()
+    };
     if let Some(confirmation) =
-        confirm_ending_window_programs(window, close_intent, include_background, cx)
+        confirm_ending_window_programs(window, close_intent, background, cx)
         && !confirmation.await
     {
         return Ok(false);

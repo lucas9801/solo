@@ -5,7 +5,7 @@
 //! `terminal.keep_running_on_quit` says otherwise (the terminal views decide,
 //! see `Item::keeps_running_after_quit`).
 
-use gpui::{App, Global, SharedString};
+use gpui::{App, Global, SharedString, Task};
 
 use crate::item::RunningProgram;
 
@@ -44,6 +44,16 @@ pub(crate) fn set_restarting(restarting: bool, cx: &mut App) {
     cx.default_global::<SoloQuit>().restarting = restarting;
 }
 
+/// Solo was prepared to restart (see `prepare_windows_to_restart`), but
+/// doesn't (the installer couldn't start, the Store's dialog was
+/// cancelled): quitting later is the user's again, which asks and ends.
+pub fn restart_cancelled(cx: &mut App) {
+    if is_restarting(cx) {
+        log::info!("Solo isn't restarting after all");
+        set_restarting(false, cx);
+    }
+}
+
 /// The user quits Solo, all windows prepared to close: unless it's
 /// restarting, ends what was to keep running only for an update or a crash.
 pub(crate) fn quitting_by_user(cx: &mut App) {
@@ -66,17 +76,19 @@ pub struct BackgroundProgram {
     pub program: RunningProgram,
 }
 
-/// What lists, and ends, the [`BackgroundProgram`]s quitting ends: none when
-/// quitting leaves them running.
+/// What lists (as the quit prompt shows them, in the background: it reads
+/// files and the processes), and ends, the [`BackgroundProgram`]s quitting
+/// ends: none when quitting leaves them running.
 pub struct BackgroundPrograms {
-    pub list: fn(&App) -> Vec<BackgroundProgram>,
+    pub list: fn(&App) -> Task<Vec<BackgroundProgram>>,
     pub end: fn(&mut App),
 }
 
 impl Global for BackgroundPrograms {}
 
-pub(crate) fn background_programs(cx: &App) -> Vec<BackgroundProgram> {
-    cx.try_global::<BackgroundPrograms>()
-        .map(|programs| (programs.list)(cx))
-        .unwrap_or_default()
+pub(crate) fn background_programs(cx: &App) -> Task<Vec<BackgroundProgram>> {
+    match cx.try_global::<BackgroundPrograms>() {
+        Some(programs) => (programs.list)(cx),
+        None => Task::ready(Vec::new()),
+    }
 }
