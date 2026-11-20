@@ -89,6 +89,14 @@ impl<M: ManagedView> PopoverMenuHandle<M> {
         }
     }
 
+    /// SOLO: the menu it shows, while it's shown.
+    pub fn menu(&self) -> Option<Entity<M>> {
+        self.0
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.menu.borrow().clone())
+    }
+
     pub fn is_deployed(&self) -> bool {
         self.0
             .borrow()

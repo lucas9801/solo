@@ -119,151 +119,162 @@ impl TerminalPanel {
             active: false,
             empty_state: Default::default(),
         };
-        terminal_panel.apply_tab_bar_buttons(&terminal_panel.active_pane, cx);
         terminal_panel
     }
 
+    /// Whether the panes show the inline assist button. SOLO: only that:
+    /// each pane gets the terminal's tab bar buttons when it's made (see
+    /// `new_terminal_pane`), and reads this when it draws them.
     pub fn set_assistant_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.assistant_enabled == enabled {
+            return;
+        }
         self.assistant_enabled = enabled;
         for pane in self.center.panes() {
-            self.apply_tab_bar_buttons(pane, cx);
+            pane.update(cx, |_, cx| cx.notify());
         }
     }
+}
 
-    pub(crate) fn apply_tab_bar_buttons(
-        &self,
-        terminal_pane: &Entity<Pane>,
-        cx: &mut Context<Self>,
-    ) {
-        let assistant_enabled = self.assistant_enabled;
-        terminal_pane.update(cx, |pane, cx| {
-            pane.set_render_tab_bar_buttons(cx, move |pane, window, cx| {
-                let split_context = pane
-                    .active_item()
-                    .and_then(|item| item.downcast::<TerminalView>())
-                    .map(|terminal_view| terminal_view.read(cx).focus_handle.clone());
-                let has_focused_rename_editor = pane
-                    .active_item()
-                    .and_then(|item| item.downcast::<TerminalView>())
-                    .is_some_and(|view| view.read(cx).rename_editor_is_focused(window, cx));
-                if !pane.has_focus(window, cx)
-                    && !pane.context_menu_focused(window, cx)
-                    && !has_focused_rename_editor
-                {
-                    return (None, None);
-                }
-                let focus_handle = pane.focus_handle(cx);
-                let right_children = h_flex()
-                    .gap(DynamicSpacing::Base02.rems(cx))
-                    .child(
-                        PopoverMenu::new("terminal-tab-bar-popover-menu")
-                            .trigger_with_tooltip(
-                                IconButton::new("plus", IconName::Plus).icon_size(IconSize::Small),
-                                Tooltip::text("New…"),
-                            )
-                            .anchor(Anchor::TopRight)
-                            .with_handle(pane.new_item_context_menu_handle.clone())
-                            .menu(move |window, cx| {
-                                let focus_handle = focus_handle.clone();
-                                let menu = ContextMenu::build(window, cx, |menu, _, _| {
-                                    // SOLO: a terminal in a new git
-                                    // worktree, and workflows (with the
-                                    // project's tasks) in place of Spawn Task.
-                                    menu.context(focus_handle.clone())
-                                        .action(
-                                            "New Terminal",
-                                            workspace::NewTerminal::default().boxed_clone(),
-                                        )
-                                        .action(
-                                            util::i18n::tr(
-                                                "New Terminal in New Worktree…",
-                                                "在新工作树中新建终端…",
-                                            ),
-                                            solo_actions::agent_task::NewAgentTask.boxed_clone(),
-                                        )
-                                        .separator()
-                                        .action(
-                                            util::i18n::tr("Run Workflow…", "运行工作流…"),
-                                            crate::run_workflow::RunWorkflow.boxed_clone(),
-                                        )
-                                });
-
-                                Some(menu)
-                            }),
+/// SOLO: the terminal's tab bar buttons ("+" with New Terminal, New Terminal
+/// in New Worktree… and Run Workflow…, inline assist, split, zoom), in place
+/// of the editor's, for every pane of `terminal_panel`: set where the pane is
+/// made, so no pane misses them (restored, split, moved to).
+fn set_terminal_tab_bar_buttons(
+    pane: &mut Pane,
+    terminal_panel: WeakEntity<TerminalPanel>,
+    cx: &mut Context<Pane>,
+) {
+    pane.set_render_tab_bar_buttons(cx, move |pane, window, cx| {
+        let assistant_enabled = terminal_panel
+            .upgrade()
+            .is_some_and(|terminal_panel| terminal_panel.read(cx).assistant_enabled);
+        let split_context = pane
+            .active_item()
+            .and_then(|item| item.downcast::<TerminalView>())
+            .map(|terminal_view| terminal_view.read(cx).focus_handle.clone());
+        let has_focused_rename_editor = pane
+            .active_item()
+            .and_then(|item| item.downcast::<TerminalView>())
+            .is_some_and(|view| view.read(cx).rename_editor_is_focused(window, cx));
+        if !pane.has_focus(window, cx)
+            && !pane.context_menu_focused(window, cx)
+            && !has_focused_rename_editor
+        {
+            return (None, None);
+        }
+        let focus_handle = pane.focus_handle(cx);
+        let right_children = h_flex()
+            .gap(DynamicSpacing::Base02.rems(cx))
+            .child(
+                PopoverMenu::new("terminal-tab-bar-popover-menu")
+                    .trigger_with_tooltip(
+                        IconButton::new("plus", IconName::Plus).icon_size(IconSize::Small),
+                        Tooltip::text("New…"),
                     )
-                    .when(assistant_enabled, |this| {
-                        this.when_some(split_context.clone(), |this, focus_handle| {
-                            this.child(InlineAssistTabBarButton { focus_handle })
-                        })
-                    })
-                    .child(
-                        PopoverMenu::new("terminal-pane-tab-bar-split")
-                            .trigger_with_tooltip(
-                                IconButton::new("terminal-pane-split", IconName::Split)
-                                    .icon_size(IconSize::Small),
-                                Tooltip::text("Split Pane"),
-                            )
-                            .anchor(Anchor::TopRight)
-                            .with_handle(pane.split_item_context_menu_handle.clone())
-                            .menu({
-                                move |window, cx| {
-                                    ContextMenu::build(window, cx, |menu, _, _| {
-                                        menu.when_some(
-                                            split_context.clone(),
-                                            |menu, split_context| menu.context(split_context),
-                                        )
-                                        .action("Split Right", SplitRight::default().boxed_clone())
-                                        .action("Split Left", SplitLeft::default().boxed_clone())
-                                        .action("Split Up", SplitUp::default().boxed_clone())
-                                        .action("Split Down", SplitDown::default().boxed_clone())
-                                    })
-                                    .into()
-                                }
-                            }),
-                    )
-                    .child({
-                        let zoomed = pane.is_zoomed();
-                        IconButton::new("toggle_zoom", IconName::Maximize)
-                            .icon_size(IconSize::Small)
-                            .toggle_state(zoomed)
-                            .selected_icon(IconName::Minimize)
-                            .on_click(cx.listener(|pane, _, window, cx| {
-                                pane.toggle_zoom(&workspace::ToggleZoom, window, cx);
-                            }))
-                            .tooltip(move |_window, cx| {
-                                Tooltip::for_action(
-                                    if zoomed { "Zoom Out" } else { "Zoom In" },
-                                    &ToggleZoom,
-                                    cx,
+                    .anchor(Anchor::TopRight)
+                    .with_handle(pane.new_item_context_menu_handle.clone())
+                    .menu(move |window, cx| {
+                        let focus_handle = focus_handle.clone();
+                        let menu = ContextMenu::build(window, cx, |menu, _, _| {
+                            // SOLO: a terminal in a new git
+                            // worktree, and workflows (with the
+                            // project's tasks) in place of Spawn Task.
+                            menu.context(focus_handle.clone())
+                                .action(
+                                    "New Terminal",
+                                    workspace::NewTerminal::default().boxed_clone(),
                                 )
+                                .action(
+                                    util::i18n::tr(
+                                        "New Terminal in New Worktree…",
+                                        "在新工作树中新建终端…",
+                                    ),
+                                    solo_actions::agent_task::NewAgentTask.boxed_clone(),
+                                )
+                                .separator()
+                                .action(
+                                    util::i18n::tr("Run Workflow…", "运行工作流…"),
+                                    crate::run_workflow::RunWorkflow.boxed_clone(),
+                                )
+                        });
+
+                        Some(menu)
+                    }),
+            )
+            .when(assistant_enabled, |this| {
+                this.when_some(split_context.clone(), |this, focus_handle| {
+                    this.child(InlineAssistTabBarButton { focus_handle })
+                })
+            })
+            .child(
+                PopoverMenu::new("terminal-pane-tab-bar-split")
+                    .trigger_with_tooltip(
+                        IconButton::new("terminal-pane-split", IconName::Split)
+                            .icon_size(IconSize::Small),
+                        Tooltip::text("Split Pane"),
+                    )
+                    .anchor(Anchor::TopRight)
+                    .with_handle(pane.split_item_context_menu_handle.clone())
+                    .menu({
+                        move |window, cx| {
+                            ContextMenu::build(window, cx, |menu, _, _| {
+                                menu.when_some(
+                                    split_context.clone(),
+                                    |menu, split_context| menu.context(split_context),
+                                )
+                                .action("Split Right", SplitRight::default().boxed_clone())
+                                .action("Split Left", SplitLeft::default().boxed_clone())
+                                .action("Split Up", SplitUp::default().boxed_clone())
+                                .action("Split Down", SplitDown::default().boxed_clone())
                             })
-                    })
-                    // SOLO: the terminal-first layout hides its terminal
-                    // column from here (and shows it from the activity bar).
-                    .when(workspace::dock::terminal_first_layout(cx), |this| {
-                        let tooltip = util::i18n::tr("Hide Terminal", "隐藏终端栏");
-                        this.child(
-                            IconButton::new("hide-terminal-column", IconName::HideTerminalColumn)
-                                .icon_size(IconSize::Small)
-                                .aria_label(tooltip)
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(
-                                        workspace::ToggleBottomDock.boxed_clone(),
-                                        cx,
-                                    )
-                                })
-                                .tooltip(move |_window, cx| {
-                                    Tooltip::for_action(tooltip, &workspace::ToggleBottomDock, cx)
-                                }),
+                            .into()
+                        }
+                    }),
+            )
+            .child({
+                let zoomed = pane.is_zoomed();
+                IconButton::new("toggle_zoom", IconName::Maximize)
+                    .icon_size(IconSize::Small)
+                    .toggle_state(zoomed)
+                    .selected_icon(IconName::Minimize)
+                    .on_click(cx.listener(|pane, _, window, cx| {
+                        pane.toggle_zoom(&workspace::ToggleZoom, window, cx);
+                    }))
+                    .tooltip(move |_window, cx| {
+                        Tooltip::for_action(
+                            if zoomed { "Zoom Out" } else { "Zoom In" },
+                            &ToggleZoom,
+                            cx,
                         )
                     })
-                    .into_any_element()
-                    .into();
-                (None, right_children)
-            });
-        });
-    }
+            })
+            // SOLO: the terminal-first layout hides its terminal
+            // column from here (and shows it from the activity bar).
+            .when(workspace::dock::terminal_first_layout(cx), |this| {
+                let tooltip = util::i18n::tr("Hide Terminal", "隐藏终端栏");
+                this.child(
+                    IconButton::new("hide-terminal-column", IconName::HideTerminalColumn)
+                        .icon_size(IconSize::Small)
+                        .aria_label(tooltip)
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(
+                                workspace::ToggleBottomDock.boxed_clone(),
+                                cx,
+                            )
+                        })
+                        .tooltip(move |_window, cx| {
+                            Tooltip::for_action(tooltip, &workspace::ToggleBottomDock, cx)
+                        }),
+                )
+            })
+            .into_any_element()
+            .into();
+        (None, right_children)
+    });
+}
 
+impl TerminalPanel {
     fn serialization_key(workspace: &Workspace) -> Option<String> {
         workspace
             .database_id()
@@ -647,7 +658,7 @@ impl TerminalPanel {
                 .log_err()?;
 
             panel
-                .update_in(cx, move |terminal_panel, window, cx| {
+                .update_in(cx, move |_, window, cx| {
                     let terminal_view = Box::new(cx.new(|cx| {
                         TerminalView::new(
                             terminal.clone(),
@@ -659,7 +670,6 @@ impl TerminalPanel {
                         )
                     }));
                     let pane = new_terminal_pane(weak_workspace, project, is_zoomed, window, cx);
-                    terminal_panel.apply_tab_bar_buttons(&pane, cx);
                     pane.update(cx, |pane, cx| {
                         pane.add_item(terminal_view, true, true, None, window, cx);
                     });
@@ -1407,6 +1417,9 @@ pub fn new_terminal_pane(
         pane.display_nav_history_buttons(None);
         pane.set_should_display_tab_bar(|_, _| true);
         pane.set_zoom_out_on_close(false);
+        // SOLO: the terminal's "+", split and zoom buttons, whatever made the
+        // pane.
+        set_terminal_tab_bar_buttons(&mut pane, terminal_panel.downgrade(), cx);
 
         let split_closure_terminal_panel = terminal_panel.downgrade();
         pane.set_can_split(Some(Arc::new(move |pane, dragged_item, _window, cx| {
@@ -1968,7 +1981,7 @@ mod tests {
     use picker::PickerDelegate as _;
 
     use super::*;
-    use crate::persistence::{SerializedPane, SerializedPaneGroup};
+    use crate::persistence::{SerializedAxis, SerializedPane, SerializedPaneGroup};
     use gpui::{Modifiers, TestAppContext, UpdateGlobal as _, VisualTestContext};
     use pretty_assertions::assert_eq;
     use project::FakeFs;
@@ -2537,6 +2550,195 @@ mod tests {
                 "unfocused interim pane must not become the active pane"
             );
         });
+    }
+
+    /// SOLO: what the "+" of `pane` offers, as the user opens it: the pane
+    /// focused, its tab bar drawn, the button's menu shown.
+    fn new_menu_labels(pane: &Entity<Pane>, cx: &mut VisualTestContext) -> Vec<String> {
+        pane.update_in(cx, |pane, window, cx| {
+            window.focus(&pane.focus_handle(cx), cx)
+        });
+        cx.run_until_parked();
+        let handle = pane.read_with(cx, |pane, _| pane.new_item_context_menu_handle.clone());
+        cx.update(|window, cx| handle.show(window, cx));
+        cx.run_until_parked();
+        let labels = handle
+            .menu()
+            .map(|menu| {
+                menu.read_with(cx, |menu, _| {
+                    menu.entry_labels()
+                        .into_iter()
+                        .map(|label| label.to_string())
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        cx.update(|_, cx| handle.hide(cx));
+        cx.run_until_parked();
+        labels
+    }
+
+    /// SOLO: the terminal pane's "+" menu, in English or Chinese.
+    fn assert_terminal_menus(
+        panel: &Entity<TerminalPanel>,
+        assistant: bool,
+        cx: &mut VisualTestContext,
+    ) {
+        let panes: Vec<_> =
+            panel.read_with(cx, |panel, _| panel.center.panes().into_iter().cloned().collect());
+        for (ix, pane) in panes.iter().enumerate() {
+            let labels = new_menu_labels(pane, cx);
+            assert_eq!(
+                labels,
+                [
+                    "New Terminal",
+                    util::i18n::tr("New Terminal in New Worktree…", "在新工作树中新建终端…"),
+                    util::i18n::tr("Run Workflow…", "运行工作流…"),
+                ],
+                "the + of terminal pane {ix} of {}",
+                panes.len()
+            );
+            // Focused again: the menu took the focus.
+            pane.update_in(cx, |pane, window, cx| {
+                window.focus(&pane.focus_handle(cx), cx)
+            });
+            cx.run_until_parked();
+            assert_eq!(
+                cx.debug_bounds("ICON-ZedAssistant").is_some(),
+                assistant,
+                "the inline assist button of terminal pane {ix}"
+            );
+        }
+    }
+
+    /// SOLO: how AI is set up when the panel is restored.
+    #[derive(Clone, Copy, Debug)]
+    enum Assistant {
+        /// No model: nothing ever tells the panel (the default).
+        NeverSet,
+        /// AI off, or the model gone: told it's not available.
+        Disabled,
+        /// A model: told it's available, before the panel restores.
+        Enabled,
+    }
+
+    /// SOLO: restores a panel of `items`, as Solo does when it starts.
+    async fn restore_panel(
+        items: SerializedItems,
+        assistant: Assistant,
+        cx: &mut TestAppContext,
+    ) -> (gpui::WindowHandle<MultiWorkspace>, Entity<TerminalPanel>) {
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        match assistant {
+            Assistant::NeverSet => {}
+            Assistant::Disabled => {
+                terminal_panel.update(cx, |panel, cx| panel.set_assistant_enabled(false, cx))
+            }
+            Assistant::Enabled => {
+                terminal_panel.update(cx, |panel, cx| panel.set_assistant_enabled(true, cx))
+            }
+        }
+        window_handle
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().clone();
+                let project = workspace.read(cx).project().clone();
+                deserialize_terminal_panel(
+                    workspace.downgrade(),
+                    project,
+                    WorkspaceId::default(),
+                    SerializedTerminalPanel {
+                        items,
+                        active_item_id: None,
+                    },
+                    terminal_panel.downgrade(),
+                    window,
+                    cx,
+                )
+            })
+            .unwrap()
+            .await
+            .unwrap();
+        window_handle
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    workspace.open_panel::<TerminalPanel>(window, cx)
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+        (window_handle, terminal_panel)
+    }
+
+    fn serialized_pane(item: u64) -> SerializedPaneGroup {
+        SerializedPaneGroup::Pane(SerializedPane {
+            active: item == 1,
+            children: vec![item],
+            active_item: Some(item),
+            pinned_count: 0,
+        })
+    }
+
+    /// SOLO: after a restart, every pane of the terminal panel offers the
+    /// terminal's "+" menu, not the editor's (New File, Open File...),
+    /// whether a model is set up or not; with one, the inline assist
+    /// button too.
+    #[gpui::test]
+    async fn test_restored_terminal_panes_have_terminal_buttons(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        init_test(cx);
+        for assistant in [Assistant::NeverSet, Assistant::Disabled, Assistant::Enabled] {
+            for split in [false, true] {
+                let items = if split {
+                    SerializedItems::WithSplits(SerializedPaneGroup::Group {
+                        axis: SerializedAxis(gpui::Axis::Horizontal),
+                        flexes: None,
+                        children: vec![serialized_pane(1), serialized_pane(2)],
+                    })
+                } else {
+                    SerializedItems::NoSplits(vec![1])
+                };
+                let (window_handle, terminal_panel) = restore_panel(items, assistant, cx).await;
+                let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+                let panes = terminal_panel.read_with(cx, |panel, _| panel.center.panes().len());
+                assert_eq!(panes, if split { 2 } else { 1 }, "{assistant:?}");
+                assert_terminal_menus(
+                    &terminal_panel,
+                    matches!(assistant, Assistant::Enabled),
+                    cx,
+                );
+                cx.update(|window, _| window.remove_window());
+                cx.run_until_parked();
+            }
+        }
+    }
+
+    /// SOLO: so does a pane a terminal moved to when its pane was split
+    /// ("Split Right" on a pane with two terminals moves one).
+    #[gpui::test]
+    async fn test_moved_split_pane_has_terminal_buttons(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        init_test(cx);
+        let (window_handle, terminal_panel) =
+            restore_panel(SerializedItems::NoSplits(vec![1, 2]), Assistant::NeverSet, cx).await;
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let pane = terminal_panel.read_with(cx, |panel, _| panel.active_pane.clone());
+        assert_eq!(pane.read_with(cx, |pane, _| pane.items_len()), 2);
+        pane.update_in(cx, |pane, window, cx| {
+            window.focus(&pane.focus_handle(cx), cx);
+            window.dispatch_action(
+                SplitRight {
+                    mode: SplitMode::MovePane,
+                }
+                .boxed_clone(),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            terminal_panel.read_with(cx, |panel, _| panel.center.panes().len()),
+            2
+        );
+        assert_terminal_menus(&terminal_panel, false, cx);
     }
 
     #[gpui::test]

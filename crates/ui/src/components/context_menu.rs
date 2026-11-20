@@ -908,6 +908,19 @@ impl ContextMenu {
         self
     }
 
+    /// SOLO: the labels of its entries and submenus, in order, for tests to
+    /// tell which menu this is.
+    pub fn entry_labels(&self) -> Vec<SharedString> {
+        self.items
+            .iter()
+            .filter_map(|item| match item {
+                ContextMenuItem::Entry(entry) => Some(entry.label.clone()),
+                ContextMenuItem::Submenu { label, .. } => Some(label.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn selected_index(&self) -> Option<usize> {
         self.selected_index
     }
