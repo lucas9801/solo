@@ -30,6 +30,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context as _, Result, anyhow};
+use serde::{Deserialize, Serialize};
 
 /// SOLO: Whether `directory` is an absolute path on a local drive: not a
 /// network share (`\\server\share`), and on Windows not a drive letter
@@ -139,7 +140,7 @@ fn with_state<R>(store_dir: &Path, f: impl FnOnce(&mut StoreState) -> R) -> R {
 }
 
 /// SOLO: An untracked file a snapshot left out, as it was then (G51).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LargeFile {
     /// Relative to the work tree, with `/` separators.
     pub path: String,
@@ -185,14 +186,14 @@ impl Drop for TreePin {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum FileChange {
     Added,
     Modified,
     Deleted,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ChangedFile {
     /// Relative to the work tree, with `/` separators.
     pub path: String,
@@ -1171,6 +1172,26 @@ impl SnapshotStore {
         })
     }
 
+    /// SOLO: Whether each of `trees` is in the store (G59).
+    pub(crate) fn has_trees(&self, trees: &[TreeId]) -> Result<Vec<bool>> {
+        let mut input = Vec::new();
+        for tree in trees {
+            input.extend_from_slice(tree.trim().as_bytes());
+            input.push(b'\n');
+        }
+        let output = self.run_with_input(
+            &self.index_path(),
+            &["cat-file", "--batch-check=%(objecttype)"],
+            input,
+        )?;
+        let output = String::from_utf8_lossy(&output);
+        let mut lines = output.lines();
+        Ok(trees
+            .iter()
+            .map(|_| lines.next().is_some_and(|line| line.trim() == "tree"))
+            .collect())
+    }
+
     /// SOLO: The ids of objects (`<tree>:<path>`, say), `None` for those
     /// that aren't there (G59).
     pub(crate) fn object_ids(&self, objects: &[String]) -> Result<Vec<Option<String>>> {
@@ -1608,8 +1629,10 @@ fn empty_unused_store(store_dir: &Path) -> Result<()> {
     {
         return Ok(());
     }
-    // SOLO: records of pending changes name objects that go (G59).
-    for name in ["objects", "repository", "index", "restore-index", PENDING_DIR] {
+    // SOLO: the records of pending changes there name no objects (none
+    // names a tree): they're kept, for what the review hasn't sent the agent
+    // yet (G59).
+    for name in ["objects", "repository", "index", "restore-index"] {
         let path = store_dir.join(name);
         let removed = if path.is_dir() {
             std::fs::remove_dir_all(&path)
@@ -2951,7 +2974,15 @@ mod tests {
                 while_closed: None,
             },
         )]);
-        pending::save(&store, "abcd1234", &repository, &files).unwrap();
+        pending::save(
+            &store,
+            "abcd1234",
+            &repository,
+            &files,
+            &[],
+            &Default::default(),
+        )
+        .unwrap();
         // Kept through a collection, and read back.
         store.collect_garbage(Vec::new()).unwrap();
         let (_, contents) = SnapshotStore::find_pending_records(&storage, "abcd1234").remove(0);
@@ -2991,7 +3022,15 @@ mod tests {
             .collect();
         let started = std::time::Instant::now();
         for terminal in 0..10 {
-            pending::save(&store, &format!("terminal{terminal}"), &repository, &files).unwrap();
+            pending::save(
+                &store,
+                &format!("terminal{terminal}"),
+                &repository,
+                &files,
+                &[],
+                &Default::default(),
+            )
+            .unwrap();
         }
         let elapsed = started.elapsed();
         eprintln!("recorded 10 terminals x 100 pending files in {elapsed:?}");

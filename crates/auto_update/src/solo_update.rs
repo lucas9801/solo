@@ -2069,7 +2069,7 @@ Solo 1.29: faster."
         );
         assert_eq!(
             update_button::offer_summary(&offer, false).as_deref(),
-            Some("faster.")
+            Some("Faster.")
         );
 
         // A failed automatic check keeps the offer; a failed manual one says so.

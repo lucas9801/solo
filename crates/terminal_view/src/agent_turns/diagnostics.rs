@@ -14,6 +14,7 @@ use collections::HashMap;
 use gpui::{App, AsyncApp, Entity, TaskExt as _, WeakEntity};
 use language::{Buffer, DiagnosticSeverity, Point};
 use project::Project;
+use serde::{Deserialize, Serialize};
 
 /// How long the language servers get to check the changed files (with
 /// rust-analyzer, a `cargo check`).
@@ -34,7 +35,7 @@ struct DiagnosticKey {
     message: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TurnDiagnostic {
     pub path: PathBuf,
     /// From 1.
@@ -64,7 +65,7 @@ pub(crate) struct DiagnosticsBefore {
 }
 
 /// What a turn did to the diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum TurnDiagnostics {
     /// The language servers are still checking the changed files.
     Checking,
