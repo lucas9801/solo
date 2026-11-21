@@ -2890,7 +2890,7 @@ mod tests {
         let kept = |store_dir: &Path| {
             let store = SnapshotStore::open(&repository, &storage).unwrap();
             assert_eq!(store.store_dir, store_dir);
-            store.objects_contents(&[blob.clone()]).unwrap()
+            store.objects_contents(std::slice::from_ref(&blob)).unwrap()
         };
 
         // Trimming all stores to nothing leaves it alone.

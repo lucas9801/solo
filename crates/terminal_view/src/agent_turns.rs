@@ -3288,7 +3288,7 @@ mod tests {
         // The turn took the record's pending change for accepted.
         let mut changes = PendingChanges {
             store,
-            directory: repository.clone(),
+            directory: repository,
             files: BTreeMap::from_iter([("a.txt".to_string(), file("a1\n", "a2\n"))]),
             pending: BTreeSet::new(),
             trees: Vec::new(),
