@@ -976,6 +976,20 @@ impl AgentTurnReview {
             .shared();
     }
 
+    /// SOLO: Whether a hunk of the file at `ix` is among those shown, by
+    /// the turn filtered by.
+    fn in_filter(&self, ix: usize, range: &Range<language::Anchor>, cx: &App) -> bool {
+        match self.filter {
+            TurnFilter::All => true,
+            TurnFilter::Running => false,
+            TurnFilter::Turn(number) => {
+                let snapshot = self.files[ix].buffer.read(cx).snapshot();
+                self.hunk_turns(ix, &point_rows(&range.to_point(&snapshot)))
+                    .contains(&number)
+            }
+        }
+    }
+
     /// SOLO: The turns of a hunk of the file at `ix`, by its rows.
     fn hunk_turns(&self, ix: usize, rows: &Range<u32>) -> BTreeSet<usize> {
         self.files
@@ -1161,6 +1175,11 @@ impl AgentTurnReview {
                 let Some(ix) = self.file_index(hunk.buffer_id, cx) else {
                     continue;
                 };
+                // SOLO: only the turn shown's, when filtered by turn: a hunk
+                // of another can be in an excerpt's context (G59).
+                if !self.in_filter(ix, &hunk.buffer_range, cx) {
+                    continue;
+                }
                 let hunks = match by_file.iter_mut().find(|(file_ix, _)| *file_ix == ix) {
                     Some((_, hunks)) => hunks,
                     None => {
@@ -1222,7 +1241,7 @@ impl AgentTurnReview {
         }
         let mut created = Vec::new();
         let mut unsaved = Vec::new();
-        let mut updates = Vec::new();
+        let mut saves = Vec::new();
         for (ix, hunks) in self.hunks_by_file(&ranges, cx) {
             let file = &self.files[ix];
             let buffer = file.buffer.read(cx);
@@ -1256,27 +1275,32 @@ impl AgentTurnReview {
             // Where the rejected lines are now, for the agent.
             let snapshot = buffer.read(cx).snapshot();
             let path = self.agent_path(&abs_path, &relative, cx);
-            for hunk in &hunks {
-                let range = hunk.buffer_range.to_point(&snapshot);
-                let mut rows = point_rows(&range);
-                rows = rows.start + 1..rows.end + 1;
-                self.rejected.push(Rejection {
-                    path: path.clone(),
-                    lines: Some(rows),
-                });
-            }
+            let rejections: Vec<Rejection> = hunks
+                .iter()
+                .map(|hunk| {
+                    let rows = point_rows(&hunk.buffer_range.to_point(&snapshot));
+                    Rejection {
+                        path: path.clone(),
+                        lines: Some(rows.start + 1..rows.end + 1),
+                    }
+                })
+                .collect();
+            // Left as the review left it, here at once (so its own edit isn't
+            // taken for someone else's); for the pending changes once it's
+            // saved: until then the agent's change isn't undone (G59).
             let file = &mut self.files[ix];
-            if let Some(pending) = file.pending.as_mut() {
+            let update = file.pending.as_mut().map(|pending| {
                 pending.left = Version::Text(text.as_str().into());
                 let has_changes = pending.accepted != pending.left;
-                updates.push((file.path.clone(), Some(pending.clone()), has_changes));
-            }
-            self.project
-                .update(cx, |project, cx| project.save_buffer(buffer, cx))
-                .detach_and_log_err(cx);
+                (file.path.clone(), Some(pending.clone()), has_changes)
+            });
+            let save = self
+                .project
+                .update(cx, |project, cx| project.save_buffer(buffer, cx));
+            saves.push((save, update, rejections, relative));
         }
-        if !updates.is_empty() {
-            self.model_update(updates, cx);
+        if !saves.is_empty() {
+            self.save_rejections(saves, cx);
         }
         self.status = if unsaved.is_empty() {
             None
@@ -1301,6 +1325,58 @@ impl AgentTurnReview {
             self.trash_created_files(created, cx);
         }
         cx.notify();
+    }
+
+    /// SOLO: Once the rejected files are saved, the pending changes and the
+    /// message for the agent have them; a file that failed to save keeps
+    /// the agent's change pending, and the page says why (G59).
+    fn save_rejections(
+        &mut self,
+        saves: Vec<(
+            Task<anyhow::Result<()>>,
+            Option<(String, Option<PendingFile>, bool)>,
+            Vec<Rejection>,
+            String,
+        )>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let mut updates = Vec::new();
+            let mut rejected = Vec::new();
+            let mut failed = Vec::new();
+            for (save, update, rejections, path) in saves {
+                match save.await {
+                    Ok(()) => {
+                        updates.extend(update);
+                        rejected.extend(rejections);
+                    }
+                    Err(error) => {
+                        log::warn!("failed to save the rejected {path}: {error:#}");
+                        failed.push(format!("{path} ({error:#})"));
+                    }
+                }
+            }
+            this.update(cx, |this, cx| {
+                this.rejected.extend(rejected);
+                if !updates.is_empty() {
+                    this.model_update(updates, cx);
+                }
+                if !failed.is_empty() {
+                    let message = if is_chinese() {
+                        format!("保存失败，没有拒绝：{}", failed.join("、"))
+                    } else {
+                        format!("Failed to save, so not rejected: {}", failed.join(", "))
+                    };
+                    this.status = Some(match this.status.take() {
+                        Some(status) => format!("{status} {message}").into(),
+                        None => message.into(),
+                    });
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// SOLO: Moves files the agent created to the recycle bin, rather than
@@ -1440,6 +1516,10 @@ impl AgentTurnReview {
         else {
             return;
         };
+        // Not other turns' files, when filtered by turn.
+        if self.filter != TurnFilter::All {
+            return;
+        }
         let binary: Vec<String> = changes
             .files
             .iter()
@@ -2275,6 +2355,29 @@ impl AgentTurnReview {
                         .color(Color::Muted),
                 )
             })
+            .children(
+                matches!(self.mode, Mode::Pending)
+                    .then(|| {
+                        AgentTurns::try_global(cx)?
+                            .read(cx)
+                            .pending_changes(self.terminal_id)?
+                            .save_error
+                            .clone()
+                    })
+                    .flatten()
+                    .map(|error| {
+                        // SOLO: they'd be gone after a restart (G59).
+                        Label::new(format!(
+                            "{} {error}",
+                            tr(
+                                "The pending changes couldn't be recorded for after a restart; trying again:",
+                                "待审改动没能记下来（重启后会丢），稍后再试：",
+                            )
+                        ))
+                        .size(LabelSize::Small)
+                        .color(Color::Warning)
+                    }),
+            )
             .children(self.attribution_note(cx).map(|note| {
                 Label::new(note)
                     .size(LabelSize::Small)
@@ -4146,14 +4249,37 @@ mod tests {
 
         // SOLO: a Codex patch's event that came after the turn ended: the
         // file it edited is the turn's after all (R3 M5).
-        turns.update(cx, |turns, _| {
-            assert!(!turns.late_edits(second.entity_id(), 1, &[repository.join("c.txt")]));
-            assert!(turns.late_edits(second.entity_id(), 1, &[repository.join("a.txt")]));
-            assert!(!turns.late_edits(second.entity_id(), 1, &[repository.join("a.txt")]));
+        let pending_of = |terminal: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            turns.read_with(cx, |turns, _| {
+                turns
+                    .pending_changes(terminal.entity_id())
+                    .map(|changes| changes.files.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+            })
+        };
+        assert_eq!(pending_of(&second, cx), vec!["b.txt".to_string()]);
+        turns.update(cx, |turns, cx| {
+            assert!(!turns.late_edits(second.entity_id(), 1, &[repository.join("c.txt")], cx));
+            assert!(turns.late_edits(second.entity_id(), 1, &[repository.join("a.txt")], cx));
+            assert!(!turns.late_edits(second.entity_id(), 1, &[repository.join("a.txt")], cx));
         });
         assert_eq!(
             recorded(&second, cx),
             (true, vec!["a.txt".to_string(), "b.txt".to_string()], vec![])
+        );
+        // SOLO: and its changes are pending too (G59).
+        let started = std::time::Instant::now();
+        while pending_of(&second, cx).len() < 2 {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "the late file isn't pending"
+            );
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            pending_of(&second, cx),
+            vec!["a.txt".to_string(), "b.txt".to_string()]
         );
 
         // Rejecting everything in the first agent's turn.
@@ -4598,6 +4724,38 @@ mod tests {
             crate::agent_turns::render_tab_entry(view, cx).is_some()
         });
         assert!(!has_entry);
+    }
+
+    /// SOLO: Filtered by a turn, Reject All rejects only that turn's hunks,
+    /// even when another turn's hunk is close enough to show in its
+    /// context (G59).
+    #[gpui::test]
+    async fn test_reject_all_rejects_only_the_turn_shown(cx: &mut TestAppContext) {
+        let mut test = mirrored(cx, &[("a.txt", &ten_lines(&[]))]).await;
+        let review = test.open_review();
+        test.start_turn();
+        test.write("a.txt", &ten_lines(&[(2, "TWO")])).await;
+        test.end_turn();
+        test.start_turn();
+        test.write("a.txt", &ten_lines(&[(2, "TWO"), (5, "FIVE")]))
+            .await;
+        test.end_turn();
+        test.cx.run_until_parked();
+        review.read_with(test.cx, |review, cx| {
+            assert_eq!(
+                review.turn_sources(cx),
+                vec![TurnFilter::Turn(1), TurnFilter::Turn(2)]
+            );
+        });
+        review.update(test.cx, |review, cx| {
+            review.set_filter(TurnFilter::Turn(2), cx);
+            review.reject_hunks(AgentTurnReview::all_hunks(), cx);
+        });
+        test.cx.run_until_parked();
+        assert_eq!(
+            test.fs.load(&test.repository.join("a.txt")).await.unwrap(),
+            ten_lines(&[(2, "TWO")])
+        );
     }
 
     /// SOLO: Rolling back accepts the files as it left them; undoing it

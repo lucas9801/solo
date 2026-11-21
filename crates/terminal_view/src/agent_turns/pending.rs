@@ -213,6 +213,10 @@ pub(crate) struct TurnEnd {
     /// Whether what earlier turns left pending is accepted now (see
     /// [`auto_keep`]): not while the review is open.
     pub auto_keep: bool,
+    /// The files the review changed while the turn was under way: what
+    /// changed in them from before the turn includes the review's change,
+    /// not someone else's to take in.
+    pub reviewed: BTreeSet<String>,
 }
 
 /// The pending changes after `turn`: the files it changed are pending (from
@@ -249,6 +253,10 @@ pub(crate) fn end_turn(
         let committed = if repository { versions.next() } else { None };
         let changed = turn.changed.iter().any(|file| file.path == path);
         let mut file = match files.get(path) {
+            Some(file) if changed && turn.reviewed.contains(path) => PendingFile {
+                left: after.clone(),
+                ..file.clone()
+            },
             Some(file) if changed => PendingFile {
                 accepted: rebase(&file.accepted, &file.left, &before),
                 left: after.clone(),
@@ -379,6 +387,32 @@ pub(crate) fn auto_keep_now(
         }
     }
     Ok(result)
+}
+
+/// The pending files a turn's end made (`files`, from `input`), with what
+/// the review changed meanwhile (`current` differs from `input`) in files
+/// the turn didn't change: as the review left them.
+pub(crate) fn keep_review_changes(
+    input: &BTreeMap<String, PendingFile>,
+    current: &BTreeMap<String, PendingFile>,
+    changed: &[String],
+    mut files: BTreeMap<String, PendingFile>,
+) -> BTreeMap<String, PendingFile> {
+    let paths: BTreeSet<&String> = input.keys().chain(current.keys()).collect();
+    for path in paths {
+        if changed.contains(path) || input.get(path) == current.get(path) {
+            continue;
+        }
+        match current.get(path) {
+            Some(file) => {
+                files.insert(path.clone(), file.clone());
+            }
+            None => {
+                files.remove(path);
+            }
+        }
+    }
+    files
 }
 
 /// How a terminal's pending changes are recorded, to be there after a
@@ -532,6 +566,15 @@ pub(crate) fn load(
     let mut files = BTreeMap::new();
     for file in &record.files {
         let versions = recorded(file);
+        // A path that would lead out of the work tree isn't one of its files.
+        if !is_work_tree_path(&file.path) {
+            log::warn!("ignoring the pending file {:?}: not a path in the work tree", file.path);
+            // Past its contents.
+            for version in &versions {
+                read(version).ok();
+            }
+            continue;
+        }
         let accepted = read(&versions[0])?;
         let left = read(&versions[1])?;
         let while_closed = if versions.len() == 4 {
@@ -553,6 +596,18 @@ pub(crate) fn load(
         );
     }
     Ok(files)
+}
+
+/// Whether `path` names a file inside a work tree: relative, `/`-separated,
+/// without `.` or `..` parts, a drive or a root.
+pub(crate) fn is_work_tree_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.contains(':')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 /// The pending changes restored after Solo was closed, with what changed on
@@ -1014,6 +1069,49 @@ mod tests {
         );
         assert_eq!(accept_edits(accepted, current, |_| false), current);
         assert_eq!(accept_edits(accepted, current, |_| true), accepted);
+    }
+
+    #[test]
+    fn test_keep_review_changes() {
+        let file = |accepted: &str, left: &str| PendingFile {
+            accepted: Version::Text(accepted.into()),
+            left: Version::Text(left.into()),
+            first_turn: 1,
+            since: None,
+            while_closed: None,
+        };
+        let input = BTreeMap::from_iter([
+            ("kept.txt".to_string(), file("a", "b")),
+            ("edited.txt".to_string(), file("a", "b")),
+            ("changed.txt".to_string(), file("a", "b")),
+            ("same.txt".to_string(), file("a", "b")),
+        ]);
+        // Meanwhile the review kept one file and changed another.
+        let mut current = input.clone();
+        current.remove("kept.txt");
+        current.insert("edited.txt".to_string(), file("a", "c"));
+        current.insert("changed.txt".to_string(), file("a", "c"));
+        // The turn's end, from the input: it changed changed.txt.
+        let ended = BTreeMap::from_iter([
+            ("kept.txt".to_string(), file("a", "b")),
+            ("edited.txt".to_string(), file("a", "b")),
+            ("changed.txt".to_string(), file("a", "d")),
+            ("same.txt".to_string(), file("a", "e")),
+        ]);
+        let result = keep_review_changes(&input, &current, &["changed.txt".to_string()], ended);
+        assert!(!result.contains_key("kept.txt"));
+        assert_eq!(result["edited.txt"], file("a", "c"));
+        assert_eq!(result["changed.txt"], file("a", "d"));
+        assert_eq!(result["same.txt"], file("a", "e"));
+    }
+
+    #[test]
+    fn test_is_work_tree_path() {
+        assert!(is_work_tree_path("src/a.cpp"));
+        assert!(is_work_tree_path("a"));
+        for bad in ["", "../a", "src/../../a", "/etc/a", "C:/a", "src\\a", "./a", "a//b"] {
+            assert!(!is_work_tree_path(bad), "{bad}");
+        }
     }
 
     #[test]

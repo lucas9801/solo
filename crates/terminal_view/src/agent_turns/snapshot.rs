@@ -102,6 +102,8 @@ const BORROWED_FILE: &str = "borrowed";
 /// `<terminal id>.json`: what the user accepted of each file, kept across
 /// restarts. The trees a record lists in `"trees"` are kept (G59).
 const PENDING_DIR: &str = "pending";
+/// SOLO: How long a record of pending changes nobody restored is kept.
+const MAX_PENDING_RECORD_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
 /// Git commands that share a store's index run one at a time, also within
 /// this process (file locks don't exclude threads holding other handles).
@@ -718,7 +720,9 @@ impl SnapshotStore {
             .filter_map(|line| {
                 let mut fields = line.split(' ');
                 let id = fields.next()?;
-                (fields.next() == Some("tree")).then(|| id.to_string())
+                // SOLO: blobs too: a pending file's, which no tree has yet
+                // (G59).
+                matches!(fields.next(), Some("tree" | "blob")).then(|| id.to_string())
             })
             .collect();
         let reachable = self.run_with_input(
@@ -1197,25 +1201,41 @@ impl SnapshotStore {
             .collect())
     }
 
-    /// SOLO: The blob ids the files at `abs_paths` would have, without
-    /// storing them; `None` for one that can't be read (G59).
+    /// SOLO: Stores the files at `abs_paths` as blobs, filtered as snapshots
+    /// take them (so the ids match theirs): the ids, `None` for one that
+    /// can't be read. They're kept until the next collection at least, for
+    /// a record to name them (G59).
     pub(crate) fn hash_files(&self, abs_paths: &[PathBuf]) -> Vec<Option<String>> {
-        abs_paths
-            .iter()
-            .map(|path| {
-                let output = self
-                    .command(&self.index_path())
-                    .args(["hash-object", "--no-filters", "--"])
-                    .arg(path)
-                    .output()
-                    .ok()?;
-                output.status.success().then(|| {
-                    String::from_utf8_lossy(&output.stdout).trim().to_string()
+        let stored = (|| -> Result<Vec<Option<String>>> {
+            let _lock = self.lock()?;
+            abs_paths
+                .iter()
+                .map(|path| {
+                    let output = self
+                        .command(&self.index_path())
+                        .args(["hash-object", "-w", "--"])
+                        .arg(path)
+                        .output()
+                        .context("running git hash-object")?;
+                    Ok(output
+                        .status
+                        .success()
+                        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string()))
                 })
-            })
-            .collect()
+                .collect()
+        })();
+        let ids = match stored {
+            Ok(ids) => ids,
+            Err(error) => {
+                log::warn!("failed to store files of {:?}: {error:#}", self.work_tree);
+                vec![None; abs_paths.len()]
+            }
+        };
+        with_state(&self.store_dir, |state| {
+            state.recent.extend(ids.iter().flatten().cloned());
+        });
+        ids
     }
-
     /// SOLO: Keeps other git commands off the store, in this process and
     /// others, until it's dropped (G59).
     pub(crate) fn lock(&self) -> Result<StoreLock<'_>> {
@@ -1361,7 +1381,12 @@ impl StoreLock<'_> {
         let path = directory.join(format!("{key}.json"));
         let temporary = directory.join(format!("{key}.json.tmp"));
         std::fs::write(&temporary, record).with_context(|| format!("writing {temporary:?}"))?;
-        std::fs::rename(&temporary, &path).with_context(|| format!("writing {path:?}"))
+        std::fs::rename(&temporary, &path).with_context(|| format!("writing {path:?}"))?;
+        // Used now, for trimming the least recently used stores.
+        if let Err(error) = std::fs::write(self.store.store_dir.join(LAST_USED_FILE), b"") {
+            log::warn!("failed to mark {:?} as used: {error}", self.store.store_dir);
+        }
+        Ok(())
     }
 
     /// Forgets the pending changes of the terminal `key`.
@@ -1409,15 +1434,17 @@ fn pending_record_trees(store_dir: &Path) -> Vec<TreeId> {
     trees
 }
 
-/// SOLO: Removes the records of pending changes nobody updated for a week:
-/// their terminals are gone (G59).
+/// SOLO: Removes the records of pending changes nobody restored or updated
+/// for [MAX_PENDING_RECORD_AGE]: a terminal that outlives Solo has its
+/// record rewritten each time Solo starts, so theirs are gone. Not by the
+/// store's age: Solo may just not have run for a while (G59).
 fn remove_old_pending_records(store_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(store_dir.join(PENDING_DIR)) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if is_older_than(&path, MAX_STORE_AGE) {
+        if is_older_than(&path, MAX_PENDING_RECORD_AGE) {
             log::info!("removing the old record of pending changes {path:?}");
             std::fs::remove_file(&path).ok();
         }
@@ -1558,7 +1585,11 @@ fn empty_unused_store(store_dir: &Path) -> Result<()> {
         .write(true)
         .open(store_dir.join(LOCK_FILE))
         .context("opening the snapshot store's lock")?;
-    if lock.try_lock().is_err() || in_use_elsewhere(store_dir) {
+    // SOLO: and never what records of pending changes need (G59).
+    if lock.try_lock().is_err()
+        || in_use_elsewhere(store_dir)
+        || !pending_record_trees(store_dir).is_empty()
+    {
         return Ok(());
     }
     // SOLO: records of pending changes name objects that go (G59).
@@ -1699,7 +1730,9 @@ fn trim_stores(storage_root: &Path, max_bytes: u64) {
         let ours = STORES
             .lock()
             .map_or(true, |stores| stores.contains_key(&path));
-        if ours {
+        // SOLO: nor one with pending changes, which its next opening
+        // collects instead (G59).
+        if ours || !pending_record_trees(&path).is_empty() {
             continue;
         }
         match empty_unused_store(&path) {
@@ -2818,6 +2851,86 @@ mod tests {
         store.collect_garbage(Vec::new()).unwrap();
         assert_eq!(contents(&store), vec![None, None]);
         assert!(SnapshotStore::find_pending_records(&storage, "abcd1234").is_empty());
+    }
+
+    /// SOLO: A store with pending changes isn't emptied: not by trimming
+    /// all stores, not for being unused, not when its record is old (G59).
+    #[test]
+    fn test_stores_with_pending_records_arent_emptied() {
+        let (_temp, repository, storage) = repository();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let (blob, record_path) = {
+            let lock = store.lock().unwrap();
+            let blob = lock.write_blobs(&[b"accepted\n".as_slice()]).unwrap().remove(0);
+            let tree = lock
+                .write_tree(&[("a.txt".to_string(), blob.clone())])
+                .unwrap();
+            let record = serde_json::json!({ "trees": [tree] });
+            lock.write_record("abcd1234", record.to_string().as_bytes())
+                .unwrap();
+            (blob, store.store_dir.join(PENDING_DIR).join("abcd1234.json"))
+        };
+        // Solo hasn't run for ten days.
+        let old = SystemTime::now() - Duration::from_secs(10 * 24 * 60 * 60);
+        fs::File::options()
+            .write(true)
+            .open(&record_path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(store.store_dir.join(LAST_USED_FILE))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let store_dir = store.store_dir.clone();
+        drop(store);
+        STORES.lock().unwrap().remove(&store_dir);
+        let kept = |store_dir: &Path| {
+            let store = SnapshotStore::open(&repository, &storage).unwrap();
+            assert_eq!(store.store_dir, store_dir);
+            store.objects_contents(&[blob.clone()]).unwrap()
+        };
+
+        // Trimming all stores to nothing leaves it alone.
+        trim_stores(&storage, 0);
+        empty_unused_store(&store_dir).unwrap();
+        assert!(record_path.exists());
+        assert_eq!(kept(&store_dir), vec![Some(b"accepted\n".to_vec())]);
+        STORES.lock().unwrap().remove(&store_dir);
+        // So does opening it again.
+        assert_eq!(kept(&store_dir), vec![Some(b"accepted\n".to_vec())]);
+        assert!(record_path.exists());
+    }
+
+    /// SOLO: A file that isn't text is stored as snapshots store it, so a
+    /// record can name it (G59).
+    #[test]
+    fn test_binary_files_can_be_recorded() {
+        use super::super::pending::{self, PendingFile, Version};
+        let (_temp, repository, storage) = repository();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        fs::write(repository.join("image.bin"), [0u8, 1, 2, 255, 0, 7]).unwrap();
+        let current = pending::current_version(&store, &repository.join("image.bin"));
+        assert!(matches!(current, Version::Binary(ref id) if !id.is_empty()), "{current:?}");
+        let files = std::collections::BTreeMap::from_iter([(
+            "image.bin".to_string(),
+            PendingFile {
+                accepted: Version::Absent,
+                left: current.clone(),
+                first_turn: 1,
+                since: None,
+                while_closed: None,
+            },
+        )]);
+        pending::save(&store, "abcd1234", &repository, &files).unwrap();
+        // Kept through a collection, and read back.
+        store.collect_garbage(Vec::new()).unwrap();
+        let (_, contents) = SnapshotStore::find_pending_records(&storage, "abcd1234").remove(0);
+        let record: pending::Record = serde_json::from_slice(&contents).unwrap();
+        let loaded = pending::load(&store, &record).unwrap();
+        assert_eq!(loaded["image.bin"].left, current);
     }
 
     /// Trees another Solo keeps are kept while it runs (G51).

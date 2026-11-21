@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use collections::HashMap;
+use collections::{HashMap, HashSet};
 use anyhow::Context as _;
 use futures::FutureExt as _;
 use futures::future::{BoxFuture, Shared};
@@ -83,6 +83,11 @@ const CODEX_EDITS_SLACK_MS: i64 = 2_000;
 /// SOLO: How long after a pending file changes on disk its changes are
 /// checked again (G59).
 const PENDING_REFRESH_DELAY: Duration = Duration::from_millis(500);
+/// SOLO: How long pending changes wait to be recorded, for more to come.
+const SAVE_DELAY: Duration = Duration::from_millis(200);
+/// SOLO: How long a failed record of pending changes waits to be tried
+/// again.
+const SAVE_RETRY_DELAY: Duration = Duration::from_secs(30);
 /// SOLO: How long after its view goes a terminal's pending changes are
 /// forgotten, unless a view of it comes back (it moved) (G59).
 const FORGET_CLOSED_TERMINAL_DELAY: Duration = Duration::from_secs(3);
@@ -292,6 +297,12 @@ struct TerminalTurns {
     refresh_task: Option<Task<()>>,
     _watch_files: Option<Subscription>,
     view: Option<WeakEntity<TerminalView>>,
+    /// SOLO: The files the review changed while a turn was under way, by
+    /// store: the turn's end mustn't take that for the agent undoing it.
+    reviewed_during_turn: Vec<(PathBuf, String)>,
+    /// SOLO: Whether its pending changes came from the view it moved from,
+    /// newer than its record.
+    handed_over: bool,
 }
 
 /// SOLO: A terminal's pending changes: for each file its agent changed,
@@ -311,6 +322,8 @@ pub(crate) struct PendingChanges {
     /// When the agent last worked in its folder, by the terminal's count:
     /// the latest is the one the review shows.
     used: usize,
+    /// Why the last record of them failed, to show on the review page.
+    pub save_error: Option<SharedString>,
 }
 
 /// SOLO: A turn under way or ending, whose files are locked (G59).
@@ -386,9 +399,10 @@ impl AgentTurns {
             return global.0.clone();
         }
         let turns = cx.new(|cx| {
-            cx.on_app_quit(|this: &mut AgentTurns, _| {
+            cx.on_app_quit(|this: &mut AgentTurns, cx| {
                 this.quitting = true;
-                async {}
+                // SOLO: the saves still waiting, before Solo goes (G59).
+                this.save_all_now(cx)
             })
             .detach();
             AgentTurns::default()
@@ -832,15 +846,20 @@ impl AgentTurns {
             // SOLO: what the turn changed is pending now, and what only
             // earlier turns did is accepted (G59).
             if let Some((key, files, turn_end)) = turn_end {
+                let input = files.clone();
                 let result = cx
                     .background_spawn(async move {
                         let files = pending::end_turn(&files, &turn_end)?;
-                        anyhow::Ok((files, turn_end.store))
+                        let changed: Vec<String> =
+                            turn_end.changed.iter().map(|file| file.path.clone()).collect();
+                        anyhow::Ok((files, turn_end.store, changed))
                     })
                     .await;
                 this.update(cx, |this, cx| {
                     match result {
-                        Ok((files, store)) => {
+                        Ok((files, store, changed)) => {
+                            let files =
+                                this.with_review_meanwhile(terminal_id, &store, &input, &changed, files);
                             this.set_pending_files(terminal_id, key, store, &directory, files, cx);
                         }
                         Err(error) => log::error!("failed to record pending changes: {error:#}"),
@@ -869,7 +888,7 @@ impl AgentTurns {
                             continue;
                         };
                         let moved = this.update(cx, |this, cx| {
-                            let moved = this.late_edits(terminal_id, number, &edited);
+                            let moved = this.late_edits(terminal_id, number, &edited, cx);
                             if moved {
                                 cx.notify();
                                 update_tab(&terminal_view, cx);
@@ -905,7 +924,13 @@ impl AgentTurns {
     /// SOLO: Codex's patches of turn `number` that came after it ended:
     /// the files they edited are the turn's rather than someone else's.
     /// Whether any moved.
-    fn late_edits(&mut self, terminal_id: EntityId, number: usize, edited: &[PathBuf]) -> bool {
+    fn late_edits(
+        &mut self,
+        terminal_id: EntityId,
+        number: usize,
+        edited: &[PathBuf],
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
             return false;
         };
@@ -935,12 +960,126 @@ impl AgentTurns {
             "{} of a Codex turn's files turned out to be its own",
             late.len()
         );
+        // SOLO: and they're pending, as the turn's other files (G59).
+        let late_turn = (
+            turn.store.clone(),
+            turn.before.clone(),
+            turn.after.clone(),
+            SystemTime::from(turn.started_at),
+            late.iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
+        );
         turn.changed.extend(late);
         turn.changed.sort_by(|a, b| a.path.cmp(&b.path));
         if is_last && terminal.pending.is_none() {
             terminal.offer_last_turn = true;
         }
+        self.add_late_pending(terminal_id, number, late_turn, cx);
         true
+    }
+
+    /// SOLO: Files a turn turned out to have changed after it ended (Codex's
+    /// late patches): pending from before the turn, unless they already
+    /// are (G59).
+    fn add_late_pending(
+        &mut self,
+        terminal_id: EntityId,
+        number: usize,
+        (store, before, after, started_at, paths): (
+            Arc<SnapshotStore>,
+            TreeId,
+            TreeId,
+            SystemTime,
+            Vec<String>,
+        ),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.terminals.get(&terminal_id) else {
+            return;
+        };
+        let paths: Vec<String> = paths
+            .into_iter()
+            .filter(|path| {
+                terminal
+                    .changes_in(store.store_dir())
+                    .is_none_or(|changes| !changes.files.contains_key(path))
+            })
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let directory = store.work_tree().to_path_buf();
+        cx.spawn(async move |this, cx| {
+            let loaded = cx
+                .background_spawn({
+                    let store = store.clone();
+                    async move {
+                        let objects: Vec<String> = paths
+                            .iter()
+                            .flat_map(|path| [format!("{before}:{path}"), format!("{after}:{path}")])
+                            .collect();
+                        let mut versions = pending::load_versions(&store, &objects)?.into_iter();
+                        let mut files = BTreeMap::new();
+                        for path in paths {
+                            let (Some(accepted), Some(left)) = (versions.next(), versions.next())
+                            else {
+                                break;
+                            };
+                            let file = PendingFile {
+                                accepted,
+                                left,
+                                first_turn: number,
+                                since: Some(started_at),
+                                while_closed: None,
+                            };
+                            if !file.is_accepted() {
+                                files.insert(path, file);
+                            }
+                        }
+                        anyhow::Ok(files)
+                    }
+                })
+                .await;
+            let files = match loaded {
+                Ok(files) if !files.is_empty() => files,
+                Ok(_) => return,
+                Err(error) => {
+                    log::warn!("failed to add a Codex turn's late files: {error:#}");
+                    return;
+                }
+            };
+            this.update(cx, |this, cx| {
+                let Some(terminal) = this.terminals.get_mut(&terminal_id) else {
+                    return;
+                };
+                match terminal.changes_in_mut(store.store_dir()) {
+                    Some(changes) => {
+                        for (path, file) in files {
+                            changes.pending.insert(path.clone());
+                            changes.files.entry(path).or_insert(file);
+                        }
+                        changes.revision += 1;
+                    }
+                    None => {
+                        let used = terminal.next_use();
+                        terminal.changes.push(PendingChanges {
+                            store,
+                            directory,
+                            pending: files.keys().cloned().collect(),
+                            files,
+                            trees: Vec::new(),
+                            revision: 1,
+                            used,
+                            save_error: None,
+                        });
+                    }
+                }
+                this.save_pending(terminal_id, cx);
+                this.refresh_pending(terminal_id, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// SOLO: The trees of `store_dir`'s store that turns of any terminal
@@ -1070,9 +1209,14 @@ impl AgentTurns {
                 let Some(terminal) = this.terminals.get_mut(&terminal_id) else {
                     return;
                 };
+                if terminal.handed_over {
+                    return;
+                }
                 for (store, directory, files, modified) in restored {
-                    // A turn there ended meanwhile: its changes are newer.
-                    if terminal.changes_in(store.store_dir()).is_some() {
+                    // A turn there ended meanwhile: what the user accepted is
+                    // the record's; what the agent left, the turn's.
+                    if let Some(changes) = terminal.changes_in_mut(store.store_dir()) {
+                        merge_restored(changes, files);
                         continue;
                     }
                     log::info!(
@@ -1088,6 +1232,7 @@ impl AgentTurns {
                         trees: Vec::new(),
                         revision: 1,
                         used: modified,
+                        save_error: None,
                     });
                 }
                 this.save_pending(terminal_id, cx);
@@ -1111,9 +1256,41 @@ impl AgentTurns {
         }
         let terminal = self.terminals.remove(&terminal_id);
         cx.notify();
-        let (Some(key), Some(terminal)) = (key, terminal) else {
+        let (Some(key), Some(mut terminal)) = (key, terminal) else {
             return;
         };
+        // SOLO: moved, and its new view is there already: the changes go
+        // to it, as they are now.
+        if let Some(other) = self
+            .keys
+            .iter()
+            .find(|(_, other)| **other == key)
+            .map(|(id, _)| *id)
+        {
+            let changes = std::mem::take(&mut terminal.changes);
+            if let Some(other_terminal) = self.terminals.get_mut(&other) {
+                // Newer than its record, which its restoring would read.
+                other_terminal.handed_over = true;
+                for changes in changes {
+                    match other_terminal.changes_in_mut(changes.store.store_dir()) {
+                        Some(existing) => merge_restored(existing, changes.files),
+                        None => other_terminal.changes.push(changes),
+                    }
+                }
+            }
+            self.save_pending(other, cx);
+            return;
+        }
+        // Recorded as they are now, in case a view of it comes back.
+        if terminal.save_task.is_some()
+            && let Some(key) = terminal.key.clone()
+        {
+            let changes = terminal.changes.clone();
+            cx.background_spawn(async move {
+                save_all(&key, changes);
+            })
+            .detach();
+        }
         let stores: Vec<Arc<SnapshotStore>> = terminal
             .changes
             .into_iter()
@@ -1220,6 +1397,16 @@ impl AgentTurns {
         if !auto_keep && !files.is_empty() {
             terminal.auto_keep_due = true;
         }
+        let store_dir = started.store.store_dir().to_path_buf();
+        let mut reviewed = BTreeSet::new();
+        terminal.reviewed_during_turn.retain(|(dir, path)| {
+            if *dir == store_dir {
+                reviewed.insert(path.clone());
+                false
+            } else {
+                true
+            }
+        });
         Some((
             terminal.key.clone(),
             files,
@@ -1231,6 +1418,7 @@ impl AgentTurns {
                 started_at: SystemTime::from(started_at),
                 changed: changed.to_vec(),
                 auto_keep,
+                reviewed,
             },
         ))
     }
@@ -1244,6 +1432,27 @@ impl AgentTurns {
             if terminal.ending.len() != before {
                 cx.notify();
             }
+        }
+    }
+
+    /// SOLO: A turn's end made `files` of the pending changes it was given
+    /// (`input`): the files the review changed meanwhile, which the turn
+    /// didn't, stay as the review left them (G59).
+    fn with_review_meanwhile(
+        &self,
+        terminal_id: EntityId,
+        store: &SnapshotStore,
+        input: &BTreeMap<String, PendingFile>,
+        changed: &[String],
+        files: BTreeMap<String, PendingFile>,
+    ) -> BTreeMap<String, PendingFile> {
+        match self
+            .terminals
+            .get(&terminal_id)
+            .and_then(|terminal| terminal.changes_in(store.store_dir()))
+        {
+            Some(current) => pending::keep_review_changes(input, &current.files, changed, files),
+            None => files,
         }
     }
 
@@ -1283,6 +1492,7 @@ impl AgentTurns {
                 trees: Vec::new(),
                 revision: 1,
                 used,
+                save_error: None,
             }),
         }
         self.save_pending(terminal_id, cx);
@@ -1301,11 +1511,18 @@ impl AgentTurns {
         updates: Vec<(String, Option<PendingFile>, bool)>,
         cx: &mut Context<Self>,
     ) {
-        let Some(changes) = self
-            .terminals
-            .get_mut(&terminal_id)
-            .and_then(|terminal| terminal.changes_in_mut(store_dir))
-        else {
+        let turn_under_way = !self.active_turns(terminal_id).is_empty();
+        let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+            return;
+        };
+        if turn_under_way {
+            for (path, _, _) in &updates {
+                terminal
+                    .reviewed_during_turn
+                    .push((store_dir.to_path_buf(), path.clone()));
+            }
+        }
+        let Some(changes) = terminal.changes_in_mut(store_dir) else {
             return;
         };
         for (path, file, pending) in updates {
@@ -1355,8 +1572,13 @@ impl AgentTurns {
     }
 
     /// SOLO: Records the terminal's pending changes, a moment from now: the
-    /// latest of them, if more come meanwhile.
+    /// latest of them, if more come meanwhile. A failed save is shown on
+    /// the review page and tried again.
     fn save_pending(&mut self, terminal_id: EntityId, cx: &mut Context<Self>) {
+        self.save_pending_after(terminal_id, SAVE_DELAY, cx);
+    }
+
+    fn save_pending_after(&mut self, terminal_id: EntityId, delay: Duration, cx: &mut Context<Self>) {
         let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
             return;
         };
@@ -1364,46 +1586,86 @@ impl AgentTurns {
             return;
         }
         terminal.save_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(200))
-                .await;
+            cx.background_executor().timer(delay).await;
             let input = this
-                .read_with(cx, |this, _| {
-                    let terminal = this.terminals.get(&terminal_id)?;
-                    Some((terminal.key.clone()?, terminal.changes.clone()))
-                })
+                .read_with(cx, |this, _| this.save_input(terminal_id))
                 .ok()
                 .flatten();
             let Some((key, all_changes)) = input else {
                 return;
             };
-            for changes in all_changes {
-                let store = changes.store.clone();
-                let key = key.clone();
-                let saved = cx
-                    .background_spawn(async move {
-                        pending::save(&changes.store, &key, &changes.directory, &changes.files)
-                    })
-                    .await;
-                match saved {
-                    Ok(trees) => {
-                        this.update(cx, |this, _| {
-                            if let Some(changes) = this
-                                .terminals
-                                .get_mut(&terminal_id)
-                                .and_then(|terminal| terminal.changes_in_mut(store.store_dir()))
-                            {
-                                changes.trees = trees;
-                            }
-                        })
-                        .ok();
-                    }
-                    Err(error) => log::warn!("failed to record pending changes: {error:#}"),
+            let results = cx
+                .background_spawn(async move { save_all(&key, all_changes) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.saved(terminal_id, results, cx) {
+                    this.save_pending_after(terminal_id, SAVE_RETRY_DELAY, cx);
                 }
-            }
+            })
+            .ok();
         }));
     }
 
+    /// SOLO: What to record of the terminal's pending changes: its id, and
+    /// the changes in each folder.
+    fn save_input(&self, terminal_id: EntityId) -> Option<(String, Vec<PendingChanges>)> {
+        let terminal = self.terminals.get(&terminal_id)?;
+        Some((terminal.key.clone()?, terminal.changes.clone()))
+    }
+
+    /// SOLO: The terminal's pending changes were recorded: each folder's
+    /// trees, or why it failed. Whether any failed.
+    fn saved(
+        &mut self,
+        terminal_id: EntityId,
+        results: Vec<(PathBuf, Result<Vec<TreeId>, SharedString>)>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+            return false;
+        };
+        let mut failed = false;
+        for (store_dir, result) in results {
+            let Some(changes) = terminal.changes_in_mut(&store_dir) else {
+                continue;
+            };
+            match result {
+                Ok(trees) => {
+                    changes.trees = trees;
+                    changes.save_error = None;
+                }
+                Err(error) => {
+                    failed = true;
+                    changes.save_error = Some(error);
+                }
+            }
+        }
+        cx.notify();
+        failed
+    }
+
+    /// SOLO: Records every terminal's pending changes now, not a moment
+    /// from now: Solo is quitting.
+    fn save_all_now(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        let inputs: Vec<(String, Vec<PendingChanges>)> = self
+            .terminals
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter(|terminal_id| {
+                self.terminals
+                    .get(terminal_id)
+                    .is_some_and(|terminal| terminal.save_task.is_some())
+            })
+            .filter_map(|terminal_id| self.save_input(terminal_id))
+            .collect();
+        cx.background_spawn(async move {
+            for (key, changes) in inputs {
+                save_all(&key, changes);
+            }
+        })
+    }
     /// SOLO: Checks the terminal's pending files again, a moment from now:
     /// which still differ from what's accepted. While no review is open and
     /// no turn is under way, what the user did since is taken in too (see
@@ -1495,15 +1757,20 @@ impl AgentTurns {
                 return;
             };
             let worktree = worktree.read(cx);
-            let touched = updates.iter().any(|(path, _, _)| {
-                let abs_path = worktree.absolutize(path);
-                terminal.changes.iter().any(|changes| {
+            // By path, not each update against each file.
+            let pending: HashSet<String> = terminal
+                .changes
+                .iter()
+                .flat_map(|changes| {
                     changes
                         .files
                         .keys()
-                        .any(|path| is_same_path(&changes.store.abs_path(path), &abs_path))
+                        .map(|path| path_key(&changes.store.abs_path(path)))
                 })
-            });
+                .collect();
+            let touched = updates
+                .iter()
+                .any(|(path, _, _)| pending.contains(&path_key(&worktree.absolutize(path))));
             if touched {
                 this.refresh_pending(terminal_id, cx);
             }
@@ -1652,6 +1919,48 @@ impl AgentTurns {
     }
 }
 
+/// SOLO: Takes in restored pending files where a turn's end already made
+/// some: what the user accepted is the restored files', what the agent left
+/// the turn's.
+fn merge_restored(changes: &mut PendingChanges, restored: BTreeMap<String, PendingFile>) {
+    for (path, restored) in restored {
+        match changes.files.get_mut(&path) {
+            Some(file) => {
+                file.accepted = restored.accepted;
+                file.since = restored.since.or(file.since);
+                file.while_closed = file.while_closed.take().or(restored.while_closed);
+            }
+            None => {
+                changes.files.insert(path, restored);
+            }
+        }
+    }
+    changes.files.retain(|_, file| !file.is_accepted());
+    changes.pending = changes.files.keys().cloned().collect();
+    changes.revision += 1;
+}
+
+/// SOLO: Records each folder's pending changes for the terminal `key`:
+/// by store, the trees kept, or why it failed.
+fn save_all(
+    key: &str,
+    all_changes: Vec<PendingChanges>,
+) -> Vec<(PathBuf, Result<Vec<TreeId>, SharedString>)> {
+    all_changes
+        .into_iter()
+        .map(|changes| {
+            let result =
+                pending::save(&changes.store, key, &changes.directory, &changes.files).map_err(
+                    |error| {
+                        log::warn!("failed to record pending changes: {error:#}");
+                        SharedString::from(format!("{error:#}"))
+                    },
+                );
+            (changes.store.store_dir().to_path_buf(), result)
+        })
+        .collect()
+}
+
 /// SOLO: The id of a terminal's view's terminal (`SOLO_TERMINAL_ID`),
 /// which outlives Solo with the terminal (G59).
 fn terminal_key(view: &TerminalView, cx: &App) -> Option<String> {
@@ -1767,6 +2076,16 @@ fn comparable_path(path: &Path) -> PathBuf {
     match (path.parent().map(std::fs::canonicalize), path.file_name()) {
         (Some(Ok(parent)), Some(name)) => parent.join(name),
         _ => path.to_path_buf(),
+    }
+}
+
+/// SOLO: A path to compare by, as [`is_same_path`] does.
+fn path_key(path: &Path) -> String {
+    if cfg!(windows) {
+        let text = path.to_string_lossy().replace('/', "\\").to_lowercase();
+        text.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(text)
+    } else {
+        path.to_string_lossy().into_owned()
     }
 }
 
@@ -2859,6 +3178,129 @@ mod tests {
             let paths: Vec<&String> = changes.files.keys().collect();
             assert_eq!(paths, vec!["a.txt", "b.txt"]);
         });
+    }
+
+    /// SOLO: The review rejects a hunk while a turn of an agent that doesn't
+    /// report its edits is under way: the turn's end mustn't take the
+    /// rejection for the agent's change and leave its reverse pending (G59).
+    #[gpui::test]
+    async fn test_review_during_a_turn_isnt_undone_at_its_end(cx: &mut TestAppContext) {
+        crate::tests::init_test(cx).await;
+        cx.executor().allow_parking();
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let lines = |changed: &[(usize, &str)]| -> String {
+            (1..=10)
+                .map(|row| {
+                    let line = changed
+                        .iter()
+                        .find(|(changed_row, _)| *changed_row == row)
+                        .map(|(_, text)| text.to_string())
+                        .unwrap_or_else(|| format!("line {row}"));
+                    line + "\n"
+                })
+                .collect()
+        };
+        committed_repository(&repository, &[("a.txt", &lines(&[]))]);
+        let terminal_view = display_terminal(cx);
+        let terminal_id = terminal_view.entity_id();
+        let turns = cx.update(|cx| AgentTurns::global(cx));
+        turns.update(cx, |turns, _| {
+            turns.storage_root = Some(temp.path().join("storage"));
+            // Turn 1's changes stay pending at turn 2's end.
+            turns.review_opened(terminal_id);
+        });
+        let start = |cx: &mut TestAppContext| {
+            turns.update(cx, |turns, cx| {
+                turns.start_turn(
+                    terminal_view.clone(),
+                    Some(repository.clone()),
+                    None,
+                    WeakEntity::new_invalid(),
+                    DiagnosticsBefore::default(),
+                    cx,
+                )
+            });
+            let started = std::time::Instant::now();
+            while !turns.read_with(cx, |turns, _| turns.start_snapshot_taken(terminal_id)) {
+                assert!(started.elapsed() < Duration::from_secs(30));
+                cx.run_until_parked();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let end = |cx: &mut TestAppContext| {
+            turns.update(cx, |turns, cx| {
+                turns.end_turn(terminal_view.clone(), None, cx)
+            });
+            let started = std::time::Instant::now();
+            while !turns.read_with(cx, |turns, _| turns.active_turns(terminal_id).is_empty()) {
+                assert!(started.elapsed() < Duration::from_secs(30));
+                cx.run_until_parked();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+
+        start(cx);
+        std::fs::write(repository.join("a.txt"), lines(&[(2, "TWO"), (9, "NINE")])).unwrap();
+        end(cx);
+
+        // Turn 2 runs; the review rejects the change to line 2 meanwhile.
+        start(cx);
+        let rejected = lines(&[(9, "NINE")]);
+        std::fs::write(repository.join("a.txt"), &rejected).unwrap();
+        turns.update(cx, |turns, cx| {
+            let changes = turns.pending_changes(terminal_id).unwrap();
+            let store_dir = changes.store.store_dir().to_path_buf();
+            let file = PendingFile {
+                left: pending::Version::Text(rejected.as_str().into()),
+                ..changes.files["a.txt"].clone()
+            };
+            turns.update_pending_files(terminal_id, &store_dir, vec![("a.txt".into(), Some(file), true)], cx);
+        });
+        end(cx);
+
+        turns.read_with(cx, |turns, _| {
+            let file = &turns.pending_changes(terminal_id).unwrap().files["a.txt"];
+            assert_eq!(file.accepted, pending::Version::Text(lines(&[]).into()));
+            assert_eq!(file.left, pending::Version::Text(rejected.as_str().into()));
+        });
+    }
+
+    /// SOLO: A record restored after a turn's end made pending changes:
+    /// what the user accepted comes from the record (G59).
+    #[test]
+    fn test_merge_restored() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        committed_repository(&repository, &[("a.txt", "a\n")]);
+        let store = Arc::new(SnapshotStore::open(&repository, &temp.path().join("storage")).unwrap());
+        let text = |text: &str| pending::Version::Text(text.into());
+        let file = |accepted: &str, left: &str| PendingFile {
+            accepted: text(accepted),
+            left: text(left),
+            first_turn: 1,
+            since: None,
+            while_closed: None,
+        };
+        // The turn took the record's pending change for accepted.
+        let mut changes = PendingChanges {
+            store,
+            directory: repository.clone(),
+            files: BTreeMap::from_iter([("a.txt".to_string(), file("a1\n", "a2\n"))]),
+            pending: BTreeSet::new(),
+            trees: Vec::new(),
+            revision: 1,
+            used: 1,
+            save_error: None,
+        };
+        let restored = BTreeMap::from_iter([
+            ("a.txt".to_string(), file("a0\n", "a1\n")),
+            ("b.txt".to_string(), file("b0\n", "b1\n")),
+        ]);
+        merge_restored(&mut changes, restored);
+        assert_eq!(changes.files["a.txt"], file("a0\n", "a2\n"));
+        assert_eq!(changes.files["b.txt"], file("b0\n", "b1\n"));
+        assert_eq!(changes.pending.len(), 2);
     }
 
     /// SOLO: The agent works in another folder: what's pending in the first
