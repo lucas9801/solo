@@ -234,6 +234,9 @@ pub(crate) struct AgentTurnReview {
     carried_search: Task<()>,
     /// SOLO: Whether comments from before are being put in the editor.
     placing: bool,
+    /// What a test does once a rejected file is written, before the rest.
+    #[cfg(test)]
+    after_write: Option<Box<dyn FnOnce(&mut Self, &mut Context<Self>)>>,
     /// SOLO: The rejection of each file under way, which the next one of the
     /// file waits for: it starts from what that one left.
     rejecting: collections::HashMap<language::BufferId, Shared<BoxFuture<'static, ()>>>,
@@ -434,6 +437,8 @@ impl AgentTurnReview {
             carried_rows: Vec::new(),
             carried_search: Task::ready(()),
             placing: false,
+            #[cfg(test)]
+            after_write: None,
             rejecting: collections::HashMap::default(),
             window: window.window_handle(),
             shown: None,
@@ -1363,10 +1368,8 @@ impl AgentTurnReview {
             // changed once the file is written, so nothing changes if it
             // can't be.
             if self.project.read(cx).is_local() && buffer.read(cx).encoding().name() == "UTF-8" {
-                let accepted = base.text();
                 let path = self.agent_path(&abs_path, &relative, cx);
-                let save =
-                    self.write_rejected(buffer, abs_path, &relative, path, edits, accepted, cx);
+                let save = self.write_rejected(buffer, abs_path, &relative, path, hunks, cx);
                 saves.push((save, relative));
                 continue;
             }
@@ -1433,25 +1436,24 @@ impl AgentTurnReview {
         cx.notify();
     }
 
-    /// SOLO: Rejects `edits` of `buffer`'s file at `abs_path` (`path` in the
+    /// SOLO: Rejects `hunks` of `buffer`'s file at `abs_path` (`path` in the
     /// work tree, `agent_path` for the agent): writes only the lines
-    /// rejecting changes, as they are in the accepted version (whose text
-    /// is `accepted`), so the rest keeps its line breaks and byte order mark
-    /// (see [`pending::rejected_bytes`]); then makes the same edits in the
+    /// rejecting changes, as they are in the accepted version, so the rest
+    /// keeps its line breaks and byte order mark (see
+    /// [`pending::rejected_bytes`]); then makes the same edits in the
     /// buffer, and records them in the pending changes and for the agent.
-    /// After an earlier rejection of the file, from what it left: what's
-    /// rejected already isn't again. Fails, changing nothing, if the file
-    /// isn't what the buffer has, or either changed meanwhile. Gives what
-    /// the pending changes didn't take (without them, the page keeps it).
-    #[allow(clippy::too_many_arguments)]
+    /// After an earlier rejection of the file, from what it left: the hunks
+    /// are taken from the diff as it is then, so one rejected already isn't
+    /// again. Fails, changing nothing, if the file isn't what the buffer
+    /// has, or either changed meanwhile. Gives what the pending changes
+    /// didn't take (without them, the page keeps it).
     fn write_rejected(
         &mut self,
         buffer: Entity<Buffer>,
         abs_path: PathBuf,
         path: &str,
         agent_path: String,
-        edits: Vec<(Range<language::Anchor>, String)>,
-        accepted: String,
+        hunks: Vec<Hunk>,
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<RejectedFile>> {
         let fs = self.project.read(cx).fs().clone();
@@ -1489,30 +1491,67 @@ impl AgentTurnReview {
             if let Some(previous) = previous {
                 previous.await;
             }
-            // From the buffer as it is now.
+            // The diff as the earlier rejection left it.
+            let diff_update = this.update(cx, |this, cx| {
+                let ix = this.file_index(buffer_id, cx)?;
+                Some(this.files[ix].diff_update.clone())
+            })?;
+            let Some(diff_update) = diff_update else {
+                anyhow::bail!(tr("it isn't shown anymore", "它已经不在页面上了"));
+            };
+            diff_update.await;
+            // The hunks asked for that are still there, as they are now.
             let prepared = this.update(cx, |this, cx| {
+                let ix = this.file_index(buffer_id, cx)?;
+                let file = &this.files[ix];
                 let buffer = buffer.read(cx);
                 if buffer.is_dirty() || buffer.has_conflict() {
-                    return None;
+                    return Some(None);
                 }
                 let snapshot = buffer.snapshot();
-                let mut edits: Vec<(Range<language::Anchor>, Range<usize>, String)> = edits
-                    .into_iter()
-                    .map(|(range, text)| {
-                        let offsets = range.to_offset(&snapshot);
-                        (range, offsets, text)
+                let diff = file.diff.read(cx);
+                let base = diff.base_text(cx);
+                let asked: Vec<(Range<usize>, Range<usize>)> = hunks
+                    .iter()
+                    .map(|hunk| {
+                        (
+                            hunk.buffer_range.to_offset(&snapshot),
+                            hunk.base_range.clone(),
+                        )
                     })
-                    .filter(|(_, offsets, text)| {
-                        snapshot.text_for_range(offsets.clone()).collect::<String>() != *text
+                    .collect();
+                let mut edits: Vec<(Range<language::Anchor>, Range<usize>, String)> = diff
+                    .snapshot(cx)
+                    .hunks_intersecting_range(
+                        language::Anchor::min_max_range_for_buffer(snapshot.remote_id()),
+                        &snapshot,
+                    )
+                    .filter_map(|hunk| {
+                        let offsets = hunk.buffer_range.to_offset(&snapshot);
+                        let base_range = hunk.diff_base_byte_range.clone();
+                        asked
+                            .iter()
+                            .any(|(asked_offsets, asked_base)| {
+                                *asked_offsets == offsets || *asked_base == base_range
+                            })
+                            .then(|| {
+                                let text: String = base.text_for_range(base_range).collect();
+                                (hunk.buffer_range.clone(), offsets, text)
+                            })
                     })
                     .collect();
                 edits.sort_by_key(|(_, offsets, _)| offsets.start);
-                let pending = this
-                    .file_index(buffer_id, cx)
-                    .and_then(|ix| this.files[ix].pending.clone());
-                Some((snapshot.version().clone(), snapshot.text(), edits, pending))
+                Some(Some((
+                    snapshot.version().clone(),
+                    snapshot.text(),
+                    edits,
+                    base.text(),
+                )))
             })?;
-            let Some((version, before, edits, pending)) = prepared else {
+            let Some(prepared) = prepared else {
+                anyhow::bail!(tr("it isn't shown anymore", "它已经不在页面上了"));
+            };
+            let Some((version, before, edits, accepted)) = prepared else {
                 anyhow::bail!(tr(
                     "it has unsaved edits or a conflict in the editor",
                     "它在编辑器里有没保存的改动或冲突",
@@ -1565,6 +1604,13 @@ impl AgentTurnReview {
                 ));
             }
             fs.write(&abs_path, &bytes).await?;
+            #[cfg(test)]
+            this.update(cx, |this, cx| {
+                if let Some(after_write) = this.after_write.take() {
+                    after_write(this, cx);
+                }
+            })
+            .ok();
             let rejections: Vec<Rejection> = offset_edits_rows(&after, &after_ranges)
                 .into_iter()
                 .map(|rows| Rejection {
@@ -1572,14 +1618,7 @@ impl AgentTurnReview {
                     lines: Some(rows.start + 1..rows.end + 1),
                 })
                 .collect();
-            let pending = pending.map(|mut pending| {
-                pending.left = Version::Text(after.as_str().into());
-                pending
-            });
-            let update = pending.clone().map(|pending| {
-                let has_changes = pending.accepted != pending.left;
-                (relative, Some(pending), has_changes)
-            });
+            let left = Version::Text(after.as_str().into());
             // Written: the buffer has the same edits at once, before its file
             // watcher reloads it (which would take them for a conflict).
             let recorded = cx.update(|cx| {
@@ -1598,30 +1637,53 @@ impl AgentTurnReview {
                     });
                 }
                 // Left as the review left it, here at once (so its own edit
-                // isn't taken for someone else's).
-                this.update(cx, |this, cx| {
-                    if let Some(ix) = this.file_index(buffer_id, cx) {
-                        this.files[ix].pending = pending;
-                    }
-                })
-                .ok();
+                // isn't taken for someone else's): only that, on the pending
+                // file as it is now (a hunk kept meanwhile stays kept).
+                let on_page = this
+                    .update(cx, |this, cx| {
+                        let ix = this.file_index(buffer_id, cx)?;
+                        let pending = this.files[ix].pending.as_mut()?;
+                        pending.left = left.clone();
+                        Some(pending.clone())
+                    })
+                    .ok()
+                    .flatten();
                 // Recorded, also when the page is gone.
                 let (Some(store_dir), Some(turns)) =
                     (store_dir, AgentTurns::try_global(cx).cloned())
                 else {
-                    return false;
+                    let update = on_page.map(|pending| {
+                        let has_changes = pending.accepted != pending.left;
+                        (relative.clone(), Some(pending), has_changes)
+                    });
+                    return Some(update);
                 };
-                turns.update(cx, |turns, cx| {
+                let pending = on_page.or_else(|| {
+                    let mut pending = turns
+                        .read(cx)
+                        .pending_changes_in(terminal_id, &store_dir)?
+                        .files
+                        .get(&relative)?
+                        .clone();
+                    pending.left = left.clone();
+                    Some(pending)
+                });
+                let update = pending.map(|pending| {
+                    let has_changes = pending.accepted != pending.left;
+                    (relative.clone(), Some(pending), has_changes)
+                });
+                let added = turns.update(cx, |turns, cx| {
                     if let Some(update) = update.clone() {
                         turns.update_pending_files(terminal_id, &store_dir, vec![update], cx);
                     }
                     turns.add_rejections(terminal_id, &store_dir, rejections.clone(), cx)
-                })
+                });
+                if added { None } else { Some(update) }
             });
-            if recorded {
-                Ok((None, Vec::new()))
-            } else {
-                Ok((update, rejections))
+            match recorded {
+                None => Ok((None, Vec::new())),
+                // Kept by the page instead.
+                Some(update) => Ok((update, rejections)),
             }
         })
     }
@@ -5512,6 +5574,81 @@ mod tests {
                 .map(|rejection| format!("{}:{:?}", rejection.path, rejection.lines))
                 .collect();
             assert_eq!(rejected, vec!["a.txt:Some(2..3)", "a.txt:Some(9..10)"]);
+        });
+        assert!(hunks_of(&review, "a.txt", test.cx).is_empty());
+    }
+
+    /// SOLO: A hunk where the agent deleted lines, rejected twice in a row
+    /// (a double click, say): the lines come back once, and the agent is
+    /// told once (G59).
+    #[gpui::test]
+    async fn test_rejecting_a_deletion_twice(cx: &mut TestAppContext) {
+        let mut test = mirrored(cx, &[("a.txt", &ten_lines(&[]))]).await;
+        test.start_turn();
+        let deleted: String = ten_lines(&[])
+            .lines()
+            .filter(|line| *line != "line 5")
+            .map(|line| format!("{line}\n"))
+            .collect();
+        test.write("a.txt", &deleted).await;
+        test.end_turn();
+        let review = test.open_review();
+        let hunks = hunks_of(&review, "a.txt", test.cx);
+        assert_eq!(hunks.len(), 1);
+        review.update(test.cx, |review, cx| {
+            review.reject_hunks(hunks.clone(), cx);
+            review.reject_hunks(hunks.clone(), cx);
+        });
+        test.cx.run_until_parked();
+        let path = test.repository.join("a.txt");
+        assert_eq!(test.fs.load(&path).await.unwrap(), ten_lines(&[]));
+        review.read_with(test.cx, |review, cx| {
+            assert_eq!(review.files[0].buffer.read(cx).text(), ten_lines(&[]));
+            assert_eq!(review.unsent_rejected(cx).len(), 1);
+        });
+    }
+
+    /// SOLO: A hunk kept while another hunk of the file is being rejected
+    /// stays kept (G59).
+    #[gpui::test]
+    async fn test_keeping_while_rejecting(cx: &mut TestAppContext) {
+        let mut test = mirrored(cx, &[("a.txt", &ten_lines(&[]))]).await;
+        let terminal_id = test.terminal_view.entity_id();
+        test.start_turn();
+        test.write("a.txt", &ten_lines(&[(2, "TWO"), (9, "NINE")]))
+            .await;
+        test.end_turn();
+        let review = test.open_review();
+        let hunks = hunks_of(&review, "a.txt", test.cx);
+        assert_eq!(hunks.len(), 2);
+        let keep = hunks[1].clone();
+        review.update(test.cx, |review, cx| {
+            // Kept while the rejected file is being written.
+            review.after_write = Some(Box::new(move |review, cx| {
+                review.keep_hunks(vec![keep], cx);
+            }));
+            review.reject_hunks(vec![hunks[0].clone()], cx);
+        });
+        test.cx.run_until_parked();
+        let path = test.repository.join("a.txt");
+        assert_eq!(
+            test.fs.load(&path).await.unwrap(),
+            ten_lines(&[(9, "NINE")])
+        );
+        // Nothing's left to review: line 9 was kept, line 2 rejected.
+        let accepted = Version::Text(ten_lines(&[(9, "NINE")]).into());
+        review.read_with(test.cx, |review, _| {
+            let pending = review.files[0].pending.clone().unwrap();
+            assert_eq!(pending.accepted, accepted);
+            assert_eq!(pending.left, accepted);
+        });
+        test.turns.read_with(test.cx, |turns, _| {
+            let changes = turns.pending_changes(terminal_id).unwrap();
+            assert!(
+                !changes.files.contains_key("a.txt"),
+                "{:?}",
+                changes.files.get("a.txt")
+            );
         });
         assert!(hunks_of(&review, "a.txt", test.cx).is_empty());
     }
