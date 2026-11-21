@@ -512,8 +512,29 @@ impl AgentTurnReview {
                         .await
                         .ok();
                     let text = after.unwrap_or_default();
+                    let worktree_id = project.read_with(cx, |project, cx| {
+                        project
+                            .find_worktree(&abs_path, cx)
+                            .map(|(worktree, _)| worktree.read(cx).id())
+                    });
+                    let file = RelPath::from_unix_str(&path).ok().map(|relative| {
+                        Arc::new(TurnFile {
+                            path: relative.into_arc(),
+                            abs_path: abs_path.clone(),
+                            worktree_id: worktree_id
+                                .unwrap_or_else(|| project::WorktreeId::from_usize(usize::MAX)),
+                            name: abs_path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.clone()),
+                        }) as Arc<dyn language::File>
+                    });
                     Ok(cx.new(|cx| {
                         let mut buffer = Buffer::local(text, cx);
+                        // SOLO: named as the file it was (G59).
+                        if let Some(file) = file {
+                            buffer.file_updated(file, cx);
+                        }
                         buffer.set_language(language, cx);
                         buffer
                     }))
@@ -987,6 +1008,17 @@ impl AgentTurnReview {
         sources
     }
 
+    /// SOLO: Whether the pending changes come from more than one place,
+    /// so hunks say which turn they're from: hunks from before this session
+    /// (no turn known) count as one.
+    fn shows_turns(&self, cx: &App) -> bool {
+        let earlier = self.files.iter().any(|file| {
+            (file.pending.is_some() && file.turn_versions.is_empty())
+                || file.edit_turns.iter().any(|(_, turns)| turns.is_empty())
+        });
+        self.turn_sources(cx).len() + usize::from(earlier) > 1
+    }
+
     /// Shows the file's hunks, or nothing when it has none left; SOLO: only
     /// those of the turn filtered by (G59).
     fn refresh_excerpts(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -1055,7 +1087,7 @@ impl AgentTurnReview {
     fn update_scope_labels(&mut self, cx: &mut Context<Self>) {
         let context_lines = multibuffer_context_lines(cx);
         let snapshot = self.multibuffer.read(cx).snapshot(cx);
-        let show_turns = self.turn_sources(cx).len() > 1;
+        let show_turns = self.shows_turns(cx);
         let mut labels: Vec<(editor::Anchor, Option<String>, Option<String>)> = Vec::new();
         for hunk in snapshot.diff_hunks() {
             let Some(ix) = self.file_index(hunk.buffer_id, cx) else {
@@ -2233,7 +2265,7 @@ impl AgentTurnReview {
                     )
                     .child(h_flex().flex_none().gap_1().child(actions)),
             )
-            .when(sources.len() > 1, |this| {
+            .when(self.shows_turns(cx), |this| {
                 this.child(self.render_filters(&sources, cx))
             })
             .when_some(self.status.clone(), |this, status| {
@@ -2875,6 +2907,57 @@ fn turn_title(turn: &AgentTurn) -> String {
         title.push_str(&prompt);
     }
     title
+}
+
+/// SOLO: A file as a turn left it, for its read-only page: named as the
+/// file, not opened from disk (G59).
+struct TurnFile {
+    path: Arc<RelPath>,
+    abs_path: PathBuf,
+    worktree_id: project::WorktreeId,
+    name: String,
+}
+
+impl language::File for TurnFile {
+    fn as_local(&self) -> Option<&dyn language::LocalFile> {
+        None
+    }
+
+    fn disk_state(&self) -> language::DiskState {
+        language::DiskState::Historic { was_deleted: false }
+    }
+
+    fn path_style(&self, _: &App) -> util::paths::PathStyle {
+        util::paths::PathStyle::local()
+    }
+
+    fn path(&self) -> &Arc<RelPath> {
+        &self.path
+    }
+
+    fn full_path(&self, _: &App) -> PathBuf {
+        self.abs_path.clone()
+    }
+
+    fn file_name<'a>(&'a self, _: &'a App) -> &'a str {
+        &self.name
+    }
+
+    fn worktree_id(&self, _: &App) -> project::WorktreeId {
+        self.worktree_id
+    }
+
+    fn to_proto(&self, _: &App) -> language::proto::File {
+        language::proto::File::default()
+    }
+
+    fn is_private(&self) -> bool {
+        false
+    }
+
+    fn can_open(&self) -> bool {
+        false
+    }
 }
 
 struct TurnHunkRenderer {
