@@ -2117,6 +2117,62 @@ mod tests {
         assert!(!stderr.contains("without status reports"), "{stderr}");
     }
 
+    /// SOLO: which codex the wrapper runs: the .ps1 beside a .cmd shim in
+    /// the folder PATH finds codex in first (npm's), never one further on
+    /// PATH in place of the user's own earlier wrapper.
+    #[test]
+    #[cfg(windows)]
+    #[allow(clippy::disallowed_methods, reason = "a test running a short script")]
+    fn powershell_codex_wrapper_keeps_to_the_first_folder() {
+        let run = |folders: &[&[(&str, &str)]]| -> String {
+            let dir = tempfile::tempdir().unwrap();
+            let mut path = Vec::new();
+            for (ix, files) in folders.iter().enumerate() {
+                let folder = dir.path().join(format!("bin{ix}"));
+                std::fs::create_dir_all(&folder).unwrap();
+                for (name, contents) in *files {
+                    std::fs::write(folder.join(name), contents).unwrap();
+                }
+                path.push(folder.display().to_string());
+            }
+            let script = dir.path().join("integration.ps1");
+            std::fs::write(&script, POWERSHELL_SCRIPT).unwrap();
+            let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+            path.push(format!(r"{system}\System32"));
+            let output = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                ])
+                .arg("-Command")
+                .arg(format!(
+                    "{}; codex hi",
+                    powershell_load_command(&script.to_string_lossy().replace('\\', "/"))
+                ))
+                .env("PATH", path.join(";"))
+                .env(SHELL_NONCE_ENV, "n1")
+                .env("SOLO_CODEX_ARGS", "-c\nhooks.x=1")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        // npm's: codex.cmd and codex.ps1 side by side: the .ps1, with hooks.
+        let npm: &[(&str, &str)] = &[
+            ("codex.cmd", "@echo NPM-CMD %*\r\n"),
+            ("codex.ps1", "Write-Output \"NPM-PS1 $args\"\r\n"),
+        ];
+        let out = run(&[npm]);
+        assert!(out.contains("NPM-PS1 -c hooks.x=1 hi"), "{out}");
+        // The user's own codex.cmd earlier on PATH runs, as typed.
+        let own: &[(&str, &str)] = &[("codex.cmd", "@echo OWN-CMD %*\r\n")];
+        let out = run(&[own, npm]);
+        assert!(out.contains("OWN-CMD"), "{out}");
+        assert!(!out.contains("NPM-PS1"), "{out}");
+    }
+
     #[test]
     #[cfg(windows)]
     #[allow(clippy::disallowed_methods, reason = "a test running a short script")]
