@@ -17,7 +17,8 @@ use anyhow::{Context as _, Result};
 use collections::HashMap;
 use serde::{Deserialize, Serialize};
 
-use super::snapshot::{ChangedFile, MAX_UNTRACKED_FILE_BYTES, SnapshotStore, TreeId};
+use super::diagnostics::TurnDiagnostics;
+use super::snapshot::{ChangedFile, LargeFile, MAX_UNTRACKED_FILE_BYTES, SnapshotStore, TreeId};
 
 /// A version of a file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -451,6 +452,72 @@ pub(crate) fn keep_review_changes(
     files
 }
 
+/// SOLO: A hunk the user rejected, for the message to the agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Rejection {
+    /// Relative to the agent's working directory when it's in there.
+    pub path: String,
+    /// From 1, in the file as rejecting left it; empty for lines that
+    /// rejecting removed (at the line now there); None for a whole file.
+    pub lines: Option<Range<u32>>,
+}
+
+/// A review comment on lines of a file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ReviewComment {
+    /// Relative to the agent's working directory when it's in there.
+    pub path: String,
+    /// From 1.
+    pub lines: std::ops::RangeInclusive<u32>,
+    pub code: String,
+    pub comment: String,
+}
+
+/// SOLO: What the review has for the agent that isn't sent yet: kept with
+/// the pending changes, so it's still there when the review page is opened
+/// again, or after a restart, until it's sent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Unsent {
+    #[serde(default)]
+    pub rejected: Vec<Rejection>,
+    #[serde(default)]
+    pub comments: Vec<ReviewComment>,
+}
+
+impl Unsent {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rejected.is_empty() && self.comments.is_empty()
+    }
+}
+
+/// SOLO: A finished turn, recorded with the pending changes of its folder,
+/// so the review still has it after a restart.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct RecordedTurn {
+    pub number: usize,
+    /// Milliseconds since the epoch.
+    pub started_at: i64,
+    pub directory: PathBuf,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    pub before: TreeId,
+    pub after: TreeId,
+    #[serde(default)]
+    pub before_large: Vec<LargeFile>,
+    #[serde(default)]
+    pub changed: Vec<ChangedFile>,
+    #[serde(default)]
+    pub attributed: bool,
+    #[serde(default)]
+    pub others: Vec<ChangedFile>,
+    #[serde(default)]
+    pub edited_before_snapshot: Vec<PathBuf>,
+    #[serde(default)]
+    pub diagnostics: Option<TurnDiagnostics>,
+    #[serde(default)]
+    pub large_files: Vec<String>,
+}
+
 /// How a terminal's pending changes are recorded, to be there after a
 /// restart (in the snapshot store; see `SnapshotStore::lock`).
 #[derive(Serialize, Deserialize)]
@@ -458,9 +525,14 @@ pub(crate) struct Record {
     pub version: u32,
     /// Where the agent works.
     pub directory: PathBuf,
-    /// Trees with the blobs below, which keep them.
+    /// Trees with the blobs below, which keep them; SOLO: and the turns'.
     pub trees: Vec<TreeId>,
     pub files: Vec<RecordedFile>,
+    /// SOLO: The terminal's turns in this folder.
+    #[serde(default)]
+    pub turns: Vec<RecordedTurn>,
+    #[serde(default)]
+    pub unsent: Unsent,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -474,6 +546,9 @@ pub(crate) struct RecordedFile {
     /// `None`).
     #[serde(default)]
     pub while_closed: Option<(Option<RecordedVersion>, Option<RecordedVersion>)>,
+    /// SOLO: `PendingFile::first_turn`, among the record's turns.
+    #[serde(default)]
+    pub first_turn: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -483,13 +558,17 @@ pub(crate) struct RecordedVersion {
     pub binary: bool,
 }
 
-/// Records `files` for the terminal `key`, or forgets it when there are
-/// none. Returns the trees the record keeps.
+/// Records `files` for the terminal `key`, SOLO: with its `turns` in the
+/// folder and what the review hasn't sent the agent yet; or forgets it when
+/// there are no files and nothing unsent. Returns the trees the record
+/// keeps.
 pub(crate) fn save(
     store: &SnapshotStore,
     key: &str,
     directory: &Path,
     files: &BTreeMap<String, PendingFile>,
+    turns: &[RecordedTurn],
+    unsent: &Unsent,
 ) -> Result<Vec<TreeId>> {
     // A file's blob that's gone (collected before a record named it) is
     // stored again from the file, if it's still as it was.
@@ -515,7 +594,7 @@ pub(crate) fn save(
         }
     }
     let lock = store.lock()?;
-    if files.is_empty() {
+    if files.is_empty() && unsent.is_empty() {
         lock.remove_record(key);
         return Ok(Vec::new());
     }
@@ -567,6 +646,7 @@ pub(crate) fn save(
                     .map(|since| since.as_millis() as u64)
             }),
             while_closed: file.while_closed.as_ref().map(|_| (from, to)),
+            first_turn: file.first_turn,
         });
     }
     // One tree with a folder for each kind of version: one git index, not
@@ -580,12 +660,25 @@ pub(crate) fn save(
                 .map(move |(path, blob)| (format!("{kind}/{path}"), blob.clone()))
         })
         .collect();
-    let trees = vec![lock.write_tree(&combined)?];
+    let mut trees = Vec::new();
+    if !files.is_empty() {
+        trees.push(lock.write_tree(&combined)?);
+    }
+    // SOLO: the turns' snapshots stay as long as the record names them.
+    for turn in turns {
+        for tree in [&turn.before, &turn.after] {
+            if !trees.contains(tree) {
+                trees.push(tree.clone());
+            }
+        }
+    }
     let record = Record {
         version: 1,
         directory: directory.to_path_buf(),
         trees: trees.clone(),
         files: recorded,
+        turns: turns.to_vec(),
+        unsent: unsent.clone(),
     };
     lock.write_record(key, &serde_json::to_vec(&record)?)?;
     let binary: Vec<String> = entries
@@ -658,7 +751,7 @@ pub(crate) fn load(
             PendingFile {
                 accepted,
                 left,
-                first_turn: 0,
+                first_turn: file.first_turn,
                 since: file
                     .since
                     .map(|since| SystemTime::UNIX_EPOCH + Duration::from_millis(since)),
@@ -749,6 +842,147 @@ pub(crate) fn normalized_text(text: String) -> String {
     };
     language::LineEnding::normalize(&mut text);
     text
+}
+
+/// SOLO: The lines of a text as it is on disk: each line's text and its
+/// line break (`\r\n`, `\n`, a lone `\r`, or none at the end), so that
+/// they're the rows of its [`normalized_text`].
+fn raw_lines(text: &str) -> Vec<(&str, &str)> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut ix = 0;
+    while ix < bytes.len() {
+        let end = match bytes[ix] {
+            b'\n' => ix + 1,
+            b'\r' if bytes.get(ix + 1) == Some(&b'\n') => ix + 2,
+            b'\r' => ix + 1,
+            _ => {
+                ix += 1;
+                continue;
+            }
+        };
+        lines.push((&text[start..ix], &text[ix..end]));
+        start = end;
+        ix = end;
+    }
+    if start < text.len() {
+        lines.push((&text[start..], ""));
+    }
+    lines
+}
+
+/// SOLO: For each row of `new`, the row of `old` it's unchanged from.
+fn unchanged_rows(old: &str, new: &str) -> Vec<Option<usize>> {
+    let old_count = lines(old).len();
+    let new_count = lines(new).len();
+    let mut rows = vec![None; new_count];
+    let end = LineEdit {
+        old: old_count as u32..old_count as u32,
+        new: new_count as u32..new_count as u32,
+    };
+    let (mut old_row, mut new_row) = (0, 0);
+    for edit in line_edits(old, new).iter().chain([&end]) {
+        while new_row < (edit.new.start as usize).min(new_count) && old_row < old_count {
+            rows[new_row] = Some(old_row);
+            old_row += 1;
+            new_row += 1;
+        }
+        old_row = edit.old.end as usize;
+        new_row = edit.new.end as usize;
+    }
+    rows
+}
+
+/// SOLO: What to write to a file rejecting changed, byte for byte. On disk
+/// it's `disk`; its buffer had `before` and rejecting left `after` there,
+/// putting back lines of `accepted` (all [`normalized_text`]). The lines it
+/// didn't touch stay as they are on disk, with their line breaks and the
+/// byte order mark; the lines it put back get the line breaks they have in
+/// the accepted version as it was on disk, which is one of
+/// `accepted_on_disk` when it's known (else those of the lines next to
+/// them). When rejecting puts all of the accepted version back and its
+/// bytes are known, it's those bytes. `None` if `disk` isn't `before`.
+pub(crate) fn rejected_bytes(
+    disk: &[u8],
+    before: &str,
+    after: &str,
+    accepted: &str,
+    accepted_on_disk: &[Vec<u8>],
+) -> Option<Vec<u8>> {
+    let disk = std::str::from_utf8(disk).ok()?;
+    let (bom, body) = match disk.strip_prefix('\u{feff}') {
+        Some(body) => ("\u{feff}", body),
+        None => ("", disk),
+    };
+    if normalized_text(body.to_string()) != before {
+        return None;
+    }
+    let references: Vec<(&str, String)> = accepted_on_disk
+        .iter()
+        .filter_map(|bytes| std::str::from_utf8(bytes).ok())
+        .map(|text| (text, normalized_text(text.to_string())))
+        .collect();
+    if after == accepted
+        && let Some((text, _)) = references
+            .iter()
+            .find(|(_, normalized)| normalized == accepted)
+    {
+        return Some(text.as_bytes().to_vec());
+    }
+    // The line breaks of the accepted version's rows, where known.
+    let accepted_count = lines(accepted).len();
+    let mut accepted_breaks: Vec<Option<&str>> = vec![None; accepted_count];
+    for (text, normalized) in &references {
+        let raw = raw_lines(text.strip_prefix('\u{feff}').unwrap_or(text));
+        for (row, from) in unchanged_rows(normalized, accepted).into_iter().enumerate() {
+            if accepted_breaks[row].is_none()
+                && let Some((_, line_break)) = from.and_then(|from| raw.get(from))
+            {
+                accepted_breaks[row] = Some(line_break);
+            }
+        }
+    }
+    let disk_lines = raw_lines(body);
+    let from_disk = unchanged_rows(before, after);
+    let from_accepted = unchanged_rows(accepted, after);
+    let after_lines = lines(after);
+    // A put back line's break when the accepted version's isn't known: that
+    // of the line before it on disk, else after it, else `\n`.
+    let neighbor_break = |row: usize| -> &str {
+        let disk_break = |row: usize| {
+            from_disk[row]
+                .and_then(|from| disk_lines.get(from))
+                .map(|(_, line_break)| *line_break)
+                .filter(|line_break| !line_break.is_empty())
+        };
+        (0..row)
+            .rev()
+            .find_map(disk_break)
+            .or_else(|| (row + 1..after_lines.len()).find_map(disk_break))
+            .unwrap_or("\n")
+    };
+    let mut out = String::with_capacity(disk.len());
+    out.push_str(bom);
+    for (row, line) in after_lines.iter().enumerate() {
+        if let Some((text, line_break)) = from_disk[row].and_then(|from| disk_lines.get(from)) {
+            out.push_str(text);
+            out.push_str(line_break);
+            continue;
+        }
+        match line.strip_suffix('\n') {
+            Some(text) => {
+                out.push_str(text);
+                let line_break = from_accepted[row]
+                    .and_then(|from| accepted_breaks.get(from).copied().flatten())
+                    .filter(|line_break| !line_break.is_empty())
+                    .unwrap_or_else(|| neighbor_break(row));
+                out.push_str(line_break);
+            }
+            None => out.push_str(line),
+        }
+    }
+    Some(out.into_bytes())
 }
 
 /// Whether two row ranges touch: they overlap, or an empty one (a point
@@ -1188,5 +1422,100 @@ mod tests {
     #[test]
     fn test_normalized_text() {
         assert_eq!(normalized_text("\u{feff}a\r\nb\r\n".into()), "a\nb\n");
+    }
+
+    #[test]
+    fn test_raw_lines() {
+        assert_eq!(
+            raw_lines("a\r\nb\nc\rd"),
+            vec![("a", "\r\n"), ("b", "\n"), ("c", "\r"), ("d", "")]
+        );
+        assert_eq!(
+            raw_lines("project.\n\r\n"),
+            vec![("project.", "\n"), ("", "\r\n")]
+        );
+    }
+
+    /// SOLO: Rejecting writes the lines it didn't touch as they are on
+    /// disk, and the lines it puts back as they are in the accepted version
+    /// (G59).
+    #[test]
+    fn test_rejected_bytes() {
+        let normalized = |text: &str| normalized_text(text.to_string());
+        let reject = |disk: &str, after: &str, accepted_on_disk: &str| {
+            let references = if accepted_on_disk.is_empty() {
+                Vec::new()
+            } else {
+                vec![accepted_on_disk.as_bytes().to_vec()]
+            };
+            let accepted = normalized(if accepted_on_disk.is_empty() {
+                after
+            } else {
+                accepted_on_disk
+            });
+            rejected_bytes(
+                disk.as_bytes(),
+                &normalized(disk),
+                after,
+                &accepted,
+                &references,
+            )
+            .map(|bytes| String::from_utf8(bytes).unwrap())
+        };
+
+        // LF.
+        assert_eq!(
+            reject("a\nb\nADDED\nc\n", "a\nb\nc\n", "").as_deref(),
+            Some("a\nb\nc\n")
+        );
+        // CRLF stays CRLF, also for a line put back without its version on
+        // disk.
+        assert_eq!(
+            reject("a\r\nb\r\nADDED\r\nc\r\n", "a\nb\nc\n", "").as_deref(),
+            Some("a\r\nb\r\nc\r\n")
+        );
+        assert_eq!(
+            reject("a\r\nc\r\n", "a\nb\nc\n", "").as_deref(),
+            Some("a\r\nb\r\nc\r\n")
+        );
+        // CRLF with a BOM.
+        assert_eq!(
+            reject(
+                "\u{feff}a\r\nX\r\nc\r\n",
+                "a\nb\nc\n",
+                "\u{feff}a\r\nb\r\nc\r\n"
+            )
+            .as_deref(),
+            Some("\u{feff}a\r\nb\r\nc\r\n")
+        );
+        // Mixed: everything rejected is the accepted bytes.
+        let accepted = "# Title\r\nThis is the project.\n\r\n";
+        assert_eq!(
+            reject(
+                "# Title\r\nThis is the project.\nAgent line\r\n\r\n",
+                "# Title\nThis is the project.\n\n",
+                accepted
+            )
+            .as_deref(),
+            Some(accepted)
+        );
+        // Mixed, one hunk of two rejected: the other stays as on disk, the
+        // line put back has its own line break.
+        assert_eq!(
+            reject(
+                "one\r\nTWO\r\nthree\r\nNEW\n",
+                "one\ntwo\nthree\nNEW\n",
+                "one\r\ntwo\nthree\r\n"
+            )
+            .as_deref(),
+            Some("one\r\ntwo\nthree\r\nNEW\n")
+        );
+        // Without a line break at the end.
+        assert_eq!(
+            reject("a\r\nb\r\nc", "a\nb", "a\r\nb").as_deref(),
+            Some("a\r\nb")
+        );
+        // The disk isn't what the buffer had: nothing.
+        assert_eq!(rejected_bytes(b"other\n", "a\n", "", "", &[]), None);
     }
 }

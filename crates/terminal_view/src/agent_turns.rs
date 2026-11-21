@@ -42,7 +42,7 @@ use crate::{
     AgentTurnEvent, TerminalView, agent_status::AgentEditedFile, terminal_panel::TerminalPanel,
 };
 use diagnostics::{DiagnosticsBefore, TurnDiagnostics};
-use pending::PendingFile;
+use pending::{PendingFile, RecordedTurn, Rejection, ReviewComment, Unsent};
 pub(crate) use review::AgentTurnReview;
 use snapshot::{
     ChangedFile, FileChange, LargeFile, SnapshotStore, SnapshotUnavailable, TreeId,
@@ -324,6 +324,8 @@ pub(crate) struct PendingChanges {
     used: usize,
     /// Why the last record of them failed, to show on the review page.
     pub save_error: Option<SharedString>,
+    /// SOLO: What the review has for the agent that isn't sent yet.
+    pub unsent: Unsent,
 }
 
 /// SOLO: A turn under way or ending, whose files are locked (G59).
@@ -911,6 +913,8 @@ impl AgentTurns {
                     });
                     if let Some(turn) = turn {
                         turn.diagnostics = result;
+                        // SOLO: recorded with the turn (G59).
+                        this.save_pending(terminal_id, cx);
                         cx.notify();
                         update_tab(&terminal_view, cx);
                     }
@@ -1070,6 +1074,7 @@ impl AgentTurns {
                             revision: 1,
                             used,
                             save_error: None,
+                            unsent: Unsent::default(),
                         });
                     }
                 }
@@ -1212,11 +1217,34 @@ impl AgentTurns {
                 if terminal.handed_over {
                     return;
                 }
-                for (store, directory, files, modified) in restored {
+                // SOLO: the turns too, unless it has had turns since: they'd
+                // have the same numbers.
+                let restore_turns = terminal.turns_started == 0 && terminal.turns.is_empty();
+                let mut turns: Vec<AgentTurn> = Vec::new();
+                for record in restored {
+                    let RestoredRecord {
+                        store,
+                        directory,
+                        mut files,
+                        used: modified,
+                        turns: recorded_turns,
+                        unsent,
+                    } = record;
+                    if restore_turns {
+                        turns.extend(
+                            recorded_turns
+                                .into_iter()
+                                .filter_map(|turn| AgentTurn::from_record(turn, store.clone())),
+                        );
+                    } else {
+                        for file in files.values_mut() {
+                            file.first_turn = 0;
+                        }
+                    }
                     // A turn there ended meanwhile: what the user accepted is
                     // the record's; what the agent left, the turn's.
                     if let Some(changes) = terminal.changes_in_mut(store.store_dir()) {
-                        merge_restored(changes, files);
+                        merge_restored(changes, files, unsent);
                         continue;
                     }
                     log::info!(
@@ -1233,7 +1261,17 @@ impl AgentTurns {
                         revision: 1,
                         used: modified,
                         save_error: None,
+                        unsent,
                     });
+                }
+                if !turns.is_empty() {
+                    turns.sort_by_key(|turn| turn.number);
+                    turns.dedup_by_key(|turn| turn.number);
+                    let excess = turns.len().saturating_sub(MAX_TURNS);
+                    turns.drain(..excess);
+                    log::info!("restored {} turns", turns.len());
+                    terminal.turns_started = turns.last().map_or(0, |turn| turn.number);
+                    terminal.turns = turns.into();
                 }
                 this.save_pending(terminal_id, cx);
                 this.watch_pending_files(terminal_id, cx);
@@ -1273,9 +1311,14 @@ impl AgentTurns {
                 other_terminal.handed_over = true;
                 for changes in changes {
                     match other_terminal.changes_in_mut(changes.store.store_dir()) {
-                        Some(existing) => merge_restored(existing, changes.files),
+                        Some(existing) => merge_restored(existing, changes.files, changes.unsent),
                         None => other_terminal.changes.push(changes),
                     }
+                }
+                // SOLO: and its turns, as the review shows them.
+                if other_terminal.turns_started == 0 && other_terminal.turns.is_empty() {
+                    other_terminal.turns = std::mem::take(&mut terminal.turns);
+                    other_terminal.turns_started = terminal.turns_started;
                 }
             }
             self.save_pending(other, cx);
@@ -1286,8 +1329,9 @@ impl AgentTurns {
             && let Some(key) = terminal.key.clone()
         {
             let changes = terminal.changes.clone();
+            let turns = recorded_turns(&terminal.turns);
             cx.background_spawn(async move {
-                save_all(&key, changes);
+                save_all(&key, changes, turns);
             })
             .detach();
         }
@@ -1494,6 +1538,7 @@ impl AgentTurns {
                 revision: 1,
                 used,
                 save_error: None,
+                unsent: Unsent::default(),
             }),
         }
         self.save_pending(terminal_id, cx);
@@ -1601,11 +1646,11 @@ impl AgentTurns {
                 .read_with(cx, |this, _| this.save_input(terminal_id))
                 .ok()
                 .flatten();
-            let Some((key, all_changes)) = input else {
+            let Some((key, all_changes, turns)) = input else {
                 return;
             };
             let results = cx
-                .background_spawn(async move { save_all(&key, all_changes) })
+                .background_spawn(async move { save_all(&key, all_changes, turns) })
                 .await;
             this.update(cx, |this, cx| {
                 if this.saved(terminal_id, results, cx) {
@@ -1616,11 +1661,18 @@ impl AgentTurns {
         }));
     }
 
-    /// SOLO: What to record of the terminal's pending changes: its id, and
-    /// the changes in each folder.
-    fn save_input(&self, terminal_id: EntityId) -> Option<(String, Vec<PendingChanges>)> {
+    /// SOLO: What to record of the terminal's pending changes: its id, the
+    /// changes in each folder, and its turns.
+    fn save_input(
+        &self,
+        terminal_id: EntityId,
+    ) -> Option<(String, Vec<PendingChanges>, Vec<(PathBuf, RecordedTurn)>)> {
         let terminal = self.terminals.get(&terminal_id)?;
-        Some((terminal.key.clone()?, terminal.changes.clone()))
+        Some((
+            terminal.key.clone()?,
+            terminal.changes.clone(),
+            recorded_turns(&terminal.turns),
+        ))
     }
 
     /// SOLO: The terminal's pending changes were recorded: each folder's
@@ -1657,7 +1709,7 @@ impl AgentTurns {
     /// SOLO: Records every terminal's pending changes now, not a moment
     /// from now: Solo is quitting.
     fn save_all_now(&mut self, cx: &mut Context<Self>) -> Task<()> {
-        let inputs: Vec<(String, Vec<PendingChanges>)> = self
+        let inputs: Vec<(String, Vec<PendingChanges>, Vec<(PathBuf, RecordedTurn)>)> = self
             .terminals
             .keys()
             .copied()
@@ -1671,8 +1723,8 @@ impl AgentTurns {
             .filter_map(|terminal_id| self.save_input(terminal_id))
             .collect();
         cx.background_spawn(async move {
-            for (key, changes) in inputs {
-                save_all(&key, changes);
+            for (key, changes, turns) in inputs {
+                save_all(&key, changes, turns);
             }
         })
     }
@@ -1932,7 +1984,22 @@ impl AgentTurns {
 /// SOLO: Takes in restored pending files where a turn's end already made
 /// some: what the user accepted is the restored files', what the agent left
 /// the turn's.
-fn merge_restored(changes: &mut PendingChanges, restored: BTreeMap<String, PendingFile>) {
+fn merge_restored(
+    changes: &mut PendingChanges,
+    restored: BTreeMap<String, PendingFile>,
+    unsent: Unsent,
+) {
+    // SOLO: and what wasn't sent to the agent, once.
+    for rejection in unsent.rejected {
+        if !changes.unsent.rejected.contains(&rejection) {
+            changes.unsent.rejected.push(rejection);
+        }
+    }
+    for comment in unsent.comments {
+        if !changes.unsent.comments.contains(&comment) {
+            changes.unsent.comments.push(comment);
+        }
+    }
     for (path, restored) in restored {
         match changes.files.get_mut(&path) {
             Some(file) => {
@@ -1955,17 +2022,29 @@ fn merge_restored(changes: &mut PendingChanges, restored: BTreeMap<String, Pendi
 fn save_all(
     key: &str,
     all_changes: Vec<PendingChanges>,
+    turns: Vec<(PathBuf, RecordedTurn)>,
 ) -> Vec<(PathBuf, Result<Vec<TreeId>, SharedString>)> {
     all_changes
         .into_iter()
         .map(|changes| {
-            let result =
-                pending::save(&changes.store, key, &changes.directory, &changes.files).map_err(
-                    |error| {
-                        log::warn!("failed to record pending changes: {error:#}");
-                        SharedString::from(format!("{error:#}"))
-                    },
-                );
+            // SOLO: the turns in its folder.
+            let turns: Vec<RecordedTurn> = turns
+                .iter()
+                .filter(|(store_dir, _)| store_dir == changes.store.store_dir())
+                .map(|(_, turn)| turn.clone())
+                .collect();
+            let result = pending::save(
+                &changes.store,
+                key,
+                &changes.directory,
+                &changes.files,
+                &turns,
+                &changes.unsent,
+            )
+            .map_err(|error| {
+                log::warn!("failed to record pending changes: {error:#}");
+                SharedString::from(format!("{error:#}"))
+            });
             (changes.store.store_dir().to_path_buf(), result)
         })
         .collect()
@@ -1982,19 +2061,24 @@ fn terminal_key(view: &TerminalView, cx: &App) -> Option<String> {
         .map(str::to_string)
 }
 
+/// SOLO: What a record of pending changes had (see [`restore_pending`]).
+struct RestoredRecord {
+    store: Arc<SnapshotStore>,
+    directory: PathBuf,
+    files: BTreeMap<String, PendingFile>,
+    /// When the record was written, by order.
+    used: usize,
+    /// The turns whose snapshots are still there.
+    turns: Vec<RecordedTurn>,
+    unsent: Unsent,
+}
+
 /// SOLO: The pending changes recorded for the terminal `key`, in each
 /// folder its agent worked in: the store, the folder, the files (with what
-/// changed while Solo was closed marked as such) and when the record was
-/// written, newest first (G59).
-fn restore_pending(
-    storage_root: &Path,
-    key: &str,
-) -> Vec<(
-    Arc<SnapshotStore>,
-    PathBuf,
-    BTreeMap<String, PendingFile>,
-    usize,
-)> {
+/// changed while Solo was closed marked as such), when the record was
+/// written, newest first, the turns and what wasn't sent to the agent
+/// (G59).
+fn restore_pending(storage_root: &Path, key: &str) -> Vec<RestoredRecord> {
     let records = SnapshotStore::find_pending_records(storage_root, key);
     let count = records.len();
     let mut restored = Vec::new();
@@ -2019,8 +2103,32 @@ fn restore_pending(
         match pending::load(&store, &record) {
             Ok(files) => {
                 let files = pending::changed_while_closed(&store, files);
-                // Newest first: the folder worked in last counts as used last.
-                restored.push((Arc::new(store), record.directory, files, count - ix));
+                let trees: Vec<String> = record
+                    .turns
+                    .iter()
+                    .flat_map(|turn| [turn.before.clone(), turn.after.clone()])
+                    .collect();
+                let present = store.has_trees(&trees).log_err().unwrap_or_default();
+                let turns = record
+                    .turns
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(ix, _)| {
+                        present.get(2 * ix).copied().unwrap_or(false)
+                            && present.get(2 * ix + 1).copied().unwrap_or(false)
+                    })
+                    .map(|(_, turn)| turn)
+                    .collect();
+                restored.push(RestoredRecord {
+                    store: Arc::new(store),
+                    directory: record.directory,
+                    files,
+                    // Newest first: the folder worked in last counts as used
+                    // last.
+                    used: count - ix,
+                    turns,
+                    unsent: record.unsent,
+                });
             }
             Err(error) => {
                 log::warn!("failed to read the pending changes in {path:?}: {error:#}");
@@ -2125,6 +2233,64 @@ struct CodexWindow {
 
 fn unix_ms(time: time::OffsetDateTime) -> i64 {
     (time.unix_timestamp_nanos() / 1_000_000) as i64
+}
+
+/// SOLO: Turns as they're recorded, with their stores (G59).
+fn recorded_turns(turns: &VecDeque<AgentTurn>) -> Vec<(PathBuf, RecordedTurn)> {
+    turns
+        .iter()
+        .map(|turn| (turn.store.store_dir().to_path_buf(), turn.recorded()))
+        .collect()
+}
+
+impl AgentTurn {
+    /// SOLO: As it's recorded with the pending changes (G59).
+    fn recorded(&self) -> RecordedTurn {
+        RecordedTurn {
+            number: self.number,
+            started_at: unix_ms(self.started_at),
+            directory: self.directory.clone(),
+            prompt: self.prompt.clone(),
+            before: self.before.clone(),
+            after: self.after.clone(),
+            before_large: self.before_large.to_vec(),
+            changed: self.changed.clone(),
+            attributed: self.attributed,
+            others: self.others.clone(),
+            edited_before_snapshot: self.edited_before_snapshot.clone(),
+            diagnostics: Some(self.diagnostics.clone()),
+            large_files: self.large_files.clone(),
+        }
+    }
+
+    /// SOLO: A turn recorded in `store`'s record of pending changes.
+    fn from_record(turn: RecordedTurn, store: Arc<SnapshotStore>) -> Option<Self> {
+        let started_at = time::OffsetDateTime::from_unix_timestamp_nanos(
+            i128::from(turn.started_at) * 1_000_000,
+        )
+        .ok()?
+        .to_offset(now().offset());
+        Some(AgentTurn {
+            number: turn.number,
+            started_at,
+            directory: turn.directory,
+            prompt: turn.prompt,
+            store,
+            before: turn.before,
+            before_large: Arc::new(turn.before_large),
+            after: turn.after,
+            changed: turn.changed,
+            attributed: turn.attributed,
+            others: turn.others,
+            edited_before_snapshot: turn.edited_before_snapshot,
+            // Not checked when Solo closed: not anymore.
+            diagnostics: match turn.diagnostics {
+                Some(TurnDiagnostics::Checking) | None => TurnDiagnostics::Unchecked,
+                Some(diagnostics) => diagnostics,
+            },
+            large_files: turn.large_files,
+        })
+    }
 }
 
 /// SOLO: The files Codex session `session`'s patches edited in `window`, as
@@ -2476,9 +2642,101 @@ fn unsnapshotted_turn_menu(
 }
 
 impl AgentTurns {
-    /// SOLO: Whether the terminal has turns or pending changes to review.
+    /// SOLO: Whether the terminal has turns or pending changes to review,
+    /// or something for its agent the review hasn't sent.
     pub(crate) fn has_something_to_review(&self, terminal: EntityId) -> bool {
-        self.turns(terminal).next().is_some() || self.pending_file_count(terminal) > 0
+        self.turns(terminal).next().is_some()
+            || self.pending_file_count(terminal) > 0
+            || !self.unsent(terminal).is_empty()
+    }
+
+    /// SOLO: What the review hasn't sent the terminal's agent yet, in all
+    /// the folders it worked in (G59).
+    pub(crate) fn unsent(&self, terminal: EntityId) -> Unsent {
+        let mut unsent = Unsent::default();
+        if let Some(terminal) = self.terminals.get(&terminal) {
+            for changes in &terminal.changes {
+                unsent
+                    .rejected
+                    .extend(changes.unsent.rejected.iter().cloned());
+                unsent
+                    .comments
+                    .extend(changes.unsent.comments.iter().cloned());
+            }
+        }
+        unsent
+    }
+
+    /// SOLO: Hunks of the pending changes in the store at `store_dir` were
+    /// rejected, to tell the agent. Whether there are such pending changes
+    /// to keep them with.
+    pub(crate) fn add_rejections(
+        &mut self,
+        terminal_id: EntityId,
+        store_dir: &Path,
+        rejected: Vec<Rejection>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(changes) = self
+            .terminals
+            .get_mut(&terminal_id)
+            .and_then(|terminal| terminal.changes_in_mut(store_dir))
+        else {
+            return false;
+        };
+        changes.unsent.rejected.extend(rejected);
+        self.save_pending(terminal_id, cx);
+        cx.notify();
+        true
+    }
+
+    /// SOLO: The review comments not sent to the agent are now `comments`,
+    /// kept with the pending changes in the store at `store_dir`.
+    pub(crate) fn set_unsent_comments(
+        &mut self,
+        terminal_id: EntityId,
+        store_dir: &Path,
+        comments: Vec<ReviewComment>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+            return;
+        };
+        if terminal.changes_in(store_dir).is_none() {
+            return;
+        }
+        let mut changed = false;
+        for changes in &mut terminal.changes {
+            let wanted = if changes.store.store_dir() == store_dir {
+                comments.clone()
+            } else {
+                Vec::new()
+            };
+            if changes.unsent.comments != wanted {
+                changes.unsent.comments = wanted;
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_pending(terminal_id, cx);
+            cx.notify();
+        }
+    }
+
+    /// SOLO: Takes what wasn't sent to the terminal's agent: it's being sent.
+    pub(crate) fn take_unsent(&mut self, terminal_id: EntityId, cx: &mut Context<Self>) -> Unsent {
+        let unsent = self.unsent(terminal_id);
+        if unsent.is_empty() {
+            return unsent;
+        }
+        if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
+            for changes in &mut terminal.changes {
+                changes.unsent = Unsent::default();
+            }
+        }
+        self.save_pending(terminal_id, cx);
+        cx.notify();
+        unsent
     }
 
     /// SOLO: When the terminal's agent last changed something to review.
@@ -3025,7 +3283,7 @@ mod tests {
         cx.run_until_parked();
         let mut restored = restore_pending(&storage, KEY);
         assert_eq!(restored.len(), 1, "recorded");
-        let (_, _, restored, _) = restored.remove(0);
+        let restored = restored.remove(0).files;
         let versions = |files: BTreeMap<String, PendingFile>| {
             files
                 .into_iter()
@@ -3324,12 +3582,13 @@ mod tests {
             revision: 1,
             used: 1,
             save_error: None,
+            unsent: Unsent::default(),
         };
         let restored = BTreeMap::from_iter([
             ("a.txt".to_string(), file("a0\n", "a1\n")),
             ("b.txt".to_string(), file("b0\n", "b1\n")),
         ]);
-        merge_restored(&mut changes, restored);
+        merge_restored(&mut changes, restored, Unsent::default());
         assert_eq!(changes.files["a.txt"], file("a0\n", "a2\n"));
         assert_eq!(changes.files["b.txt"], file("b0\n", "b1\n"));
         assert_eq!(changes.pending.len(), 2);

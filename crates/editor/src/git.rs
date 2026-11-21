@@ -79,6 +79,42 @@ impl Editor {
             .map(|comment| (comment.range, comment.comment))
             .collect()
     }
+
+    /// SOLO: The stored review comments, as [`Self::take_review_comments`]
+    /// gives them, leaving them there.
+    pub fn review_comments(&self) -> Vec<(Range<Anchor>, String)> {
+        let mut comments: Vec<&StoredReviewComment> = self
+            .stored_review_comments
+            .iter()
+            .flat_map(|(_, comments)| comments)
+            .collect();
+        comments.sort_by_key(|comment| comment.id);
+        comments
+            .into_iter()
+            .map(|comment| (comment.range.clone(), comment.comment.clone()))
+            .collect()
+    }
+
+    /// SOLO: Stores a review comment on `range` of the multibuffer, as
+    /// writing it in the review overlay there would.
+    pub fn restore_review_comment(
+        &mut self,
+        range: Range<Anchor>,
+        comment: String,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.buffer.read(cx).snapshot(cx);
+        let start = range.start.to_point(&snapshot);
+        let file_path = snapshot
+            .file_at(start)
+            .map(|file: &Arc<dyn language::File>| file.path().clone())
+            .unwrap_or_else(|| Arc::from(util::rel_path::RelPath::empty()));
+        let hunk_key = DiffHunkKey {
+            file_path,
+            hunk_start_anchor: snapshot.anchor_before(start),
+        };
+        self.add_review_comment(hunk_key, comment, range, cx);
+    }
 }
 
 pub struct DefaultDiffHunkRenderer;
