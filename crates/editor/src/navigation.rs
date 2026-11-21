@@ -2603,14 +2603,23 @@ mod navigation_title_tests {
             navigation_results_title(References, "add", false),
             "References to add"
         );
-        assert_eq!(navigation_results_title(References, "add", true), "add 的引用");
-        assert_eq!(navigation_results_title(References, "", false), "References");
+        assert_eq!(
+            navigation_results_title(References, "add", true),
+            "add 的引用"
+        );
+        assert_eq!(
+            navigation_results_title(References, "", false),
+            "References"
+        );
         assert_eq!(navigation_results_title(References, "", true), "引用");
         assert_eq!(
             navigation_results_title(Definitions, "a, b", false),
             "Definitions for a, b"
         );
-        assert_eq!(navigation_results_title(Definitions, "a, b", true), "a, b 的定义");
+        assert_eq!(
+            navigation_results_title(Definitions, "a, b", true),
+            "a, b 的定义"
+        );
         assert_eq!(
             navigation_results_title(Implementations, "Foo", true),
             "Foo 的实现"
@@ -2620,7 +2629,10 @@ mod navigation_title_tests {
             "Declarations for Foo"
         );
         assert_eq!(navigation_results_title(Declarations, "", true), "声明");
-        assert_eq!(navigation_results_title(Types, "Foo", true), "Foo 的类型定义");
+        assert_eq!(
+            navigation_results_title(Types, "Foo", true),
+            "Foo 的类型定义"
+        );
         assert_eq!(selections_title("x", false), "Selections for 'x'");
         assert_eq!(selections_title("x", true), "“x”的选区");
     }

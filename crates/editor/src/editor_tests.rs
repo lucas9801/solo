@@ -35648,8 +35648,8 @@ async fn test_find_all_references_editor_reuse(cx: &mut TestAppContext) {
     cx.update_editor(|_, _, _| {
         assert_eq!(editors.len(), 2, "We should have opened a new multibuffer");
     });
-    // SOLO: the results tab's title, in the interface's language (tests run
-    // in English).
+    // SOLO: the results tab's title, in the interface's language, whichever
+    // the test runs in.
     let titles = cx.update_workspace(|_, _, cx| {
         editors
             .iter()
@@ -35658,7 +35658,11 @@ async fn test_find_all_references_editor_reuse(cx: &mut TestAppContext) {
     });
     assert!(
         // (The fake server's ranges cover other text than `two`.)
-        titles.iter().any(|title| title.starts_with("References to ")),
+        titles.iter().any(|title| if util::i18n::is_chinese() {
+            title.ends_with(" 的引用")
+        } else {
+            title.starts_with("References to ")
+        }),
         "{titles:?}"
     );
 
