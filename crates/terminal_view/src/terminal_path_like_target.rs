@@ -82,7 +82,7 @@ fn link_tooltip(link: &ResolvedLink) -> String {
     if !link.ambiguous {
         return path;
     }
-    let count = link.candidates.len();
+    let count = link.total;
     if util::i18n::is_chinese() {
         format!("{path} 等 {count} 个同名文件")
     } else {
@@ -280,25 +280,24 @@ async fn rank_by_rows(
     project: &Entity<Project>,
     cx: &mut AsyncApp,
 ) -> ResolvedLink {
+    let total = link.total;
     let mut candidates = link.candidates;
     if candidates
         .first()
-        .is_none_or(|candidate| candidate.target.path().row.is_none())
+        .is_some_and(|candidate| candidate.target.path().row.is_some())
     {
-        return ResolvedLink::from_candidates(candidates).unwrap_or(ResolvedLink {
+        for candidate in candidates.iter_mut().take(MAX_ROW_CHECKS) {
+            candidate.rank.has_row = Some(has_row(&candidate.target, project, cx).await);
+        }
+    }
+    ResolvedLink::from_candidates(candidates)
+        .map(|ranked| ranked.with_total(total))
+        .unwrap_or(ResolvedLink {
             target: link.target,
             candidates: Vec::new(),
             ambiguous: link.ambiguous,
-        });
-    }
-    for candidate in candidates.iter_mut().take(MAX_ROW_CHECKS) {
-        candidate.rank.has_row = Some(has_row(&candidate.target, project, cx).await);
-    }
-    ResolvedLink::from_candidates(candidates).unwrap_or(ResolvedLink {
-        target: link.target,
-        candidates: Vec::new(),
-        ambiguous: link.ambiguous,
-    })
+            total,
+        })
 }
 
 /// SOLO: whether the file `target` is has the line it names: counted in its
@@ -1624,6 +1623,44 @@ mod tests {
             .await
             .expect("relative to the terminal's folder");
         assert_eq!(found.path, core);
+    }
+
+    // SOLO: a name many files have (`mod.rs`): the count is all of them,
+    // and the one in the terminal's folder is found though many come first.
+    #[gpui::test]
+    async fn test_names_many_files_have(cx: &mut TestAppContext) {
+        let fs = cx.update(AppState::test).fs.as_fake().clone();
+        cx.update(|cx| {
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        let mut tree = serde_json::Map::new();
+        tree.insert(".git".to_string(), json!({}));
+        for ix in 0..80 {
+            tree.insert(format!("a_{ix:02}"), json!({ "mod.rs": "" }));
+        }
+        tree.insert("z_mine".to_string(), json!({ "deep": { "mod.rs": "" } }));
+        fs.insert_tree(path!("/project"), serde_json::Value::Object(tree))
+            .await;
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().downgrade());
+        cx.run_until_parked();
+
+        let Some(PathLinkResolution::Here(link)) = resolve_in(
+            cx,
+            &workspace,
+            &target_at("mod.rs", path!("/project/z_mine")),
+            LinkPurpose::Click,
+        )
+        .await
+        else {
+            panic!("mod.rs should resolve");
+        };
+        assert_eq!(link.total, 81);
+        assert!(link.target.path().path.ends_with("z_mine/deep/mod.rs") || link.target.path().path.ends_with("z_mine\deep\mod.rs"));
+        assert!(!link.ambiguous);
     }
 
     // SOLO: the ranking and the guess flag the link menu shows.

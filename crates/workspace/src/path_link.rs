@@ -144,6 +144,9 @@ pub struct ResolvedLink {
     /// only tie-breakers (someone else's code, the line, the length) put it
     /// first, so the user is better asked which one.
     pub ambiguous: bool,
+    /// How many files the link may mean, `candidates` holding the best of
+    /// them when there are very many.
+    pub total: usize,
 }
 
 impl ResolvedLink {
@@ -155,7 +158,14 @@ impl ResolvedLink {
             }],
             target,
             ambiguous: false,
+            total: 1,
         }
+    }
+
+    /// The same, saying `total` files may be meant.
+    pub fn with_total(mut self, total: usize) -> Self {
+        self.total = total.max(self.candidates.len());
+        self
     }
 
     /// Orders `candidates` by their ranks and decides whether the first is
@@ -169,6 +179,7 @@ impl ResolvedLink {
             .is_some_and(|second| second.rank.decisive_key() == first.rank.decisive_key());
         Some(Self {
             target: first.target.clone(),
+            total: candidates.len(),
             candidates,
             ambiguous,
         })
@@ -802,20 +813,37 @@ async fn scan_worktrees(
             .collect::<Vec<_>>();
         cx.background_spawn(async move {
             let mut found = Vec::new();
+            // Every file of the name, counted though not all are ranked.
+            let mut total = 0;
             for (snapshot, paths_to_check, context_paths) in worktree_paths_to_check {
                 let traversal = snapshot.traverse_from_path(true, true, false, RelPath::empty());
+                let working_directory = working_directory
+                    .as_deref()
+                    .and_then(|cwd| cwd.strip_prefix(snapshot.abs_path()).ok())
+                    .and_then(|cwd| RelPath::new(cwd, PathStyle::local()).ok())
+                    .map(std::borrow::Cow::into_owned);
                 let mut candidates = Vec::new();
                 let mut context_entries = vec![Vec::new(); context_paths.len()];
                 for entry in traversal {
-                    if candidates.len() < MAX_SCAN_CANDIDATES
-                        && let Some(path_with_position) =
-                            paths_to_check
-                                .iter()
-                                .find_map(|(path_with_position, path)| {
-                                    entry.path.ends_with(path).then_some(path_with_position)
-                                })
+                    if let Some(path_with_position) =
+                        paths_to_check
+                            .iter()
+                            .find_map(|(path_with_position, path)| {
+                                entry.path.ends_with(path).then_some(path_with_position)
+                            })
                     {
-                        candidates.push((entry.clone(), path_with_position));
+                        total += 1;
+                        // Past the cap, files in the terminal's folder are
+                        // still collected: they rank first.
+                        let in_working_directory = working_directory
+                            .as_ref()
+                            .is_some_and(|cwd| entry.path.starts_with(cwd));
+                        if candidates.len() < MAX_SCAN_CANDIDATES
+                            || (in_working_directory
+                                && candidates.len() < MAX_SCAN_CANDIDATES_IN_WORKING_DIRECTORY)
+                        {
+                            candidates.push((entry.clone(), path_with_position));
+                        }
                     }
                     for (context_path, entries) in context_paths.iter().zip(&mut context_entries) {
                         if entries.len() < MAX_SCAN_CANDIDATES && entry.path.ends_with(context_path)
@@ -823,20 +851,7 @@ async fn scan_worktrees(
                             entries.push(entry.path.clone());
                         }
                     }
-                    // SOLO: nothing more can be collected.
-                    if candidates.len() == MAX_SCAN_CANDIDATES
-                        && context_entries
-                            .iter()
-                            .all(|entries| entries.len() == MAX_SCAN_CANDIDATES)
-                    {
-                        break;
-                    }
                 }
-                let working_directory = working_directory
-                    .as_deref()
-                    .and_then(|cwd| cwd.strip_prefix(snapshot.abs_path()).ok())
-                    .and_then(|cwd| RelPath::new(cwd, PathStyle::local()).ok())
-                    .map(std::borrow::Cow::into_owned);
                 for (entry, path_with_position) in candidates {
                     let context_score: usize = context_entries
                         .iter()
@@ -875,7 +890,7 @@ async fn scan_worktrees(
                     });
                 }
             }
-            ResolvedLink::from_candidates(found)
+            ResolvedLink::from_candidates(found).map(|link| link.with_total(total))
         })
         .await
     }
@@ -884,6 +899,8 @@ async fn scan_worktrees(
 /// SOLO: how many files of the name a scanned path ends with are compared
 /// with the paths around it.
 const MAX_SCAN_CANDIDATES: usize = 50;
+/// SOLO: how many, counting those, in the terminal's folder.
+const MAX_SCAN_CANDIDATES_IN_WORKING_DIRECTORY: usize = 500;
 
 /// SOLO: how many leading directories two worktree paths have in common.
 fn shared_directories(a: &RelPath, b: &RelPath) -> usize {
