@@ -772,9 +772,12 @@ pub(crate) fn navigation_target(
             if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
                 return None;
             }
-            urlencoding::decode(path)
+            let path = urlencoding::decode(path)
                 .map(|decoded| decoded.into_owned())
-                .unwrap_or(path.to_owned())
+                .unwrap_or(path.to_owned());
+            without_slash_before_drive(path)
+        } else if scheme == "mailto" {
+            return Some(MaybeNavigationTarget::Url(safe_mailto(maybe_url_or_path)));
         } else if SYSTEM_LINK_SCHEMES.contains(&scheme.as_str()) {
             return Some(MaybeNavigationTarget::Url(maybe_url_or_path.to_string()));
         } else {
@@ -786,6 +789,12 @@ pub(crate) fn navigation_target(
     if path_is_on_network(&path) {
         return None;
     }
+    // A bare position (`:123`) is tried in the files named before it: not
+    // in one on the network either.
+    let position_files = position_files
+        .into_iter()
+        .filter(|file| !path_is_on_network(file))
+        .collect();
     Some(MaybeNavigationTarget::PathLike(PathLikeTarget {
         maybe_path: path,
         working_directory,
@@ -794,13 +803,61 @@ pub(crate) fn navigation_target(
     }))
 }
 
-/// SOLO: whether `path` is on another computer (`\\server\share\x`,
-/// `//server/share/x`, `\\?\UNC\...`): such a path isn't touched to find
-/// out what it is, as that would reach out to the network.
+/// SOLO: `/C:/x` (a `file:` URL's path) as `C:/x`, which Windows opens.
+fn without_slash_before_drive(path: String) -> String {
+    let bytes = path.as_bytes();
+    if cfg!(windows)
+        && bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && bytes[2] == b':'
+    {
+        path[1..].to_string()
+    } else {
+        path
+    }
+}
+
+/// SOLO: a `mailto:` link without parameters other than the address and
+/// the subject, body, cc and bcc: some mail programs attach files named in
+/// `attach=`.
+fn safe_mailto(url: &str) -> String {
+    let Some((address, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    let kept = query
+        .split('&')
+        .filter(|parameter| {
+            let name = parameter.split('=').next().unwrap_or_default();
+            ["subject", "body", "cc", "bcc"]
+                .iter()
+                .any(|allowed| name.eq_ignore_ascii_case(allowed))
+        })
+        .collect::<Vec<_>>();
+    if kept.is_empty() {
+        address.to_string()
+    } else {
+        format!("{address}?{}", kept.join("&"))
+    }
+}
+
+/// SOLO: whether `path` may be on another computer, or is anything other
+/// than a file on a drive: `\\server\share\x`, `//server/share/x`, and under
+/// `\\?\` and `\\.\` everything but a drive (`\\?\UNC\...`,
+/// `\\?\GLOBALROOT\...`, `\\.\pipe\...`, which can hang when looked at).
+/// Such a path isn't touched to find out what it is.
 fn path_is_on_network(path: &str) -> bool {
     let path = path.replace('/', "\\");
-    (path.starts_with("\\\\") && !path.starts_with("\\\\?\\") && !path.starts_with("\\\\.\\"))
-        || path.to_ascii_uppercase().starts_with("\\\\?\\UNC\\")
+    let Some(rest) = path.strip_prefix("\\\\") else {
+        return false;
+    };
+    match rest.strip_prefix("?\\").or_else(|| rest.strip_prefix(".\\")) {
+        Some(device) => {
+            let bytes = device.as_bytes();
+            !(bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+        }
+        None => true,
+    }
 }
 
 /// A string inside terminal, potentially useful as a URI that can be opened.
@@ -7944,9 +8001,19 @@ mod link_target_tests {
         navigation_target(text, is_url, None, Vec::new(), Vec::new())
     }
 
-    fn path(text: &str) -> Option<MaybeNavigationTarget> {
+    /// `C:/x` as a `file:` URL's path becomes on this system.
+    fn drive(text: &str) -> String {
+        if cfg!(windows) {
+            text.to_string()
+        } else {
+            format!("/{text}")
+        }
+    }
+
+    fn path(text: impl Into<String>) -> Option<MaybeNavigationTarget> {
+        let text: String = text.into();
         Some(MaybeNavigationTarget::PathLike(PathLikeTarget {
-            maybe_path: text.to_string(),
+            maybe_path: text,
             working_directory: None,
             context_paths: Vec::new(),
             position_files: Vec::new(),
@@ -7959,14 +8026,21 @@ mod link_target_tests {
     fn file_links_are_paths_never_system_links() {
         assert_eq!(
             target("file:///C:/tools/setup.exe", true),
-            path("/C:/tools/setup.exe")
+            path(drive("C:/tools/setup.exe"))
         );
         assert_eq!(
             target("file:///C:/My%20Tools/setup.exe", true),
-            path("/C:/My Tools/setup.exe")
+            path(drive("C:/My Tools/setup.exe"))
         );
+        // Not a drive: kept.
+        assert_eq!(target("file:///home/me/a.txt", true), path("/home/me/a.txt"));
         // `localhost` is this computer.
-        assert_eq!(target("FILE://localhost/C:/x.bat", true), path("/C:/x.bat"));
+        assert_eq!(target("FILE://localhost/C:/x.bat", true), path(drive("C:/x.bat")));
+        // Spaces and other characters are decoded.
+        assert_eq!(
+            target("file:///E:/%E6%B5%8B%E8%AF%95/My%20Tools/a.txt", true),
+            path(drive("E:/测试/My Tools/a.txt"))
+        );
     }
 
     #[test]
@@ -7975,9 +8049,49 @@ mod link_target_tests {
         assert_eq!(target(r"\\server\share\setup.exe", false), None);
         assert_eq!(target("//server/share/setup.exe", false), None);
         assert_eq!(target(r"\\?\UNC\server\share\x.exe", false), None);
-        // Local long paths and devices aren't the network.
+        assert_eq!(target(r"\\.\UNC\server\share\x.exe", false), None);
+        assert_eq!(
+            target(r"\\?\GLOBALROOT\Device\Mup\server\share\x.exe", false),
+            None
+        );
+        // A pipe can hang when looked at.
+        assert_eq!(target(r"\\.\pipe\name", false), None);
+        // Local long paths are files.
         assert_eq!(target(r"\\?\C:\x.txt", false), path(r"\\?\C:\x.txt"));
+        assert_eq!(target(r"\\.\C:\x.txt", false), path(r"\\.\C:\x.txt"));
         assert_eq!(target(r"C:\tools\setup.exe", false), path(r"C:\tools\setup.exe"));
+    }
+
+    #[test]
+    fn bare_positions_skip_network_files() {
+        let found = navigation_target(
+            ":123",
+            false,
+            None,
+            Vec::new(),
+            vec![
+                r"\\server\share\a.cpp:123".to_string(),
+                "src/b.cpp:123".to_string(),
+            ],
+        );
+        let Some(MaybeNavigationTarget::PathLike(found)) = found else {
+            panic!("a path");
+        };
+        assert_eq!(found.position_files, ["src/b.cpp:123"]);
+    }
+
+    #[test]
+    fn mailto_keeps_only_harmless_parameters() {
+        assert_eq!(
+            target("mailto:a@b.com?subject=Hi&attach=C:\\secret.txt&body=x", true),
+            Some(MaybeNavigationTarget::Url(
+                "mailto:a@b.com?subject=Hi&body=x".to_string()
+            ))
+        );
+        assert_eq!(
+            target("mailto:a@b.com?attach=x", true),
+            Some(MaybeNavigationTarget::Url("mailto:a@b.com".to_string()))
+        );
     }
 
     #[test]
