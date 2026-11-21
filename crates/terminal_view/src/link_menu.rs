@@ -1117,6 +1117,31 @@ mod view_tests {
         assert!(performed(&view, cx).is_empty());
     }
 
+    // SOLO: holding Ctrl (its key repeats) while a Ctrl+click's link is
+    // resolved doesn't cancel the click: only keys that type do.
+    #[gpui::test]
+    async fn holding_ctrl_keeps_a_pending_ctrl_click(cx: &mut TestAppContext) {
+        let (view, mut cx) = view_in(cx, engine()).await;
+        let cx = &mut cx;
+        cx.simulate_modifiers_change(Modifiers::control());
+        view.update_in(cx, |view, window, cx| {
+            view.shown_link_menu = None;
+            view.performed_link_items.clear();
+            view.open_path_link(target("Array.h:883"), window, cx)
+        });
+        for _ in 0..5 {
+            cx.simulate_modifiers_change(Modifiers::control());
+        }
+        cx.run_until_parked();
+        let opened = performed(&view, cx);
+        assert_eq!(opened.len(), 1, "{opened:?}");
+        assert!(
+            opened[0].ends_with("Source/Runtime/Core/Containers/Array.h"),
+            "{opened:?}"
+        );
+        cx.simulate_modifiers_change(Modifiers::none());
+    }
+
     #[gpui::test]
     async fn web_addresses(cx: &mut TestAppContext) {
         let (view, mut cx) = view_in(cx, engine()).await;

@@ -862,6 +862,12 @@ fn path_is_on_network(path: &str) -> bool {
     }
 }
 
+/// SOLO: whether a program's link (OSC 8) to `uri` is followed when
+/// clicked, so it's drawn as a link.
+pub fn hyperlink_is_followed(uri: &str) -> bool {
+    navigation_target(uri, true, None, Vec::new(), Vec::new()).is_some()
+}
+
 /// A string inside terminal, potentially useful as a URI that can be opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MaybeNavigationTarget {
@@ -8101,6 +8107,15 @@ mod link_target_tests {
             target("mailto:a@b.com?attach=x", true),
             Some(MaybeNavigationTarget::Url("mailto:a@b.com".to_string()))
         );
+    }
+
+    #[test]
+    fn only_followed_program_links_look_like_links() {
+        assert!(hyperlink_is_followed("https://example.com"));
+        assert!(hyperlink_is_followed("file:///C:/x/a.txt"));
+        assert!(!hyperlink_is_followed("ms-settings:privacy"));
+        assert!(!hyperlink_is_followed("ssh://host"));
+        assert!(!hyperlink_is_followed("file://server/share/a.txt"));
     }
 
     #[test]

@@ -997,7 +997,11 @@ impl TerminalElement {
     ) -> TextRun {
         let skip_contrast = Self::is_app_chosen_exact_color(&fg);
         // SOLO: links (OSC 8) the program didn't color stand out from the text.
-        let mut fg = if cell.hyperlink().is_some() && fg == Color::Named(NamedColor::Foreground) {
+        // SOLO: only links that are followed when clicked look like links.
+        let is_link = cell
+            .hyperlink()
+            .is_some_and(|link| terminal::hyperlink_is_followed(link.uri()));
+        let mut fg = if is_link && fg == Color::Named(NamedColor::Foreground) {
             colors.colors().text_accent
         } else {
             convert_color(&fg, colors)
@@ -1014,7 +1018,7 @@ impl TerminalElement {
         }
 
         let underline =
-            (cell.has_underline() || cell.hyperlink().is_some()).then(|| UnderlineStyle {
+            (cell.has_underline() || is_link).then(|| UnderlineStyle {
                 color: Some(fg),
                 thickness: Pixels::from(1.0),
                 wavy: cell.has_undercurl(),
