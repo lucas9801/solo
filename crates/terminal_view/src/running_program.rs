@@ -93,6 +93,17 @@ impl TerminalView {
                 status,
             });
         }
+        // SOLO: an agent told apart from its command, e.g. in a terminal
+        // connected again to the host an earlier Solo left running.
+        if let Some((name, status)) = self
+            .agent_status()
+            .filter(|(_, status)| status.is_running())
+        {
+            return Some(RunningProgram {
+                name: name.to_string().into(),
+                status: Some(status.label().into()),
+            });
+        }
         if settings.confirm_close != TerminalConfirmClose::Commands || !is_command {
             return None;
         }
@@ -300,5 +311,184 @@ mod tests {
         close_all.await.unwrap();
         assert!(!cx.has_pending_prompt());
         assert_eq!(pane.read_with(cx, |pane, _| pane.items_len()), 2);
+    }
+
+    fn program(command: &str, command_line: &str) -> terminal::ShellProgram {
+        terminal::ShellProgram {
+            pid: 1,
+            start_time: 0,
+            command: command.to_string(),
+            command_line: command_line.to_string(),
+        }
+    }
+
+    fn agent(view: &Entity<TerminalView>, cx: &mut VisualTestContext) -> Option<String> {
+        view.update_in(cx, |view, window, cx| view.update_agent_status(window, cx));
+        view.read_with(cx, |view, _| {
+            view.agent_status().map(|(name, _)| name.to_string())
+        })
+    }
+
+    /// SOLO: a terminal connected again to the host an earlier Solo left
+    /// running gets its screen, not its shell's marks, and its foreground
+    /// process is the shell: the agent found running under the shell is
+    /// what runs, for its status, title and closing, until the shell's next
+    /// prompt.
+    #[gpui::test]
+    async fn test_reconnected_agent(cx: &mut TestAppContext) {
+        let (project, _workspace, window) = init_test_with_window(cx).await;
+        let (_, terminal, view) = add_display_only_terminal(&project, window, false, false, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        terminal.update(cx, |terminal, _| {
+            terminal.set_reconnected_programs_for_test(vec![program(
+                "claude --settings x.json",
+                r"C:\Users\a\.local\bin\claude.exe --settings x.json",
+            )])
+        });
+        assert_eq!(agent(&view, cx).as_deref(), Some("claude"));
+        assert!(
+            terminal
+                .read_with(cx, |terminal, _| terminal.title(false))
+                .contains("claude --settings x.json")
+        );
+        let closing = view.read_with(cx, |view, cx| view.program_ending_on_close(cx));
+        assert_eq!(closing.map(|program| program.name), Some("claude".into()));
+
+        // It ended: the shell shows its prompt.
+        write(&terminal, PROMPT, cx);
+        assert_eq!(agent(&view, cx), None);
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.program_ending_on_close(cx)),
+            None
+        );
+    }
+
+    /// SOLO: the agent saved for the terminal tells which program under the
+    /// shell is the agent; else a report from the agent's hooks does.
+    #[gpui::test]
+    async fn test_reconnected_agent_from_its_session_or_hooks(cx: &mut TestAppContext) {
+        let (project, _workspace, window) = init_test_with_window(cx).await;
+        let (_, terminal, view) = add_display_only_terminal(&project, window, false, false, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        terminal.update(cx, |terminal, _| {
+            terminal.set_reconnected_programs_for_test(vec![program(
+                "launcher --resume",
+                r"C:\tools\launcher.exe C:\Users\a\.claude\x --resume",
+            )])
+        });
+        assert_eq!(agent(&view, cx), None);
+        view.update(cx, |view, _| {
+            view.reconnected_agent_hint = Some("codex resume".to_string())
+        });
+        assert_eq!(agent(&view, cx), None, "codex isn't what runs");
+        view.update(cx, |view, _| {
+            view.reconnected_agent_hint = Some("claude --continue".to_string())
+        });
+        assert_eq!(agent(&view, cx).as_deref(), Some("claude"));
+
+        // No saved agent: its hooks tell.
+        view.update(cx, |view, _| view.reconnected_agent_hint = None);
+        assert_eq!(agent(&view, cx), None);
+        view.update_in(cx, |view, window, cx| {
+            view.agent_hook(
+                terminal::shell_integration::AgentHook {
+                    kind: terminal::shell_integration::AgentHookKind::PromptSubmitted,
+                    sent_at_ms: Some(1),
+                    session_id: None,
+                    raw_session_id: None,
+                    agent: None,
+                    working_directory: None,
+                },
+                window,
+                cx,
+            )
+        });
+        assert_eq!(agent(&view, cx).as_deref(), Some("claude"));
+        let closing = view.read_with(cx, |view, cx| view.program_ending_on_close(cx));
+        assert_eq!(closing.map(|program| program.name), Some("claude".into()));
+    }
+
+    /// SOLO: the agent saved for a terminal still tells which program is
+    /// the agent after any number of restarts that reconnect to its host,
+    /// until what runs ends.
+    #[gpui::test]
+    async fn test_reconnected_agent_session_kept_across_restarts(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (project, _workspace, window) = init_test_with_window(cx).await;
+        let db = cx.update(|cx| crate::persistence::TerminalDb::global(cx));
+        let workspace_id = db.test_workspace().await.unwrap();
+        let launcher = || {
+            vec![program(
+                "launcher --resume",
+                r"C:\tools\launcher.exe C:\Users\a\.claude\x --resume",
+            )]
+        };
+        let saved = crate::agent_resume::AgentSession {
+            command: "claude --continue".to_string(),
+            working_directory: None,
+            session_id: None,
+        };
+
+        // Restored after a first restart, from the saved terminal.
+        let mut session = Some(saved);
+        let mut item_id = 0;
+        for restart in 1..=2 {
+            let (_, terminal, view) =
+                add_display_only_terminal(&project, window, false, false, cx);
+            let cx = &mut VisualTestContext::from_window(window.into(), cx);
+            terminal.update(cx, |terminal, _| {
+                terminal.set_reconnected_programs_for_test(launcher())
+            });
+            view.update(cx, |view, cx| {
+                view.workspace_id = Some(workspace_id);
+                view.keep_reconnected_agent_session(
+                    session.take().expect("no agent saved for the terminal"),
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            assert_eq!(agent(&view, cx).as_deref(), Some("claude"), "restart {restart}");
+            item_id = view.entity_id().as_u64();
+            // What the next restart reads for this terminal.
+            session = crate::agent_resume::saved_agent_session(&db, item_id, workspace_id);
+            assert_eq!(
+                session.as_ref().map(|session| session.command.as_str()),
+                Some("claude --continue"),
+                "saved again after restart {restart}"
+            );
+            if restart == 2 {
+                // It ended: the shell shows its prompt; nothing saved.
+                write(&terminal, PROMPT, cx);
+                assert_eq!(agent(&view, cx), None);
+                cx.run_until_parked();
+            }
+        }
+        assert_eq!(
+            crate::agent_resume::saved_agent_session(&db, item_id, workspace_id),
+            None
+        );
+    }
+
+    /// SOLO: a program the agent started that ends (a helper, say) leaves
+    /// the agent recognized; the agent ending ends it.
+    #[gpui::test]
+    async fn test_reconnected_agent_outlives_a_helper(cx: &mut TestAppContext) {
+        let (project, _workspace, window) = init_test_with_window(cx).await;
+        let (_, terminal, view) = add_display_only_terminal(&project, window, false, false, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        let helper = program("node helper.js", r"node C:\x\helper.js");
+        let claude = program("claude --continue", r"C:\bin\claude.exe --continue");
+        terminal.update(cx, |terminal, _| {
+            terminal.set_reconnected_programs_for_test(vec![helper, claude.clone()])
+        });
+        assert_eq!(agent(&view, cx).as_deref(), Some("claude"));
+        terminal.update(cx, |terminal, cx| {
+            terminal.set_reconnected_programs_still_running_for_test(vec![claude], cx)
+        });
+        assert_eq!(agent(&view, cx).as_deref(), Some("claude"));
+        terminal.update(cx, |terminal, cx| {
+            terminal.set_reconnected_programs_still_running_for_test(Vec::new(), cx)
+        });
+        assert_eq!(agent(&view, cx), None);
     }
 }

@@ -274,6 +274,10 @@ pub struct TerminalView {
     /// in (or the host it was opened for), which it holds even when that one
     /// was gone and another started: see `uses_host`.
     saved_host: Option<String>,
+    /// SOLO: the agent command saved for the terminal it was restored from,
+    /// when it connected again to the host still running it: to tell the
+    /// agent among what runs under its shell (see `reconnected_agent`).
+    reconnected_agent_hint: Option<String>,
     agent_activity: agent_status::AgentActivity,
     /// SOLO: which workspace tab the terminal belongs in.
     grouping: workspace_grouping::GroupingState,
@@ -475,6 +479,7 @@ impl TerminalView {
             rendered_since_output: true,
             restored_from: None,
             saved_host: None,
+            reconnected_agent_hint: None,
             agent_activity: Default::default(),
             grouping: Default::default(),
             restored_at_startup: false,
@@ -2770,9 +2775,11 @@ impl SerializableItem for TerminalView {
             // SOLO: reconnected, the shell and what ran in it are still there,
             // with their output: nothing to restore or resume.
             let mut contents = contents;
+            let mut reconnected_session = None;
             if terminal.read_with(cx, |terminal, _| terminal.reconnected_to_host()) {
                 contents = None;
-                agent_session = None;
+                // SOLO: not offered to resume, but it tells what runs.
+                reconnected_session = agent_session.take();
             }
             // SOLO: written before the shell prints, which it does below them.
             let had_contents = contents.is_some();
@@ -2793,6 +2800,11 @@ impl SerializableItem for TerminalView {
                         view.custom_title = custom_title;
                     }
                     view.saved_host = saved_host;
+                    // SOLO: kept for the next restart too, under this
+                    // terminal, until what runs ends.
+                    if let Some(session) = reconnected_session {
+                        view.keep_reconnected_agent_session(session, cx);
+                    }
                     view.restored_at_startup = true;
                     // SOLO: a terminal an earlier Solo left running stays kept
                     // from now on, also if Solo crashes before its tab shows
