@@ -1606,6 +1606,9 @@ mod tests {
             .1
             .map(|target| target.path().clone())
         };
+        // Only a file name, from the root: not indexed, not found. (First:
+        // opening the file below loads its folder.)
+        assert_eq!(resolve("Array.h:883", path!("/Engine")).await, None);
         let core = PathBuf::from(path!("/Engine/Source/Runtime/Core/Public/Containers/Array.h"));
         let found = resolve("Source/Runtime/Core/Public/Containers/Array.h:883", path!("/Engine"))
             .await
@@ -1615,8 +1618,6 @@ mod tests {
             .await
             .expect("relative to the terminal's folder");
         assert_eq!(found.path, core);
-        // Only a file name, from the root: not indexed, not found.
-        assert_eq!(resolve("Array.h:883", path!("/Engine")).await, None);
     }
 
     // SOLO: the ranking and the guess flag the link menu shows.
