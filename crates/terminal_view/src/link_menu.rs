@@ -986,8 +986,14 @@ mod view_tests {
         click_path(&view, cx, "Array.h:883");
         assert!(view.read_with(cx, |view, _| view.context_menu.is_some()));
         // Nothing is selected at first: Down selects the first file, Down
-        // again the second; Enter opens it.
-        cx.simulate_keystrokes("down down enter");
+        // again the second; Enter opens it. (The menu's own key bindings
+        // send these; the view isn't drawn in this test.)
+        let menu = view.read_with(cx, |view, _| view.context_menu.as_ref().unwrap().0.clone());
+        menu.update_in(cx, |menu, window, cx| {
+            menu.select_next(&menu::SelectNext, window, cx);
+            menu.select_next(&menu::SelectNext, window, cx);
+            menu.confirm(&menu::Confirm, window, cx);
+        });
         cx.run_until_parked();
         let opened = performed(&view, cx);
         assert_eq!(opened.len(), 1, "{opened:?}");
@@ -996,7 +1002,8 @@ mod view_tests {
 
         // Escape closes it; typing closes it.
         click_path(&view, cx, "Array.h:883");
-        cx.simulate_keystrokes("escape");
+        let menu = view.read_with(cx, |view, _| view.context_menu.as_ref().unwrap().0.clone());
+        menu.update_in(cx, |menu, window, cx| menu.cancel(&menu::Cancel, window, cx));
         cx.run_until_parked();
         assert!(view.read_with(cx, |view, _| view.context_menu.is_none()));
         click_path(&view, cx, "Array.h:883");
