@@ -30,7 +30,13 @@ solo-cli agent ls [--json]
 ```
 
 The terminals in all Solo windows: id (`*` marks yours), agent, status,
-branch, directory and title, tab-separated. Statuses:
+branch, directory and title, tab-separated. With `--json`, each terminal
+also has `tab` (the workspace tab it's in, by its first folder's name) and
+`tab_path` (that folder), `hosted` (a background process holds it, so what
+runs in it outlives Solo restarting for an update) and `ends_with_solo`
+(that process couldn't start, so it ends with Solo). Terminals of workspace
+tabs not opened since Solo started aren't listed until their tab opens.
+Statuses:
 
 | Status | Meaning |
 |---|---|

@@ -323,6 +323,16 @@ struct TerminalRow {
     branch: Option<String>,
     /// Whether the command runs in it.
     current: bool,
+    /// SOLO: the workspace tab it's in, by its first folder's name, and that
+    /// folder.
+    tab: Option<String>,
+    tab_path: Option<PathBuf>,
+    /// SOLO: whether a terminal host holds it, so what runs in it outlives
+    /// Solo restarting (and quitting, when set so).
+    hosted: bool,
+    /// SOLO: whether it was to run in a terminal host but none could start,
+    /// so it ends with Solo.
+    ends_with_solo: bool,
 }
 
 fn status_name(status: AgentStatus) -> &'static str {
@@ -395,7 +405,23 @@ fn row(found: &Found, caller: Option<&str>, cx: &App) -> TerminalRow {
     let view = found.view.read(cx);
     let id = terminal_id(&found.view, cx);
     let agent = view.agent_status();
+    let tab_path = found
+        .workspace
+        .read(cx)
+        .project_group_key(cx)
+        .path_list()
+        .ordered_paths()
+        .next()
+        .cloned();
+    let terminal = view.terminal.read(cx);
     TerminalRow {
+        tab: tab_path
+            .as_deref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned()),
+        tab_path,
+        hosted: terminal.host_pipe().is_some(),
+        ends_with_solo: terminal.host_failed(),
         current: caller == Some(id.as_str()),
         id,
         title: view.smart_title(0, false, cx),
@@ -1174,6 +1200,10 @@ mod tests {
             directory: Some(PathBuf::from("/code/solo")),
             branch: Some("main".into()),
             current: true,
+            tab: Some("solo".into()),
+            tab_path: Some(PathBuf::from("/code/solo")),
+            hosted: true,
+            ends_with_solo: false,
         }];
         assert_eq!(
             format_rows(&rows),
@@ -1186,5 +1216,8 @@ mod tests {
         assert_eq!(parsed[0]["id"], "a1b2c3d4");
         assert_eq!(parsed[0]["status"], "working");
         assert_eq!(parsed[0]["current"], true);
+        assert_eq!(parsed[0]["tab"], "solo");
+        assert_eq!(parsed[0]["hosted"], true);
+        assert_eq!(parsed[0]["ends_with_solo"], false);
     }
 }
