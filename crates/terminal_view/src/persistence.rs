@@ -466,6 +466,13 @@ db::static_connection!(TerminalDb, [WorkspaceDb]);
 
 #[cfg(test)]
 impl TerminalDb {
+    // A workspace row for a test's saved terminals to refer to.
+    query! {
+        pub async fn test_workspace() -> Result<WorkspaceId> {
+            INSERT INTO workspaces DEFAULT VALUES RETURNING workspace_id
+        }
+    }
+
     /// A test database with the workspace tables terminals refer to.
     pub(crate) async fn open_test_db_with_workspaces(name: &'static str) -> Self {
         Self(db::open_test_db::<(WorkspaceDb, TerminalDb)>(name).await)
@@ -615,6 +622,22 @@ impl TerminalDb {
             SELECT terminal_host
             FROM terminals
             WHERE terminal_host IS NOT NULL AND length(terminal_host) > 0
+        }
+    }
+
+    // SOLO: the hosts' pipes of the saved terminals of local workspaces,
+    // with their workspace and its folders (`paths`, `paths_order`), and
+    // those of its project (`identity_paths`: a linked git worktree's main
+    // repository), the most recently used workspace first.
+    query! {
+        pub fn terminal_hosts_with_workspaces() -> Result<Vec<(String, WorkspaceId, String, String, Option<String>, Option<String>)>> {
+            SELECT terminals.terminal_host, terminals.workspace_id, workspaces.paths, workspaces.paths_order, workspaces.identity_paths, workspaces.identity_paths_order
+            FROM terminals
+            JOIN workspaces ON workspaces.workspace_id = terminals.workspace_id
+            WHERE length(terminals.terminal_host) > (0)
+                AND terminals.terminal_host IS NOT NULL
+                AND workspaces.remote_connection_id IS NULL
+            ORDER BY workspaces.timestamp DESC
         }
     }
 

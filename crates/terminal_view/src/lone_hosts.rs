@@ -1,25 +1,36 @@
 //! SOLO: terminal hosts no terminal of this Solo uses. A host outlives Solo
 //! when its terminal was busy as Solo went (quit, restarted for an update,
 //! crashed), for the next Solo to restore the terminal and connect to it
-//! again. When that doesn't happen (its workspace isn't restored, or its
-//! saved terminal is gone), the host would run on unseen, with its agent or
-//! build. Hosts list themselves in Solo's data folder (see
-//! `terminal::running_hosts`); after restoring the session, Solo opens each
-//! one no terminal connected to as a terminal in its first window, and
-//! offers to end those it can't open.
+//! again. A saved terminal of a workspace tab not open yet (a tab opens when
+//! it's first shown) waits for its tab, which restores it. When that doesn't
+//! happen (its workspace isn't a tab, or its saved terminal is gone), the
+//! host would run on unseen, with its agent or build. Hosts list themselves
+//! in Solo's data folder (see `terminal::running_hosts`); after restoring the
+//! session, Solo opens each one no terminal connected to as a terminal in
+//! the tab of its project (by its directory, as a terminal's tab goes; that
+//! tab opens in the background if it isn't open), else in the current tab of
+//! its first window, and offers to end those it can't open.
 
 use collections::HashSet;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use gpui::{App, AppContext as _, AsyncApp, Entity, WindowHandle};
+use std::path::PathBuf;
 use std::time::Duration;
 use terminal::RunningHost;
 use util::ResultExt as _;
 use util::i18n::tr;
+use util::path_list::{PathList, SerializedPathList};
 use workspace::notifications::NotificationId;
 use workspace::notifications::simple_message_notification::MessageNotification;
-use workspace::{MultiWorkspace, Workspace};
+use workspace::{MultiWorkspace, ProjectGroupKey, Workspace, WorkspaceId};
 
+use crate::TerminalView;
 use crate::persistence::TerminalDb;
 use crate::terminal_panel::TerminalPanel;
+use crate::workspace_grouping::{self, Destination};
 
 /// After the session is restored, its terminals still connect to their
 /// hosts for a moment.
@@ -27,53 +38,246 @@ const FIRST_LOOK: Duration = Duration::from_secs(5);
 /// Hosts a saved terminal refers to get longer: its workspace may still be
 /// opening.
 const SECOND_LOOK: Duration = Duration::from_secs(60);
+/// How long a workspace opened later (a tab opened) gets to restore its
+/// terminals before its hosts no terminal took are looked at.
+const TAB_RESTORE: Duration = Duration::from_secs(15);
 
 struct LoneTerminalHosts;
 
 /// Looks for hosts no terminal uses, once the session is restored.
 pub fn look_for_lone_terminal_hosts(cx: &mut App) {
     let db = TerminalDb::global(cx);
-    cx.spawn(async move |cx| {
-        let mut seen = HashSet::default();
-        cx.background_executor().timer(FIRST_LOOK).await;
-        look(&db, false, &mut seen, cx).await;
-        cx.background_executor().timer(SECOND_LOOK).await;
-        look(&db, true, &mut seen, cx).await;
+    let seen: Rc<RefCell<HashSet<String>>> = Rc::default();
+    let looked: Arc<AtomicBool> = Arc::default();
+    cx.spawn({
+        let db = db.clone();
+        let seen = seen.clone();
+        let looked = looked.clone();
+        async move |cx| {
+            cx.background_executor().timer(FIRST_LOOK).await;
+            look(&db, false, &seen, cx).await;
+            cx.background_executor().timer(SECOND_LOOK).await;
+            look(&db, true, &seen, cx).await;
+            looked.store(true, Ordering::SeqCst);
+        }
+    })
+    .detach();
+    // A tab opened later restores its saved terminals; a host one of them
+    // waited for that it didn't take (its record was stale, say) would
+    // wait on unseen: look again once it has restored.
+    cx.observe_new(move |_: &mut Workspace, _, cx| {
+        let db = db.clone();
+        let seen = seen.clone();
+        let looked = looked.clone();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(TAB_RESTORE).await;
+            if looked.load(Ordering::SeqCst) {
+                look(&db, true, &seen, cx).await;
+            }
+        })
+        .detach();
     })
     .detach();
 }
 
-async fn look(db: &TerminalDb, with_saved: bool, seen: &mut HashSet<String>, cx: &mut AsyncApp) {
-    let saved: HashSet<String> = db
-        .terminal_hosts()
+/// A saved terminal's host, and the workspace it was saved in.
+struct SavedHost {
+    pipe: String,
+    workspace_id: WorkspaceId,
+    paths: PathList,
+    /// The folders of its project: for a linked git worktree, its main
+    /// repository's.
+    identity_paths: Option<PathList>,
+}
+
+fn saved_hosts(db: &TerminalDb) -> Vec<SavedHost> {
+    db.terminal_hosts_with_workspaces()
         .log_err()
         .unwrap_or_default()
         .into_iter()
-        .collect();
+        .map(
+            |(pipe, workspace_id, paths, order, identity_paths, identity_order)| SavedHost {
+                pipe,
+                workspace_id,
+                paths: PathList::deserialize(&SerializedPathList { paths, order }),
+                identity_paths: identity_paths.map(|paths| {
+                    PathList::deserialize(&SerializedPathList {
+                        paths,
+                        order: identity_order.unwrap_or_default(),
+                    })
+                }),
+            },
+        )
+        .collect()
+}
+
+/// A workspace tab of a window, open or not yet.
+#[derive(Clone)]
+struct Tab<W> {
+    /// Its workspace, once the tab is open.
+    workspace: Option<W>,
+    database_id: Option<WorkspaceId>,
+    paths: PathList,
+}
+
+/// Where the saved terminal of a host goes.
+#[derive(Debug, PartialEq)]
+enum SavedTab {
+    /// In the open tab of this index, which restored it, or didn't (then
+    /// the host is opened there).
+    Open(usize),
+    /// In a tab not open yet, which restores it when it opens.
+    NotOpenYet,
+    /// In the project of the tab of this index, not open yet, as a linked
+    /// git worktree of it: the tab opens its main repository's workspace,
+    /// which doesn't restore it, so the host is opened there.
+    Worktree(usize),
+    /// In none.
+    None,
+}
+
+/// Which of the `tabs` the saved terminal of `saved` belongs in.
+fn saved_tab<W>(saved: &SavedHost, tabs: &[Tab<W>]) -> SavedTab {
+    if let Some(ix) = tabs.iter().position(|tab| {
+        tab.workspace.is_some() && tab.database_id == Some(saved.workspace_id)
+    }) {
+        return SavedTab::Open(ix);
+    }
+    // A tab opens the workspace saved for its folders.
+    if tabs
+        .iter()
+        .any(|tab| tab.workspace.is_none() && tab.paths == saved.paths)
+    {
+        return SavedTab::NotOpenYet;
+    }
+    if let Some(identity) = &saved.identity_paths
+        && let Some(ix) = tabs
+            .iter()
+            .position(|tab| tab.workspace.is_none() && tab.paths == *identity)
+    {
+        return SavedTab::Worktree(ix);
+    }
+    SavedTab::None
+}
+
+/// A tab of a window with a local project.
+struct WindowTab {
+    window: WindowHandle<MultiWorkspace>,
+    multi_workspace: Entity<MultiWorkspace>,
+    tab: Tab<Entity<Workspace>>,
+    key: Option<ProjectGroupKey>,
+}
+
+/// The tabs of all windows, open or not yet, with local projects.
+fn window_tabs(cx: &App) -> Vec<WindowTab> {
+    let mut result = Vec::new();
+    for window in cx.windows() {
+        let Some(window) = window.downcast::<MultiWorkspace>() else {
+            continue;
+        };
+        let Ok(multi_workspace) = window.entity(cx) else {
+            continue;
+        };
+        let mut keys = Vec::new();
+        for workspace in multi_workspace.read(cx).workspaces() {
+            let read = workspace.read(cx);
+            if !read.project().read(cx).is_local() {
+                continue;
+            }
+            let key = read.project_group_key(cx);
+            keys.push(key.clone());
+            result.push(WindowTab {
+                window,
+                multi_workspace: multi_workspace.clone(),
+                tab: Tab {
+                    workspace: Some(workspace.clone()),
+                    database_id: read.database_id(),
+                    paths: PathList::new(&read.root_paths(cx)),
+                },
+                key: Some(key),
+            });
+        }
+        for group in multi_workspace.read(cx).project_groups(cx) {
+            if group.key.host().is_some()
+                || !group.workspaces.is_empty()
+                || keys.contains(&group.key)
+                || group.key.path_list().paths().is_empty()
+            {
+                continue;
+            }
+            result.push(WindowTab {
+                window,
+                multi_workspace: multi_workspace.clone(),
+                tab: Tab {
+                    workspace: None,
+                    database_id: None,
+                    paths: group.key.path_list().clone(),
+                },
+                key: Some(group.key),
+            });
+        }
+    }
+    result
+}
+
+async fn look(
+    db: &TerminalDb,
+    with_saved: bool,
+    seen: &Rc<RefCell<HashSet<String>>>,
+    cx: &mut AsyncApp,
+) {
+    let saved = saved_hosts(db);
     let hosts = cx
         .background_spawn(async move { terminal::running_hosts() })
         .await;
     let lone: Vec<RunningHost> = hosts
         .into_iter()
-        .filter(|host| {
-            host.is_left_alone()
-                && (with_saved || !saved.contains(&host.pipe))
-                && !seen.contains(&host.pipe)
-        })
+        .filter(|host| host.is_left_alone() && !seen.borrow().contains(&host.pipe))
         .collect();
     if lone.is_empty() {
         return;
     }
+    let windows = cx.update(|cx| window_tabs(cx));
+    let tabs: Vec<Tab<Entity<Workspace>>> =
+        windows.iter().map(|window| window.tab.clone()).collect();
     let mut not_opened = Vec::new();
     for host in lone {
-        seen.insert(host.pipe.clone());
+        let mut place = None;
+        // The newest record of its pipe (saved first).
+        if let Some(saved) = saved.iter().find(|saved| saved.pipe == host.pipe) {
+            // Its workspace may still be restoring it.
+            if !with_saved {
+                continue;
+            }
+            match saved_tab(saved, &tabs) {
+                SavedTab::Open(ix) | SavedTab::Worktree(ix) => place = Some(ix),
+                SavedTab::NotOpenYet => {
+                    log::info!(
+                        "terminal host {} ({}) waits for its tab to open",
+                        host.host_pid,
+                        host.pipe
+                    );
+                    continue;
+                }
+                SavedTab::None => {}
+            }
+        }
+        seen.borrow_mut().insert(host.pipe.clone());
         log::info!(
             "terminal host {} ({}) runs {} with no terminal, opening it",
             host.host_pid,
             host.pipe,
             host.command_line
         );
-        if let Err(error) = open_as_terminal(&host, cx).await {
+        let place = match place {
+            Some(ix) => Some(ix),
+            None => tab_for_host(&host, &tabs, cx).await,
+        };
+        let opened = match place {
+            Some(ix) => open_in_tab(&host, &windows[ix], cx).await,
+            None => open_as_terminal(&host, cx).await,
+        };
+        if let Err(error) = opened {
             log::warn!(
                 "couldn't open the terminal host {} as a terminal: {error:#}",
                 host.pipe
@@ -92,6 +296,107 @@ async fn look(db: &TerminalDb, with_saved: bool, seen: &mut HashSet<String>, cx:
     }
 }
 
+/// Of the `tabs`, the one of the project the host runs in, by its
+/// directory, as a terminal's tab goes (see `workspace_grouping`).
+async fn tab_for_host<W>(
+    host: &RunningHost,
+    tabs: &[Tab<W>],
+    cx: &mut AsyncApp,
+) -> Option<usize> {
+    let directory = host.working_directory.clone()?;
+    let fs = cx.update(|cx| <dyn project::Fs>::global(cx));
+    let folders: Vec<Vec<PathBuf>> = tabs
+        .iter()
+        .map(|tab| tab.paths.ordered_paths().cloned().collect())
+        .collect();
+    workspace_grouping::tab_for_directory(fs.as_ref(), &directory, &folders).await
+}
+
+/// The environment of a terminal only to connect to `host`.
+fn reconnect_env(host: &RunningHost) -> collections::HashMap<String, String> {
+    [
+        (terminal::HOST_RECONNECT_ENV.to_string(), host.pipe.clone()),
+        (
+            terminal::HOST_RECONNECT_ONLY_ENV.to_string(),
+            "1".to_string(),
+        ),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// Opens `host` as a terminal in the terminal panel of `tab`, opening the
+/// tab in the background if it isn't open.
+async fn open_in_tab(host: &RunningHost, tab: &WindowTab, cx: &mut AsyncApp) -> anyhow::Result<()> {
+    let workspace = match &tab.tab.workspace {
+        Some(workspace) => workspace.clone(),
+        None => {
+            let destination = Destination {
+                key: tab.key.clone(),
+                paths: tab.tab.paths.ordered_paths().cloned().collect(),
+                workspace: None,
+            };
+            let opening = tab.window.update(cx, |_, window, cx| {
+                workspace_grouping::destination_workspace(
+                    &tab.multi_workspace,
+                    &destination,
+                    false,
+                    window,
+                    cx,
+                )
+            })?;
+            opening
+                .await
+                .ok_or_else(|| anyhow::anyhow!("couldn't open the tab"))?
+        }
+    };
+    let panel = workspace_grouping::panel_ready_for_terminal(&workspace, cx)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("no terminal panel"))?;
+    let added = add_to_panel(host, tab.window, &workspace, &panel, cx).await;
+    workspace_grouping::done_adding_terminal(&panel, cx);
+    added
+}
+
+async fn add_to_panel(
+    host: &RunningHost,
+    window: WindowHandle<MultiWorkspace>,
+    workspace: &Entity<Workspace>,
+    panel: &Entity<TerminalPanel>,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    let project = workspace.read_with(cx, |workspace, _| workspace.project().clone());
+    let env = reconnect_env(host);
+    let cwd = host.working_directory.clone();
+    let terminal = project
+        .update(cx, |project, cx| {
+            project.create_terminal_shell_with_env(cwd, env, cx)
+        })
+        .await?;
+    let pipe = host.pipe.clone();
+    window.update(cx, |_, window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = TerminalView::new(
+                terminal,
+                workspace.downgrade(),
+                workspace.read(cx).database_id(),
+                project.downgrade(),
+                window,
+                cx,
+            );
+            view.saved_host = Some(pipe);
+            // Kept running from now on, as a restored terminal is.
+            view.update_keep_running(cx);
+            view
+        });
+        let pane = panel.read(cx).pane_for_moved_terminal(cx);
+        pane.update(cx, |pane, cx| {
+            pane.add_item(Box::new(view), false, false, None, window, cx)
+        });
+    })?;
+    Ok(())
+}
+
 /// The first window with a local project, where a terminal can connect to
 /// a host on this computer.
 fn local_workspace(cx: &App) -> Option<(WindowHandle<MultiWorkspace>, Entity<Workspace>)> {
@@ -107,19 +412,13 @@ fn local_workspace(cx: &App) -> Option<(WindowHandle<MultiWorkspace>, Entity<Wor
     })
 }
 
+/// Opens `host` as a terminal in the current tab of the first window, when
+/// no tab has its project; its bar says it's in no folder of the tab.
 async fn open_as_terminal(host: &RunningHost, cx: &mut AsyncApp) -> anyhow::Result<()> {
     let (window, workspace) = cx
         .update(|cx| local_workspace(cx))
         .ok_or_else(|| anyhow::anyhow!("no window with a local project"))?;
-    let env: collections::HashMap<String, String> = [
-        (terminal::HOST_RECONNECT_ENV.to_string(), host.pipe.clone()),
-        (
-            terminal::HOST_RECONNECT_ONLY_ENV.to_string(),
-            "1".to_string(),
-        ),
-    ]
-    .into_iter()
-    .collect();
+    let env = reconnect_env(host);
     let cwd = host.working_directory.clone();
     let opened = window.update(cx, |_, window, cx| {
         workspace.update(cx, |workspace, cx| {
@@ -176,4 +475,75 @@ fn offer_to_end(hosts: Vec<RunningHost>, cx: &mut App) {
             })
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(workspace_id: i64, paths: &[&str]) -> SavedHost {
+        SavedHost {
+            pipe: r"\\.\pipe\solo-terminal-1-2".to_string(),
+            workspace_id: WorkspaceId::from_i64(workspace_id),
+            paths: PathList::new(paths),
+            identity_paths: None,
+        }
+    }
+
+    fn open(database_id: i64, paths: &[&str]) -> Tab<()> {
+        Tab {
+            workspace: Some(()),
+            database_id: Some(WorkspaceId::from_i64(database_id)),
+            paths: PathList::new(paths),
+        }
+    }
+
+    fn not_open(paths: &[&str]) -> Tab<()> {
+        Tab {
+            workspace: None,
+            database_id: None,
+            paths: PathList::new(paths),
+        }
+    }
+
+    /// A host whose saved terminal is in a tab not open yet waits for that
+    /// tab; it isn't opened in the current one.
+    #[test]
+    fn test_a_saved_terminal_waits_for_its_tab() {
+        let tabs = [
+            open(1, &["/repos/tcframework"]),
+            not_open(&["/repos/solo"]),
+            not_open(&["/repos/engine"]),
+        ];
+        assert_eq!(
+            saved_tab(&saved(2, &["/repos/solo"]), &tabs),
+            SavedTab::NotOpenYet
+        );
+        assert_eq!(
+            saved_tab(&saved(3, &["/repos/engine"]), &tabs),
+            SavedTab::NotOpenYet
+        );
+        // Its tab is open: there, by its workspace.
+        assert_eq!(
+            saved_tab(&saved(1, &["/repos/tcframework"]), &tabs),
+            SavedTab::Open(0)
+        );
+        let opened = [open(1, &["/repos/tcframework"]), open(2, &["/repos/solo"])];
+        assert_eq!(
+            saved_tab(&saved(2, &["/repos/solo"]), &opened),
+            SavedTab::Open(1)
+        );
+        // No tab has its workspace: opened by its directory.
+        assert_eq!(
+            saved_tab(&saved(4, &["/repos/gone"]), &tabs),
+            SavedTab::None
+        );
+        // A linked worktree of a tab's project: that tab opens the main
+        // repository, which doesn't restore it; opened in that tab.
+        let worktree = SavedHost {
+            identity_paths: Some(PathList::new(&["/repos/engine"])),
+            ..saved(5, &["/worktrees/engine-fix"])
+        };
+        assert_eq!(saved_tab(&worktree, &tabs), SavedTab::Worktree(2));
+    }
 }

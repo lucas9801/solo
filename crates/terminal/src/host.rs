@@ -50,6 +50,9 @@ const HOST_FILES: &[&str] = &[HOST_EXE, "conpty.dll", "OpenConsole.exe"];
 /// session) and security software scanning the new processes, starting can
 /// take seconds.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+/// SOLO: how many times to start a host before the terminal holds its
+/// console itself.
+const START_TRIES: u32 = 2;
 /// How long to wait for a host that's busy with another client.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -321,6 +324,15 @@ pub(crate) fn start(
     }
     let started = Instant::now();
     let connected = connect(&pipe, START_TIMEOUT, Some(&mut child), solo_going);
+    let connected = connected.map_err(|error| {
+        // SOLO: how it ended, if it did: 2 (it couldn't read what to run), 3
+        // (it couldn't start the program), 4 (its pipes' name was taken), or
+        // another code when something ended it.
+        match child.try_wait() {
+            Ok(Some(status)) => error.context(format!("the terminal host exited ({status})")),
+            _ => error,
+        }
+    });
     if connected.is_err() {
         // Not left waiting for a client that won't come.
         child.kill().ok();
@@ -380,11 +392,23 @@ pub(crate) fn open(
             Err(error) => log::info!("the terminal's host is gone, starting a new one: {error:#}"),
         }
     }
-    match start(options, window_size, nonce, terminal_id, solo_going) {
-        Ok(connected) => Some((connected, false)),
-        Err(error) => {
-            log::warn!("failed to start a terminal host, the terminal ends with Solo: {error:#}");
-            None
+    // SOLO: once more when it fails: the first host started from a copy
+    // just made (after an update) was seen to end at once, the next ones not.
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        match start(options, window_size, nonce, terminal_id, solo_going.clone()) {
+            Ok(connected) => return Some((connected, false)),
+            // Not while Solo is going: it would wait for the host again.
+            Err(error) if tries < START_TRIES && !solo_going.is_set() => {
+                log::warn!("failed to start a terminal host, trying again: {error:#}");
+            }
+            Err(error) => {
+                log::warn!(
+                    "failed to start a terminal host, the terminal ends with Solo: {error:#}"
+                );
+                return None;
+            }
         }
     }
 }

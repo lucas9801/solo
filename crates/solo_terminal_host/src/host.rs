@@ -40,6 +40,22 @@ pub fn main() {
         std::process::exit(2);
     }
     let log = Arc::new(Log::new(spec.log_dir.as_deref(), &spec.pipe));
+    // SOLO: first thing, so a host that ends before it says anything else
+    // (blocked by security software, say) shows it got this far.
+    log.write(&format!(
+        "starting from {}",
+        std::env::current_exe()
+            .map(|exe| exe.display().to_string())
+            .unwrap_or_default()
+    ));
+    {
+        let log = log.clone();
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            log.write(&format!("panicked: {info}"));
+            default_hook(info);
+        }));
+    }
     // The pipes first, so Solo can open them while the program starts (which
     // can take seconds with many terminals starting at once, or security
     // software scanning). Solo then waits for the header, which follows once
