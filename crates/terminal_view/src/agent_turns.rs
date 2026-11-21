@@ -2684,7 +2684,12 @@ impl AgentTurns {
         else {
             return false;
         };
-        changes.unsent.rejected.extend(rejected);
+        // SOLO: each once.
+        for rejection in rejected {
+            if !changes.unsent.rejected.contains(&rejection) {
+                changes.unsent.rejected.push(rejection);
+            }
+        }
         self.save_pending(terminal_id, cx);
         cx.notify();
         true

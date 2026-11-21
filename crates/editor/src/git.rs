@@ -658,7 +658,9 @@ impl Editor {
         self.open_diff_review_overlay(display_range, true, window, cx);
     }
 
-    /// SOLO: [`Self::show_diff_review_overlay`], focusing its input or not.
+    /// SOLO: [`Self::show_diff_review_overlay`], focusing its input and
+    /// closing the overlays without comments (a draft the user is writing in
+    /// one too), or neither: to show a comment put back.
     fn open_diff_review_overlay(
         &mut self,
         display_range: Range<DisplayRow>,
@@ -712,7 +714,9 @@ impl Editor {
         }
 
         // Dismiss overlays that have no comments for their hunks
-        self.dismiss_overlays_without_comments(cx);
+        if focus {
+            self.dismiss_overlays_without_comments(cx);
+        }
 
         // Get the current user's avatar URI from the project's user_store
         let user_avatar_uri = self.project.as_ref().and_then(|project| {
