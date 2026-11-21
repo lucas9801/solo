@@ -2,7 +2,7 @@
 description = "A code editor for AI coding agents: they work in real terminals, and the editor opens beside them."
 edition.workspace = true
 name = "solo"
-version = "2.5.3"
+version = "2.5.4"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["lucas9801"]
