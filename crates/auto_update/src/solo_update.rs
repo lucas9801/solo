@@ -705,6 +705,13 @@ fn read_skipped_version(cx: &App) -> Task<Option<Version>> {
     })
 }
 
+/// Whether the button is out of the way of an update waiting for Solo to
+/// quit: hidden, or saying it waits. One the user brought back (a manual
+/// check) or a failure to retry stays.
+fn hidden_for_quit(state: &ButtonState) -> bool {
+    matches!(state, ButtonState::Hidden | ButtonState::OnQuit)
+}
+
 /// When a downloaded update is installed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallWhen {
@@ -1180,7 +1187,7 @@ impl SoloUpdater {
             Ok(CheckOutcome::UpdateAvailable(release))
                 if ready.as_ref() == Some(&release.version)
                     && !check_type.is_manual()
-                    && *self.entry.read(cx).state() != ButtonState::Available =>
+                    && hidden_for_quit(self.entry.read(cx).state()) =>
             {
                 self.offer(release, ButtonState::OnQuit, cx);
             }
@@ -1214,10 +1221,19 @@ impl SoloUpdater {
                         },
                         cx,
                     );
+                } else if ready.is_some()
+                    && self.release.as_ref().map(|release| &release.version) == ready.as_ref()
+                {
+                    // The update waiting for Solo to quit stays hidden, or
+                    // shown if it was.
+                    if hidden_for_quit(self.entry.read(cx).state()) {
+                        self.show(ButtonState::OnQuit, cx);
+                    }
+                } else if self.release.is_some() {
+                    // A newer version than the one waiting, or none waits.
+                    self.show(ButtonState::Available, cx);
                 } else if ready.is_some() {
                     self.show(ButtonState::OnQuit, cx);
-                } else if self.release.is_some() {
-                    self.show(ButtonState::Available, cx);
                 }
                 // Otherwise an automatic check says nothing; it's tried again
                 // later.
@@ -1317,6 +1333,27 @@ impl SoloUpdater {
                 self.offer(release, ButtonState::Failed { reason }, cx);
             }
         }
+    }
+
+    /// After "Update and Restart" was cancelled (Solo didn't quit): when an
+    /// older update waits for Solo to quit, the one just downloaded goes in
+    /// at quit instead. Without one waiting, nothing is installed at quit:
+    /// the user didn't ask for that.
+    fn keep_download_for_quit(&mut self, downloaded: ReadyOnQuit) {
+        let Some(waiting) = self.ready_on_quit.as_ref() else {
+            return;
+        };
+        if waiting.version == downloaded.version {
+            return;
+        }
+        if waiting.installer != downloaded.installer {
+            std::fs::remove_file(&waiting.installer).ok();
+        }
+        log::info!(
+            "solo update: {} replaces the update waiting for Solo to quit",
+            downloaded.version
+        );
+        self.ready_on_quit = Some(downloaded);
     }
 
     /// Starts the helper for an update waiting for Solo to quit. It can't stop
@@ -1428,6 +1465,8 @@ async fn install_and_restart(
     });
     // SOLO: Solo starts again after installing: what runs keeps running.
     if !workspace::prepare_windows_to_restart(&windows, cx).await {
+        this.update(cx, |this, _| this.keep_download_for_quit(ready))
+            .ok();
         return Ok(InstallResult::QuitCancelled);
     }
 
@@ -2197,6 +2236,93 @@ Solo 1.29: faster."
                 .map(|ready| ready.version.clone())),
             Some(version("1.29.0"))
         );
+    }
+
+    #[gpui::test]
+    async fn failed_hourly_checks_keep_what_the_button_shows(cx: &mut TestAppContext) {
+        let (updater, entry) = button_updater(cx);
+        let state = |cx: &mut TestAppContext| entry.read_with(cx, |e, _| e.state().clone());
+        let fail = |check_type, cx: &mut TestAppContext| {
+            updater.update(cx, |updater, cx| {
+                updater.handle_outcome(Err(anyhow::anyhow!("offline")), check_type, cx)
+            })
+        };
+        // 1.29.0 waits for Solo to quit; 1.29.1 came out and is offered.
+        updater.update(cx, |updater, cx| {
+            updater.ready_on_quit = Some(ready_on_quit("1.29.0"));
+            updater.handle_outcome(
+                Ok(CheckOutcome::UpdateAvailable(installable("1.29.1"))),
+                UpdateCheckType::Automatic,
+                cx,
+            )
+        });
+        assert_eq!(state(cx), ButtonState::Available);
+        // A failed hourly check doesn't hide the newer one.
+        fail(UpdateCheckType::Automatic, cx);
+        assert_eq!(state(cx), ButtonState::Available);
+
+        // The waiting one itself, shown by a manual check, stays shown.
+        updater.update(cx, |updater, cx| {
+            updater.handle_outcome(
+                Ok(CheckOutcome::UpdateAvailable(installable("1.29.0"))),
+                UpdateCheckType::Manual,
+                cx,
+            )
+        });
+        assert_eq!(state(cx), ButtonState::Available);
+        fail(UpdateCheckType::Automatic, cx);
+        assert_eq!(state(cx), ButtonState::Available);
+
+        // A manual check's failure (with "Retry") isn't hidden by the next
+        // hourly check finding the waiting update: that shows it instead.
+        fail(UpdateCheckType::Manual, cx);
+        assert!(matches!(state(cx), ButtonState::Failed { .. }));
+        updater.update(cx, |updater, cx| {
+            updater.handle_outcome(
+                Ok(CheckOutcome::UpdateAvailable(installable("1.29.0"))),
+                UpdateCheckType::Automatic,
+                cx,
+            )
+        });
+        assert_eq!(state(cx), ButtonState::Available);
+
+        // Hidden for quit, a failed hourly check keeps it hidden.
+        updater.update(cx, |updater, cx| updater.show(ButtonState::OnQuit, cx));
+        fail(UpdateCheckType::Automatic, cx);
+        assert_eq!(state(cx), ButtonState::OnQuit);
+    }
+
+    #[gpui::test]
+    async fn a_cancelled_restart_keeps_the_newer_download_for_quit(cx: &mut TestAppContext) {
+        let (updater, _entry) = button_updater(cx);
+        let folder = tempfile::tempdir().unwrap();
+        let installer = |name: &str| {
+            let path = folder.path().join(name);
+            std::fs::write(&path, b"setup").unwrap();
+            path
+        };
+        let older = ReadyOnQuit {
+            installer: installer("Solo-Setup-1.29.0.exe"),
+            ..ready_on_quit("1.29.0")
+        };
+        let newer = ReadyOnQuit {
+            installer: installer("Solo-Setup-1.29.1.exe"),
+            ..ready_on_quit("1.29.1")
+        };
+        // Nothing waiting: nothing to install at quit after a cancel.
+        updater.update(cx, |updater, _| updater.keep_download_for_quit(newer.clone()));
+        assert_eq!(updater.read_with(cx, |updater, _| updater.ready_on_quit.clone()), None);
+        // An older one waiting: the newer download replaces it.
+        updater.update(cx, |updater, _| {
+            updater.ready_on_quit = Some(older.clone());
+            updater.keep_download_for_quit(newer.clone())
+        });
+        assert_eq!(
+            updater.read_with(cx, |updater, _| updater.ready_on_quit.clone()),
+            Some(newer.clone())
+        );
+        assert!(!older.installer.exists());
+        assert!(newer.installer.exists());
     }
 
     #[gpui::test]

@@ -208,15 +208,23 @@ impl RenderOnce for UpdatePill {
                     .size(LabelSize::Small)
                     .weight(FontWeight::MEDIUM),
             )
+            // Inset by the pill's corner radius: clipping is to its
+            // rectangle, not its rounded ends.
             .when_some(label.progress, |pill, percent| {
                 pill.child(
                     div()
                         .absolute()
-                        .left_0()
                         .bottom_0()
+                        .left(rems_from_px(11_f32))
+                        .right(rems_from_px(11_f32))
                         .h(px(2.))
-                        .w(relative(f32::from(percent.min(100)) / 100.))
-                        .bg(tint),
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded_full()
+                                .w(relative(f32::from(percent.min(100)) / 100.))
+                                .bg(tint),
+                        ),
                 )
             })
             .when_some(self.on_click, |pill, on_click| {
