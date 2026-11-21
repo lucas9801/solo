@@ -224,7 +224,7 @@ Solo is Windows x64 only for now. There are two ways to install it; one is enoug
 
 **Getting started**: open Solo, open a project folder, and run `claude`, `codex` or the agent you use in the terminal (install the agent yourself first).
 
-**Updating** happens inside Solo: the Store version updates through the Store without opening it; the GitHub version downloads the new installer and installs it silently. Solo checks 30 seconds after it starts and every 6 hours after that. A newer version shows an update button at the far right of the title bar (no notification), and nothing updates until you agree; with agents running you can choose "Install When Solo Quits". To turn off the automatic checks, set `"auto_update": false`.
+**Updating** happens inside Solo: the Store version updates through the Store without opening it; the GitHub version downloads the new installer and installs it silently. Solo checks 30 seconds after it starts and every hour after that. A newer version shows an update button at the far right of the title bar (no notification), and nothing updates until you agree; with agents running you can choose "Install When Solo Quits", and the button goes away until Solo quits (checking for updates by hand shows it again). To turn off the automatic checks, set `"auto_update": false`.
 
 **Uninstalling**: uninstall Solo Code (Store version) or Solo (GitHub installer) from Settings > Apps. Uninstalling doesn't remove your settings and data; to remove everything, see the [user guide](docs/guide/en.md#4-uninstalling-and-removing-everything).
 

@@ -45,7 +45,9 @@ pub enum ButtonState {
     },
     /// Solo is closing (or being closed) to install the update.
     Installing,
-    /// The update is installed when the user quits Solo.
+    /// The update is installed when the user quits Solo. No button: the
+    /// user chose already; a manual check shows it again as
+    /// [`ButtonState::Available`].
     OnQuit,
     /// A check or an update failed, for this reason.
     Failed {
@@ -70,11 +72,28 @@ pub struct UpdateOffer {
     pub can_install_on_quit: bool,
 }
 
-/// The button's text and whether it's a warning (yellow).
+/// The icon the button draws before its text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonIcon {
+    Download,
+    Warning,
+    /// A spinning circle: a check runs.
+    Spinner,
+    Check,
+}
+
+/// What the button shows: its text, icon, and whether it's a filled pill
+/// (tinted with the accent color, or the warning color for a failure).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ButtonLabel {
     pub text: String,
     pub warning: bool,
+    pub icon: ButtonIcon,
+    /// Drawn on a tinted pill; "checking" and "up to date" only say
+    /// something, without a background.
+    pub filled: bool,
+    /// How far a download got, drawn as a thin bar along the pill's bottom.
+    pub progress: Option<u8>,
 }
 
 /// One row of the button's menu after its two lines of text.
@@ -105,50 +124,100 @@ fn version_suffix(offer: Option<&UpdateOffer>) -> String {
         .unwrap_or_default()
 }
 
-/// The release notes' one sentence for the menu, in the UI's language.
+/// The release notes' one sentence for the menu, in the UI's language,
+/// without a leading "Solo 2.5.3：" that the menu's title already says.
 pub fn offer_summary(offer: &UpdateOffer, chinese: bool) -> Option<String> {
-    crate::solo_update::notes_summary(offer.notes.as_deref()?, chinese)
+    let summary = crate::solo_update::notes_summary(offer.notes.as_deref()?, chinese)?;
+    let summary = without_version_prefix(&summary);
+    (!summary.is_empty()).then(|| summary.to_string())
 }
 
-/// What the button says in `state`, or `None` when it's hidden.
+/// `summary` without a leading "Solo <version>：" or "Solo <version>: ".
+fn without_version_prefix(summary: &str) -> &str {
+    let Some(rest) = summary.strip_prefix("Solo ") else {
+        return summary;
+    };
+    let rest = rest.strip_prefix(['v', 'V']).unwrap_or(rest);
+    let version_end = rest
+        .find(|character: char| !(character.is_ascii_digit() || character == '.'))
+        .unwrap_or(rest.len());
+    let version = &rest[..version_end];
+    if !version.starts_with(|character: char| character.is_ascii_digit()) {
+        return summary;
+    }
+    let rest = &rest[version_end..];
+    match rest.strip_prefix('：').or_else(|| rest.strip_prefix(':')) {
+        Some(rest) => rest.trim_start(),
+        None => summary,
+    }
+}
+
+/// What the button shows in `state`, or `None` when it's hidden.
+///
+/// An update waiting for Solo to quit hides the button: the user already
+/// chose what happens. A manual "check for updates" shows it again (as
+/// [`ButtonState::Available`]).
 pub fn button_label(
     state: &ButtonState,
     offer: Option<&UpdateOffer>,
     chinese: bool,
 ) -> Option<ButtonLabel> {
     let version = version_suffix(offer);
-    let plain = |text: String| {
+    let label = |text: String, icon: ButtonIcon, filled: bool| {
         Some(ButtonLabel {
             text,
             warning: false,
+            icon,
+            filled,
+            progress: None,
         })
     };
     match state {
-        ButtonState::Hidden => None,
-        ButtonState::Checking => plain(text(chinese, "Checking…", "正在检查…")),
-        ButtonState::UpToDate => plain(text(chinese, "Up to date", "已是最新")),
-        ButtonState::Available => plain(if chinese {
-            format!("↑ 更新到{version}")
-        } else {
-            format!("↑ Update to{version}")
-        }),
-        ButtonState::Downloading { percent } => {
-            let percent = percent.map(|p| format!(" {p}%")).unwrap_or_default();
-            plain(if chinese {
-                format!("↓ 下载中{percent}")
+        ButtonState::Hidden | ButtonState::OnQuit => None,
+        ButtonState::Checking => label(
+            text(chinese, "Checking…", "正在检查…"),
+            ButtonIcon::Spinner,
+            false,
+        ),
+        ButtonState::UpToDate => label(
+            text(chinese, "Up to date", "已是最新"),
+            ButtonIcon::Check,
+            false,
+        ),
+        ButtonState::Available => label(
+            if chinese {
+                format!("更新到{version}")
             } else {
-                format!("↓ Downloading{percent}")
+                format!("Update to{version}")
+            },
+            ButtonIcon::Download,
+            true,
+        ),
+        ButtonState::Downloading { percent } => {
+            let suffix = percent.map(|p| format!(" {p}%")).unwrap_or_default();
+            Some(ButtonLabel {
+                text: if chinese {
+                    format!("下载中{suffix}")
+                } else {
+                    format!("Downloading{suffix}")
+                },
+                warning: false,
+                icon: ButtonIcon::Download,
+                filled: true,
+                progress: *percent,
             })
         }
-        ButtonState::Installing => plain(text(chinese, "↑ Installing…", "↑ 正在安装…")),
-        ButtonState::OnQuit => plain(if chinese {
-            format!("↑ 退出时更新到{version}")
-        } else {
-            format!("↑ Update to{version} on quit")
-        }),
+        ButtonState::Installing => label(
+            text(chinese, "Installing…", "正在安装…"),
+            ButtonIcon::Download,
+            true,
+        ),
         ButtonState::Failed { .. } => Some(ButtonLabel {
             text: text(chinese, "Update failed", "更新失败"),
             warning: true,
+            icon: ButtonIcon::Warning,
+            filled: true,
+            progress: None,
         }),
     }
 }
@@ -410,27 +479,30 @@ mod tests {
         assert_eq!(label(ButtonState::Hidden, true), None);
         assert_eq!(
             label(ButtonState::Available, true).as_deref(),
-            Some("↑ 更新到 2.5.0")
+            Some("更新到 2.5.0")
         );
         assert_eq!(
             label(ButtonState::Available, false).as_deref(),
-            Some("↑ Update to 2.5.0")
+            Some("Update to 2.5.0")
         );
         assert_eq!(
             label(ButtonState::Downloading { percent: Some(45) }, true).as_deref(),
-            Some("↓ 下载中 45%")
+            Some("下载中 45%")
         );
         assert_eq!(
             label(ButtonState::Downloading { percent: None }, false).as_deref(),
-            Some("↓ Downloading")
+            Some("Downloading")
+        );
+        // Chosen to install when Solo quits: the button goes.
+        assert_eq!(label(ButtonState::OnQuit, true), None);
+        assert_eq!(label(ButtonState::OnQuit, false), None);
+        assert_eq!(
+            label(ButtonState::Installing, true).as_deref(),
+            Some("正在安装…")
         );
         assert_eq!(
-            label(ButtonState::OnQuit, true).as_deref(),
-            Some("↑ 退出时更新到 2.5.0")
-        );
-        assert_eq!(
-            label(ButtonState::OnQuit, false).as_deref(),
-            Some("↑ Update to 2.5.0 on quit")
+            label(ButtonState::Checking, false).as_deref(),
+            Some("Checking…")
         );
         assert_eq!(
             label(ButtonState::UpToDate, true).as_deref(),
@@ -460,8 +532,87 @@ mod tests {
             button_label(&ButtonState::Available, Some(&unknown), true)
                 .unwrap()
                 .text,
-            "↑ 更新到"
+            "更新到"
         );
+        // No arrow characters left: the icon is drawn.
+        for state in [
+            ButtonState::Checking,
+            ButtonState::UpToDate,
+            ButtonState::Available,
+            ButtonState::Downloading { percent: Some(1) },
+            ButtonState::Installing,
+            ButtonState::Failed {
+                reason: "x".into(),
+            },
+        ] {
+            for chinese in [true, false] {
+                let text = label(state.clone(), chinese).unwrap();
+                assert!(!text.contains(['↑', '↓']), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn button_icon_fill_and_progress_in_each_state() {
+        let look = |state: ButtonState| {
+            let label = button_label(&state, Some(&offer("2.5.0")), true).unwrap();
+            (label.icon, label.filled, label.warning, label.progress)
+        };
+        assert_eq!(
+            look(ButtonState::Available),
+            (ButtonIcon::Download, true, false, None)
+        );
+        assert_eq!(
+            look(ButtonState::Downloading { percent: Some(45) }),
+            (ButtonIcon::Download, true, false, Some(45))
+        );
+        assert_eq!(
+            look(ButtonState::Downloading { percent: None }),
+            (ButtonIcon::Download, true, false, None)
+        );
+        assert_eq!(
+            look(ButtonState::Failed {
+                reason: "offline".into()
+            }),
+            (ButtonIcon::Warning, true, true, None)
+        );
+        assert_eq!(
+            look(ButtonState::Checking),
+            (ButtonIcon::Spinner, false, false, None)
+        );
+        assert_eq!(
+            look(ButtonState::UpToDate),
+            (ButtonIcon::Check, false, false, None)
+        );
+    }
+
+    #[test]
+    fn summary_drops_the_version_the_title_says() {
+        let with_notes = |notes: &str| UpdateOffer {
+            notes: Some(notes.into()),
+            ..offer("2.5.3")
+        };
+        let notes = "Solo 2.5.3：终端大量输出时 CPU 大幅下降。
+Solo 2.5.3: Much less CPU when terminals print a lot.";
+        assert_eq!(
+            offer_summary(&with_notes(notes), true).as_deref(),
+            Some("终端大量输出时 CPU 大幅下降。")
+        );
+        assert_eq!(
+            offer_summary(&with_notes(notes), false).as_deref(),
+            Some("Much less CPU when terminals print a lot.")
+        );
+        // Summaries that don't start with the version stay as they are.
+        let notes = "终端重连时恢复画面。
+Terminals keep their screen when reconnecting.";
+        assert_eq!(
+            offer_summary(&with_notes(notes), true).as_deref(),
+            Some("终端重连时恢复画面。")
+        );
+        assert_eq!(without_version_prefix("Solo 很快：更新"), "Solo 很快：更新");
+        assert_eq!(without_version_prefix("Solo v2.5.3: Faster"), "Faster");
+        assert_eq!(without_version_prefix("Solo 2.5.3 is faster"), "Solo 2.5.3 is faster");
+        assert_eq!(without_version_prefix("Solo: faster"), "Solo: faster");
     }
 
     fn actions(menu: &UpdateMenu) -> Vec<Option<UpdateAction>> {
