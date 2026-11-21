@@ -125,6 +125,11 @@ pub fn set_custom_data_dir(dir: &str) -> &'static PathBuf {
     })
 }
 
+/// SOLO: the data folder `--user-data-dir` set, if it did.
+pub fn custom_data_dir() -> Option<&'static PathBuf> {
+    CUSTOM_DATA_DIR.get()
+}
+
 /// Returns the path to the configuration directory used by Zed.
 pub fn config_dir() -> &'static PathBuf {
     CONFIG_DIR.get_or_init(|| {
@@ -149,28 +154,60 @@ pub fn config_dir() -> &'static PathBuf {
 
 /// Returns the path to the data directory used by Zed.
 pub fn data_dir() -> &'static PathBuf {
-    CURRENT_DATA_DIR.get_or_init(|| {
-        if let Some(custom_dir) = CUSTOM_DATA_DIR.get() {
-            custom_dir.clone()
-        } else if cfg!(target_os = "macos") {
-            home_dir()
-                .join("Library/Application Support")
-                .join(APP_NAME)
-        } else if cfg!(any(target_os = "linux", target_os = "freebsd")) {
-            if let Ok(flatpak_xdg_data) = std::env::var("FLATPAK_XDG_DATA_HOME") {
-                flatpak_xdg_data.into()
-            } else {
-                dirs::data_local_dir().expect("failed to determine XDG_DATA_HOME directory")
-            }
-            .join(APP_NAME_LOWERCASE)
-        } else if cfg!(target_os = "windows") {
-            dirs::data_local_dir()
-                .expect("failed to determine LocalAppData directory")
-                .join(APP_NAME)
-        } else {
-            config_dir().clone() // Fallback
-        }
+    CURRENT_DATA_DIR.get_or_init(|| match CUSTOM_DATA_DIR.get() {
+        Some(custom_dir) => custom_dir.clone(),
+        None => default_data_dir(),
     })
+}
+
+/// The data directory when `--user-data-dir` doesn't set one.
+fn default_data_dir() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        home_dir()
+            .join("Library/Application Support")
+            .join(APP_NAME)
+    } else if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+        if let Ok(flatpak_xdg_data) = std::env::var("FLATPAK_XDG_DATA_HOME") {
+            flatpak_xdg_data.into()
+        } else {
+            dirs::data_local_dir().expect("failed to determine XDG_DATA_HOME directory")
+        }
+        .join(APP_NAME_LOWERCASE)
+    } else if cfg!(target_os = "windows") {
+        dirs::data_local_dir()
+            .expect("failed to determine LocalAppData directory")
+            .join(APP_NAME)
+    } else {
+        config_dir().clone() // Fallback
+    }
+}
+
+/// SOLO: the data folder `--user-data-dir` set, unless it's the default one:
+/// what gives a Solo a single instance of its own (see
+/// `release_channel::instance_identifier`). With the default folder named
+/// through `--user-data-dir`, Solo shares the default Solo's instance, so two
+/// Solos never open the same data.
+pub fn instance_data_dir() -> Option<&'static PathBuf> {
+    let custom = CUSTOM_DATA_DIR.get()?;
+    let default = default_data_dir();
+    let default = default.canonicalize().unwrap_or(default);
+    (!same_dir(custom, SanitizedPath::new(&default).as_path())).then_some(custom)
+}
+
+/// SOLO: whether `a` and `b` name the same folder, as the file system
+/// compares them (ignoring case on Windows) and with or without a trailing
+/// separator.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let comparable = |path: &Path| {
+        let text = path.to_string_lossy();
+        let text = text.trim_end_matches(['\\', '/']).to_string();
+        if cfg!(windows) {
+            text.to_lowercase()
+        } else {
+            text
+        }
+    };
+    comparable(a) == comparable(b)
 }
 
 pub fn state_dir() -> &'static PathBuf {
@@ -693,4 +730,24 @@ pub fn global_gitignore_path() -> Option<PathBuf> {
     GLOBAL_GITIGNORE_PATH
         .get_or_init(::ignore::gitignore::gitconfig_excludes_path)
         .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SOLO: the default data folder named with --user-data-dir is the
+    /// default Solo's, whatever its spelling; another folder isn't.
+    #[test]
+    fn test_same_dir() {
+        let default = default_data_dir();
+        assert!(same_dir(&default, &default));
+        let trailing = PathBuf::from(format!("{}{}", default.display(), std::path::MAIN_SEPARATOR));
+        assert!(same_dir(&trailing, &default));
+        if cfg!(windows) {
+            let upper = PathBuf::from(default.to_string_lossy().to_uppercase());
+            assert!(same_dir(&upper, &default));
+        }
+        assert!(!same_dir(&default.join("test"), &default));
+    }
 }

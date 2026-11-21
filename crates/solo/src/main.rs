@@ -263,6 +263,19 @@ fn main() {
     } else {
         Vec::new()
     };
+    // SOLO: what this Solo starts (terminals, agents, MCP servers, hooks)
+    // reaches this Solo with solo-cli, not the one whose terminal started
+    // it, whose SOLO_INSTANCE it inherited. Set before Solo starts its own
+    // threads.
+    #[cfg(target_os = "windows")]
+    unsafe {
+        std::env::set_var(
+            "SOLO_INSTANCE",
+            release_channel::instance_identifier(
+                paths::instance_data_dir().map(|dir| dir.as_path()),
+            ),
+        );
+    }
 
     #[cfg(target_os = "windows")]
     match util::get_zed_cli_path() {

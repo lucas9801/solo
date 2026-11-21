@@ -58,6 +58,50 @@ pub fn app_identifier() -> &'static str {
     }
 }
 
+/// SOLO: the name of the single-instance mutex and pipe (before
+/// `-Instance-Mutex` and `-Named-Pipe`) of a Solo whose data is in
+/// `custom_data_dir` (`--user-data-dir`): the app identifier, with a short
+/// hash of that folder when there's one. Solos with different data folders
+/// then never hand what they open to each other (a test build with its own
+/// data to the installed Solo, say), and `solo-cli` reaches the one of its
+/// data folder; with the default data folder it's the app identifier, as
+/// before.
+#[cfg(target_os = "windows")]
+pub fn instance_identifier(custom_data_dir: Option<&std::path::Path>) -> String {
+    match custom_data_dir {
+        None => app_identifier().to_string(),
+        Some(dir) => format!("{}-{:012x}", app_identifier(), data_dir_hash(dir)),
+    }
+}
+
+/// SOLO: whether `name` is an instance identifier of this release channel
+/// (see [`instance_identifier`]): what `solo-cli` accepts from the
+/// environment of the terminal it runs in.
+#[cfg(target_os = "windows")]
+pub fn is_instance_identifier(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(app_identifier()) else {
+        return false;
+    };
+    rest.is_empty()
+        || rest.strip_prefix('-').is_some_and(|hash| {
+            hash.len() == 12 && hash.chars().all(|c| c.is_ascii_hexdigit())
+        })
+}
+
+/// SOLO: a 48-bit FNV-1a hash of `dir`, compared as Windows compares paths:
+/// ignoring case and a trailing separator.
+#[cfg(target_os = "windows")]
+fn data_dir_hash(dir: &std::path::Path) -> u64 {
+    let text = dir.to_string_lossy().to_lowercase();
+    let text = text.trim_end_matches(['\\', '/']);
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash & 0xffff_ffff_ffff
+}
+
 /// The Git commit SHA that Zed was built at.
 #[derive(Clone, Eq, Debug, PartialEq)]
 pub struct AppCommitSha(String);
@@ -260,5 +304,35 @@ impl FromStr for ReleaseChannel {
             "stable" => ReleaseChannel::Stable,
             _ => return Err(InvalidReleaseChannel),
         })
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod instance_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_instance_identifier() {
+        // The default data folder keeps the name installed Solos use.
+        assert_eq!(instance_identifier(None), app_identifier());
+        let test = instance_identifier(Some(Path::new(r"E:\solo-test\data")));
+        let other = instance_identifier(Some(Path::new(r"E:\solo-test\other")));
+        assert_ne!(test, app_identifier());
+        assert_ne!(test, other);
+        assert!(test.starts_with(app_identifier()));
+        // The same folder, spelled differently.
+        assert_eq!(
+            test,
+            instance_identifier(Some(Path::new(r"e:\SOLO-TEST\data\")))
+        );
+        assert!(is_instance_identifier(&test));
+        assert!(is_instance_identifier(app_identifier()));
+        assert!(!is_instance_identifier("Other-App"));
+        assert!(!is_instance_identifier(&format!("{}-xyz", app_identifier())));
+        assert!(!is_instance_identifier(&format!(
+            "{}-0123456789ab\\..\\x",
+            app_identifier()
+        )));
     }
 }

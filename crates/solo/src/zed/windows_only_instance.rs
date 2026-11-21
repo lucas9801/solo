@@ -3,7 +3,6 @@ use std::{sync::Arc, thread::JoinHandle};
 use anyhow::Context;
 use cli::{CliRequest, CliResponse, IpcHandshake, ipc::IpcOneShotServer};
 use parking_lot::Mutex;
-use release_channel::app_identifier;
 use util::ResultExt;
 use windows::{
     Win32::{
@@ -25,13 +24,20 @@ use windows::{
 
 use crate::{Args, OpenListener, RawOpenRequest};
 
+/// SOLO: the single-instance name of this Solo: its own for its own data
+/// folder (`--user-data-dir`), so it never hands what it opens to a Solo
+/// with another data folder (see `release_channel::instance_identifier`).
+fn instance_identifier() -> String {
+    release_channel::instance_identifier(paths::instance_data_dir().map(|dir| dir.as_path()))
+}
+
 #[inline]
 fn is_first_instance() -> bool {
     unsafe {
         CreateMutexW(
             None,
             false,
-            &HSTRING::from(format!("{}-Instance-Mutex", app_identifier())),
+            &HSTRING::from(format!("{}-Instance-Mutex", instance_identifier())),
         )
         .expect("Unable to create instance mutex.")
     };
@@ -64,7 +70,7 @@ pub fn handle_single_instance(opener: OpenListener, args: &Args) -> bool {
 fn with_pipe(f: &dyn Fn(String)) {
     let pipe = unsafe {
         CreateNamedPipeW(
-            &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", app_identifier())),
+            &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", instance_identifier())),
             PIPE_ACCESS_INBOUND,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
             1,
@@ -204,7 +210,7 @@ fn send_args_to_instance(args: &Args) -> anyhow::Result<()> {
 fn write_message_to_instance_pipe(message: &[u8]) -> anyhow::Result<()> {
     unsafe {
         let pipe = CreateFileW(
-            &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", app_identifier())),
+            &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", instance_identifier())),
             GENERIC_WRITE.0,
             FILE_SHARE_MODE::default(),
             None,
