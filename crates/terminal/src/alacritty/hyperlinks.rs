@@ -208,7 +208,7 @@ pub(crate) fn find_link_at<T: EventListener>(
 /// SOLO: how many cells on each side of the hovered one a path is looked for
 /// in, on a long line: a path is never this long, and it keeps the regexes'
 /// time bounded on lines of minified code or logs.
-const MAX_CELLS_AROUND_HOVER: usize = 2048;
+const MAX_CELLS_AROUND_HOVER: usize = 8192;
 
 /// SOLO: at most one "timed out" log line this often.
 const TIMEOUT_LOG_INTERVAL: Duration = Duration::from_secs(60);
@@ -1125,7 +1125,7 @@ mod tests {
     fn test_paths_on_very_long_lines() {
         // SOLO: a path in the middle of a line of tens of thousands of
         // characters is found, by looking only near the mouse.
-        let filler = "x ".repeat(10_000);
+        let filler = "x ".repeat(20_000);
         let line = format!("{filler}see src/main.rs:12 here {filler}");
         let mut probe = link_probe::LinkProbe::new(&[line], 200);
         let rows = probe.rows();
