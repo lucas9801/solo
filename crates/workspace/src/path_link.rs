@@ -823,6 +823,14 @@ async fn scan_worktrees(
                             entries.push(entry.path.clone());
                         }
                     }
+                    // SOLO: nothing more can be collected.
+                    if candidates.len() == MAX_SCAN_CANDIDATES
+                        && context_entries
+                            .iter()
+                            .all(|entries| entries.len() == MAX_SCAN_CANDIDATES)
+                    {
+                        break;
+                    }
                 }
                 let working_directory = working_directory
                     .as_deref()
@@ -875,7 +883,7 @@ async fn scan_worktrees(
 
 /// SOLO: how many files of the name a scanned path ends with are compared
 /// with the paths around it.
-const MAX_SCAN_CANDIDATES: usize = 100;
+const MAX_SCAN_CANDIDATES: usize = 50;
 
 /// SOLO: how many leading directories two worktree paths have in common.
 fn shared_directories(a: &RelPath, b: &RelPath) -> usize {
@@ -1042,7 +1050,9 @@ const MAX_OTHER_TAB_TARGETS: usize = 50;
 struct OtherTabsCache(
     std::collections::HashMap<
         (gpui::EntityId, String),
-        (std::time::Instant, Vec<OtherTabTarget>),
+        // `None`: a hover gave up on it (too many files); hovering doesn't
+        // try again for a while, a click does.
+        (std::time::Instant, Option<Vec<OtherTabTarget>>),
     >,
 );
 
@@ -1052,7 +1062,8 @@ impl gpui::Global for OtherTabsCache {}
 /// for a path the tab `workspace` doesn't have. Only tabs loaded already
 /// (opened since Solo started) are searched, in the file lists they hold;
 /// nothing is read from disk and no tab is loaded for this. With `budget`
-/// (hovering), the search gives up after that long and finds nothing.
+/// (hovering), the search gives up after that long and finds nothing, and
+/// hovering the name doesn't search again for a few seconds.
 /// Results are remembered for a few seconds.
 pub fn find_in_other_tabs(
     workspace: &WeakEntity<Workspace>,
@@ -1079,8 +1090,10 @@ pub fn find_in_other_tabs(
     cache
         .0
         .retain(|_, (found_at, _)| found_at.elapsed() < OTHER_TABS_CACHE_DURATION);
-    if let Some((_, targets)) = cache.0.get(&key) {
-        return Task::ready(targets.clone());
+    match cache.0.get(&key) {
+        Some((_, Some(targets))) => return Task::ready(targets.clone()),
+        Some((_, None)) if budget.is_some() => return Task::ready(Vec::new()),
+        _ => {}
     }
     let others = this
         .read(cx)
@@ -1155,15 +1168,13 @@ pub fn find_in_other_tabs(
         Some(targets)
     });
     cx.spawn(async move |cx| {
-        // Over the budget: nothing, and nothing remembered.
-        let Some(targets) = search.await else {
-            return Vec::new();
-        };
+        // Over the budget: nothing, remembered as unknown.
+        let targets = search.await;
         cx.update(|cx| {
             cx.default_global::<OtherTabsCache>()
                 .0
                 .insert(key, (std::time::Instant::now(), targets.clone()));
         });
-        targets
+        targets.unwrap_or_default()
     })
 }

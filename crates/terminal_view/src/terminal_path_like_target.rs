@@ -43,10 +43,12 @@ fn possible_hover_target(
     cx: &mut Context<TerminalView>,
     #[cfg(test)] background_path_checks: BackgroundPathChecks,
 ) -> Task<()> {
+    // SOLO: files only other tabs have aren't links (yet): not searched for
+    // on every hover.
     let resolution_task = resolve_path_like_target(
         workspace,
         path_like_target,
-        LinkPurpose::Hover,
+        LinkPurpose::HoverHereOnly,
         cx,
         #[cfg(test)]
         background_path_checks,
@@ -157,6 +159,9 @@ fn possibly_open_target(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LinkPurpose {
     Hover,
+    /// Hovering when files only other tabs have aren't offered: they
+    /// aren't searched for.
+    HoverHereOnly,
     Click,
 }
 
@@ -255,6 +260,7 @@ pub(crate) fn resolve_path_like_target(
                 rank_by_rows(link, &project, cx).await,
             )),
             Some(link) => Some(PathLinkResolution::Here(link)),
+            None if purpose == LinkPurpose::HoverHereOnly => None,
             None => {
                 let budget = (purpose == LinkPurpose::Hover).then_some(HOVER_OTHER_TABS_BUDGET);
                 let in_other_tabs = cx
@@ -1879,6 +1885,42 @@ mod tests {
             assert_eq!(found[0].relative_folder, "Assets/UI");
             assert_eq!(found[0].target.path().row, Some(225));
         }
+        // A hover over its budget finds nothing and doesn't search again
+        // for a while; a click does.
+        let over_budget = cx
+            .update(|_, cx| {
+                workspace::path_link::find_in_other_tabs(
+                    &godot_workspace,
+                    "UI/CSSpriteDamageLabel.cs:1",
+                    Some(std::time::Duration::ZERO),
+                    cx,
+                )
+            })
+            .await;
+        assert!(over_budget.is_empty());
+        let hovered_again = cx
+            .update(|_, cx| {
+                workspace::path_link::find_in_other_tabs(
+                    &godot_workspace,
+                    "UI/CSSpriteDamageLabel.cs:1",
+                    Some(std::time::Duration::from_secs(60)),
+                    cx,
+                )
+            })
+            .await;
+        assert!(hovered_again.is_empty(), "remembered as unknown");
+        let clicked = cx
+            .update(|_, cx| {
+                workspace::path_link::find_in_other_tabs(
+                    &godot_workspace,
+                    "UI/CSSpriteDamageLabel.cs:1",
+                    None,
+                    cx,
+                )
+            })
+            .await;
+        assert_eq!(clicked.len(), 1);
+
         // Nothing anywhere: nothing.
         let missing = target_at("Missing.cs:1", path!("/godot"));
         assert!(

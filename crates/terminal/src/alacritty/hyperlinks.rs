@@ -205,12 +205,22 @@ pub(crate) fn find_link_at<T: EventListener>(
     })
 }
 
+/// SOLO: how many cells on each side of the hovered one a path is looked for
+/// in, on a long line: a path is never this long, and it keeps the regexes'
+/// time bounded on lines of minified code or logs.
+const MAX_CELLS_AROUND_HOVER: usize = 2048;
+
+/// SOLO: at most one "timed out" log line this often.
+const TIMEOUT_LOG_INTERVAL: Duration = Duration::from_secs(60);
+
 /// SOLO: the path at `hovered` on the line from `line_start` to `line_end`.
-/// Every regex runs on the hovered line, however long that takes: one that
-/// didn't get to run would leave the path without a link. Within `timeout`,
-/// a path the program broke across the line's edge is looked for as well
-/// (see [`joined_path_match`]); past it, the hovered line's path is kept and
-/// the time is logged with the line's length (never its text).
+/// Every regex runs on the hovered line (up to [`MAX_CELLS_AROUND_HOVER`]
+/// cells on each side of the hovered one): one that didn't get to run
+/// would leave the path without a link. Within `timeout`, a path the
+/// program broke across the line's edge is looked for as well (see
+/// [`joined_path_match`]); past it, the hovered line's path is kept and the
+/// time is logged (at most once a minute) with the line's length, never its
+/// text.
 fn find_path<T>(
     term: &Term<T>,
     line_start: AlacPoint,
@@ -223,6 +233,10 @@ fn find_path<T>(
         return None;
     }
     let started = Instant::now();
+    let around_start = hovered.sub(term, Boundary::Grid, MAX_CELLS_AROUND_HOVER);
+    let around_end = hovered.add(term, Boundary::Grid, MAX_CELLS_AROUND_HOVER);
+    let line_start = line_start.max(around_start);
+    let line_end = line_end.min(around_end);
     let on_line = path_match(
         term,
         &[(line_start, line_end)],
@@ -235,15 +249,29 @@ fn find_path<T>(
         None
     };
     let elapsed = started.elapsed();
-    if elapsed > timeout {
+    if elapsed > timeout && timeout_log_due() {
         let line_length = term.bounds_to_string(line_start, line_end).chars().count();
         warn!(
-            "Path hyperlink regexes took {}ms on a line of {line_length} characters ({}ms allowed)",
+            "Timed out processing path hyperlink regexes after {}ms on a line of {line_length} characters ({}ms allowed)",
             elapsed.as_millis(),
             timeout.as_millis()
         );
     }
     joined.or(on_line)
+}
+
+/// SOLO: whether a "timed out" line may be logged now (see
+/// [`TIMEOUT_LOG_INTERVAL`]).
+fn timeout_log_due() -> bool {
+    static LAST: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else {
+        return false;
+    };
+    let due = last.is_none_or(|last| last.elapsed() >= TIMEOUT_LOG_INTERVAL);
+    if due {
+        *last = Some(Instant::now());
+    }
+    due
 }
 
 /// SOLO: how many lines above a bare position (`:403-405`) to look for the
@@ -1091,6 +1119,30 @@ mod tests {
             Some("src/main.rs:12".to_string())
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_paths_on_very_long_lines() {
+        // SOLO: a path in the middle of a line of tens of thousands of
+        // characters is found, by looking only near the mouse.
+        let filler = "x ".repeat(10_000);
+        let line = format!("{filler}see src/main.rs:12 here {filler}");
+        let mut probe = link_probe::LinkProbe::new(&[line], 200);
+        let rows = probe.rows();
+        let (row, column) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(row, cells)| {
+                let text: String = cells.iter().map(|(_, c)| *c).collect();
+                text.find("main.rs").map(|ix| {
+                    (row, cells[text[..ix].chars().count()].0)
+                })
+            })
+            .expect("the path is on some row");
+        let started = std::time::Instant::now();
+        let found = probe.link_at(row as i32, column, false);
+        assert_eq!(found.map(|found| found.text), Some("src/main.rs:12".to_string()));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

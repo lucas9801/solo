@@ -14,9 +14,9 @@ mod command_notifications;
 mod failures;
 mod follow_working_directory;
 pub mod input;
-#[cfg(windows)]
 #[cfg(test)]
 mod link_corpus_tests;
+#[cfg(windows)]
 mod lone_hosts;
 mod mermaid_preview;
 mod mermaid_viewer;
