@@ -203,6 +203,8 @@ pub struct WorktreeSettingsContent {
     /// inside a root folder activate their git features immediately; deeper ones
     /// activate on first use.
     /// `0` means no limit and activates all git repositories immediately.
+    /// Terminal links that name only a file (`Array.h:883`) find it in the
+    /// indexed folders only; links with folders in them are checked on disk.
     ///
     /// Default: 5
     pub file_scan_depth: Option<u32>,

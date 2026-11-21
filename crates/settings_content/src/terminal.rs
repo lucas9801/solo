@@ -102,15 +102,18 @@ pub struct ProjectTerminalSettingsContent {
     /// `link` capture selects the clickable text, otherwise the entire match is
     /// clickable.
     ///
-    /// Processing stops at the first regex that matches the terminal line, even
-    /// if the cursor is outside its clickable text. Put more specific regexes
+    /// Processing stops at the first regex that finds a path under the cursor;
+    /// every regex runs until one does. Put more specific regexes
     /// before broader ones. Regexes use Rust's `regex` syntax. Invalid regexes
     /// are logged and ignored. The `path_hyperlink_timeout_ms` setting controls
     /// the discovery timeout. Setting it to `0` disables path hyperlinks.
     pub path_hyperlink_regexes: Option<PathHyperlinkRegexes>,
-    /// Timeout for hover and Cmd-click path hyperlink discovery in milliseconds.
+    /// Time for path hyperlink discovery on hover, in milliseconds. The
+    /// regexes always all run on the hovered line; past this time, a path
+    /// broken across lines isn't looked for. A click gets at least 100
+    /// milliseconds.
     ///
-    /// Default: 1
+    /// Default: 5
     pub path_hyperlink_timeout_ms: Option<u64>,
 }
 

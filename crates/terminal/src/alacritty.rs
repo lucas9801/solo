@@ -11,6 +11,8 @@ use std::{
 };
 
 mod hyperlinks;
+#[cfg(any(test, feature = "test-support"))]
+pub use hyperlinks::link_probe;
 
 use alacritty_terminal::{
     event::{Event as AlacTermEvent, EventListener, Notify, WindowSize},
@@ -50,7 +52,7 @@ use crate::{
     terminal_settings::{AlternateScroll, CursorShape as SettingsCursorShape},
 };
 
-pub(super) use hyperlinks::{HyperlinkMatch, RegexSearches};
+pub(super) use hyperlinks::{HyperlinkMatch, LinkSearch, RegexSearches};
 
 pub(super) type AlacrittyPty = tty::Pty;
 pub(super) type AlacrittyTerm = Term<ZedListener>;
@@ -1267,9 +1269,10 @@ pub(super) fn find_from_terminal_point(
     point: Point,
     regex_searches: &mut RegexSearches,
     path_style: PathStyle,
+    search: LinkSearch,
 ) -> Option<HyperlinkMatch> {
     let point = point.to_alacritty().grid_clamp(term, Boundary::Grid);
-    hyperlinks::find_from_grid_point(term, point, regex_searches, path_style)
+    hyperlinks::find_link_at(term, point, regex_searches, path_style, search)
 }
 
 fn logical_line_for_row(grid: &Grid<AlacCell>, current: i32, topmost: i32) -> (i32, String) {

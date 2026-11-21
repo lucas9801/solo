@@ -76,6 +76,135 @@ impl OpenTarget {
     }
 }
 
+/// SOLO: where a file of the name a path link ends with stands among the
+/// others of that name, best first (see [`CandidateRank::sort_key`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CandidateRank {
+    /// It's in the terminal's folder (or the folder the agent in it said
+    /// it works in).
+    pub under_working_directory: bool,
+    /// How near it is to the paths written around the link: the number of
+    /// leading folders it shares with each, summed.
+    pub context_score: usize,
+    /// How many leading folders it shares with the terminal's folder.
+    pub shared_with_working_directory: usize,
+    /// It's in a folder of someone else's code (`ThirdParty`, `vendor`, ...).
+    pub third_party: bool,
+    /// Whether the file has the line the link names: `None` until checked
+    /// (it's read from disk, so only the first few candidates are).
+    pub has_row: Option<bool>,
+    /// How many components its path has.
+    pub components: usize,
+}
+
+impl CandidateRank {
+    /// What decides the order, greatest first: in the terminal's folder,
+    /// near the paths around the link, near the terminal's folder, not
+    /// someone else's code, has the line, short.
+    pub fn sort_key(&self) -> (bool, usize, usize, bool, bool, std::cmp::Reverse<usize>) {
+        (
+            self.under_working_directory,
+            self.context_score,
+            self.shared_with_working_directory,
+            !self.third_party,
+            self.has_row != Some(false),
+            std::cmp::Reverse(self.components),
+        )
+    }
+
+    /// The part of [`Self::sort_key`] that tells where the agent is and
+    /// what it wrote about: a candidate better here than the next one is
+    /// the one meant. The rest only breaks ties, so a tie here is a guess.
+    fn decisive_key(&self) -> (bool, usize, usize) {
+        (
+            self.under_working_directory,
+            self.context_score,
+            self.shared_with_working_directory,
+        )
+    }
+}
+
+/// SOLO: a file a path link may mean, and why it ranks where it does.
+#[derive(Clone, Debug)]
+pub struct LinkCandidate {
+    pub target: OpenTarget,
+    pub rank: CandidateRank,
+}
+
+/// SOLO: what a path link resolves to: the target it opens, and when files
+/// of its name were searched for, all of them best first.
+#[derive(Clone, Debug)]
+pub struct ResolvedLink {
+    /// What clicking the link opens: the first candidate.
+    pub target: OpenTarget,
+    /// Every file the link may mean, best first; just `target` when only
+    /// one may be meant.
+    pub candidates: Vec<LinkCandidate>,
+    /// The first candidate doesn't clearly win over the second ("猜不准"):
+    /// only tie-breakers (someone else's code, the line, the length) put it
+    /// first, so the user is better asked which one.
+    pub ambiguous: bool,
+    /// How many files the link may mean, `candidates` holding the best of
+    /// them when there are very many.
+    pub total: usize,
+}
+
+impl ResolvedLink {
+    fn single(target: OpenTarget) -> Self {
+        Self {
+            candidates: vec![LinkCandidate {
+                target: target.clone(),
+                rank: CandidateRank::default(),
+            }],
+            target,
+            ambiguous: false,
+            total: 1,
+        }
+    }
+
+    /// The same, saying `total` files may be meant.
+    pub fn with_total(mut self, total: usize) -> Self {
+        self.total = total.max(self.candidates.len());
+        self
+    }
+
+    /// Orders `candidates` by their ranks and decides whether the first is
+    /// a guess. `None` without candidates.
+    pub fn from_candidates(mut candidates: Vec<LinkCandidate>) -> Option<Self> {
+        // Stable: equal ranks keep the order they were found in.
+        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.rank.sort_key()));
+        let first = candidates.first()?;
+        let ambiguous = candidates
+            .get(1)
+            .is_some_and(|second| second.rank.decisive_key() == first.rank.decisive_key());
+        Some(Self {
+            target: first.target.clone(),
+            total: candidates.len(),
+            candidates,
+            ambiguous,
+        })
+    }
+}
+
+/// SOLO: folders of someone else's code, whose files of a name rank after
+/// the project's own.
+const THIRD_PARTY_FOLDERS: &[&str] = &[
+    "thirdparty",
+    "third_party",
+    "extras",
+    "external",
+    "vendor",
+    "node_modules",
+];
+
+fn is_third_party(path: &RelPath) -> bool {
+    path.components().any(|component| {
+        THIRD_PARTY_FOLDERS
+            .iter()
+            .any(|folder| component.eq_ignore_ascii_case(folder))
+    })
+}
+
 pub fn sanitize_path_text(text: &str) -> &str {
     let start = first_unbalanced_open_paren(text).unwrap_or(0);
     let mut sanitized = &text[start..];
@@ -142,21 +271,23 @@ pub fn resolve_open_target(
     cwd: Option<&Path>,
     cx: &App,
 ) -> Task<Option<OpenTarget>> {
-    resolve_open_target_internal(workspace, matching, maybe_path, cwd, &[], cx, None)
+    let resolved = resolve_open_target_internal(workspace, matching, maybe_path, cwd, &[], cx, None);
+    cx.background_spawn(async move { Some(resolved.await?.target) })
 }
 
-/// SOLO: [`resolve_open_target`] for a path written among `context_paths`:
-/// when several files have the name it ends with, the one nearest to those
-/// paths is meant (`register_types.cpp` next to `dynamic_bone_collider_3d.h`
-/// is `modules/dynamicbone/register_types.cpp`).
-pub fn resolve_open_target_near(
+/// SOLO: [`resolve_open_target`] for a path written among `context_paths`,
+/// with every file it may mean: when several files have the name it ends
+/// with, they're ranked (see [`CandidateRank`]), so the one nearest to
+/// those paths comes first (`register_types.cpp` next to
+/// `dynamic_bone_collider_3d.h` is `modules/dynamicbone/register_types.cpp`).
+pub fn resolve_link_near(
     workspace: &WeakEntity<Workspace>,
     matching: PathMatching,
     maybe_path: &str,
     cwd: Option<&Path>,
     context_paths: &[String],
     cx: &App,
-) -> Task<Option<OpenTarget>> {
+) -> Task<Option<ResolvedLink>> {
     resolve_open_target_internal(
         workspace,
         matching,
@@ -169,7 +300,7 @@ pub fn resolve_open_target_near(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn resolve_open_target_with_fs_checks(
+pub fn resolve_link_with_fs_checks(
     workspace: &WeakEntity<Workspace>,
     matching: PathMatching,
     maybe_path: &str,
@@ -177,7 +308,7 @@ pub fn resolve_open_target_with_fs_checks(
     context_paths: &[String],
     cx: &App,
     background_path_checks: BackgroundPathChecks,
-) -> Task<Option<OpenTarget>> {
+) -> Task<Option<ResolvedLink>> {
     resolve_open_target_internal(
         workspace,
         matching,
@@ -197,7 +328,7 @@ fn resolve_open_target_internal(
     context_paths: &[String],
     cx: &App,
     background_path_checks: Option<BackgroundPathChecks>,
-) -> Task<Option<OpenTarget>> {
+) -> Task<Option<ResolvedLink>> {
     let Some(workspace) = workspace.upgrade() else {
         return Task::ready(None);
     };
@@ -206,6 +337,10 @@ fn resolve_open_target_internal(
     let mut potential_paths = Vec::new();
     let original_path = PathWithPosition::from_path(PathBuf::from(maybe_path));
     let path_with_position = PathWithPosition::parse_str(maybe_path);
+    // SOLO: `res://` and `%APPDATA%` paths, which are only looked up on disk.
+    let special_paths = matches!(matching, PathMatching::Heuristic)
+        .then(|| special_paths(&path_with_position, cwd))
+        .unwrap_or_default();
     // SOLO: a position without a file, like the `:161` of "(:161)", names no
     // file; an empty path would be the worktree's root.
     if path_with_position.path.as_os_str().is_empty() || maybe_path.starts_with(':') {
@@ -347,11 +482,13 @@ fn resolve_open_target_internal(
 
     if open_target.is_some() {
         if is_cwd_in_worktree {
-            return Task::ready(open_target);
+            return Task::ready(open_target.map(ResolvedLink::single));
         }
     }
 
     let project = workspace.read(cx).project().clone();
+    let siblings = (matching == PathMatching::Heuristic && project.read(cx).is_local())
+        .then(|| (sibling_paths(&potential_paths, cwd), project.read(cx).fs().clone()));
     // SOLO: a terminal (or the agent in it) working in a folder no worktree
     // holds has its bare file names (`object.h:163`) looked for there too.
     let outside_folder_search = (matching == PathMatching::Heuristic
@@ -382,10 +519,26 @@ fn resolve_open_target_internal(
 
     let background_resolution_task = match background_path_checks {
         BackgroundPathChecks::LocalFileSystem => {
-            let fs_paths_to_check =
+            let mut fs_paths_to_check =
                 local_paths_to_check(&potential_paths, matching, cwd, &worktree_candidates, cx);
             let fs = project.read(cx).fs().clone();
             cx.background_spawn(async move {
+                // SOLO: a `res://` path is in the Godot project the terminal
+                // is in: the nearest folder up with a `project.godot`.
+                for (project_file, path) in special_paths {
+                    let applies = match project_file {
+                        None => true,
+                        Some(project_file) => fs
+                            .metadata(&project_file)
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some_and(|metadata| !metadata.is_dir),
+                    };
+                    if applies {
+                        fs_paths_to_check.push(path);
+                    }
+                }
                 for mut path_to_check in fs_paths_to_check {
                     if let Some(fs_path_to_check) = fs.canonicalize(&path_to_check.path).await.ok()
                         && let Some(metadata) = fs.metadata(&fs_path_to_check).await.ok().flatten()
@@ -453,9 +606,10 @@ fn resolve_open_target_internal(
         }
     };
 
+    let working_directory = cwd.map(Path::to_path_buf);
     cx.spawn(async move |cx| {
         if let Some(open_target) = background_resolution_task.await {
-            return Some(open_target);
+            return Some(ResolvedLink::single(open_target));
         }
 
         // An inexact path must not resolve to an unrelated file sharing its trailing components.
@@ -463,14 +617,96 @@ fn resolve_open_target_internal(
             return None;
         }
 
-        let in_worktrees = scan_worktrees(cx, worktree_paths_to_check, context_paths).await;
+        let in_worktrees = scan_worktrees(
+            cx,
+            worktree_paths_to_check,
+            context_paths,
+            working_directory,
+        )
+        .await;
         if in_worktrees.is_some() {
             return in_worktrees;
+        }
+        if let Some((siblings, fs)) = siblings {
+            let found = cx
+                .background_spawn(async move {
+                    for mut path in siblings {
+                        if let Ok(canonical) = fs.canonicalize(&path.path).await
+                            && let Some(metadata) = fs.metadata(&canonical).await.ok().flatten()
+                        {
+                            path.path = canonical;
+                            return Some(OpenTarget::Path(
+                                path,
+                                metadata.is_dir,
+                                #[cfg(any(test, feature = "test-support"))]
+                                OpenTargetFoundBy::BackgroundPathResolution,
+                            ));
+                        }
+                    }
+                    None
+                })
+                .await;
+            if let Some(found) = found {
+                return Some(ResolvedLink::single(found));
+            }
         }
         let (cwd, names, fs) = outside_folder_search?;
         cx.background_spawn(async move { find_under(fs.as_ref(), &cwd, &names).await })
             .await
+            .map(ResolvedLink::single)
     })
+}
+
+/// SOLO: paths written relative to something other than a folder Solo
+/// knows: Godot's `res://` (the Godot project the terminal is in) and
+/// `%APPDATA%`-style variables. Each comes with the file that must exist for
+/// it to apply (`project.godot`), if any. Only checked on disk, never
+/// searched for.
+fn special_paths(
+    path: &PathWithPosition,
+    cwd: Option<&Path>,
+) -> Vec<(Option<PathBuf>, PathWithPosition)> {
+    let text = path.path.to_string_lossy();
+    let mut paths = Vec::new();
+    if let Some(rest) = text.strip_prefix("res://") {
+        let rest = rest.trim_start_matches(['/', '\\']);
+        for folder in cwd.into_iter().flat_map(Path::ancestors) {
+            paths.push((
+                Some(folder.join("project.godot")),
+                PathWithPosition {
+                    path: folder.join(rest),
+                    row: path.row,
+                    column: path.column,
+                },
+            ));
+        }
+    } else if let Some(expanded) = expand_environment_variable(&text) {
+        paths.push((
+            None,
+            PathWithPosition {
+                path: expanded,
+                row: path.row,
+                column: path.column,
+            },
+        ));
+    }
+    paths
+}
+
+/// SOLO: the variables a path written by an agent may start with.
+const PATH_VARIABLES: &[&str] = &["APPDATA", "LOCALAPPDATA", "USERPROFILE"];
+
+/// SOLO: `text` with a leading `%APPDATA%` (or another of
+/// [`PATH_VARIABLES`]) replaced by its value.
+fn expand_environment_variable(text: &str) -> Option<PathBuf> {
+    let rest = text.strip_prefix('%')?;
+    let (name, rest) = rest.split_once('%')?;
+    let name = PATH_VARIABLES
+        .iter()
+        .find(|variable| variable.eq_ignore_ascii_case(name))?;
+    let value = std::env::var_os(name)?;
+    let rest = rest.trim_start_matches(['/', '\\']);
+    Some(PathBuf::from(value).join(rest))
 }
 
 /// SOLO: how many entries, and for how long, a terminal's own folder outside
@@ -534,13 +770,14 @@ async fn find_under(
     None
 }
 
-/// The worktree scan for a path's trailing components, the file nearest to
-/// `context_paths` winning.
+/// The worktree scan for a path's trailing components. SOLO: every file it
+/// may mean is ranked (see [`CandidateRank`]).
 async fn scan_worktrees(
     cx: &mut gpui::AsyncApp,
     worktree_paths_to_check: Vec<(Entity<Worktree>, Vec<PathWithPosition>)>,
     context_paths: Vec<String>,
-) -> Option<OpenTarget> {
+    working_directory: Option<PathBuf>,
+) -> Option<ResolvedLink> {
     {
 
         let worktree_paths_to_check = worktree_paths_to_check
@@ -575,22 +812,37 @@ async fn scan_worktrees(
             })
             .collect::<Vec<_>>();
         cx.background_spawn(async move {
+            let mut found = Vec::new();
+            // Every file of the name, counted though not all are ranked.
+            let mut total = 0;
             for (snapshot, paths_to_check, context_paths) in worktree_paths_to_check {
                 let traversal = snapshot.traverse_from_path(true, true, false, RelPath::empty());
+                let working_directory = working_directory
+                    .as_deref()
+                    .and_then(|cwd| cwd.strip_prefix(snapshot.abs_path()).ok())
+                    .and_then(|cwd| RelPath::new(cwd, PathStyle::local()).ok())
+                    .map(std::borrow::Cow::into_owned);
                 let mut candidates = Vec::new();
                 let mut context_entries = vec![Vec::new(); context_paths.len()];
                 for entry in traversal {
-                    if candidates.len() < MAX_SCAN_CANDIDATES
-                        && let Some(path_with_position) =
-                            paths_to_check
-                                .iter()
-                                .find_map(|(path_with_position, path)| {
-                                    entry.path.ends_with(path).then_some(path_with_position)
-                                })
+                    if let Some(path_with_position) =
+                        paths_to_check
+                            .iter()
+                            .find_map(|(path_with_position, path)| {
+                                entry.path.ends_with(path).then_some(path_with_position)
+                            })
                     {
-                        candidates.push((entry.clone(), path_with_position));
-                        if context_paths.is_empty() {
-                            break;
+                        total += 1;
+                        // Past the cap, files in the terminal's folder are
+                        // still collected: they rank first.
+                        let in_working_directory = working_directory
+                            .as_ref()
+                            .is_some_and(|cwd| entry.path.starts_with(cwd));
+                        if candidates.len() < MAX_SCAN_CANDIDATES
+                            || (in_working_directory
+                                && candidates.len() < MAX_SCAN_CANDIDATES_IN_WORKING_DIRECTORY)
+                        {
+                            candidates.push((entry.clone(), path_with_position));
                         }
                     }
                     for (context_path, entries) in context_paths.iter().zip(&mut context_entries) {
@@ -600,37 +852,45 @@ async fn scan_worktrees(
                         }
                     }
                 }
-                // The first one found wins a tie.
-                let best = candidates
-                    .into_iter()
-                    .enumerate()
-                    .max_by_key(|(ix, (entry, _))| {
-                        let score: usize = context_entries
-                            .iter()
-                            .map(|entries| {
-                                entries
-                                    .iter()
-                                    .map(|path| shared_directories(&entry.path, path))
-                                    .max()
-                                    .unwrap_or(0)
-                            })
-                            .sum();
-                        (score, std::cmp::Reverse(*ix))
+                for (entry, path_with_position) in candidates {
+                    let context_score: usize = context_entries
+                        .iter()
+                        .map(|entries| {
+                            entries
+                                .iter()
+                                .map(|path| shared_directories(&entry.path, path))
+                                .max()
+                                .unwrap_or(0)
+                        })
+                        .sum();
+                    let rank = CandidateRank {
+                        under_working_directory: working_directory
+                            .as_ref()
+                            .is_some_and(|cwd| entry.path.starts_with(cwd)),
+                        context_score,
+                        shared_with_working_directory: working_directory
+                            .as_ref()
+                            .map_or(0, |cwd| shared_folders(&entry.path, cwd)),
+                        third_party: is_third_party(&entry.path),
+                        has_row: None,
+                        components: entry.path.components().count(),
+                    };
+                    found.push(LinkCandidate {
+                        target: OpenTarget::Worktree(
+                            PathWithPosition {
+                                path: snapshot.absolutize(&entry.path),
+                                row: path_with_position.row,
+                                column: path_with_position.column,
+                            },
+                            entry,
+                            #[cfg(any(test, feature = "test-support"))]
+                            OpenTargetFoundBy::WorktreeScan,
+                        ),
+                        rank,
                     });
-                if let Some((_, (entry, path_with_position))) = best {
-                    return Some(OpenTarget::Worktree(
-                        PathWithPosition {
-                            path: snapshot.absolutize(&entry.path),
-                            row: path_with_position.row,
-                            column: path_with_position.column,
-                        },
-                        entry,
-                        #[cfg(any(test, feature = "test-support"))]
-                        OpenTargetFoundBy::WorktreeScan,
-                    ));
                 }
             }
-            None
+            ResolvedLink::from_candidates(found).map(|link| link.with_total(total))
         })
         .await
     }
@@ -638,7 +898,9 @@ async fn scan_worktrees(
 
 /// SOLO: how many files of the name a scanned path ends with are compared
 /// with the paths around it.
-const MAX_SCAN_CANDIDATES: usize = 100;
+const MAX_SCAN_CANDIDATES: usize = 50;
+/// SOLO: how many, counting those, in the terminal's folder.
+const MAX_SCAN_CANDIDATES_IN_WORKING_DIRECTORY: usize = 500;
 
 /// SOLO: how many leading directories two worktree paths have in common.
 fn shared_directories(a: &RelPath, b: &RelPath) -> usize {
@@ -651,9 +913,46 @@ fn shared_directories(a: &RelPath, b: &RelPath) -> usize {
         .count()
 }
 
+/// SOLO: how many leading folders a worktree file shares with the folder
+/// `directory`.
+fn shared_folders(file: &RelPath, directory: &RelPath) -> usize {
+    let Some(parent) = file.parent() else {
+        return 0;
+    };
+    parent
+        .components()
+        .zip(directory.components())
+        .take_while(|(a, b)| a == b)
+        .count()
+}
+
 /// Whether `path` has a directory or an extension, i.e. isn't a bare word.
 fn looks_like_a_path(path: &Path) -> bool {
     path.components().count() > 1 || path.extension().is_some()
+}
+
+/// SOLO: how many levels up from the terminal's folder paths are tried
+/// relative to the folders next to it.
+const SIBLING_FOLDER_LEVELS: usize = 3;
+
+/// SOLO: a path written relative to a folder next to the terminal's, or
+/// next to one a few levels up (`DBBench_GodotTestbed/main.gd` in a
+/// terminal in `godot_engine`). Only paths with a folder: a bare file name
+/// there would be a guess. Tried after the worktrees, which come first.
+fn sibling_paths(potential_paths: &[PathWithPosition], cwd: Option<&Path>) -> Vec<PathWithPosition> {
+    cwd.into_iter()
+        .flat_map(|cwd| cwd.ancestors().skip(1).take(SIBLING_FOLDER_LEVELS))
+        .flat_map(|folder| {
+            potential_paths.iter().filter_map(move |path_to_check| {
+                (path_to_check.path.is_relative() && path_to_check.path.components().count() > 1)
+                    .then(|| PathWithPosition {
+                        path: folder.join(&path_to_check.path),
+                        row: path_to_check.row,
+                        column: path_to_check.column,
+                    })
+            })
+        })
+        .collect()
 }
 
 fn local_paths_to_check(
@@ -746,4 +1045,153 @@ fn normalize_absolute_candidate(
                 column: path_to_check.column,
             })
     })?
+}
+
+/// SOLO: a file a path link means that only another project tab has.
+#[derive(Clone, Debug)]
+pub struct OtherTabTarget {
+    pub workspace: WeakEntity<Workspace>,
+    /// The tab's name: its first folder's.
+    pub tab_name: String,
+    /// The file's folder relative to the tab's folder, for "tab/folder".
+    pub relative_folder: String,
+    pub target: OpenTarget,
+}
+
+/// SOLO: how long other tabs' files found for a path stay remembered.
+const OTHER_TABS_CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs(10);
+/// SOLO: how many files of a name are kept from all other tabs.
+const MAX_OTHER_TAB_TARGETS: usize = 50;
+
+#[derive(Default)]
+struct OtherTabsCache(
+    std::collections::HashMap<
+        (gpui::EntityId, String),
+        // `None`: a hover gave up on it (too many files); hovering doesn't
+        // try again for a while, a click does.
+        (std::time::Instant, Option<Vec<OtherTabTarget>>),
+    >,
+);
+
+impl gpui::Global for OtherTabsCache {}
+
+/// SOLO: the files `maybe_path` may mean in the window's other project tabs,
+/// for a path the tab `workspace` doesn't have. Only tabs loaded already
+/// (opened since Solo started) are searched, in the file lists they hold;
+/// nothing is read from disk and no tab is loaded for this. With `budget`
+/// (hovering), the search gives up after that long and finds nothing, and
+/// hovering the name doesn't search again for a few seconds.
+/// Results are remembered for a few seconds.
+pub fn find_in_other_tabs(
+    workspace: &WeakEntity<Workspace>,
+    maybe_path: &str,
+    budget: Option<std::time::Duration>,
+    cx: &mut App,
+) -> Task<Vec<OtherTabTarget>> {
+    let Some(this) = workspace.upgrade() else {
+        return Task::ready(Vec::new());
+    };
+    let path_with_position = PathWithPosition::parse_str(maybe_path);
+    if !path_with_position.path.is_relative()
+        || !looks_like_a_path(&path_with_position.path)
+        || maybe_path.starts_with(':')
+    {
+        return Task::ready(Vec::new());
+    }
+    let Ok(path) = RelPath::new(&path_with_position.path, PathStyle::local()) else {
+        return Task::ready(Vec::new());
+    };
+    let path = path.into_owned();
+    let key = (this.entity_id(), maybe_path.to_string());
+    let cache = cx.default_global::<OtherTabsCache>();
+    cache
+        .0
+        .retain(|_, (found_at, _)| found_at.elapsed() < OTHER_TABS_CACHE_DURATION);
+    match cache.0.get(&key) {
+        Some((_, Some(targets))) => return Task::ready(targets.clone()),
+        Some((_, None)) if budget.is_some() => return Task::ready(Vec::new()),
+        _ => {}
+    }
+    let others = this
+        .read(cx)
+        .multi_workspace()
+        .and_then(|multi_workspace| multi_workspace.upgrade())
+        .map(|multi_workspace| {
+            multi_workspace
+                .read(cx)
+                .workspaces()
+                .filter(|other| other.entity_id() != this.entity_id())
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let snapshots = others
+        .iter()
+        .flat_map(|other| {
+            let tab_name = other
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .map(|worktree| worktree.read(cx).root_name_str().to_string())
+                .unwrap_or_default();
+            let weak = other.downgrade();
+            other
+                .read(cx)
+                .worktrees(cx)
+                .filter(|worktree| !worktree.read(cx).is_single_file())
+                .map(|worktree| (weak.clone(), tab_name.clone(), worktree.read(cx).snapshot()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    if snapshots.is_empty() {
+        return Task::ready(Vec::new());
+    }
+    let search = cx.background_spawn(async move {
+        let started = std::time::Instant::now();
+        let mut targets = Vec::new();
+        for (workspace, tab_name, snapshot) in snapshots {
+            for entry in snapshot.files(false, 0) {
+                if budget.is_some_and(|budget| started.elapsed() > budget) {
+                    return None;
+                }
+                if !entry.path.ends_with(&path) {
+                    continue;
+                }
+                let relative_folder = entry
+                    .path
+                    .parent()
+                    .map(|folder| folder.as_unix_str().to_string())
+                    .unwrap_or_default();
+                targets.push(OtherTabTarget {
+                    workspace: workspace.clone(),
+                    tab_name: tab_name.clone(),
+                    relative_folder,
+                    target: OpenTarget::Worktree(
+                        PathWithPosition {
+                            path: snapshot.absolutize(&entry.path),
+                            row: path_with_position.row,
+                            column: path_with_position.column,
+                        },
+                        entry.clone(),
+                        #[cfg(any(test, feature = "test-support"))]
+                        OpenTargetFoundBy::WorktreeScan,
+                    ),
+                });
+                if targets.len() == MAX_OTHER_TAB_TARGETS {
+                    return Some(targets);
+                }
+            }
+        }
+        Some(targets)
+    });
+    cx.spawn(async move |cx| {
+        // Over the budget: nothing, remembered as unknown.
+        let targets = search.await;
+        cx.update(|cx| {
+            cx.default_global::<OtherTabsCache>()
+                .0
+                .insert(key, (std::time::Instant::now(), targets.clone()));
+        });
+        targets.unwrap_or_default()
+    })
 }
