@@ -125,11 +125,23 @@ fn version_suffix(offer: Option<&UpdateOffer>) -> String {
 }
 
 /// The release notes' one sentence for the menu, in the UI's language,
-/// without a leading "Solo 2.5.3：" that the menu's title already says.
+/// without a leading "Solo 2.5.3：" that the menu's title already says;
+/// SOLO: in English, capitalized then.
 pub fn offer_summary(offer: &UpdateOffer, chinese: bool) -> Option<String> {
     let summary = crate::solo_update::notes_summary(offer.notes.as_deref()?, chinese)?;
-    let summary = without_version_prefix(&summary);
-    (!summary.is_empty()).then(|| summary.to_string())
+    let rest = without_version_prefix(&summary);
+    if rest.is_empty() {
+        return None;
+    }
+    // SOLO: the English rest of "Solo 2.5.4: what an agent changed" starts
+    // a sentence of its own in the menu.
+    if !chinese && rest.len() != summary.len() {
+        let mut characters = rest.chars();
+        if let Some(first) = characters.next() {
+            return Some(first.to_uppercase().chain(characters).collect());
+        }
+    }
+    Some(rest.to_string())
 }
 
 /// `summary` without a leading "Solo <version>：" or "Solo <version>: ".
@@ -608,6 +620,24 @@ Terminals keep their screen when reconnecting.";
         assert_eq!(
             offer_summary(&with_notes(notes), true).as_deref(),
             Some("终端重连时恢复画面。")
+        );
+        // The English rest starts with a capital letter, as a sentence does;
+        // a summary without the version stays as it was written.
+        let notes = "Solo 2.5.4：agent 改了什么，在审阅页里逐处保留或拒绝。
+Solo 2.5.4: what an agent changed, to keep or reject on the review page.";
+        assert_eq!(
+            offer_summary(&with_notes(notes), false).as_deref(),
+            Some("What an agent changed, to keep or reject on the review page.")
+        );
+        assert_eq!(
+            offer_summary(&with_notes(notes), true).as_deref(),
+            Some("agent 改了什么，在审阅页里逐处保留或拒绝。")
+        );
+        let notes = "终端更快。
+terminals are faster.";
+        assert_eq!(
+            offer_summary(&with_notes(notes), false).as_deref(),
+            Some("terminals are faster.")
         );
         assert_eq!(without_version_prefix("Solo 很快：更新"), "Solo 很快：更新");
         assert_eq!(without_version_prefix("Solo v2.5.3: Faster"), "Faster");
