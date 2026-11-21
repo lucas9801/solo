@@ -1501,7 +1501,8 @@ impl AgentTurnReview {
             }
             // The diff as the earlier rejection left it: of the buffer as it
             // is now.
-            for _ in 0..MAX_DIFF_WAITS {
+            let mut waits = 0;
+            loop {
                 let diff_update = this.update(cx, |this, cx| {
                     let ix = this.file_index(buffer_id, cx)?;
                     let file = &this.files[ix];
@@ -1518,7 +1519,16 @@ impl AgentTurnReview {
                 match diff_update {
                     None => anyhow::bail!(tr("it isn't shown anymore", "它已经不在页面上了")),
                     Some(None) => break,
-                    Some(Some(diff_update)) => diff_update.await,
+                    // Not a diff that's out of date: it may not be the hunks
+                    // asked for.
+                    Some(Some(_)) if waits == MAX_DIFF_WAITS => anyhow::bail!(tr(
+                        "it keeps changing; try again in a moment",
+                        "它一直在变，请稍后再试",
+                    )),
+                    Some(Some(diff_update)) => {
+                        waits += 1;
+                        diff_update.await;
+                    }
                 }
             }
             // The hunks asked for that are still there, as they are now.
@@ -1543,6 +1553,8 @@ impl AgentTurnReview {
                         )
                     })
                     .collect();
+                // A hunk where one was asked for that isn't it anymore.
+                let mut changed_here = false;
                 let mut edits: Vec<(Range<language::Anchor>, Range<usize>, String)> = diff
                     .snapshot(cx)
                     .hunks_intersecting_range(
@@ -1552,13 +1564,18 @@ impl AgentTurnReview {
                     .filter_map(|hunk| {
                         let offsets = hunk.buffer_range.to_offset(&snapshot);
                         let base_range = hunk.diff_base_byte_range.clone();
-                        asked
-                            .iter()
-                            .any(|(asked_offsets, asked_base)| {
-                                *asked_offsets == offsets
-                                    || (same_base && *asked_base == base_range)
+                        let matched = asked.iter().any(|(asked_offsets, asked_base)| {
+                            *asked_offsets == offsets || (same_base && *asked_base == base_range)
+                        });
+                        if !matched
+                            && asked.iter().any(|(asked_offsets, _)| {
+                                asked_offsets.start <= offsets.end
+                                    && offsets.start <= asked_offsets.end
                             })
-                            .then(|| {
+                        {
+                            changed_here = true;
+                        }
+                        matched.then(|| {
                                 let text: String = base.text_for_range(base_range).collect();
                                 (hunk.buffer_range.clone(), offsets, text)
                             })
@@ -1570,18 +1587,27 @@ impl AgentTurnReview {
                     snapshot.text(),
                     edits,
                     base.text(),
+                    changed_here,
                 )))
             })?;
             let Some(prepared) = prepared else {
                 anyhow::bail!(tr("it isn't shown anymore", "它已经不在页面上了"));
             };
-            let Some((version, before, edits, accepted)) = prepared else {
+            let Some((version, before, edits, accepted, changed_here)) = prepared else {
                 anyhow::bail!(tr(
                     "it has unsaved edits or a conflict in the editor",
                     "它在编辑器里有没保存的改动或冲突",
                 ));
             };
             if edits.is_empty() {
+                // Rejected already: nothing to say. Changed: the user may
+                // think it was rejected.
+                if changed_here {
+                    anyhow::bail!(tr(
+                        "it changed meanwhile; choose what to reject again",
+                        "这期间它改过了，请重新选择要拒绝的改动",
+                    ));
+                }
                 return Ok((None, Vec::new()));
             }
             let offset_edits: Vec<(Range<usize>, String)> = edits
