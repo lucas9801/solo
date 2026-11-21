@@ -100,6 +100,9 @@ pub(crate) struct LoadedFile {
 /// left it, and what was rejected, for the agent.
 type RejectedFile = (Option<(String, Option<PendingFile>, bool)>, Vec<Rejection>);
 
+/// SOLO: How many times rejecting waits for the diff of the buffer as it is.
+const MAX_DIFF_WAITS: usize = 5;
+
 /// SOLO: Why a file wasn't rejected: it changed on disk.
 fn changed_on_disk() -> &'static str {
     tr(
@@ -1461,6 +1464,11 @@ impl AgentTurnReview {
         let terminal_id = self.terminal_id;
         let store_dir = self.store_dir.clone();
         let relative = path.to_string();
+        // What the hunks' places in the accepted version are places in: if
+        // that changes (a hunk kept), they aren't the same places anymore.
+        let asked_base = self
+            .file_index(buffer_id, cx)
+            .and_then(|ix| self.files[ix].base.clone());
         // The accepted version as it was on disk is in the turns' snapshots,
         // when they have it: newest last.
         let turns: Vec<AgentTurn> = AgentTurns::try_global(cx)
@@ -1491,15 +1499,28 @@ impl AgentTurnReview {
             if let Some(previous) = previous {
                 previous.await;
             }
-            // The diff as the earlier rejection left it.
-            let diff_update = this.update(cx, |this, cx| {
-                let ix = this.file_index(buffer_id, cx)?;
-                Some(this.files[ix].diff_update.clone())
-            })?;
-            let Some(diff_update) = diff_update else {
-                anyhow::bail!(tr("it isn't shown anymore", "它已经不在页面上了"));
-            };
-            diff_update.await;
+            // The diff as the earlier rejection left it: of the buffer as it
+            // is now.
+            for _ in 0..MAX_DIFF_WAITS {
+                let diff_update = this.update(cx, |this, cx| {
+                    let ix = this.file_index(buffer_id, cx)?;
+                    let file = &this.files[ix];
+                    let current = file.diff.read(cx).snapshot(cx).buffer_version()
+                        == &buffer.read(cx).version();
+                    if current && file.diff_update.peek().is_some() {
+                        return Some(None);
+                    }
+                    if !current {
+                        this.update_diff(ix, cx);
+                    }
+                    Some(Some(this.files[ix].diff_update.clone()))
+                })?;
+                match diff_update {
+                    None => anyhow::bail!(tr("it isn't shown anymore", "它已经不在页面上了")),
+                    Some(None) => break,
+                    Some(Some(diff_update)) => diff_update.await,
+                }
+            }
             // The hunks asked for that are still there, as they are now.
             let prepared = this.update(cx, |this, cx| {
                 let ix = this.file_index(buffer_id, cx)?;
@@ -1511,6 +1532,8 @@ impl AgentTurnReview {
                 let snapshot = buffer.snapshot();
                 let diff = file.diff.read(cx);
                 let base = diff.base_text(cx);
+                // Places in the accepted version count only in the same one.
+                let same_base = file.base == asked_base;
                 let asked: Vec<(Range<usize>, Range<usize>)> = hunks
                     .iter()
                     .map(|hunk| {
@@ -1532,7 +1555,8 @@ impl AgentTurnReview {
                         asked
                             .iter()
                             .any(|(asked_offsets, asked_base)| {
-                                *asked_offsets == offsets || *asked_base == base_range
+                                *asked_offsets == offsets
+                                    || (same_base && *asked_base == base_range)
                             })
                             .then(|| {
                                 let text: String = base.text_for_range(base_range).collect();
@@ -5604,6 +5628,43 @@ mod tests {
         assert_eq!(test.fs.load(&path).await.unwrap(), ten_lines(&[]));
         review.read_with(test.cx, |review, cx| {
             assert_eq!(review.files[0].buffer.read(cx).text(), ten_lines(&[]));
+            assert_eq!(review.unsent_rejected(cx).len(), 1);
+        });
+    }
+
+    /// SOLO: A hunk kept before a rejection of another hunk of the file gets
+    /// to it: the places in the accepted version move, and a third hunk now
+    /// at the rejected one's place isn't rejected with it (G59).
+    #[gpui::test]
+    async fn test_keeping_before_a_rejection_starts(cx: &mut TestAppContext) {
+        let base = "bbbbb\nxxxxx\nyyyyy\nzzzzz\n";
+        let mut test = mirrored(cx, &[("a.txt", base)]).await;
+        test.start_turn();
+        // Deletes the first line, adds a line after the second and after
+        // the third.
+        test.write("a.txt", "xxxxx\nAAA\nyyyyy\nCCC\nzzzzz\n").await;
+        test.end_turn();
+        let review = test.open_review();
+        let hunks = hunks_of(&review, "a.txt", test.cx);
+        assert_eq!(hunks.len(), 3);
+        let (deletion, added, other) = (hunks[0].clone(), hunks[1].clone(), hunks[2].clone());
+        review.update(test.cx, |review, cx| {
+            review.reject_hunks(vec![added], cx);
+            review.keep_hunks(vec![deletion], cx);
+        });
+        test.cx.run_until_parked();
+        let path = test.repository.join("a.txt");
+        assert_eq!(
+            test.fs.load(&path).await.unwrap(),
+            "xxxxx\nyyyyy\nCCC\nzzzzz\n"
+        );
+        let left = hunks_of(&review, "a.txt", test.cx);
+        assert_eq!(left.len(), 1);
+        review.read_with(test.cx, |review, cx| {
+            let snapshot = review.multibuffer.read(cx).snapshot(cx);
+            let other = editor::ToPoint::to_point(&other.start, &snapshot);
+            let left = editor::ToPoint::to_point(&left[0].start, &snapshot);
+            assert_eq!(left.row, other.row);
             assert_eq!(review.unsent_rejected(cx).len(), 1);
         });
     }
