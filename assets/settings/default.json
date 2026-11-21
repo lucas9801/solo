@@ -2311,8 +2311,8 @@
     // "auto" for the links Solo doesn't open itself (external web addresses,
     // files Solo can't open, a file name several files have, a file only
     // another project tab has), "always" for every link, "never" for none.
-    // Ctrl+click does the menu's first item, except that it never runs a
-    // program (it shows it in File Explorer instead). With "never", a click
+    // Ctrl+click does the menu's first item, except that a file Solo can't
+    // open is only shown in File Explorer, never given to a program. With "never", a click
     // resolves its link on its own, without waiting for the hover.
     "link_menu": "auto",
     // Show a desktop notification when a command that ran at least this many

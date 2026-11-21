@@ -119,8 +119,28 @@ pub(crate) fn middle_ellipsis(text: &str, max: usize) -> String {
     format!("{start}…{end}")
 }
 
+/// What Ctrl+click does with a menu of `items`: its first row, except that a
+/// file Solo can't open is only shown in File Explorer, never given to a
+/// program (which may run it), whatever its extension.
+pub(crate) fn ctrl_click_item(items: Vec<LinkMenuItem>) -> Option<LinkMenuItem> {
+    let gives_to_a_program = items.iter().any(|item| {
+        matches!(
+            item,
+            LinkMenuItem::OpenWithDefaultProgram(_) | LinkMenuItem::RunWithDefaultProgram(_)
+        )
+    });
+    if gives_to_a_program {
+        return items
+            .into_iter()
+            .find(|item| matches!(item, LinkMenuItem::RevealInFileManager(_)));
+    }
+    items
+        .into_iter()
+        .find(|item| !matches!(item, LinkMenuItem::Separator))
+}
+
 /// What a click on `link` does: the menu's rows, or none to open it as
-/// before. Ctrl+click does the first row.
+/// before. Ctrl+click does the first row (see [`ctrl_click_item`]).
 pub(crate) fn menu_items(link: &ClickedLink, setting: TerminalLinkMenu) -> Vec<LinkMenuItem> {
     use LinkMenuItem::*;
     if setting == TerminalLinkMenu::Never {
@@ -149,7 +169,10 @@ pub(crate) fn menu_items(link: &ClickedLink, setting: TerminalLinkMenu) -> Vec<L
             PathLinkResolution::Here(link) => {
                 let target = &link.target;
                 let path = target.path().path.clone();
-                if target.is_file() && runs_when_opened(&path) {
+                // Solo opens text files itself, scripts included (`.js`,
+                // `.bat`, `.ps1`): only files it can't open are given to
+                // another program.
+                if target.is_file() && !solo_can_open && runs_when_opened(&path) {
                     vec![
                         RevealInFileManager(path.clone()),
                         CopyPath(path.clone()),
@@ -195,7 +218,7 @@ fn candidate_items(link: &ResolvedLink) -> Vec<LinkMenuItem> {
             folder: candidate_folder(&candidate.target),
         })
         .collect::<Vec<_>>();
-    if link.candidates.len() > MAX_LISTED_CANDIDATES {
+    if link.total > MAX_LISTED_CANDIDATES {
         let file_name = link
             .target
             .path()
@@ -206,7 +229,7 @@ fn candidate_items(link: &ResolvedLink) -> Vec<LinkMenuItem> {
         items.push(LinkMenuItem::Separator);
         items.push(LinkMenuItem::ShowAll {
             file_name,
-            count: link.candidates.len(),
+            count: link.total,
         });
     }
     items
@@ -236,10 +259,20 @@ const RUNNABLE_EXTENSIONS: &[&str] = &[
     "appxbundle", "msix", "msixbundle",
 ];
 
+/// The extension Windows goes by for `path`, lowercase: without trailing
+/// dots and spaces (which Windows ignores) or a `:stream` suffix.
+fn effective_extension(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let name = name.split(':').next().unwrap_or_default();
+    let name = name.trim_end_matches(['.', ' ']);
+    let (stem, extension) = name.rsplit_once('.')?;
+    (!stem.is_empty() && !extension.is_empty()).then(|| extension.to_ascii_lowercase())
+}
+
 /// Whether opening `path` with its default program would run something:
 /// a program, a script, a shortcut. Those are never opened by Ctrl+click.
 pub(crate) fn runs_when_opened(path: &Path) -> bool {
-    let Some(extension) = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()) else {
+    let Some(extension) = effective_extension(path) else {
         return false;
     };
     RUNNABLE_EXTENSIONS.contains(&extension.as_str())
@@ -276,12 +309,9 @@ pub(crate) fn is_local_url(url: &str) -> bool {
 /// are not supported"). A file that can't be read is left to opening,
 /// which says why.
 pub(crate) fn solo_can_open(path: &Path, file: Option<&mut dyn std::io::Read>) -> bool {
-    let is_image = path
-        .extension()
-        .map(|extension| extension.to_string_lossy().to_lowercase())
-        .is_some_and(|extension| {
-            gpui::Img::extensions().contains(&extension.as_str()) && !extension.contains("svg")
-        });
+    let is_image = effective_extension(path).is_some_and(|extension| {
+        gpui::Img::extensions().contains(&extension.as_str()) && !extension.contains("svg")
+    });
     if is_image {
         return true;
     }
@@ -460,11 +490,8 @@ mod view {
             window: &mut Window,
             cx: &mut Context<Self>,
         ) {
-            if let Some(first) = items
-                .into_iter()
-                .find(|item| !matches!(item, LinkMenuItem::Separator))
-            {
-                self.perform_link_item(first, window, cx);
+            if let Some(item) = ctrl_click_item(items) {
+                self.perform_link_item(item, window, cx);
             }
         }
 
@@ -711,6 +738,7 @@ mod tests {
                     rank: CandidateRank::default(),
                 }],
                 ambiguous: false,
+                total: 1,
             }),
             solo_can_open,
         }
@@ -771,6 +799,7 @@ mod tests {
         let link = ClickedLink::Path {
             resolution: PathLinkResolution::Here(ResolvedLink {
                 target: candidates[0].target.clone(),
+                total: candidates.len(),
                 candidates,
                 ambiguous: true,
             }),
@@ -991,8 +1020,9 @@ mod view_tests {
             opened[0].ends_with("Source/Runtime/Core/Containers/Array.h"),
             "{opened:?}"
         );
+        // A file Solo can't open: only shown in File Explorer.
         click_path(&view, cx, "Binaries/PerfCmp.apk");
-        assert_eq!(performed(&view, cx), ["Open with Default Program"]);
+        assert_eq!(performed(&view, cx), ["Reveal in File Explorer"]);
         cx.simulate_modifiers_change(Modifiers::none());
 
         // "always": a menu for every link.
@@ -1014,11 +1044,14 @@ mod view_tests {
         tree["tools"] = json!({
             "setup.exe": "MZ\u{90}\u{0}\u{3}\u{0}\u{0}\u{0}\u{4}\u{0}",
             "build.bat": "@echo off\n",
+            "run.ps1": "Write-Output hi\n",
+            "app.js": "console.log(1)\n",
             "Solo.lnk": "L\u{0}\u{0}\u{0}\u{1}\u{14}\u{2}\u{0}",
+            "help.chm": "ITSF\u{3}\u{0}\u{0}\u{0}\u{60}\u{0}\u{0}\u{0}",
         });
         let (view, mut cx) = view_in(cx, tree).await;
         let cx = &mut cx;
-        for program in ["tools/setup.exe", "tools/build.bat", "tools/Solo.lnk"] {
+        for program in ["tools/setup.exe", "tools/Solo.lnk"] {
             // The menu: showing it first, running it last and said so.
             click_path(&view, cx, program);
             assert_eq!(
@@ -1037,10 +1070,29 @@ mod view_tests {
             assert_eq!(performed(&view, cx), ["Reveal in File Explorer"], "{program}");
             cx.simulate_modifiers_change(Modifiers::none());
         }
+        // Scripts are text: Solo opens them, the menu doesn't show.
+        for script in ["tools/build.bat", "tools/run.ps1", "tools/app.js"] {
+            click_path(&view, cx, script);
+            assert_eq!(shown(&view, cx), None, "{script}");
+            assert_eq!(performed(&view, cx).len(), 1, "{script}");
+            assert!(performed(&view, cx)[0].ends_with(script), "{script}");
+        }
+        // Any other file Solo can't open: Ctrl+click only shows it.
+        cx.simulate_modifiers_change(Modifiers::control());
+        for file in ["tools/help.chm", "Binaries/PerfCmp.apk"] {
+            click_path(&view, cx, file);
+            assert_eq!(performed(&view, cx), ["Reveal in File Explorer"], "{file}");
+        }
+        cx.simulate_modifiers_change(Modifiers::none());
         assert!(runs_when_opened(Path::new("x.EXE")));
         assert!(runs_when_opened(Path::new("a.ps1")));
         assert!(!runs_when_opened(Path::new("PerfCmp.apk")));
         assert!(!runs_when_opened(Path::new("KernelBase.dll")));
+        // Trailing dots and spaces, and a stream, don't hide it.
+        assert!(runs_when_opened(Path::new("setup.exe.")));
+        assert!(runs_when_opened(Path::new("setup.exe . ")));
+        assert!(runs_when_opened(Path::new("setup.exe:payload")));
+        assert!(runs_when_opened(Path::new("setup.exe::$DATA")));
     }
 
     #[gpui::test]

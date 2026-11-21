@@ -292,8 +292,8 @@ pub struct TerminalSettingsContent {
     /// itself (external web addresses, files Solo can't open, a file name
     /// several files have, a file only another project tab has), "always"
     /// for every link, "never" for none. Ctrl+click does the menu's first
-    /// item, except that it never runs a program: for those it shows the
-    /// file in File Explorer. With "never", a click resolves its link on its
+    /// item, except that a file Solo can't open is only shown in File
+    /// Explorer, never given to a program (which may run it). With "never", a click resolves its link on its
     /// own, without waiting for the hover to have found it.
     ///
     /// Default: "auto"
