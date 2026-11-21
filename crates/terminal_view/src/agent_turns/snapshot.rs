@@ -1172,8 +1172,6 @@ impl SnapshotStore {
         })
     }
 
-    /// SOLO: The ids of objects (`<tree>:<path>`, say), `None` for those
-    /// that aren't there (G59).
     /// SOLO: Whether each of `trees` is in the store (G59).
     pub(crate) fn has_trees(&self, trees: &[TreeId]) -> Result<Vec<bool>> {
         let mut input = Vec::new();
@@ -1194,6 +1192,8 @@ impl SnapshotStore {
             .collect())
     }
 
+    /// SOLO: The ids of objects (`<tree>:<path>`, say), `None` for those
+    /// that aren't there (G59).
     pub(crate) fn object_ids(&self, objects: &[String]) -> Result<Vec<Option<String>>> {
         let asked: Vec<bool> = objects
             .iter()

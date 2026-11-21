@@ -844,6 +844,21 @@ pub(crate) fn normalized_text(text: String) -> String {
     text
 }
 
+/// SOLO: `text` with `edits` (by offset in it, sorted, not overlapping).
+pub(crate) fn apply_edits(text: &str, edits: &[(Range<usize>, String)]) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (range, new_text) in edits {
+        let start = range.start.clamp(copied, text.len());
+        let end = range.end.clamp(start, text.len());
+        result.push_str(text.get(copied..start).unwrap_or_default());
+        result.push_str(new_text);
+        copied = end;
+    }
+    result.push_str(text.get(copied..).unwrap_or_default());
+    result
+}
+
 /// SOLO: The lines of a text as it is on disk: each line's text and its
 /// line break (`\r\n`, `\n`, a lone `\r`, or none at the end), so that
 /// they're the rows of its [`normalized_text`].
@@ -902,7 +917,10 @@ fn unchanged_rows(old: &str, new: &str) -> Vec<Option<usize>> {
 /// the accepted version as it was on disk, which is one of
 /// `accepted_on_disk` when it's known (else those of the lines next to
 /// them). When rejecting puts all of the accepted version back and its
-/// bytes are known, it's those bytes. `None` if `disk` isn't `before`.
+/// bytes are known, it's those bytes. `accepted_on_disk` are newest last:
+/// a newer one is the accepted version's own bytes rather than an older one
+/// with the same text (but other line breaks). `None` if `disk` isn't
+/// `before`.
 pub(crate) fn rejected_bytes(
     disk: &[u8],
     before: &str,
@@ -926,6 +944,7 @@ pub(crate) fn rejected_bytes(
     if after == accepted
         && let Some((text, _)) = references
             .iter()
+            .rev()
             .find(|(_, normalized)| normalized == accepted)
     {
         return Some(text.as_bytes().to_vec());
@@ -933,7 +952,7 @@ pub(crate) fn rejected_bytes(
     // The line breaks of the accepted version's rows, where known.
     let accepted_count = lines(accepted).len();
     let mut accepted_breaks: Vec<Option<&str>> = vec![None; accepted_count];
-    for (text, normalized) in &references {
+    for (text, normalized) in references.iter().rev() {
         let raw = raw_lines(text.strip_prefix('\u{feff}').unwrap_or(text));
         for (row, from) in unchanged_rows(normalized, accepted).into_iter().enumerate() {
             if accepted_breaks[row].is_none()
@@ -1425,6 +1444,17 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_edits() {
+        assert_eq!(
+            apply_edits(
+                "one\ntwo\nthree\n",
+                &[(0..0, "zero\n".into()), (4..8, String::new())]
+            ),
+            "zero\none\nthree\n"
+        );
+    }
+
+    #[test]
     fn test_raw_lines() {
         assert_eq!(
             raw_lines("a\r\nb\nc\rd"),
@@ -1514,6 +1544,23 @@ mod tests {
         assert_eq!(
             reject("a\r\nb\r\nc", "a\nb", "a\r\nb").as_deref(),
             Some("a\r\nb")
+        );
+        // A turn that only changed CRLF to LF, accepted, and then one that
+        // added a line: rejecting it gives back the LF the user accepted,
+        // not the CRLF from before.
+        let crlf = "a\r\nb\r\n".as_bytes().to_vec();
+        let lf = "a\nb\n".as_bytes().to_vec();
+        assert_eq!(
+            rejected_bytes(
+                b"a\nb\nadded\n",
+                "a\nb\nadded\n",
+                "a\nb\n",
+                "a\nb\n",
+                &[crlf, lf]
+            )
+            .map(|bytes| String::from_utf8(bytes).unwrap())
+            .as_deref(),
+            Some("a\nb\n")
         );
         // The disk isn't what the buffer had: nothing.
         assert_eq!(rejected_bytes(b"other\n", "a\n", "", "", &[]), None);

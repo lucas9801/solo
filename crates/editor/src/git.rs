@@ -96,15 +96,18 @@ impl Editor {
     }
 
     /// SOLO: Stores a review comment on `range` of the multibuffer, as
-    /// writing it in the review overlay there would.
+    /// writing it in the review overlay there would, and shows it there (in
+    /// its overlay, open as after writing it), without moving the focus.
     pub fn restore_review_comment(
         &mut self,
         range: Range<Anchor>,
         comment: String,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.buffer.read(cx).snapshot(cx);
-        let start = range.start.to_point(&snapshot);
+        let start = Point::new(range.start.to_point(&snapshot).row, 0);
+        let end = range.end.to_point(&snapshot);
         let file_path = snapshot
             .file_at(start)
             .map(|file: &Arc<dyn language::File>| file.path().clone())
@@ -114,6 +117,21 @@ impl Editor {
             hunk_start_anchor: snapshot.anchor_before(start),
         };
         self.add_review_comment(hunk_key, comment, range, cx);
+        let display = self.snapshot(window, cx);
+        let start_row = display
+            .display_snapshot
+            .point_to_display_point(start, Bias::Left)
+            .row();
+        let end_row = display
+            .display_snapshot
+            .point_to_display_point(end, Bias::Left)
+            .row();
+        self.open_diff_review_overlay(start_row..end_row, false, window, cx);
+    }
+
+    /// SOLO: Whether a review overlay is open, showing its comments.
+    pub fn diff_review_overlay_count(&self) -> usize {
+        self.diff_review_overlays.len()
     }
 }
 
@@ -637,6 +655,17 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_diff_review_overlay(display_range, true, window, cx);
+    }
+
+    /// SOLO: [`Self::show_diff_review_overlay`], focusing its input or not.
+    fn open_diff_review_overlay(
+        &mut self,
+        display_range: Range<DisplayRow>,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Range { start, end } = display_range.sorted();
 
         let buffer_snapshot = self.buffer.read(cx).snapshot(cx);
@@ -675,8 +704,10 @@ impl Editor {
             Self::hunk_keys_match(&overlay.hunk_key, &new_hunk_key, &buffer_snapshot)
         }) {
             // Just focus the existing overlay's prompt editor
-            let focus_handle = existing_overlay.prompt_editor.focus_handle(cx);
-            window.focus(&focus_handle, cx);
+            if focus {
+                let focus_handle = existing_overlay.prompt_editor.focus_handle(cx);
+                window.focus(&focus_handle, cx);
+            }
             return;
         }
 
@@ -763,8 +794,10 @@ impl Editor {
         });
 
         // Focus the prompt editor
-        let focus_handle = prompt_editor.focus_handle(cx);
-        window.focus(&focus_handle, cx);
+        if focus {
+            let focus_handle = prompt_editor.focus_handle(cx);
+            window.focus(&focus_handle, cx);
+        }
 
         cx.notify();
     }

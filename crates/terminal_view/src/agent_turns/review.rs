@@ -96,6 +96,60 @@ pub(crate) struct LoadedFile {
     pub turn_versions: Arc<Vec<(usize, Version, Version)>>,
 }
 
+/// SOLO: A file whose hunks were rejected: the pending file as the review
+/// left it, and what was rejected, for the agent.
+type RejectedFile = (Option<(String, Option<PendingFile>, bool)>, Vec<Rejection>);
+
+/// SOLO: The contents of `objects` of `store` that it has, each once.
+fn accepted_on_disk(store: &SnapshotStore, objects: Vec<String>) -> Vec<Vec<u8>> {
+    let ids = store.object_ids(&objects).log_err().unwrap_or_default();
+    let mut seen = HashSet::default();
+    let present: Vec<String> = objects
+        .into_iter()
+        .zip(ids)
+        .filter_map(|(object, id)| seen.insert(id?).then_some(object))
+        .collect();
+    store
+        .objects_contents(&present)
+        .log_err()
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// SOLO: Where `edits` of a text (sorted, by offset in it) are in the text
+/// they make: each one's offsets there.
+fn edits_after(edits: &[(Range<usize>, String)]) -> Vec<Range<usize>> {
+    let mut delta: isize = 0;
+    edits
+        .iter()
+        .map(|(range, text)| {
+            let start = (range.start as isize + delta).max(0) as usize;
+            delta += text.len() as isize - range.len() as isize;
+            start..start + text.len()
+        })
+        .collect()
+}
+
+/// SOLO: The rows of `text` each of `ranges` (offsets) has, as
+/// [`point_rows`] tells them.
+fn offset_edits_rows(text: &str, ranges: &[Range<usize>]) -> Vec<Range<u32>> {
+    let point = |offset: usize| -> Point {
+        let offset = offset.min(text.len());
+        let before = text.get(..offset).unwrap_or_default();
+        let row = before.matches('\n').count() as u32;
+        let column = before
+            .rfind('\n')
+            .map_or(before.len(), |ix| before.len() - ix - 1);
+        Point::new(row, column as u32)
+    };
+    ranges
+        .iter()
+        .map(|range| point_rows(&(point(range.start)..point(range.end))))
+        .collect()
+}
+
 /// A hunk of the diff shown, in its file.
 struct Hunk {
     buffer_range: Range<language::Anchor>,
@@ -166,6 +220,12 @@ pub(crate) struct AgentTurnReview {
     /// (it was closed, or Solo restarted), not in the editor yet: they're
     /// put there once their lines show.
     carried: Vec<ReviewComment>,
+    /// SOLO: Where each of `carried` is now, once that's looked for: its
+    /// file's buffer and rows.
+    carried_rows: Vec<Option<(language::BufferId, Range<u32>)>>,
+    carried_search: Task<()>,
+    /// SOLO: The window it's in, to show the comments from before in.
+    window: gpui::AnyWindowHandle,
     /// SOLO: What the pending changes shown were loaded from, to reload
     /// when that changes.
     shown: Option<ShownState>,
@@ -358,6 +418,9 @@ impl AgentTurnReview {
             } else {
                 Vec::new()
             },
+            carried_rows: Vec::new(),
+            carried_search: Task::ready(()),
+            window: window.window_handle(),
             shown: None,
             counted_open: std::cell::Cell::new(false),
             pending_page: true,
@@ -741,6 +804,8 @@ impl AgentTurnReview {
                 {
                     this.filter = TurnFilter::All;
                 }
+                // SOLO: where the comments from before are now.
+                this.find_carried_comments(cx);
             })
             .ok();
         });
@@ -1266,8 +1331,6 @@ impl AgentTurnReview {
                 continue;
             }
             let base = file.diff.read(cx).base_text(cx);
-            let accepted = base.text();
-            let before = buffer.text();
             let edits: Vec<(Range<language::Anchor>, String)> = hunks
                 .iter()
                 .map(|hunk| {
@@ -1280,6 +1343,18 @@ impl AgentTurnReview {
             let buffer = file.buffer.clone();
             let abs_path = file.abs_path.clone();
             let relative = file.path.clone();
+            // SOLO: written byte for byte, not as the buffer saves it: that
+            // would give every line the same line break. The buffer is
+            // changed once the file is written, so nothing changes if it
+            // can't be.
+            if self.project.read(cx).is_local() && buffer.read(cx).encoding().name() == "UTF-8" {
+                let accepted = base.text();
+                let path = self.agent_path(&abs_path, &relative, cx);
+                let save =
+                    self.write_rejected(buffer, abs_path, &relative, path, edits, accepted, cx);
+                saves.push((save, relative));
+                continue;
+            }
             let text = buffer.update(cx, |buffer, cx| {
                 buffer.edit(edits, None, cx);
                 buffer.text()
@@ -1306,17 +1381,14 @@ impl AgentTurnReview {
                 let has_changes = pending.accepted != pending.left;
                 (file.path.clone(), Some(pending.clone()), has_changes)
             });
-            // SOLO: written byte for byte, not as the buffer saves it: that
-            // would give every line the same line break.
-            let save = if self.project.read(cx).is_local()
-                && buffer.read(cx).encoding().name() == "UTF-8"
-            {
-                self.write_rejected(buffer, abs_path, &relative, before, text, accepted, cx)
-            } else {
-                self.project
-                    .update(cx, |project, cx| project.save_buffer(buffer, cx))
-            };
-            saves.push((save, update, rejections, relative));
+            let save = self
+                .project
+                .update(cx, |project, cx| project.save_buffer(buffer, cx));
+            let save = cx.background_spawn(async move {
+                save.await?;
+                anyhow::Ok((update, rejections))
+            });
+            saves.push((save, relative));
         }
         if !saves.is_empty() {
             self.save_rejections(saves, cx);
@@ -1346,27 +1418,36 @@ impl AgentTurnReview {
         cx.notify();
     }
 
-    /// SOLO: Writes the file `buffer` has at `abs_path` (`path` in the work
-    /// tree) after rejecting hunks made its text `after` from `before`: only
-    /// the lines rejecting changed, as they are in the accepted version, so
-    /// the rest keeps its line breaks and byte order mark (see
-    /// [`pending::rejected_bytes`]). Fails, writing nothing, if the file
-    /// isn't what the buffer had.
+    /// SOLO: Rejects `edits` of `buffer`'s file at `abs_path` (`path` in the
+    /// work tree, `agent_path` for the agent): writes only the lines
+    /// rejecting changes, as they are in the accepted version (whose text
+    /// is `accepted`), so the rest keeps its line breaks and byte order mark
+    /// (see [`pending::rejected_bytes`]); then makes the same edits in the
+    /// buffer. Fails, changing nothing, if the file isn't what the buffer
+    /// has, or the buffer changed meanwhile. Gives the pending file as the
+    /// review left it, and what was rejected, for the agent.
     #[allow(clippy::too_many_arguments)]
     fn write_rejected(
         &self,
         buffer: Entity<Buffer>,
         abs_path: PathBuf,
         path: &str,
-        before: String,
-        after: String,
+        agent_path: String,
+        edits: Vec<(Range<language::Anchor>, String)>,
         accepted: String,
         cx: &mut Context<Self>,
-    ) -> Task<anyhow::Result<()>> {
+    ) -> Task<anyhow::Result<RejectedFile>> {
         let fs = self.project.read(cx).fs().clone();
-        let version = buffer.read(cx).version();
+        let snapshot = buffer.read(cx).snapshot();
+        let version = snapshot.version().clone();
+        let before = snapshot.text();
+        let mut offset_edits: Vec<(Range<usize>, String)> = edits
+            .iter()
+            .map(|(range, text)| (range.to_offset(&snapshot), text.clone()))
+            .collect();
+        offset_edits.sort_by_key(|(range, _)| range.start);
         // The accepted version as it was on disk is in the turns' snapshots,
-        // when they have it.
+        // when they have it: newest last.
         let turns: Vec<AgentTurn> = AgentTurns::try_global(cx)
             .map(|turns| turns.read(cx).turns(self.terminal_id).cloned().collect())
             .unwrap_or_default();
@@ -1384,39 +1465,82 @@ impl AgentTurnReview {
                 ]
             })
             .collect();
-        cx.spawn(async move |_, cx| {
+        let after_ranges = edits_after(&offset_edits);
+        cx.spawn(async move |this, cx| {
             let disk = fs.load_bytes(&abs_path).await?;
-            let accepted_on_disk = cx
+            let (after, bytes) = cx
                 .background_spawn(async move {
-                    let Some(store) = store else {
-                        return Vec::new();
+                    let after = pending::apply_edits(&before, &offset_edits);
+                    if std::str::from_utf8(&disk).is_err() {
+                        anyhow::bail!(tr(
+                            "it isn't UTF-8 text on disk",
+                            "它在磁盘上不是 UTF-8 文本",
+                        ));
+                    }
+                    let accepted_on_disk = match store {
+                        Some(store) => accepted_on_disk(&store, objects),
+                        None => Vec::new(),
                     };
-                    let ids = store.object_ids(&objects).log_err().unwrap_or_default();
-                    let present: Vec<String> = objects
-                        .into_iter()
-                        .zip(ids)
-                        .filter(|(_, id)| id.is_some())
-                        .map(|(object, _)| object)
-                        .collect();
-                    store
-                        .objects_contents(&present)
-                        .log_err()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>()
-                })
-                .await;
-            let bytes =
-                pending::rejected_bytes(&disk, &before, &after, &accepted, &accepted_on_disk)
+                    let bytes = pending::rejected_bytes(
+                        &disk,
+                        &before,
+                        &after,
+                        &accepted,
+                        &accepted_on_disk,
+                    )
                     .context(tr(
-                        "it changed on disk; try again",
-                        "它在磁盘上被改过了，请再试一次",
+                        "it changed on disk since the page showed it; try again",
+                        "页面显示之后它在磁盘上又改过了，请再试一次",
                     ))?;
+                    anyhow::Ok((after, bytes))
+                })
+                .await?;
+            let unchanged = buffer.read_with(cx, |buffer, _| {
+                buffer.version() == version && !buffer.is_dirty() && !buffer.has_conflict()
+            });
+            if !unchanged {
+                anyhow::bail!(tr(
+                    "it changed in the editor meanwhile; try again",
+                    "这期间它在编辑器里改过了，请再试一次",
+                ));
+            }
             fs.write(&abs_path, &bytes).await?;
-            let mtime = fs.metadata(&abs_path).await?.map(|metadata| metadata.mtime);
-            buffer.update(cx, |buffer, cx| buffer.did_save(version, mtime, cx));
-            Ok(())
+            // Written: a time it can't tell is only a reload more later.
+            let mtime = fs
+                .metadata(&abs_path)
+                .await
+                .ok()
+                .flatten()
+                .map(|metadata| metadata.mtime);
+            let rejections: Vec<Rejection> = offset_edits_rows(&after, &after_ranges)
+                .into_iter()
+                .map(|rows| Rejection {
+                    path: agent_path.clone(),
+                    lines: Some(rows.start + 1..rows.end + 1),
+                })
+                .collect();
+            let update = this.update(cx, |this, cx| {
+                // The same edits in the buffer, if it's as it was (else it
+                // reloads what was written).
+                let same = buffer.read(cx).version() == version;
+                if same {
+                    buffer.update(cx, |buffer, cx| {
+                        buffer.edit(edits, None, cx);
+                        let version = buffer.version();
+                        buffer.did_save(version, mtime, cx);
+                    });
+                }
+                // Left as the review left it, here at once (so its own edit
+                // isn't taken for someone else's).
+                let buffer_id = buffer.read(cx).remote_id();
+                let ix = this.file_index(buffer_id, cx)?;
+                let file = &mut this.files[ix];
+                let pending = file.pending.as_mut()?;
+                pending.left = Version::Text(after.as_str().into());
+                let has_changes = pending.accepted != pending.left;
+                Some((file.path.clone(), Some(pending.clone()), has_changes))
+            })?;
+            Ok((update, rejections))
         })
     }
 
@@ -1425,21 +1549,16 @@ impl AgentTurnReview {
     /// the agent's change pending, and the page says why (G59).
     fn save_rejections(
         &mut self,
-        saves: Vec<(
-            Task<anyhow::Result<()>>,
-            Option<(String, Option<PendingFile>, bool)>,
-            Vec<Rejection>,
-            String,
-        )>,
+        saves: Vec<(Task<anyhow::Result<RejectedFile>>, String)>,
         cx: &mut Context<Self>,
     ) {
         cx.spawn(async move |this, cx| {
             let mut updates = Vec::new();
             let mut rejected = Vec::new();
             let mut failed = Vec::new();
-            for (save, update, rejections, path) in saves {
+            for (save, path) in saves {
                 match save.await {
-                    Ok(()) => {
+                    Ok((update, rejections)) => {
                         updates.extend(update);
                         rejected.extend(rejections);
                     }
@@ -1456,9 +1575,9 @@ impl AgentTurnReview {
                 }
                 if !failed.is_empty() {
                     let message = if is_chinese() {
-                        format!("保存失败，没有拒绝：{}", failed.join("、"))
+                        format!("没有拒绝：{}", failed.join("、"))
                     } else {
-                        format!("Failed to save, so not rejected: {}", failed.join(", "))
+                        format!("Not rejected: {}", failed.join(", "))
                     };
                     this.status = Some(match this.status.take() {
                         Some(status) => format!("{status} {message}").into(),
@@ -1806,13 +1925,6 @@ impl AgentTurnReview {
     }
 
     /// Takes the review comments out of the editor, with where they are.
-    fn take_comments(&mut self, cx: &mut Context<Self>) -> Vec<ReviewComment> {
-        let comments = self
-            .editor
-            .update(cx, |editor, cx| editor.take_review_comments(cx));
-        self.review_comments(comments, cx)
-    }
-
     /// SOLO: Review comments of the editor, with where they are.
     fn review_comments(
         &self,
@@ -1850,21 +1962,37 @@ impl AgentTurnReview {
     /// agent's terminal as one message (G59).
     fn send_to_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // SOLO: those from before first, as they were written first.
-        let mut comments = std::mem::take(&mut self.carried);
-        comments.extend(self.take_comments(cx));
-        let terminal_id = self.terminal_id;
-        let unsent = AgentTurns::try_global(cx)
-            .cloned()
-            .map(|turns| turns.update(cx, |turns, cx| turns.take_unsent(terminal_id, cx)))
-            .unwrap_or_default();
-        let mut rejected = unsent.rejected;
-        rejected.append(&mut self.rejected);
+        let mut comments = self.carried.clone();
+        let in_editor = self.editor.read(cx).review_comments();
+        comments.extend(self.review_comments(in_editor, cx));
+        let rejected = self.unsent_rejected(cx);
         if comments.is_empty() && rejected.is_empty() {
             return;
         }
         let message = agent_message(&comments, &rejected);
         let sent = tr("Sent to the agent.", "已发送给 agent。").to_string();
-        self.paste_to_agent(message, sent, window, cx);
+        if !self.paste_to_agent(message, sent, window, cx) {
+            // SOLO: only copied: still to send (G59).
+            let kept = tr(
+                "They're still here, to send later.",
+                "这些内容仍保留，之后可以再发送。",
+            );
+            self.status = self
+                .status
+                .take()
+                .map(|status| format!("{status} {kept}").into());
+            return;
+        }
+        // Sent: gone from here and from what's kept.
+        self.carried.clear();
+        self.carried_rows.clear();
+        self.rejected.clear();
+        self.editor
+            .update(cx, |editor, cx| editor.take_review_comments(cx));
+        let terminal_id = self.terminal_id;
+        if let Some(turns) = AgentTurns::try_global(cx).cloned() {
+            turns.update(cx, |turns, cx| turns.take_unsent(terminal_id, cx));
+        }
     }
 
     /// SOLO: Notes hunks rejected, for the next message to the agent: with
@@ -1914,26 +2042,76 @@ impl AgentTurnReview {
         });
     }
 
-    /// SOLO: Puts the comments from before in the editor, on the lines they
-    /// were on (or where those lines are now), once those lines show.
+    /// SOLO: Looks for where the comments from before are now, in the
+    /// background: the lines they were on, if those still have the code
+    /// they were on, else the nearest lines that do (see [`comment_rows`]).
+    fn find_carried_comments(&mut self, cx: &mut Context<Self>) {
+        if self.carried.is_empty() {
+            return;
+        }
+        let files: Vec<(String, language::BufferId, String)> = self
+            .files
+            .iter()
+            .map(|file| {
+                let buffer = file.buffer.read(cx);
+                (
+                    self.agent_path(&file.abs_path, &file.path, cx),
+                    buffer.remote_id(),
+                    buffer.text(),
+                )
+            })
+            .collect();
+        let carried = self.carried.clone();
+        self.carried_search = cx.spawn(async move |this, cx| {
+            let rows = cx
+                .background_spawn({
+                    let carried = carried.clone();
+                    async move {
+                        carried
+                            .iter()
+                            .map(|comment| {
+                                let (_, buffer_id, text) =
+                                    files.iter().find(|(path, _, _)| *path == comment.path)?;
+                                Some((*buffer_id, comment_rows(text, comment)?))
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                // Not if they changed meanwhile: looked for again then.
+                if this.carried != carried {
+                    return;
+                }
+                this.carried_rows = rows;
+                this.place_carried_comments(cx);
+            })
+            .ok();
+        });
+    }
+
+    /// SOLO: Puts the comments from before in the editor where they were
+    /// found, once those lines show, and shows them there.
     fn place_carried_comments(&mut self, cx: &mut Context<Self>) {
-        if self.carried.is_empty() || !matches!(self.mode, Mode::Pending) {
+        if self.carried.is_empty()
+            || self.carried_rows.len() != self.carried.len()
+            || !matches!(self.mode, Mode::Pending)
+        {
             return;
         }
         let snapshot = self.multibuffer.read(cx).snapshot(cx);
         let mut placed = Vec::new();
-        for (ix, comment) in self.carried.iter().enumerate() {
-            let Some(file) = self
-                .files
-                .iter()
-                .find(|file| self.agent_path(&file.abs_path, &file.path, cx) == comment.path)
-            else {
+        for (ix, found) in self.carried_rows.iter().enumerate() {
+            let Some((buffer_id, rows)) = found else {
                 continue;
             };
-            let buffer = file.buffer.read(cx).snapshot();
-            let Some(rows) = comment_rows(&buffer, comment) else {
+            let Some(file_ix) = self.file_index(*buffer_id, cx) else {
                 continue;
             };
+            let buffer = self.files[file_ix].buffer.read(cx).snapshot();
+            if rows.end > buffer.max_point().row {
+                continue;
+            }
             let start = buffer.anchor_after(Point::new(rows.start, 0));
             let end = buffer.anchor_before(Point::new(rows.end, buffer.line_len(rows.end)));
             let (Some(start), Some(end)) = (
@@ -1942,18 +2120,29 @@ impl AgentTurnReview {
             ) else {
                 continue;
             };
-            placed.push((ix, start..end, comment.comment.clone()));
+            placed.push((ix, start..end, self.carried[ix].comment.clone()));
         }
         if placed.is_empty() {
             return;
         }
         for (ix, _, _) in placed.iter().rev() {
             self.carried.remove(*ix);
+            self.carried_rows.remove(*ix);
         }
-        self.editor.update(cx, |editor, cx| {
-            for (_, range, comment) in placed {
-                editor.restore_review_comment(range, comment, cx);
-            }
+        // Shown in the editor's review overlays, which need the window: not
+        // while this is being updated.
+        let editor = self.editor.clone();
+        let window = self.window;
+        cx.defer(move |cx| {
+            window
+                .update(cx, |_, window, cx| {
+                    editor.update(cx, |editor, cx| {
+                        for (_, range, comment) in placed {
+                            editor.restore_review_comment(range, comment, window, cx);
+                        }
+                    })
+                })
+                .log_err();
         });
     }
 
@@ -1998,14 +2187,15 @@ impl AgentTurnReview {
         }
     }
 
-    /// Pastes `message` into the agent's prompt, or else copies it.
+    /// Pastes `message` into the agent's prompt, or else copies it. SOLO:
+    /// Whether it pasted it.
     fn paste_to_agent(
         &mut self,
         message: String,
         sent: String,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let terminal_view = self.terminal_view.upgrade();
         let workspace = terminal_view
             .as_ref()
@@ -2020,7 +2210,7 @@ impl AgentTurnReview {
                 .into(),
             );
             cx.notify();
-            return;
+            return false;
         };
         if !crate::agent_context::can_paste_to_agent(terminal_view.read(cx), &message, cx) {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
@@ -2032,7 +2222,7 @@ impl AgentTurnReview {
                 .into(),
             );
             cx.notify();
-            return;
+            return false;
         }
         terminal_view.update(cx, |view, cx| {
             view.terminal
@@ -2044,6 +2234,7 @@ impl AgentTurnReview {
         window.defer(cx, move |window, cx| {
             crate::agent_context::reveal_terminal_view(&workspace, &terminal_view, window, cx)
         });
+        true
     }
 
     /// Opens a diagnostic's file at its position.
@@ -2846,30 +3037,23 @@ impl AgentTurnReview {
     }
 }
 
-/// SOLO: The rows (from 0) of `buffer` a comment from before is on: the
-/// lines it was on, if they still have the code it was on; else the nearest
-/// lines that do.
-fn comment_rows(buffer: &BufferSnapshot, comment: &ReviewComment) -> Option<Range<u32>> {
-    let start = comment.lines.start().saturating_sub(1);
-    let count = comment.lines.end().saturating_sub(*comment.lines.start());
-    let max_row = buffer.max_point().row;
-    let code_at = |start: u32| -> Option<String> {
-        let end = start.checked_add(count).filter(|end| *end <= max_row)?;
-        Some(
-            buffer
-                .text_for_range(Point::new(start, 0)..Point::new(end, buffer.line_len(end)))
-                .collect(),
-        )
+/// SOLO: The rows (from 0: the first and the last) of `text` a comment from
+/// before is on: the lines it was on, if they still have the code it was
+/// on; else the nearest lines in the file that do.
+fn comment_rows(text: &str, comment: &ReviewComment) -> Option<Range<u32>> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let code: Vec<&str> = comment.code.split('\n').collect();
+    let count = code.len();
+    let start = comment.lines.start().saturating_sub(1) as usize;
+    let matches = |row: usize| {
+        lines
+            .get(row..row + count)
+            .is_some_and(|found| found == code)
     };
-    let matches = |start: u32| code_at(start).is_some_and(|code| code == comment.code);
-    if matches(start) {
-        return Some(start..start + count);
-    }
-    (1..=max_row)
-        .flat_map(|distance| [start.checked_sub(distance), start.checked_add(distance)])
-        .flatten()
-        .find(|row| matches(*row))
-        .map(|row| row..row + count)
+    (0..lines.len())
+        .filter(|row| matches(*row))
+        .min_by_key(|row| row.abs_diff(start))
+        .map(|row| row as u32..(row + count - 1) as u32)
 }
 
 /// SOLO: A review page of the terminal closed (G59).
@@ -5132,6 +5316,85 @@ mod tests {
         assert_eq!(pending, vec!["crlf.txt", "deleted.txt"]);
     }
 
+    /// SOLO: Rejecting a file that changed on disk since the page showed it
+    /// changes nothing (not the buffer, the page or the pending changes) and
+    /// says why; once the page has the change, rejecting works (G59).
+    #[gpui::test]
+    async fn test_rejecting_a_file_changed_on_disk(cx: &mut TestAppContext) {
+        let mut test = mirrored(cx, &[("a.txt", &ten_lines(&[]))]).await;
+        test.start_turn();
+        test.write("a.txt", &ten_lines(&[(2, "TWO")])).await;
+        test.end_turn();
+        let review = test.open_review();
+        let path = test.repository.join("a.txt");
+        let terminal_id = test.terminal_view.entity_id();
+        let pending_before = test.turns.read_with(test.cx, |turns, _| {
+            turns.pending_changes(terminal_id).unwrap().files["a.txt"].clone()
+        });
+
+        // Someone changes it, and the page doesn't know yet.
+        test.fs.pause_events();
+        let changed = ten_lines(&[(2, "TWO"), (9, "nine, by someone")]);
+        test.fs.write(&path, changed.as_bytes()).await.unwrap();
+        let hunks = hunks_of(&review, "a.txt", test.cx);
+        review.update(test.cx, |review, cx| review.reject_hunks(hunks, cx));
+        test.cx.run_until_parked();
+        assert_eq!(test.fs.load(&path).await.unwrap(), changed);
+        review.read_with(test.cx, |review, cx| {
+            let status = review.status.clone().unwrap_or_default();
+            assert!(status.contains("a.txt"), "{status}");
+            let buffer = review.files[0].buffer.read(cx);
+            assert!(!buffer.is_dirty() && !buffer.has_conflict());
+            assert_eq!(buffer.text(), ten_lines(&[(2, "TWO")]));
+            assert!(review.unsent_rejected(cx).is_empty());
+        });
+        assert_eq!(hunks_of(&review, "a.txt", test.cx).len(), 1);
+        let pending_after = test.turns.read_with(test.cx, |turns, _| {
+            turns.pending_changes(terminal_id).unwrap().files["a.txt"].clone()
+        });
+        assert_eq!(pending_after, pending_before);
+
+        // The page gets the change; rejecting again works, and leaves it.
+        test.fs.unpause_events_and_flush();
+        test.cx.run_until_parked();
+        std::fs::write(&path, &changed).unwrap();
+        let hunks = hunks_of(&review, "a.txt", test.cx);
+        assert_eq!(hunks.len(), 1);
+        review.update(test.cx, |review, cx| review.reject_hunks(hunks, cx));
+        test.cx.run_until_parked();
+        assert_eq!(
+            test.fs.load(&path).await.unwrap(),
+            ten_lines(&[(9, "nine, by someone")])
+        );
+        review.read_with(test.cx, |review, cx| {
+            assert_eq!(review.unsent_rejected(cx).len(), 1);
+        });
+    }
+
+    /// SOLO: A comment from before is found where its code is now, in all of
+    /// the file: also when it was further down than the file now goes.
+    #[test]
+    fn test_comment_rows() {
+        let comment = |lines: std::ops::RangeInclusive<u32>, code: &str| ReviewComment {
+            path: "a.txt".into(),
+            lines,
+            code: code.into(),
+            comment: "?".into(),
+        };
+        let text = "one\ntwo\nthree\nfour\n";
+        assert_eq!(
+            comment_rows(text, &comment(2..=3, "two\nthree")),
+            Some(1..2)
+        );
+        // Moved up, past the end of the file now.
+        assert_eq!(comment_rows(text, &comment(40..=40, "four")), Some(3..3));
+        // The nearest of two.
+        let text = "x\na\nx\nx\nx\na\n";
+        assert_eq!(comment_rows(text, &comment(5..=5, "a")), Some(5..5));
+        assert_eq!(comment_rows(text, &comment(1..=1, "a")), Some(1..1));
+        assert_eq!(comment_rows(text, &comment(1..=1, "gone")), None);
+    }
+
     /// SOLO: After a restart (or reloading the workspace), the review still
     /// has the turn its pending changes are from, and what wasn't sent to
     /// the agent yet: the hunks rejected and the comments, which then go to
@@ -5161,7 +5424,7 @@ mod tests {
         test.cx.run_until_parked();
         test.sync_to_disk("a.txt").await;
         // On b.txt's fifth line, as the gutter's button there gives it.
-        review.update(test.cx, |review, cx| {
+        let (start, end) = review.update(test.cx, |review, cx| {
             let file = review
                 .files
                 .iter()
@@ -5175,8 +5438,12 @@ mod tests {
             let end = snapshot
                 .anchor_in_excerpt(buffer.anchor_before(Point::new(4, buffer.line_len(4))))
                 .unwrap();
+            (start, end)
+        });
+        // As writing it in the overlay there does.
+        review.update_in(test.cx, |review, window, cx| {
             review.editor.update(cx, |editor, cx| {
-                editor.restore_review_comment(start..end, "Why five?".to_string(), cx)
+                editor.restore_review_comment(start..end, "Why five?".to_string(), window, cx)
             })
         });
         test.cx.run_until_parked();
@@ -5255,11 +5522,35 @@ mod tests {
             assert_eq!(comments.len(), 1);
             assert_eq!(comments[0].lines, 5..=5);
             assert_eq!(comments[0].comment, "Why five?");
+            // Shown, in its review overlay, as after writing it.
+            assert_eq!(review.editor.read(cx).diff_review_overlay_count(), 1);
         });
         assert_eq!(label(&review, test.cx), both);
         assert_eq!(hunks_of(&review, "b.txt", test.cx).len(), 1);
 
-        // Sent: then there's nothing to send.
+        // The agent isn't running: the message is only copied, and what it
+        // has is still there to send.
+        review.update_in(test.cx, |review, window, cx| {
+            review.send_to_agent(window, cx)
+        });
+        test.cx.run_until_parked();
+        assert_eq!(label(&review, test.cx), both);
+        let unsent = test
+            .turns
+            .read_with(test.cx, |turns, _| turns.unsent(terminal_id));
+        assert_eq!((unsent.rejected.len(), unsent.comments.len()), (1, 1));
+
+        // It runs, and takes pastes: sent, then there's nothing to send.
+        test.terminal_view.update(test.cx, |view, cx| {
+            view.terminal.update(cx, |terminal, cx| {
+                terminal.write_raw_output(b"\x1b[?2004h", cx)
+            });
+        });
+        test.cx.run_until_parked();
+        test.terminal_view.update(test.cx, |view, cx| {
+            view.set_agent_status_for_test("claude", crate::agent_status::AgentStatus::Idle);
+            assert!(crate::agent_context::can_paste_to_agent(view, "a\nb", cx));
+        });
         review.update_in(test.cx, |review, window, cx| {
             review.send_to_agent(window, cx)
         });
