@@ -1576,6 +1576,49 @@ mod tests {
         assert_eq!(hover_target.unwrap().tooltip, format!("{chaos}:883"));
     }
 
+    // SOLO: outside a git repository, folders `file_scan_depth` (5) deep or
+    // deeper aren't indexed. A link with folders in it is still found, on
+    // disk; one naming only a file deeper down isn't.
+    #[gpui::test]
+    async fn test_deep_folders_outside_git(cx: &mut TestAppContext) {
+        let mut test_path_like = init_test(
+            cx,
+            vec![(
+                path!("/Engine"),
+                json!({ "Source": { "Runtime": { "Core": { "Public": { "Containers": {
+                    "Array.h": lines(900),
+                } } } } } }),
+            )],
+            vec![path!("/Engine")],
+        )
+        .await;
+        let mut resolve = async |maybe_path: &str, working_directory: &str| {
+            test_path_like(
+                HoveredWord {
+                    word: maybe_path.to_string(),
+                    word_match: Range::new(Point::new(0, 0), Point::new(0, 0)),
+                    id: 0,
+                },
+                target_at(maybe_path, working_directory),
+                BackgroundPathChecks::LocalFileSystem,
+            )
+            .await
+            .1
+            .map(|target| target.path().clone())
+        };
+        let core = PathBuf::from(path!("/Engine/Source/Runtime/Core/Public/Containers/Array.h"));
+        let found = resolve("Source/Runtime/Core/Public/Containers/Array.h:883", path!("/Engine"))
+            .await
+            .expect("a path with folders is checked on disk");
+        assert_eq!((found.path, found.row), (core.clone(), Some(883)));
+        let found = resolve("Containers/Array.h:12", path!("/Engine/Source/Runtime/Core/Public"))
+            .await
+            .expect("relative to the terminal's folder");
+        assert_eq!(found.path, core);
+        // Only a file name, from the root: not indexed, not found.
+        assert_eq!(resolve("Array.h:883", path!("/Engine")).await, None);
+    }
+
     // SOLO: the ranking and the guess flag the link menu shows.
     #[gpui::test]
     async fn test_same_name_candidates_and_their_order(cx: &mut TestAppContext) {
