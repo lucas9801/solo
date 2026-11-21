@@ -1659,7 +1659,7 @@ mod tests {
             panic!("mod.rs should resolve");
         };
         assert_eq!(link.total, 81);
-        assert!(link.target.path().path.ends_with("z_mine/deep/mod.rs") || link.target.path().path.ends_with("z_mine\deep\mod.rs"));
+        assert!(link.target.path().path.ends_with("z_mine/deep/mod.rs"));
         assert!(!link.ambiguous);
     }
 
