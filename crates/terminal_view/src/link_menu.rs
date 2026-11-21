@@ -985,8 +985,9 @@ mod view_tests {
         let cx = &mut cx;
         click_path(&view, cx, "Array.h:883");
         assert!(view.read_with(cx, |view, _| view.context_menu.is_some()));
-        // Down, Enter: the second file.
-        cx.simulate_keystrokes("down enter");
+        // Nothing is selected at first: Down selects the first file, Down
+        // again the second; Enter opens it.
+        cx.simulate_keystrokes("down down enter");
         cx.run_until_parked();
         let opened = performed(&view, cx);
         assert_eq!(opened.len(), 1, "{opened:?}");
