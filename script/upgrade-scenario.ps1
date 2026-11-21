@@ -100,6 +100,7 @@ $reposDir = Join-Path $Root 'repos'
 $out = Join-Path $Root 'out'
 New-Item -ItemType Directory -Force $out | Out-Null
 Set-ScenarioEnvironment $Root $Language
+Assert-FakeAgentsFirst $Root
 
 function Wait-Until([scriptblock]$condition, [int]$seconds) {
     $deadline = (Get-Date).AddSeconds($seconds)

@@ -302,3 +302,21 @@ function Invoke-SoloRestart($process, [string]$Exe) {
     }
     throw 'Solo didn''t start again after restarting'
 }
+
+# Stops unless the fake agents come first on PATH, as Solo's wrappers pick
+# them: never a real claude or codex (they need an account, and would use the
+# user's own config).
+function Assert-FakeAgentsFirst([string]$Root) {
+    $fakebin = Join-Path $Root 'fakebin'
+    foreach ($agent in 'claude', 'codex') {
+        $found = @(Get-Command -Name $agent -CommandType Application, ExternalScript -All -ErrorAction SilentlyContinue)
+        if ($found.Count -eq 0 -or (Split-Path -Parent $found[0].Source) -ne $fakebin) {
+            throw "the first $agent on PATH isn't the fake one in ${fakebin}: $(($found | ForEach-Object { $_.Source }) -join ', ')"
+        }
+        # Solo's codex wrapper takes the .ps1 beside a .cmd in that folder.
+        if (-not (Test-Path (Join-Path $fakebin "$agent.ps1"))) {
+            throw "$agent.ps1 is missing in $fakebin"
+        }
+    }
+    Write-Step 'fake claude and codex come first on PATH'
+}

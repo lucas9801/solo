@@ -87,6 +87,7 @@ Write-Step "prepared $Root (projects: $($Projects -join ', '); data: $dataDir)"
 
 if ($Exe) {
     Set-ScenarioEnvironment $Root $Language
+Assert-FakeAgentsFirst $Root
     $first = Join-Path $reposDir $Projects[0]
     $solo = Start-Solo $Exe $dataDir $first
     Start-Sleep -Seconds 8
