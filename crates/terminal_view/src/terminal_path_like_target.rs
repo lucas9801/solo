@@ -43,12 +43,20 @@ fn possible_hover_target(
     cx: &mut Context<TerminalView>,
     #[cfg(test)] background_path_checks: BackgroundPathChecks,
 ) -> Task<()> {
-    // SOLO: files only other tabs have aren't links (yet): not searched for
-    // on every hover.
+    // SOLO: files only other tabs have are links only for the link menu to
+    // offer: with the menu off, they aren't searched for on every hover.
+    let link_menu =
+        <terminal::terminal_settings::TerminalSettings as settings::Settings>::get_global(cx)
+            .link_menu;
+    let purpose = if link_menu == settings::TerminalLinkMenu::Never {
+        LinkPurpose::HoverHereOnly
+    } else {
+        LinkPurpose::Hover
+    };
     let resolution_task = resolve_path_like_target(
         workspace,
         path_like_target,
-        LinkPurpose::HoverHereOnly,
+        purpose,
         cx,
         #[cfg(test)]
         background_path_checks,

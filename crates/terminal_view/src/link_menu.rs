@@ -40,6 +40,9 @@ pub(crate) enum LinkMenuItem {
     /// Opens the file (or folder) in Solo.
     Open(OpenTarget),
     OpenWithDefaultProgram(PathBuf),
+    /// Opening a program or a file that starts one (`.exe`, `.bat`, `.lnk`,
+    /// ...) runs it: never the first row, so Ctrl+click never runs it.
+    RunWithDefaultProgram(PathBuf),
     RevealInFileManager(PathBuf),
     CopyPath(PathBuf),
     /// One of several files of the link's name, with its folder relative to
@@ -66,6 +69,9 @@ impl LinkMenuItem {
             Self::Open(_) => tr("Open", "打开").into(),
             Self::OpenWithDefaultProgram(_) => {
                 tr("Open with Default Program", "用默认程序打开").into()
+            }
+            Self::RunWithDefaultProgram(_) => {
+                tr("Run It (Open with Default Program)", "运行（用默认程序打开）").into()
             }
             Self::RevealInFileManager(_) => tr(
                 "Reveal in File Explorer",
@@ -143,7 +149,14 @@ pub(crate) fn menu_items(link: &ClickedLink, setting: TerminalLinkMenu) -> Vec<L
             PathLinkResolution::Here(link) => {
                 let target = &link.target;
                 let path = target.path().path.clone();
-                if target.is_file() && !solo_can_open {
+                if target.is_file() && runs_when_opened(&path) {
+                    vec![
+                        RevealInFileManager(path.clone()),
+                        CopyPath(path.clone()),
+                        Separator,
+                        RunWithDefaultProgram(path),
+                    ]
+                } else if target.is_file() && !solo_can_open {
                     vec![
                         OpenWithDefaultProgram(path.clone()),
                         RevealInFileManager(path.clone()),
@@ -215,6 +228,29 @@ fn candidate_folder(target: &OpenTarget) -> String {
     }
 }
 
+/// Extensions Windows runs rather than opens, on top of `PATHEXT`.
+const RUNNABLE_EXTENSIONS: &[&str] = &[
+    "exe", "com", "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "msi",
+    "msp", "mst", "scr", "cpl", "lnk", "url", "hta", "pif", "reg", "jar", "appref-ms", "application",
+    "gadget", "msc", "scf", "settingcontent-ms", "library-ms", "diagcab", "appx",
+    "appxbundle", "msix", "msixbundle",
+];
+
+/// Whether opening `path` with its default program would run something:
+/// a program, a script, a shortcut. Those are never opened by Ctrl+click.
+pub(crate) fn runs_when_opened(path: &Path) -> bool {
+    let Some(extension) = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()) else {
+        return false;
+    };
+    RUNNABLE_EXTENSIONS.contains(&extension.as_str())
+        || std::env::var("PATHEXT").is_ok_and(|pathext| {
+            pathext
+                .split(';')
+                .filter_map(|entry| entry.trim().strip_prefix('.'))
+                .any(|entry| entry.eq_ignore_ascii_case(&extension))
+        })
+}
+
 /// Whether a web address is on this computer.
 pub(crate) fn is_local_url(url: &str) -> bool {
     let Ok(url) = url::Url::parse(url) else {
@@ -267,6 +303,7 @@ fn icon_for(item: &LinkMenuItem) -> ui::IconName {
         LinkMenuItem::OpenInBrowser(_) | LinkMenuItem::OpenWithDefaultProgram(_) => {
             IconName::ArrowUpRight
         }
+        LinkMenuItem::RunWithDefaultProgram(_) => IconName::Warning,
         LinkMenuItem::OpenInSolo(_) => IconName::Public,
         LinkMenuItem::CopyLink(_) | LinkMenuItem::CopyPath(_) => IconName::Copy,
         LinkMenuItem::RevealInFileManager(_) => IconName::Folder,
@@ -307,6 +344,9 @@ mod view {
             cx: &mut Context<Self>,
         ) {
             let setting = TerminalSettings::get_global(cx).link_menu;
+            // A web address clicked meanwhile wins over a path still being
+            // resolved.
+            self.link_menu_task = Task::ready(());
             let modifiers = window.modifiers();
             // Ctrl+Shift+click opens it the other way, as before.
             if modifiers.control && modifiers.shift {
@@ -349,8 +389,16 @@ mod view {
                 #[cfg(test)]
                 workspace::path_link::BackgroundPathChecks::LocalFileSystem,
             );
+            // A key pressed (or a scroll, or another click) while the link is
+            // resolved cancels it: what the user does next isn't interrupted
+            // by a menu or a file opening.
+            self.link_menu_keystrokes = Some(cx.observe_keystrokes(|this, _, _, _| {
+                this.link_menu_task = Task::ready(());
+                this.link_menu_keystrokes = None;
+            }));
             self.link_menu_task = cx.spawn_in(window, async move |this, cx| {
                 let Some(resolution) = resolution.await else {
+                    this.update(cx, |this, _| this.link_menu_keystrokes = None).ok();
                     return;
                 };
                 let single_file = match &resolution {
@@ -387,6 +435,7 @@ mod view {
                 };
                 let items = menu_items(&link, setting);
                 this.update_in(cx, |this, window, cx| {
+                    this.link_menu_keystrokes = None;
                     if items.is_empty() {
                         if let ClickedLink::Path {
                             resolution: PathLinkResolution::Here(link),
@@ -449,7 +498,8 @@ mod view {
                         path.to_string_lossy().into_owned(),
                     ));
                 }
-                LinkMenuItem::OpenWithDefaultProgram(path) => cx.open_with_system(&path),
+                LinkMenuItem::OpenWithDefaultProgram(path)
+                | LinkMenuItem::RunWithDefaultProgram(path) => cx.open_with_system(&path),
                 LinkMenuItem::RevealInFileManager(path) => cx.reveal_path(&path),
                 LinkMenuItem::Open(target) | LinkMenuItem::Candidate { target, .. } => {
                     open_target_in(workspace, target, window, cx);
@@ -490,13 +540,14 @@ mod view {
         }
 
         /// Where the link menu goes: 4 pixels below the clicked link, at
-        /// its start.
-        fn link_menu_position(&self, cx: &App) -> Point<Pixels> {
+        /// its start, where the link is now. `None` when it's no longer on
+        /// the screen (the output scrolled).
+        fn link_menu_position(&self, cx: &App) -> Option<Point<Pixels>> {
             let terminal = self.terminal.read(cx);
             let content = terminal.last_content();
             let bounds = content.terminal_bounds;
             let Some(word) = terminal.opened_word() else {
-                return bounds.bounds.origin;
+                return Some(bounds.bounds.origin);
             };
             let display_offset = content.display_offset as i32;
             let start = word.word_match.start();
@@ -506,11 +557,15 @@ mod view {
             } else {
                 0
             };
-            let row = (end.line + display_offset + 1).max(0) as f32;
-            Point {
-                x: bounds.bounds.origin.x + bounds.cell_width * column as f32,
-                y: bounds.bounds.origin.y + bounds.line_height * row + px(4.),
+            let row = end.line + display_offset;
+            let rows = (bounds.bounds.size.height / bounds.line_height).floor() as i32;
+            if row < 0 || (rows > 0 && row >= rows) {
+                return None;
             }
+            Some(Point {
+                x: bounds.bounds.origin.x + bounds.cell_width * column as f32,
+                y: bounds.bounds.origin.y + bounds.line_height * (row + 1) as f32 + px(4.),
+            })
         }
 
         /// Shows the link menu with `items` under the clicked link.
@@ -520,7 +575,9 @@ mod view {
             window: &mut Window,
             cx: &mut Context<Self>,
         ) {
-            let position = self.link_menu_position(cx);
+            let Some(position) = self.link_menu_position(cx) else {
+                return;
+            };
             #[cfg(test)]
             {
                 self.shown_link_menu = Some(items.clone());
@@ -599,8 +656,10 @@ mod view {
             cx.notify();
         }
 
-        /// Closes the link menu (scrolling, typing).
+        /// Closes the link menu, or cancels resolving a clicked link
+        /// (scrolling, typing).
         pub(crate) fn dismiss_link_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+            self.link_menu_task = Task::ready(());
             if self.link_menu_keystrokes.take().is_some() {
                 if let Some((menu, _, _)) = self.context_menu.take()
                     && menu.focus_handle(cx).contains_focused(window, cx)
@@ -947,6 +1006,63 @@ mod view_tests {
             click_path(&view, cx, link);
             assert_eq!(shown(&view, cx), None, "{link}");
         }
+    }
+
+    #[gpui::test]
+    async fn programs_are_never_run_by_a_click(cx: &mut TestAppContext) {
+        let mut tree = engine();
+        tree["tools"] = json!({
+            "setup.exe": "MZ\u{90}\u{0}\u{3}\u{0}\u{0}\u{0}\u{4}\u{0}",
+            "build.bat": "@echo off\n",
+            "Solo.lnk": "L\u{0}\u{0}\u{0}\u{1}\u{14}\u{2}\u{0}",
+        });
+        let (view, mut cx) = view_in(cx, tree).await;
+        let cx = &mut cx;
+        for program in ["tools/setup.exe", "tools/build.bat", "tools/Solo.lnk"] {
+            // The menu: showing it first, running it last and said so.
+            click_path(&view, cx, program);
+            assert_eq!(
+                shown(&view, cx).unwrap(),
+                [
+                    "Reveal in File Explorer",
+                    "Copy Path",
+                    "",
+                    "Run It (Open with Default Program)"
+                ],
+                "{program}"
+            );
+            // Ctrl+click: shown in File Explorer, not run.
+            cx.simulate_modifiers_change(Modifiers::control());
+            click_path(&view, cx, program);
+            assert_eq!(performed(&view, cx), ["Reveal in File Explorer"], "{program}");
+            cx.simulate_modifiers_change(Modifiers::none());
+        }
+        assert!(runs_when_opened(Path::new("x.EXE")));
+        assert!(runs_when_opened(Path::new("a.ps1")));
+        assert!(!runs_when_opened(Path::new("PerfCmp.apk")));
+        assert!(!runs_when_opened(Path::new("KernelBase.dll")));
+    }
+
+    #[gpui::test]
+    async fn typing_or_scrolling_cancels_a_pending_click(cx: &mut TestAppContext) {
+        let (view, mut cx) = view_in(cx, engine()).await;
+        let cx = &mut cx;
+        // A key right after the click: no menu, nothing opened.
+        view.update_in(cx, |view, window, cx| {
+            view.open_path_link(target("Array.h:883"), window, cx)
+        });
+        cx.simulate_keystrokes("a");
+        cx.run_until_parked();
+        assert_eq!(shown(&view, cx), None);
+        assert!(performed(&view, cx).is_empty());
+        // A scroll right after the click: the same.
+        view.update_in(cx, |view, window, cx| {
+            view.open_path_link(target("main.cpp"), window, cx);
+            view.dismiss_link_menu(window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(shown(&view, cx), None);
+        assert!(performed(&view, cx).is_empty());
     }
 
     #[gpui::test]

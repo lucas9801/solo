@@ -292,7 +292,9 @@ pub struct TerminalSettingsContent {
     /// itself (external web addresses, files Solo can't open, a file name
     /// several files have, a file only another project tab has), "always"
     /// for every link, "never" for none. Ctrl+click does the menu's first
-    /// item.
+    /// item, except that it never runs a program: for those it shows the
+    /// file in File Explorer. With "never", a click resolves its link on its
+    /// own, without waiting for the hover to have found it.
     ///
     /// Default: "auto"
     pub link_menu: Option<TerminalLinkMenu>,
