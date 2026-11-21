@@ -430,7 +430,7 @@ mod tests {
         };
 
         // Restored after a first restart, from the saved terminal.
-        let mut session = Some(saved.clone());
+        let mut session = Some(saved);
         let mut item_id = 0;
         for restart in 1..=2 {
             let (_, terminal, view) =
