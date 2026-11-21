@@ -18,6 +18,9 @@ https://github.com/user-attachments/assets/85627f07-1bb5-4f68-8199-c3afbdc9fa3b
 - **Diagnostics per turn.** After a turn, Solo has the language servers check the changed files and tells you how many errors and warnings the turn **added**, and how many it fixed.
 - **Navigate while reviewing.** The review is an editor: go to definition, find references and search all work, and each hunk is labeled with the function it's in.
 - **Click to look.** A file path in the terminal's output opens with a click: code in the editor, Markdown in a rendered preview, images in the image viewer. A `mermaid` block in an agent's output opens as a diagram. External web addresses, files Solo can't open, a file name several files have and files only another project tab has show a small menu instead (`terminal.link_menu`).
+
+  ![The link menu: clicking a web address in the agent's output shows a menu first: open it in the browser or in Solo, or copy it](../../media/en/link-menu.png)
+
 - **Documents too.** Plans and designs the agent writes open in a rendered preview (Mermaid diagrams included). Select text, comment, and send the comments back together; when the document changes again, Solo tells you which parts. [More →](features/documents.md)
 
 ## Judge: keep or undo, safely

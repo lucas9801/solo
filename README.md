@@ -44,7 +44,7 @@ Each project folder is a workspace with a tab in the title bar, holding its own 
 
 What an agent changed is pending until you accept it, and its terminal tab shows "N files to review". Open it: each file is compared with what you last accepted of it, so changes from several turns show together, each hunk marked with its turn. Keep or reject each hunk (also after a later turn changed the same file), comment on lines and send the comments and what you rejected to the agent at once. Changes you don't review are accepted when the next turn ends; your own edits and what you commit aren't pending. Solo also tells you how many errors and warnings the turn **added**, and how many it fixed. You can roll back to before any turn, and undo the rollback; snapshots are kept in Solo's own folder, never touching your branch, index or stash. [More →](docs/site/en/features/review.md)
 
-![Per-turn review: the files Claude Code's turn changed, a review comment on a line of code, and sending the comments to the agent at the top](docs/media/en/review.png)
+![Pending changes: the files Claude Code changed over two turns reviewed together, each hunk marked with its turn, a review comment on a line of code, and sending the comments and rejections to the agent at the top](docs/media/en/review.png)
 
 ### Agent timeline
 
@@ -63,6 +63,8 @@ A file path in the terminal's output opens with a click: code in the editor, Mar
 Links Solo shouldn't just open show a small menu instead: a web address outside this computer (open in the browser or in Solo, copy it), a file Solo can't open such as an `.apk` or `.dll` (open it with its program, show it in File Explorer, copy the path), a file name several files have when it isn't clear which one is meant (pick one), and a file only another project tab has (switch to that tab). `Ctrl`+click does the menu's first option, except that a file Solo can't open is only shown in File Explorer, never handed to a program; for programs and shortcuts (`.exe`, `.lnk`, ...) running it is the menu's last option. The `terminal.link_menu` setting (Settings › Terminal › "Menu When Clicking Links") turns the menu on for every link (`always`) or off (`never`).
 
 ![Links in the terminal: clicking a path in the agent's output opens the file in the editor at that line](docs/media/en/links.gif)
+
+![The link menu: clicking a web address in the agent's output shows a menu first: open it in the browser or in Solo, or copy it](docs/media/en/link-menu.png)
 
 ### Mermaid diagrams and document review
 
@@ -104,7 +106,7 @@ Before a language server, Node.js and the like is first downloaded, Solo asks on
 
 A newer version shows an update button at the right of the title bar, with no notification; its menu sums up the release and offers "Update and Restart", "Install When Solo Quits", the release notes or skipping the version.
 
-![The update button: "Update to 2.5.2" at the right of the title bar, with its menu open](docs/media/en/update.png)
+![The update button: shown at the right of the title bar when a newer version is out, its menu with a summary of the release and the update options](docs/media/en/update.png)
 
 ### All features
 
