@@ -743,6 +743,66 @@ pub struct PathLikeTarget {
     pub position_files: Vec<String>,
 }
 
+/// SOLO: the schemes of links handed to the system (the browser, the mail
+/// program) when clicked. Others (`ms-msdt:`, `search-ms:`, `ms-settings:`,
+/// custom protocol handlers) can start programs: they aren't links.
+const SYSTEM_LINK_SCHEMES: &[&str] = &["http", "https", "mailto"];
+
+/// SOLO: what a link found in the terminal leads to, or `None` when Solo
+/// doesn't follow it. `file:` URLs are paths (opened in Solo, never by the
+/// system, which would run a program); network paths, and schemes other than
+/// [`SYSTEM_LINK_SCHEMES`], aren't links.
+pub(crate) fn navigation_target(
+    maybe_url_or_path: &str,
+    is_url: bool,
+    working_directory: Option<PathBuf>,
+    context_paths: Vec<String>,
+    position_files: Vec<String>,
+) -> Option<MaybeNavigationTarget> {
+    let path = if is_url {
+        let scheme = maybe_url_or_path
+            .split_once(':')
+            .map(|(scheme, _)| scheme.to_ascii_lowercase())
+            .unwrap_or_default();
+        if scheme == "file" {
+            let rest = &maybe_url_or_path[scheme.len() + 1..];
+            let rest = rest.strip_prefix("//").unwrap_or(rest);
+            let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            // `file://server/share/x`: on another computer.
+            if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+                return None;
+            }
+            urlencoding::decode(path)
+                .map(|decoded| decoded.into_owned())
+                .unwrap_or(path.to_owned())
+        } else if SYSTEM_LINK_SCHEMES.contains(&scheme.as_str()) {
+            return Some(MaybeNavigationTarget::Url(maybe_url_or_path.to_string()));
+        } else {
+            return None;
+        }
+    } else {
+        maybe_url_or_path.to_string()
+    };
+    if path_is_on_network(&path) {
+        return None;
+    }
+    Some(MaybeNavigationTarget::PathLike(PathLikeTarget {
+        maybe_path: path,
+        working_directory,
+        context_paths,
+        position_files,
+    }))
+}
+
+/// SOLO: whether `path` is on another computer (`\\server\share\x`,
+/// `//server/share/x`, `\\?\UNC\...`): such a path isn't touched to find
+/// out what it is, as that would reach out to the network.
+fn path_is_on_network(path: &str) -> bool {
+    let path = path.replace('/', "\\");
+    (path.starts_with("\\\\") && !path.starts_with("\\\\?\\") && !path.starts_with("\\\\.\\"))
+        || path.to_ascii_uppercase().starts_with("\\\\?\\UNC\\")
+}
+
 /// A string inside terminal, potentially useful as a URI that can be opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MaybeNavigationTarget {
@@ -2666,28 +2726,19 @@ impl Terminal {
         let match_line = range.start().line;
         let working_directory = self.cwd_at_line(match_line, history_size);
 
-        let target = if is_url {
-            if let Some(path) = maybe_url_or_path.strip_prefix("file://") {
-                let decoded_path = urlencoding::decode(path)
-                    .map(|decoded| decoded.into_owned())
-                    .unwrap_or(path.to_owned());
-
-                MaybeNavigationTarget::PathLike(PathLikeTarget {
-                    maybe_path: decoded_path,
-                    working_directory,
-                    context_paths,
-                    position_files,
-                })
-            } else {
-                MaybeNavigationTarget::Url(maybe_url_or_path.clone())
+        // SOLO: a link Solo doesn't follow (another scheme, a network path)
+        // is no link at all.
+        let Some(target) = navigation_target(
+            &maybe_url_or_path,
+            is_url,
+            working_directory,
+            context_paths,
+            position_files,
+        ) else {
+            if prev_hovered_word.is_some() {
+                cx.emit(Event::NewNavigationTarget(None));
             }
-        } else {
-            MaybeNavigationTarget::PathLike(PathLikeTarget {
-                maybe_path: maybe_url_or_path.clone(),
-                working_directory,
-                context_paths,
-                position_files,
-            })
+            return;
         };
 
         if open {
@@ -3717,13 +3768,18 @@ impl Terminal {
             if self.selection_phase == SelectionPhase::Ended {
                 let mouse_cell_index =
                     content_index_for_mouse(position, &self.last_content.terminal_bounds);
-                if let Some(link) = self
+                if self
                     .last_content
                     .cells
                     .get(mouse_cell_index)
                     .and_then(|cell| cell.hyperlink())
+                    .is_some()
                 {
-                    cx.open_url(link.uri());
+                    // SOLO: a program's link (OSC 8) goes where any link
+                    // does (see `navigation_target`), never straight to the
+                    // system: a `file:` link to a program would run it.
+                    self.events
+                        .push_back(InternalEvent::FindHyperlink(position, true));
                 } else if e.modifiers.secondary(cx)
                     || (setting.open_links_on_click
                         && e.click_count <= 1
@@ -7877,5 +7933,77 @@ mod tests {
                 (Some("Build".to_string()), "Finished".to_string()),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod link_target_tests {
+    use super::*;
+
+    fn target(text: &str, is_url: bool) -> Option<MaybeNavigationTarget> {
+        navigation_target(text, is_url, None, Vec::new(), Vec::new())
+    }
+
+    fn path(text: &str) -> Option<MaybeNavigationTarget> {
+        Some(MaybeNavigationTarget::PathLike(PathLikeTarget {
+            maybe_path: text.to_string(),
+            working_directory: None,
+            context_paths: Vec::new(),
+            position_files: Vec::new(),
+        }))
+    }
+
+    // SOLO: a `file:` link to a program was handed to the system, which ran
+    // it. It's a path now, opened in Solo (or shown as a file it can't open).
+    #[test]
+    fn file_links_are_paths_never_system_links() {
+        assert_eq!(
+            target("file:///C:/tools/setup.exe", true),
+            path("/C:/tools/setup.exe")
+        );
+        assert_eq!(
+            target("file:///C:/My%20Tools/setup.exe", true),
+            path("/C:/My Tools/setup.exe")
+        );
+        // `localhost` is this computer.
+        assert_eq!(target("FILE://localhost/C:/x.bat", true), path("/C:/x.bat"));
+    }
+
+    #[test]
+    fn network_paths_are_no_links() {
+        assert_eq!(target("file://server/share/setup.exe", true), None);
+        assert_eq!(target(r"\\server\share\setup.exe", false), None);
+        assert_eq!(target("//server/share/setup.exe", false), None);
+        assert_eq!(target(r"\\?\UNC\server\share\x.exe", false), None);
+        // Local long paths and devices aren't the network.
+        assert_eq!(target(r"\\?\C:\x.txt", false), path(r"\\?\C:\x.txt"));
+        assert_eq!(target(r"C:\tools\setup.exe", false), path(r"C:\tools\setup.exe"));
+    }
+
+    #[test]
+    fn only_web_and_mail_links_go_to_the_system() {
+        for url in [
+            "https://example.com/a",
+            "http://localhost:5173/",
+            "mailto:someone@example.com",
+            "HTTPS://EXAMPLE.COM",
+        ] {
+            assert_eq!(
+                target(url, true),
+                Some(MaybeNavigationTarget::Url(url.to_string())),
+                "{url}"
+            );
+        }
+        for url in [
+            "ms-msdt:/id PCWDiagnostic",
+            "search-ms:query=x",
+            "ms-settings:privacy",
+            "someapp://open?x=1",
+            "ssh://host",
+            "ftp://host/x",
+            "magnet:?xt=urn:btih:x",
+        ] {
+            assert_eq!(target(url, true), None, "{url}");
+        }
     }
 }
