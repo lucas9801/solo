@@ -3215,9 +3215,10 @@ mod tests {
         // from, so what's committed doesn't hide what's pending.
         committed_repository(
             &repository,
-            &[("a.txt", &lines(&[(2, "old 2")])), ("b.txt", "b\n")],
+            &[("a.txt", &lines(&[(2, "old 2")])), ("b.txt", "b0\n")],
         );
         std::fs::write(repository.join("a.txt"), lines(&[])).unwrap();
+        std::fs::write(repository.join("b.txt"), "b\n").unwrap();
         let terminal_view = display_terminal(cx);
         let terminal_id = terminal_view.entity_id();
         let turns = cx.update(|cx| AgentTurns::global(cx));
