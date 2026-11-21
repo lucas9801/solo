@@ -52,9 +52,9 @@ Claude Code 和 Codex 的会话按轮列出：每一轮的提示、读过和改�
 
 ![Agent 时间线：右边按轮列出 Claude Code 这次会话读过和改过的文件、运行的命令和回答](docs/media/zh/timeline.png)
 
-### 关掉 Solo，agent 照样在跑
+### 更新重启、甚至崩溃，都不打断 agent
 
-每个终端的 shell 跑在一个小的后台进程里。退出 Solo、更新重启，甚至 Solo 崩溃，正在运行的 agent 和编译都会继续；Solo 再打开时自动连回去，画面和期间的输出都在。空闲的 shell 随 Solo 一起结束。没能保留下来的 agent，重启后会提示接着上次的会话。
+每个终端的 shell 跑在一个小的后台进程里。Solo 更新重启，甚至崩溃，正在运行的 agent 和编译都会继续；Solo 再打开时自动连回去，画面、期间的输出和 agent 的状态都在。自己退出 Solo 时，有 agent 在跑会先问，和关窗口一样，确认后结束它们（设置 `terminal.keep_running_on_quit` 可以让它们继续跑）。空闲的 shell 随 Solo 一起结束。没能保留下来的 agent，重启后会提示接着上次的会话。
 
 ### 终端里的链接一点就开
 
@@ -178,7 +178,7 @@ agent 写的计划和设计文档在预览里打开，选中文字写批注，�
 
 **终端常驻**
 
-- 跑着 agent 或命令的终端在 Solo 退出、更新、崩溃后继续运行，重新打开时连回去，画面完整恢复。
+- 跑着 agent 或命令的终端在 Solo 更新重启、崩溃后继续运行，重新打开时连回去，画面完整恢复，agent 照样认得出来。正常退出 Solo 时有 agent 在跑会先问，确认后结束。
 - 没能保留下来的 agent 终端，重启后提示接着上次的会话（Claude Code、Codex、Copilot CLI、OpenCode、Gemini CLI、Cursor CLI、Aider）。
 
 **更新**

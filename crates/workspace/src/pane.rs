@@ -1974,11 +1974,38 @@ impl Pane {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<impl Future<Output = bool> + use<>> {
+        let items: Vec<_> = items.iter().map(|item| (item.boxed_clone(), None)).collect();
+        Self::confirm_ending_programs_and(&items, &[], close_label, window, cx)
+    }
+
+    /// SOLO: [`Self::confirm_ending_programs`], also asking about programs
+    /// running in tabs not open yet (when quitting).
+    /// The items come with the name of the project tab they're in, when the
+    /// prompt is about several tabs (closing a window, quitting): each row
+    /// then says which tab.
+    pub(crate) fn confirm_ending_programs_and(
+        items: &[(Box<dyn ItemHandle>, Option<SharedString>)],
+        background: &[crate::solo_quit::BackgroundProgram],
+        close_label: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<impl Future<Output = bool> + use<>> {
+        let chinese = util::i18n::is_chinese();
         let running = items
             .iter()
-            .filter_map(|item| Some((item.tab_content_text(0, cx), item.running_program(cx)?)))
+            .filter_map(|(item, tab)| {
+                let program = item.running_program(cx)?;
+                let title: SharedString = match tab {
+                    Some(tab) => project_tab_title(tab, false, chinese).into(),
+                    None => item.tab_content_text(0, cx),
+                };
+                Some((title, program))
+            })
+            .chain(background.iter().map(|background| {
+                let tab: SharedString = project_tab_title(&background.tab, true, chinese).into();
+                (tab, background.program.clone())
+            }))
             .collect::<Vec<_>>();
-        let chinese = util::i18n::is_chinese();
         let (message, detail) = match running.as_slice() {
             [] => return None,
             [(_, program)] => (
@@ -2007,16 +2034,7 @@ impl Pane {
                 Some(
                     running
                         .iter()
-                        .map(|(title, program)| match (&program.status, chinese) {
-                            (Some(status), true) => {
-                                format!("{}（{status}），位于 {title}", program.name)
-                            }
-                            (None, true) => format!("{}，位于 {title}", program.name),
-                            (Some(status), false) => {
-                                format!("{} ({status}) in {title}", program.name)
-                            }
-                            (None, false) => format!("{} in {title}", program.name),
-                        })
+                        .map(|(title, program)| ending_program_row(program, title, chinese))
                         .join("\n"),
                 ),
             ),
@@ -5255,6 +5273,58 @@ impl Render for DraggedTab {
             .child(label)
             .render(window, cx)
             .font(ui_font)
+    }
+}
+
+/// SOLO: a project tab, as the prompt about ending programs names it.
+fn project_tab_title(tab: &str, not_opened: bool, chinese: bool) -> String {
+    match (not_opened, chinese) {
+        (false, true) => format!("{tab} 标签"),
+        (false, false) => format!("the {tab} tab"),
+        (true, true) => format!("{tab} 标签（未打开）"),
+        (true, false) => format!("the {tab} tab (not opened)"),
+    }
+}
+
+/// SOLO: a program the prompt says closing would end, and where it runs.
+fn ending_program_row(program: &crate::item::RunningProgram, title: &str, chinese: bool) -> String {
+    match (&program.status, chinese) {
+        (Some(status), true) => format!("{}（{status}），位于 {title}", program.name),
+        (None, true) => format!("{}，位于 {title}", program.name),
+        (Some(status), false) => format!("{} ({status}) in {title}", program.name),
+        (None, false) => format!("{} in {title}", program.name),
+    }
+}
+
+#[cfg(test)]
+mod ending_program_tests {
+    use super::*;
+
+    /// SOLO: a row of the prompt names the project tab the program runs
+    /// in, opened or not, in Chinese and in English.
+    #[test]
+    fn test_ending_program_rows() {
+        let codex = crate::item::RunningProgram {
+            name: "codex".into(),
+            status: None,
+        };
+        let claude = crate::item::RunningProgram {
+            name: "claude".into(),
+            status: Some("Working".into()),
+        };
+        let row = |program: &crate::item::RunningProgram, tab: &str, not_opened: bool, chinese: bool| {
+            ending_program_row(program, &project_tab_title(tab, not_opened, chinese), chinese)
+        };
+        assert_eq!(row(&codex, "DragonNest", false, true), "codex，位于 DragonNest 标签");
+        assert_eq!(row(&codex, "DragonNest", false, false), "codex in the DragonNest tab");
+        assert_eq!(
+            row(&claude, "solo", true, true),
+            "claude（Working），位于 solo 标签（未打开）"
+        );
+        assert_eq!(
+            row(&claude, "solo", true, false),
+            "claude (Working) in the solo tab (not opened)"
+        );
     }
 }
 

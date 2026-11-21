@@ -45,6 +45,6 @@ Solo 是一个给 AI agent 用的编辑器，基于 [Zed](https://github.com/zed
 ## 现在的状态
 
 - **只有 Windows 版**，用 [GitHub 上的安装程序](https://github.com/lucas9801/solo/releases/latest)（未签名）安装，或者从 [Microsoft Store](https://get.microsoft.com/installer/download/9NBW452JVWN6)（[商店页面](https://apps.microsoft.com/detail/9NBW452JVWN6)）安装，都在 Solo 里更新。
-- **关掉 Solo，agent 照样在跑。** 每个终端的 shell 跑在一个小的后台进程里：退出 Solo、更新重启，甚至 Solo 崩溃，正在运行东西（agent、编译）的终端都会继续跑，Solo 再打开时自动连回去，画面也都在。空闲的 shell 还是随 Solo 一起结束。
+- **更新重启、甚至崩溃，都不打断 agent。** 每个终端的 shell 跑在一个小的后台进程里：Solo 更新重启，甚至崩溃，正在运行东西（agent、编译）的终端都会继续跑，Solo 再打开时自动连回去，画面和 agent 状态也都在。正常退出 Solo 时，有 agent 在跑会先问，确认后结束。空闲的 shell 还是随 Solo 一起结束。
 - 不用注册账号，不发送遥测。默认只会定期检查更新（可以关掉），其余网络访问都由你用到的功能触发，详见[隐私说明](../../guide/zh-CN.md#9-隐私与网络)。下载语言服务等工具前先问你，离线模式下只访问本机和局域网。
 - 开源，GPL-3.0。

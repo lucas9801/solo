@@ -24,7 +24,7 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
 
 **右键菜单“通过 Solo Code 打开”**（GitHub 安装版叫“通过 Solo 打开”）：在文件、文件夹、文件夹空白处和驱动器上都有。打开文件夹时，Solo 没在运行就启动并打开它；已在运行就在现有窗口里加一个工作区标签并切过去，这个文件夹已经有标签时直接切到那个标签。打开文件时，放进包含它的那个标签，没有就放进当前标签，不会新开窗口。卸载时右键菜单会一起删掉。
 
-两种安装都有 `solo.exe`、`solo-cli.exe`（agent 用的命令行）、`solo-agent-hook.exe`（Claude Code 用它上报状态）、`solo-update-helper.exe`、`solo-terminal-host.exe`（运行终端的 shell，让它能在 Solo 关掉后继续跑）、`OpenConsole.exe` 和 `conpty.dll`（终端运行时），以及几份许可证文件。
+两种安装都有 `solo.exe`、`solo-cli.exe`（agent 用的命令行）、`solo-agent-hook.exe`（Claude Code 用它上报状态）、`solo-update-helper.exe`、`solo-terminal-host.exe`（运行终端的 shell，让它能在 Solo 更新重启后继续跑）、`OpenConsole.exe` 和 `conpty.dll`（终端运行时），以及几份许可证文件。
 
 ## 3. 更新
 
@@ -167,12 +167,14 @@ Solo 不会在 agent 工作时自动打开它改的文件。
 - 每个终端都有 `SOLO_BROWSER_CDP=http://127.0.0.1:<端口>`。其他 agent（Copilot CLI、OpenCode）可以在自己的 MCP 配置里加一个运行 `npx -y @playwright/mcp@0.0.85 --cdp-endpoint $SOLO_BROWSER_CDP` 的服务器。
 - 网页里打开的新窗口显示为编辑区里的标签页，不抢焦点。agent 自己新建的标签页（Playwright 的“新标签页”）会在 Solo 外面单独开一个窗口，所以让 agent 用已经打开的标签页。至少要开着一个浏览器标签页，agent 才能找到浏览器。
 
-### 关掉 Solo，agent 照样在跑
-每个终端的 shell 跑在一个小的后台进程 `solo-terminal-host.exe` 里。Solo 退出、更新重启，甚至崩溃时，正在运行东西（agent，或者编译之类的命令）的终端会在那里继续跑；Solo 再打开那个工作区时会自动连回去，期间的输出也都在。空闲的 shell 还是随 Solo 一起结束；关掉终端标签会结束里面运行的东西。
+### 更新重启、甚至崩溃，都不打断 agent
+每个终端的 shell 跑在一个小的后台进程 `solo-terminal-host.exe` 里。Solo 更新重启（“更新并重启”，或商店版的更新），甚至崩溃时，正在运行东西（agent，或者编译之类的命令）的终端会在那里继续跑；Solo 再打开那个工作区时会自动连回去，期间的输出也都在，agent 也照样认得出来（状态点、标签上的名字）。空闲的 shell 还是随 Solo 一起结束；关掉终端标签会结束里面运行的东西。
 
-- 所以退出和更新时不再因为终端里的 agent 而询问；关闭标签或窗口时仍然会问。关闭 Solo 的最后一个窗口算作退出。
+- 更新时不因为终端里的 agent 而询问。自己退出 Solo（菜单退出、关最后一个窗口、Alt+F4）时，和关标签、关窗口一样先问：“退出并结束 N 个程序”会结束它们，“取消”什么都不关。重启后还没点开的工作区标签里留着在跑的终端，也会按标签列在里面。
+- 设了 `"terminal": {"confirm_close": "never"}` 时，退出不问，直接结束。
+- 想在退出时也让它们继续跑（和更新重启一样）：`"terminal": {"keep_running_on_quit": true}`。
+- 留着在跑、但所在工作区标签还没点开的终端，会等那个标签：点开时它就在里面。
 - 每个后台进程会把 Solo 发给它的指令和它结束的原因记在 Solo 日志目录的 `terminal-host-<日期>.log` 里（保留一周）。
-- 关闭方法：`"terminal": {"keep_running_on_quit": false}`，之后新开的终端跑在 Solo 里面，随 Solo 结束。
 - 如果某个后台进程自己出了问题，它的终端就结束了；重启后会按下面的方式提示继续会话。
 
 ### 命令输入框
@@ -339,7 +341,7 @@ Solo 自己加的设置写在 `"terminal"` 下面：
 | `ide_tools` | `true` | 以 MCP 服务的形式给 Claude Code 和 Codex 提供 Solo 的只读 IDE 工具（符号、定义、引用、诊断） |
 | `more_agent_hooks` | `true` | 每次会话给 Pi、oh-my-pi、Kilo Code CLI、Gemini CLI、Qwen Code 加上状态上报 |
 | `global_agent_hooks` | `[]` | 允许 Solo 往自己配置里加状态 hooks 的 agent（`"kimi"`、`"mastracode"`） |
-| `keep_running_on_quit` | `true` | Solo 退出、更新或崩溃时，正在运行东西的终端继续运行，之后自动连回去 |
+| `keep_running_on_quit` | `false` | 自己退出 Solo 时，正在运行东西的终端也继续运行（更新重启和崩溃时总是继续）；false 时先问，确认后结束 |
 | `agent_usage_display` | `"always"` | 运行中的 agent 的上下文、模型和思考强度、首字和速度、本轮用时和 token 显示在终端底部的细栏里（窗口窄时整段省略：先省掉本会话，再省掉本轮，再省掉首字和速度，再省掉模型，最后只留上下文进度条和百分比），标签上显示上下文圆环和百分比；`"tooltip"` 只在标签提示里显示 |
 | `agent_commands` | `[]` | 把其他程序也当作agent |
 | `agent_task_command` | `"claude"` | 新建agent任务时运行的命令 |

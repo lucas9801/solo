@@ -52,9 +52,9 @@ Claude Code and Codex sessions are listed turn by turn: each prompt, the files r
 
 ![Agent timeline: on the right, the turns of a Claude Code session with the files it read and changed, the commands it ran and its answer](docs/media/en/timeline.png)
 
-### Agents keep running when Solo closes
+### Updates and crashes don't stop your agents
 
-Each terminal's shell runs in a small background process. When Solo quits, restarts for an update or even crashes, the agents and builds that are running keep going; when Solo opens again it connects to them, with the screen and the output printed meanwhile. Idle shells end with Solo. A terminal whose agent couldn't be kept offers to continue its session after a restart.
+Each terminal's shell runs in a small background process. When Solo restarts for an update, or even crashes, the agents and builds that are running keep going; when Solo opens again it connects to them, with the screen, the output printed meanwhile and the agent's status. Quitting Solo yourself asks first when agents are running, as closing a window does, and then ends them (`terminal.keep_running_on_quit` keeps them running instead). Idle shells end with Solo. A terminal whose agent couldn't be kept offers to continue its session after a restart.
 
 ### Click links in the terminal
 
@@ -178,7 +178,7 @@ A newer version shows an update button at the right of the title bar, with no no
 
 **Terminals that keep running**
 
-- Terminals running an agent or a command keep running when Solo quits, updates or crashes, and Solo connects to them again when it opens, with the whole screen back.
+- Terminals running an agent or a command keep running when Solo restarts for an update or crashes, and Solo connects to them again when it opens, with the whole screen back and the agent recognized. Quitting Solo asks first when agents are running, then ends them.
 - An agent terminal that couldn't be kept offers to continue its session after a restart (Claude Code, Codex, Copilot CLI, OpenCode, Gemini CLI, Cursor CLI, Aider).
 
 **Updates**

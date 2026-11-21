@@ -164,6 +164,10 @@ pub fn init(cx: &mut App) {
     agent_board::init(cx);
     workspace_terminals::init(cx);
     workspace_grouping::init(cx);
+    // SOLO: quitting asks about, and ends, terminals left running whose tab
+    // isn't open yet.
+    #[cfg(windows)]
+    lone_hosts::init(cx);
     // SOLO: Solo's IDE tools for agents in its terminals.
     solo_ide_tools::init(cx);
     sync_global_agent_hooks(cx);
@@ -278,6 +282,9 @@ pub struct TerminalView {
     /// when it connected again to the host still running it: to tell the
     /// agent among what runs under its shell (see `reconnected_agent`).
     reconnected_agent_hint: Option<String>,
+    /// SOLO: as if a terminal host held the console.
+    #[cfg(test)]
+    pub(crate) hosted_for_test: bool,
     agent_activity: agent_status::AgentActivity,
     /// SOLO: which workspace tab the terminal belongs in.
     grouping: workspace_grouping::GroupingState,
@@ -436,6 +443,10 @@ impl TerminalView {
                 }
             }),
             cx.observe_global::<SettingsStore>(Self::settings_changed),
+            // SOLO: the user quit: what runs ends with Solo.
+            workspace::solo_quit::observe_quitting(cx, |terminal_view, cx| {
+                terminal_view.update_keep_running(cx);
+            }),
             cx.on_app_quit(|terminal_view, cx| {
                 let keep = terminal_view.update_keep_running(cx);
                 if let Some(pipe) = terminal_view.terminal.read(cx).host_pipe() {
@@ -480,6 +491,8 @@ impl TerminalView {
             restored_from: None,
             saved_host: None,
             reconnected_agent_hint: None,
+            #[cfg(test)]
+            hosted_for_test: false,
             agent_activity: Default::default(),
             grouping: Default::default(),
             restored_at_startup: false,
@@ -1523,9 +1536,10 @@ impl TerminalView {
         dispatch_context
     }
 
-    /// SOLO: tells the terminal's host whether to outlive Solo (quitting,
-    /// closing the window or crashing): while the terminal runs an agent or a
-    /// command, so the next Solo finds it still running.
+    /// SOLO: tells the terminal's host whether to outlive Solo (restarting
+    /// for an update, crashing, or quitting with `keep_running_on_quit`):
+    /// while the terminal runs an agent or a command, so the next Solo finds
+    /// it still running; not once the user quit Solo otherwise.
     fn update_keep_running(&self, cx: &App) -> bool {
         let terminal = self.terminal.read(cx);
         // A terminal an earlier Solo left running was busy then; its host
@@ -1537,8 +1551,23 @@ impl TerminalView {
         let keep = self.agent_status().is_some()
             || unknown
             || matches!(running_program::running_command(terminal), Some((_, true)));
+        // SOLO: the user quit Solo (and confirmed ending what runs): only
+        // restarting for an update, or a crash, leaves it running.
+        let keep = keep
+            && !(workspace::solo_quit::is_user_quitting(cx)
+                && !TerminalSettings::get_global(cx).keep_running_on_quit);
         terminal.keep_running_after_quit(keep);
         keep
+    }
+
+    /// SOLO: whether a terminal host holds the terminal's console, so what
+    /// runs in it can outlive Solo.
+    pub(crate) fn has_host(&self, cx: &App) -> bool {
+        #[cfg(test)]
+        if self.hosted_for_test {
+            return true;
+        }
+        self.terminal.read(cx).host_pipe().is_some()
     }
 
     /// SOLO: whether the terminal uses the terminal host `pipe`: its own, or
@@ -2572,7 +2601,13 @@ impl Item for TerminalView {
     }
 
     fn keeps_running_after_quit(&self, cx: &App) -> bool {
-        self.terminal.read(cx).host_pipe().is_some()
+        self.has_host(cx)
+            && (workspace::solo_quit::is_restarting(cx)
+                || TerminalSettings::get_global(cx).keep_running_on_quit)
+    }
+
+    fn keeps_running_after_restart(&self, cx: &App) -> bool {
+        self.has_host(cx)
     }
 
     fn running_program(&self, cx: &App) -> Option<workspace::item::RunningProgram> {

@@ -1260,10 +1260,11 @@ impl TerminalBuilder {
         // allocation / acquiring a controlling terminal fails with `ENOTTY`.
         // When set, run the command as a plain subprocess instead.
         let no_pty = HeadlessTerminal::is_enabled(cx);
-        // SOLO: shells run in a terminal host, to outlive Solo when needed.
+        // SOLO: shells run in a terminal host, to outlive Solo restarting for
+        // an update, or crashing (`keep_running_on_quit` is only about
+        // quitting).
         #[cfg(windows)]
-        let use_host = cx.has_global::<settings::SettingsStore>()
-            && TerminalSettings::get_global(cx).keep_running_on_quit;
+        let use_host = cx.has_global::<settings::SettingsStore>();
         #[cfg(windows)]
         let solo_going = host::solo_going(cx);
         #[cfg(not(windows))]

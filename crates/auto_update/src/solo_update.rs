@@ -912,8 +912,9 @@ pub fn running_program_names(cx: &App) -> Vec<String> {
         .collect()
 }
 
-/// The programs running in Solo's windows that quitting would end, e.g.
-/// agents in terminals (not those that keep running in a terminal host).
+/// The programs running in Solo's windows that restarting to install an
+/// update would end, e.g. agents in terminals (not those that keep running in
+/// a terminal host).
 fn running_programs(cx: &App) -> Vec<RunningProgram> {
     cx.windows()
         .into_iter()
@@ -925,7 +926,7 @@ fn running_programs(cx: &App) -> Vec<RunningProgram> {
                 .read(cx)
                 .items_with_panels(cx)
                 .iter()
-                .filter(|item| !item.keeps_running_after_quit(cx))
+                .filter(|item| !item.keeps_running_after_restart(cx))
                 .filter_map(|item| item.running_program(cx))
                 .collect::<Vec<_>>()
         })
@@ -1457,13 +1458,20 @@ async fn install_and_restart(
             .filter_map(|window| window.downcast::<MultiWorkspace>())
             .collect::<Vec<_>>()
     });
-    if !workspace::prepare_windows_to_quit(&windows, cx).await {
+    // SOLO: Solo starts again after installing: what runs keeps running.
+    if !workspace::prepare_windows_to_restart(&windows, cx).await {
         return Ok(InstallResult::QuitCancelled);
     }
 
     // Installing now: not again at quit.
     this.update(cx, |this, _| this.ready_on_quit = None).ok();
-    spawn_installer_helper(&ready.installer, &ready.install_dir, &ready.log_file, true)?;
+    if let Err(error) =
+        spawn_installer_helper(&ready.installer, &ready.install_dir, &ready.log_file, true)
+    {
+        // SOLO: Solo doesn't restart after all.
+        cx.update(|cx| workspace::solo_quit::restart_cancelled(cx));
+        return Err(error);
+    }
     log::info!(
         "solo update: helper started; installing into {}",
         ready.install_dir.display()

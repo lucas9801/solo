@@ -525,7 +525,8 @@ impl StoreUpdater {
                     .filter_map(|window| window.downcast::<workspace::MultiWorkspace>())
                     .collect::<Vec<_>>()
             });
-            if !workspace::prepare_windows_to_quit(&windows, cx).await {
+            // SOLO: Windows starts Solo again: what runs keeps running.
+            if !workspace::prepare_windows_to_restart(&windows, cx).await {
                 this.update(cx, |this, cx| {
                     log::info!("store update: cancelled because Solo didn't quit");
                     this.activity = Activity::Idle;
@@ -552,6 +553,11 @@ impl StoreUpdater {
 
     fn finish_install(&mut self, result: Result<StoreOutcome>, cx: &mut Context<Self>) {
         self.activity = Activity::Idle;
+        // SOLO: unless the Store closes Solo to install, Solo doesn't
+        // restart after all.
+        if !matches!(result, Ok(StoreOutcome::Completed)) {
+            workspace::solo_quit::restart_cancelled(cx);
+        }
         match result {
             Ok(StoreOutcome::Completed) => {
                 // The Store closes Solo to install; until it does:

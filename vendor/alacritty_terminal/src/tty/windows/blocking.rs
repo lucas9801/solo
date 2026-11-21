@@ -84,7 +84,13 @@ impl<R: Read + Send + 'static> UnblockedReader<R> {
                     },
 
                     Poll::Ready(Err(e)) => {
-                        log::error!("error writing to pipe: {}", e);
+                        // SOLO: the other end went (a terminal host that
+                        // ended as Solo quit or restarted): nothing to report.
+                        if is_closed_pipe(&e) {
+                            log::debug!("error writing to pipe: {}", e);
+                        } else {
+                            log::error!("error writing to pipe: {}", e);
+                        }
                         return;
                     },
 
@@ -182,7 +188,13 @@ impl<W: Write + Send + 'static> UnblockedWriter<W> {
                     },
 
                     Poll::Ready(Err(e)) => {
-                        log::error!("error writing to pipe: {}", e);
+                        // SOLO: the other end went (a terminal host that
+                        // ended as Solo quit or restarted): nothing to report.
+                        if is_closed_pipe(&e) {
+                            log::debug!("error writing to pipe: {}", e);
+                        } else {
+                            log::error!("error writing to pipe: {}", e);
+                        }
                         return;
                     },
 
@@ -274,3 +286,10 @@ impl Wake for Registration {
         }
     }
 }
+
+/// SOLO: whether `error` says the pipe's other end is gone
+/// (`ERROR_BROKEN_PIPE`, `ERROR_NO_DATA`, `ERROR_PIPE_NOT_CONNECTED`).
+fn is_closed_pipe(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::BrokenPipe || matches!(error.raw_os_error(), Some(109 | 232 | 233))
+}
+

@@ -29,6 +29,8 @@ mod toolbar;
 pub mod welcome;
 pub mod workspace_error;
 mod workspace_settings;
+// SOLO: how Solo goes when it quits.
+pub mod solo_quit;
 
 pub use dock::Panel;
 pub use multi_workspace::{
@@ -1647,6 +1649,9 @@ pub struct Workspace {
     scheduled_tasks: Vec<Task<()>>,
     last_open_dock_positions: Vec<DockPosition>,
     removing: bool,
+    /// SOLO: its window asked about ending what runs in it, for all its
+    /// tabs, see `prepare_window_to_close`.
+    ending_programs_confirmed: bool,
     open_in_dev_container: bool,
     _dev_container_task: Option<Task<Result<()>>>,
     _panels_task: Option<Task<Result<()>>>,
@@ -2182,6 +2187,7 @@ impl Workspace {
             scheduled_tasks: Vec::new(),
             last_open_dock_positions: Vec::new(),
             removing: false,
+            ending_programs_confirmed: false,
             sidebar_focus_handle: None,
             multi_workspace,
             active_workspace_id: None,
@@ -3823,6 +3829,10 @@ impl Workspace {
             let quits = close_intent == CloseIntent::Quit
                 || (remaining_workspaces == 0 && closing_last_window_quits);
             let confirmation = this.update_in(cx, |this, window, cx| {
+                // SOLO: its window asked already, for all its tabs.
+                if std::mem::take(&mut this.ending_programs_confirmed) {
+                    return None;
+                }
                 let mut items = this.items_with_panels(cx);
                 if quits {
                     items.retain(|item| !item.keeps_running_after_quit(cx));
@@ -12563,13 +12573,29 @@ pub fn reload(cx: &mut App) {
             }
         }
 
-        if !prepare_windows_to_quit(&workspace_windows, cx).await {
+        // SOLO: Solo starts again at once.
+        if !prepare_windows_to_restart(&workspace_windows, cx).await {
             return anyhow::Ok(());
         }
         cx.update(|cx| cx.restart());
         anyhow::Ok(())
     })
     .detach_and_log_err(cx);
+}
+
+/// SOLO: [`prepare_windows_to_quit`], for Solo to start again at once (to
+/// install an update, say): what runs in terminals keeps running, without
+/// asking.
+pub async fn prepare_windows_to_restart(
+    workspace_windows: &[WindowHandle<MultiWorkspace>],
+    cx: &mut AsyncApp,
+) -> bool {
+    cx.update(|cx| solo_quit::set_restarting(true, cx));
+    let prepared = prepare_windows_to_quit(workspace_windows, cx).await;
+    if !prepared {
+        cx.update(|cx| solo_quit::set_restarting(false, cx));
+    }
+    prepared
 }
 
 pub async fn prepare_windows_to_quit(
@@ -12579,8 +12605,9 @@ pub async fn prepare_windows_to_quit(
     // If the user cancels any save prompt, then keep the app open.
     let mut prepared_windows = Vec::new();
     let mut cancelled = false;
-    for window in workspace_windows {
-        match prepare_window_to_close(*window, CloseIntent::Quit, cx).await {
+    for (ix, window) in workspace_windows.iter().enumerate() {
+        // SOLO: tabs not open yet are asked about once, with the first window.
+        match prepare_window_to_close(*window, CloseIntent::Quit, ix == 0, cx).await {
             Ok(true) => prepared_windows.push(*window),
             Ok(false) => {
                 cancelled = true;
@@ -12613,14 +12640,114 @@ pub async fn prepare_windows_to_quit(
     // session_id/window_id are up-to-date in the database.
     flush_windows_serialization(workspace_windows, cx).await;
 
+    // SOLO: unless restarting, the user quits: what keeps running only for
+    // an update or a crash ends.
+    cx.update(|cx| solo_quit::quitting_by_user(cx));
+
     true
+}
+
+/// SOLO: whether closing `window` (with `close_intent`) quits Solo.
+pub(crate) fn closing_window_quits(
+    window: gpui::AnyWindowHandle,
+    close_intent: CloseIntent,
+    cx: &App,
+) -> bool {
+    if close_intent == CloseIntent::Quit {
+        return true;
+    }
+    if close_intent == CloseIntent::ReplaceWindow {
+        return false;
+    }
+    let remaining = cx
+        .windows()
+        .into_iter()
+        .filter(|other| *other != window)
+        .filter_map(|other| other.downcast::<MultiWorkspace>())
+        .filter_map(|other| {
+            other
+                .read(cx)
+                .ok()
+                .map(|multi_workspace| multi_workspace.workspace().read(cx).removing)
+        })
+        .filter(|removing| !removing)
+        .count();
+    remaining == 0 && closing_last_window_quits_app(cx)
+}
+
+/// SOLO: asks once, for all the tabs of `window`, before closing it (or
+/// quitting) ends the programs running in them; with `include_background`,
+/// when quitting, also about those in tabs not open yet. `None` when nothing
+/// would end.
+fn confirm_ending_window_programs(
+    window: WindowHandle<MultiWorkspace>,
+    close_intent: CloseIntent,
+    background: Vec<solo_quit::BackgroundProgram>,
+    cx: &mut AsyncApp,
+) -> Option<impl Future<Output = bool> + use<>> {
+    window
+        .update(cx, |multi_workspace, window, cx| {
+            let quits = closing_window_quits(window.window_handle(), close_intent, cx);
+            // Each with its project tab's name, for the prompt to say where.
+            let mut items: Vec<(Box<dyn ItemHandle>, Option<SharedString>)> = multi_workspace
+                .workspaces()
+                .flat_map(|workspace| {
+                    let workspace = workspace.read(cx);
+                    let tab = workspace
+                        .project_group_key(cx)
+                        .path_list()
+                        .ordered_paths()
+                        .next()
+                        .and_then(|path| path.file_name())
+                        .map(|name| SharedString::from(name.to_string_lossy().into_owned()));
+                    workspace
+                        .items_with_panels(cx)
+                        .into_iter()
+                        .map(move |item| (item, tab.clone()))
+                })
+                .collect();
+            if quits {
+                items.retain(|(item, _)| !item.keeps_running_after_quit(cx));
+            }
+            let close_label = match close_intent {
+                CloseIntent::Quit => util::i18n::tr("Quit", "退出"),
+                CloseIntent::CloseWindow => util::i18n::tr("Close Window", "关闭窗口"),
+                CloseIntent::ReplaceWindow => util::i18n::tr("Close", "关闭"),
+            };
+            Pane::confirm_ending_programs_and(&items, &background, close_label, window, cx)
+        })
+        .ok()
+        .flatten()
 }
 
 pub(crate) async fn prepare_window_to_close(
     window: WindowHandle<MultiWorkspace>,
     close_intent: CloseIntent,
+    include_background: bool,
     cx: &mut AsyncApp,
 ) -> Result<bool> {
+    // SOLO: once for the window's tabs, rather than once for each; when it
+    // quits Solo, with those of tabs not open yet, looked up first.
+    let quits = cx.update(|cx| closing_window_quits(window.into(), close_intent, cx));
+    let background = if quits && include_background {
+        cx.update(|cx| solo_quit::background_programs(cx)).await
+    } else {
+        Vec::new()
+    };
+    if let Some(confirmation) =
+        confirm_ending_window_programs(window, close_intent, background, cx)
+        && !confirmation.await
+    {
+        return Ok(false);
+    }
+    window
+        .update(cx, |multi_workspace, _, cx| {
+            for workspace in multi_workspace.workspaces() {
+                workspace.update(cx, |workspace, _| workspace.ending_programs_confirmed = true);
+            }
+        })
+        .log_err();
+
     let active_and_workspaces = window
         .update(cx, |multi_workspace, window, _cx| {
             if close_intent == CloseIntent::Quit {
@@ -12662,6 +12789,7 @@ pub(crate) async fn prepare_window_to_close(
                 for workspace in multi_workspace.workspaces() {
                     workspace.update(cx, |workspace, _| {
                         workspace.removing = false;
+                        workspace.ending_programs_confirmed = false;
                     });
                 }
             }

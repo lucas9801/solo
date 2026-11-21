@@ -574,7 +574,9 @@ impl MultiWorkspace {
             return;
         };
         cx.spawn(async move |_, cx| {
-            if !crate::prepare_window_to_close(window_handle, CloseIntent::CloseWindow, cx)
+            // SOLO: closing the last window quits: tabs not open yet are
+            // asked about too.
+            if !crate::prepare_window_to_close(window_handle, CloseIntent::CloseWindow, true, cx)
                 .await
                 .context("preparing the window to close")?
             {
@@ -582,6 +584,14 @@ impl MultiWorkspace {
             }
 
             crate::flush_windows_serialization(&[window_handle], cx).await;
+
+            // SOLO: the user quits Solo by closing its last window.
+            cx.update(|cx| {
+                if crate::closing_window_quits(window_handle.into(), CloseIntent::CloseWindow, cx)
+                {
+                    crate::solo_quit::quitting_by_user(cx);
+                }
+            });
 
             window_handle
                 .update(cx, |_, window, _cx| {
