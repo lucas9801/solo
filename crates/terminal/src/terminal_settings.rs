@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 pub use settings::{
     AgentControl, AgentUsageDisplay, AiCommandAgent, AlternateScroll, TerminalConfirmClose,
+    TerminalLinkMenu,
 };
 
 use settings::{
@@ -63,6 +64,7 @@ pub struct TerminalSettings {
     pub ai_command_codex_model: String,
     pub ai_command_include_last_failure: bool,
     pub open_links_on_click: bool,
+    pub link_menu: TerminalLinkMenu,
     pub notify_long_commands_after_seconds: u64,
     pub program_notifications: bool,
     pub agent_input_notifications: bool,
@@ -170,6 +172,7 @@ impl settings::Settings for TerminalSettings {
                 .ai_command_include_last_failure
                 .unwrap_or(true),
             open_links_on_click: user_content.open_links_on_click.unwrap(),
+            link_menu: user_content.link_menu.unwrap_or_default(),
             notify_long_commands_after_seconds: user_content
                 .notify_long_commands_after_seconds
                 .unwrap(),

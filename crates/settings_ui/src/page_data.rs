@@ -7828,7 +7828,7 @@ fn terminal_page() -> SettingsPage {
         ]
     }
 
-    fn behavior_settings_section() -> [SettingsPageItem; 7] {
+    fn behavior_settings_section() -> [SettingsPageItem; 8] {
         [
             SettingsPageItem::SectionHeader("Behavior Settings"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -7887,6 +7887,20 @@ fn terminal_page() -> SettingsPage {
                             .terminal
                             .get_or_insert_default()
                             .keep_selection_on_copy = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Menu When Clicking Links",
+                description: "Auto: only for the links Solo doesn't open directly.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("terminal.link_menu"),
+                    pick: |settings_content| settings_content.terminal.as_ref()?.link_menu.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.terminal.get_or_insert_default().link_menu = value;
                     },
                 }),
                 metadata: None,

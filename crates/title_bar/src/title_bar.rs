@@ -77,7 +77,16 @@ actions!(
         ToggleProjectMenu,
         /// Switches to a different git branch.
         SwitchBranch,
-        /// A debug action to simulate an update being available to test the update banner UI.
+    ]
+);
+
+// SOLO: not a collaboration action ("collab: simulate update available" in
+// the command palette).
+actions!(
+    title_bar,
+    [
+        /// A debug action that steps the title bar's update button through
+        /// its states with a made-up update.
         SimulateUpdateAvailable
     ]
 );

@@ -94,7 +94,19 @@ pub fn open_url(
 ) {
     let setting = BrowserSettings::get_global(cx).open_links;
     let target = if cfg!(target_os = "windows") {
-        link_target(&action.url, setting, action.alternate)
+        match action.in_solo {
+            // SOLO: picked in the terminal's link menu.
+            Some(true)
+                if url::Url::parse(&action.url)
+                    .ok()
+                    .as_ref()
+                    .is_some_and(address::is_allowed_in_solo) =>
+            {
+                LinkTarget::Solo
+            }
+            Some(_) => LinkTarget::System,
+            None => link_target(&action.url, setting, action.alternate),
+        }
     } else {
         LinkTarget::System
     };

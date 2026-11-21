@@ -1117,5 +1117,10 @@ pub mod browser {
         /// Opens the page without moving focus to it.
         #[serde(default)]
         pub in_background: bool,
+        /// Opens it in Solo's browser (`true`) or the system browser
+        /// (`false`) whatever the setting says, as picked in the terminal's
+        /// link menu.
+        #[serde(default)]
+        pub in_solo: Option<bool>,
     }
 }

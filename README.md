@@ -60,6 +60,8 @@ Each terminal's shell runs in a small background process. When Solo restarts for
 
 A file path in the terminal's output opens with a click: code in the editor, Markdown in a rendered preview (Mermaid diagrams and images included), images in the image viewer. When the agent says "changed src/app.ts:42", a click takes you to that line; when the output only has a line number (such as `(:120)`), Solo finds the file mentioned earlier that has that line and opens it.
 
+Links Solo shouldn't just open show a small menu instead: a web address outside this computer (open in the browser or in Solo, copy it), a file Solo can't open such as an `.apk` or `.dll` (open it with its program, show it in File Explorer, copy the path), a file name several files have when it isn't clear which one is meant (pick one), and a file only another project tab has (switch to that tab). `Ctrl`+click does the menu's first option, except that a file Solo can't open is only shown in File Explorer, never handed to a program; for programs and shortcuts (`.exe`, `.lnk`, ...) running it is the menu's last option. The `terminal.link_menu` setting (Settings › Terminal › "Menu When Clicking Links") turns the menu on for every link (`always`) or off (`never`).
+
 ![Links in the terminal: clicking a path in the agent's output opens the file in the editor at that line](docs/media/en/links.gif)
 
 ### Mermaid diagrams and document review

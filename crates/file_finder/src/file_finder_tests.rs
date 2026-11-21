@@ -1217,6 +1217,7 @@ async fn test_toggle_action_include_ignored_param(cx: &mut TestAppContext) {
         cx.dispatch_action(ToggleFileFinder {
             separate_history: false,
             include_ignored: action_param,
+            query: None,
         });
         let picker = active_file_picker(&workspace, cx);
         picker.update(cx, |picker, _| {
@@ -5018,6 +5019,7 @@ pub(crate) fn open_file_picker(
     cx.dispatch_action(ToggleFileFinder {
         separate_history: true,
         include_ignored: None,
+        query: None,
     });
     active_file_picker(workspace, cx)
 }
@@ -5159,6 +5161,7 @@ async fn test_seed_query_from_editor_selection(cx: &mut TestAppContext) {
     cx.dispatch_action(ToggleFileFinder {
         separate_history: true,
         include_ignored: None,
+        query: None,
     });
     let picker = active_file_picker(&workspace, cx);
     assert_eq!(picker.read_with(cx, |picker, cx| picker.query(cx)), "quick");
@@ -5196,6 +5199,7 @@ async fn test_no_seed_query_without_selection(cx: &mut TestAppContext) {
     cx.dispatch_action(ToggleFileFinder {
         separate_history: true,
         include_ignored: None,
+        query: None,
     });
     let picker = active_file_picker(&workspace, cx);
     assert_eq!(picker.read_with(cx, |picker, cx| picker.query(cx)), "");
@@ -5231,6 +5235,7 @@ async fn test_seed_query_flattens_multiline_selection(cx: &mut TestAppContext) {
     cx.dispatch_action(ToggleFileFinder {
         separate_history: true,
         include_ignored: None,
+        query: None,
     });
     let picker = active_file_picker(&workspace, cx);
     assert_eq!(
@@ -5279,6 +5284,7 @@ async fn test_no_seed_query_when_setting_disabled(cx: &mut TestAppContext) {
     cx.dispatch_action(ToggleFileFinder {
         separate_history: true,
         include_ignored: None,
+        query: None,
     });
     let picker = active_file_picker(&workspace, cx);
     assert_eq!(picker.read_with(cx, |picker, cx| picker.query(cx)), "");

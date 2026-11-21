@@ -16,6 +16,7 @@ mod follow_working_directory;
 pub mod input;
 #[cfg(test)]
 mod link_corpus_tests;
+mod link_menu;
 #[cfg(windows)]
 mod lone_hosts;
 mod mermaid_preview;
@@ -87,7 +88,7 @@ use terminal::{
 };
 use terminal_element::TerminalElement;
 use terminal_panel::TerminalPanel;
-use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
+use terminal_path_like_target::hover_path_like_target;
 use terminal_scrollbar::TerminalScrollHandle;
 use ui::{
     ContextMenu, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
@@ -255,6 +256,14 @@ pub struct TerminalView {
     custom_title: Option<String>,
     hover: Option<HoverTarget>,
     hover_tooltip_update: Task<()>,
+    /// SOLO: resolving a clicked path link, for its menu.
+    link_menu_task: Task<()>,
+    /// SOLO: closes the link menu when the user types.
+    link_menu_keystrokes: Option<Subscription>,
+    #[cfg(test)]
+    shown_link_menu: Option<Vec<link_menu::LinkMenuItem>>,
+    #[cfg(test)]
+    performed_link_items: Vec<link_menu::LinkMenuItem>,
     workspace_id: Option<WorkspaceId>,
     show_breadcrumbs: bool,
     block_below_cursor: Option<Rc<BlockProperties>>,
@@ -475,6 +484,12 @@ impl TerminalView {
             blinking_terminal_enabled: false,
             hover: None,
             hover_tooltip_update: Task::ready(()),
+            link_menu_task: Task::ready(()),
+            link_menu_keystrokes: None,
+            #[cfg(test)]
+            shown_link_menu: None,
+            #[cfg(test)]
+            performed_link_items: Vec::new(),
             mode: TerminalMode::Standalone,
             background_corner_radii: None,
             content_top_padding: Rems::ZERO,
@@ -1809,7 +1824,9 @@ fn subscribe_for_terminal_events(
                     terminal_view.agent_response_reported(response, cx)
                 }
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
-                    MaybeNavigationTarget::Url(url) => Workspace::open_web_link(url, window, cx),
+                    MaybeNavigationTarget::Url(url) => {
+                        terminal_view.open_url_link(url.clone(), window, cx)
+                    }
                     MaybeNavigationTarget::PathLike(_)
                         if let Some(diagram) =
                             terminal.read(cx).opened_word().cloned().and_then(|word| {
@@ -1818,13 +1835,9 @@ fn subscribe_for_terminal_events(
                     {
                         terminal_view.open_mermaid_diagram(diagram, window, cx)
                     }
-                    MaybeNavigationTarget::PathLike(path_like_target) => open_path_like_target(
-                        &workspace,
-                        terminal_view,
-                        path_like_target,
-                        window,
-                        cx,
-                    ),
+                    MaybeNavigationTarget::PathLike(path_like_target) => {
+                        terminal_view.open_path_link(path_like_target.clone(), window, cx)
+                    }
                 },
                 Event::BreadcrumbsChanged => {
                     // SOLO: an agent's session title shows on its tab, and
@@ -2130,6 +2143,8 @@ impl Render for TerminalView {
                     anchored()
                         .position(*position)
                         .anchor(gpui::Anchor::TopLeft)
+                        // SOLO: a menu that doesn't fit moves left (or up).
+                        .snap_to_window_with_margin(px(8.))
                         .child(menu.clone()),
                 )
                 .with_priority(1)

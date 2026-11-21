@@ -988,6 +988,7 @@ impl VsCodeSettings {
             ai_command_codex_model: None,
             ai_command_include_last_failure: None,
             open_links_on_click: None,
+            link_menu: None,
             notify_long_commands_after_seconds: None,
             program_notifications: None,
             agent_input_notifications: None,

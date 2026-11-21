@@ -43,12 +43,20 @@ fn possible_hover_target(
     cx: &mut Context<TerminalView>,
     #[cfg(test)] background_path_checks: BackgroundPathChecks,
 ) -> Task<()> {
-    // SOLO: files only other tabs have aren't links (yet): not searched for
-    // on every hover.
+    // SOLO: files only other tabs have are links only for the link menu to
+    // offer: with the menu off, they aren't searched for on every hover.
+    let link_menu =
+        <terminal::terminal_settings::TerminalSettings as settings::Settings>::get_global(cx)
+            .link_menu;
+    let purpose = if link_menu == settings::TerminalLinkMenu::Never {
+        LinkPurpose::HoverHereOnly
+    } else {
+        LinkPurpose::Hover
+    };
     let resolution_task = resolve_path_like_target(
         workspace,
         path_like_target,
-        LinkPurpose::HoverHereOnly,
+        purpose,
         cx,
         #[cfg(test)]
         background_path_checks,
@@ -57,19 +65,44 @@ fn possible_hover_target(
         let resolution = resolution_task.await;
         terminal_view
             .update(cx, |terminal_view, cx| {
+                let link_menu =
+                    <terminal::terminal_settings::TerminalSettings as settings::Settings>::get_global(cx)
+                        .link_menu;
                 terminal_view.hover = match &resolution {
                     Some(PathLinkResolution::Here(link)) => Some(HoverTarget {
                         tooltip: link_tooltip(link),
                         hovered_word,
                     }),
-                    // SOLO: shown once the link menu can offer the other
-                    // tabs' files; until then, no link, as before.
+                    // A link to the other tabs' files, for the link menu to
+                    // offer; with the menu off, no link, as before.
+                    Some(PathLinkResolution::InOtherTabs(found))
+                        if link_menu != settings::TerminalLinkMenu::Never =>
+                    {
+                        found.first().map(|first| HoverTarget {
+                            tooltip: other_tab_tooltip(first, found.len()),
+                            hovered_word,
+                        })
+                    }
                     Some(PathLinkResolution::InOtherTabs(_)) | None => None,
                 };
                 cx.notify();
             })
             .ok();
     })
+}
+
+/// SOLO: the tooltip of a link to a file only other project tabs have.
+fn other_tab_tooltip(first: &OtherTabTarget, count: usize) -> String {
+    let path = first
+        .target
+        .path()
+        .to_string(&|path: &PathBuf| path.to_string_lossy().into_owned());
+    match (util::i18n::is_chinese(), count) {
+        (true, 1) => format!("{}标签：{path}", first.tab_name),
+        (true, _) => format!("{}标签：{path} 等 {count} 个", first.tab_name),
+        (false, 1) => format!("In {}: {path}", first.tab_name),
+        (false, _) => format!("In {}: {path} (1 of {count})", first.tab_name),
+    }
 }
 
 /// SOLO: the tooltip of a path link: the full path of the file it opens,

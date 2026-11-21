@@ -287,6 +287,17 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub open_links_on_click: Option<bool>,
+    /// When clicking a link shows a small menu of what to do with it
+    /// instead of opening it: "auto" for the links Solo doesn't open
+    /// itself (external web addresses, files Solo can't open, a file name
+    /// several files have, a file only another project tab has), "always"
+    /// for every link, "never" for none. Ctrl+click does the menu's first
+    /// item, except that a file Solo can't open is only shown in File
+    /// Explorer, never given to a program (which may run it). With "never", a click resolves its link on its
+    /// own, without waiting for the hover to have found it.
+    ///
+    /// Default: "auto"
+    pub link_menu: Option<TerminalLinkMenu>,
     /// Show a desktop notification when a command that ran at least this many
     /// seconds finishes while Solo is in the background. 0 turns it off.
     ///
@@ -445,7 +456,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         scrollbar, minimum_contrast, show_count_badge, bell,
         input_editor, compact_prompt, completions_as_you_type, ai_command_agent,
         ai_command_claude_model, ai_command_codex_model, ai_command_include_last_failure,
-        open_links_on_click,
+        open_links_on_click, link_menu,
         notify_long_commands_after_seconds, program_notifications, agent_input_notifications,
         agent_stopped_notifications, restore_contents,
         agent_commands, claude_code_hooks, codex_hooks, codex_edit_hooks, copilot_hooks, opencode_hooks, ide_tools, more_agent_hooks, global_agent_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
@@ -763,6 +774,35 @@ pub enum AgentUsageDisplay {
     Always,
     /// Only in the tab's tooltip.
     Tooltip,
+}
+
+/// SOLO: when clicking a link in the terminal shows a menu.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalLinkMenu {
+    /// For the links Solo doesn't open itself.
+    #[default]
+    #[strum(serialize = "Auto")]
+    Auto,
+    /// For every link.
+    #[strum(serialize = "Every Link")]
+    Always,
+    /// For none: links open as before.
+    #[strum(serialize = "Never")]
+    Never,
 }
 
 /// SOLO: the agent CLI that generates commands from `# requests`.

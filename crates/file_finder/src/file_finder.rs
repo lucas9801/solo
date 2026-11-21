@@ -81,7 +81,10 @@ impl FileFinder {
         workspace.register_action(
             |workspace, action: &workspace::ToggleFileFinder, window, cx| {
                 let Some(file_finder) = workspace.active_modal::<Self>(cx) else {
-                    let seed_query = Self::seed_query(workspace, window, cx);
+                    let seed_query = action
+                        .query
+                        .clone()
+                        .or_else(|| Self::seed_query(workspace, window, cx));
                     Self::open(
                         workspace,
                         action.separate_history,
