@@ -126,6 +126,9 @@ struct StoreState {
     recent: HashSet<TreeId>,
     /// The trees kept by the last collection.
     kept: HashSet<TreeId>,
+    /// SOLO: Blobs of files stored for records of pending changes, kept
+    /// until a record names them (G59).
+    unrecorded: HashSet<TreeId>,
     /// `live/<pid>.lock`, held locked while this process runs.
     live_lock: Option<std::fs::File>,
 }
@@ -687,6 +690,7 @@ impl SnapshotStore {
         with_state(&self.store_dir, |state| {
             trees.extend(state.pins.keys().cloned());
             trees.extend(state.recent.iter().cloned());
+            trees.extend(state.unrecorded.iter().cloned());
         });
         trees.extend(other_processes_trees(&self.store_dir));
         // SOLO: and what the user accepted of files with pending changes, in
@@ -1231,9 +1235,12 @@ impl SnapshotStore {
                 vec![None; abs_paths.len()]
             }
         };
-        with_state(&self.store_dir, |state| {
-            state.recent.extend(ids.iter().flatten().cloned());
+        // Listed for other Solos' collections too.
+        let live = with_state(&self.store_dir, |state| {
+            state.unrecorded.extend(ids.iter().flatten().cloned());
+            live_trees(state)
         });
+        self.write_live_trees(&live);
         ids
     }
     /// SOLO: Keeps other git commands off the store, in this process and
@@ -1387,6 +1394,15 @@ impl StoreLock<'_> {
             log::warn!("failed to mark {:?} as used: {error}", self.store.store_dir);
         }
         Ok(())
+    }
+
+    /// The blobs a record now names: kept by it, not as unrecorded.
+    pub(crate) fn recorded(&self, blobs: &[String]) {
+        with_state(&self.store.store_dir, |state| {
+            for blob in blobs {
+                state.unrecorded.remove(blob);
+            }
+        });
     }
 
     /// Forgets the pending changes of the terminal `key`.
@@ -1615,6 +1631,7 @@ fn live_trees(state: &StoreState) -> Vec<TreeId> {
         .kept
         .iter()
         .chain(&state.recent)
+        .chain(&state.unrecorded)
         .chain(state.pins.keys())
         .cloned()
         .collect();
@@ -2914,6 +2931,16 @@ mod tests {
         fs::write(repository.join("image.bin"), [0u8, 1, 2, 255, 0, 7]).unwrap();
         let current = pending::current_version(&store, &repository.join("image.bin"));
         assert!(matches!(current, Version::Binary(ref id) if !id.is_empty()), "{current:?}");
+        // Kept through collections until a record names it.
+        let Version::Binary(blob) = &current else {
+            unreachable!()
+        };
+        store.collect_garbage(Vec::new()).unwrap();
+        store.collect_garbage(Vec::new()).unwrap();
+        assert_eq!(
+            store.object_ids(std::slice::from_ref(blob)).unwrap(),
+            vec![Some(blob.clone())]
+        );
         let files = std::collections::BTreeMap::from_iter([(
             "image.bin".to_string(),
             PendingFile {
@@ -2931,6 +2958,44 @@ mod tests {
         let record: pending::Record = serde_json::from_slice(&contents).unwrap();
         let loaded = pending::load(&store, &record).unwrap();
         assert_eq!(loaded["image.bin"].left, current);
+    }
+
+    /// SOLO: Recording many pending files, as quitting with many terminals
+    /// does: how long it takes (G59).
+    #[test]
+    fn test_recording_many_pending_files_is_quick() {
+        use super::super::pending::{self, PendingFile, Version};
+        let (_temp, repository, storage) = repository();
+        let store = SnapshotStore::open(&repository, &storage).unwrap();
+        let text = |seed: usize| -> Version {
+            Version::Text(
+                (0..200)
+                    .map(|line| format!("line {line} of file {seed}\n"))
+                    .collect::<String>()
+                    .into(),
+            )
+        };
+        let files: std::collections::BTreeMap<String, PendingFile> = (0..100)
+            .map(|ix| {
+                (
+                    format!("src/file{ix}.rs"),
+                    PendingFile {
+                        accepted: text(ix),
+                        left: text(ix + 1000),
+                        first_turn: 1,
+                        since: None,
+                        while_closed: None,
+                    },
+                )
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        for terminal in 0..10 {
+            pending::save(&store, &format!("terminal{terminal}"), &repository, &files).unwrap();
+        }
+        let elapsed = started.elapsed();
+        eprintln!("recorded 10 terminals x 100 pending files in {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(120), "{elapsed:?}");
     }
 
     /// Trees another Solo keeps are kept while it runs (G51).

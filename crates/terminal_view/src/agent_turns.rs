@@ -299,7 +299,7 @@ struct TerminalTurns {
     view: Option<WeakEntity<TerminalView>>,
     /// SOLO: The files the review changed while a turn was under way, by
     /// store: the turn's end mustn't take that for the agent undoing it.
-    reviewed_during_turn: Vec<(PathBuf, String)>,
+    reviewed_during_turn: Vec<(PathBuf, String, PendingFile)>,
     /// SOLO: Whether its pending changes came from the view it moved from,
     /// newer than its record.
     handed_over: bool,
@@ -1398,10 +1398,11 @@ impl AgentTurns {
             terminal.auto_keep_due = true;
         }
         let store_dir = started.store.store_dir().to_path_buf();
-        let mut reviewed = BTreeSet::new();
-        terminal.reviewed_during_turn.retain(|(dir, path)| {
+        let mut reviewed = BTreeMap::new();
+        terminal.reviewed_during_turn.retain(|(dir, path, file)| {
             if *dir == store_dir {
-                reviewed.insert(path.clone());
+                // The last the review left it.
+                reviewed.insert(path.clone(), file.clone());
                 false
             } else {
                 true
@@ -1516,10 +1517,19 @@ impl AgentTurns {
             return;
         };
         if turn_under_way {
-            for (path, _, _) in &updates {
+            for (path, file, _) in &updates {
+                // Gone from the pending changes: accepted, or a created file
+                // rejected (gone, as accepted).
+                let file = file.clone().unwrap_or(PendingFile {
+                    accepted: pending::Version::Absent,
+                    left: pending::Version::Absent,
+                    first_turn: 0,
+                    since: None,
+                    while_closed: None,
+                });
                 terminal
                     .reviewed_during_turn
-                    .push((store_dir.to_path_buf(), path.clone()));
+                    .push((store_dir.to_path_buf(), path.clone(), file));
             }
         }
         let Some(changes) = terminal.changes_in_mut(store_dir) else {
@@ -3203,7 +3213,10 @@ mod tests {
         };
         // Committed with another second line than the one the agent starts
         // from, so what's committed doesn't hide what's pending.
-        committed_repository(&repository, &[("a.txt", &lines(&[(2, "old 2")]))]);
+        committed_repository(
+            &repository,
+            &[("a.txt", &lines(&[(2, "old 2")])), ("b.txt", "b\n")],
+        );
         std::fs::write(repository.join("a.txt"), lines(&[])).unwrap();
         let terminal_view = display_terminal(cx);
         let terminal_id = terminal_view.entity_id();
@@ -3245,12 +3258,14 @@ mod tests {
 
         start(cx);
         std::fs::write(repository.join("a.txt"), lines(&[(2, "TWO"), (9, "NINE")])).unwrap();
+        std::fs::write(repository.join("b.txt"), "B\n").unwrap();
         end(cx);
 
         // Turn 2 runs; the review rejects the change to line 2 meanwhile.
         start(cx);
         let rejected = lines(&[(9, "NINE")]);
         std::fs::write(repository.join("a.txt"), &rejected).unwrap();
+        std::fs::write(repository.join("b.txt"), "b\n").unwrap();
         turns.update(cx, |turns, cx| {
             let changes = turns.pending_changes(terminal_id).unwrap();
             let store_dir = changes.store.store_dir().to_path_buf();
@@ -3258,7 +3273,17 @@ mod tests {
                 left: pending::Version::Text(rejected.as_str().into()),
                 ..changes.files["a.txt"].clone()
             };
-            turns.update_pending_files(terminal_id, &store_dir, vec![("a.txt".into(), Some(file), true)], cx);
+            // And all of b.txt: nothing's pending in it then.
+            let b = PendingFile {
+                left: pending::Version::Text("b\n".into()),
+                ..changes.files["b.txt"].clone()
+            };
+            turns.update_pending_files(
+                terminal_id,
+                &store_dir,
+                vec![("a.txt".into(), Some(file), true), ("b.txt".into(), Some(b), false)],
+                cx,
+            );
         });
         end(cx);
 
@@ -3266,6 +3291,9 @@ mod tests {
             let file = &turns.pending_changes(terminal_id).unwrap().files["a.txt"];
             assert_eq!(file.accepted, pending::Version::Text(lines(&[]).into()));
             assert_eq!(file.left, pending::Version::Text(rejected.as_str().into()));
+            // Not the agent's change back as the reverse of the rejection.
+            let files = &turns.pending_changes(terminal_id).unwrap().files;
+            assert!(!files.contains_key("b.txt"), "{:?}", files.get("b.txt"));
         });
     }
 

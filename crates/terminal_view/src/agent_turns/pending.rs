@@ -10,13 +10,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context as _, Result};
+use collections::HashMap;
 use serde::{Deserialize, Serialize};
 
-use super::snapshot::{ChangedFile, SnapshotStore, TreeId};
+use super::snapshot::{ChangedFile, MAX_UNTRACKED_FILE_BYTES, SnapshotStore, TreeId};
 
 /// A version of a file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,21 +187,49 @@ pub(crate) fn load_versions(store: &SnapshotStore, objects: &[String]) -> Result
         .collect())
 }
 
-/// The version of the file at `abs_path` now.
+/// The version of the file at `abs_path` now. A file over the size
+/// snapshots take (see `MAX_UNTRACKED_FILE_BYTES`) isn't read: its version
+/// is unknown. A file that isn't text is stored for its blob's id, once
+/// for as long as its size and time are the same.
 pub(crate) fn current_version(store: &SnapshotStore, abs_path: &Path) -> Version {
-    match std::fs::read(abs_path) {
-        Ok(bytes) => Version::from_bytes(bytes, || {
-            store
-                .hash_files(&[abs_path.to_path_buf()])
-                .pop()
-                .flatten()
-        }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Version::Absent,
+    let metadata = match std::fs::metadata(abs_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Version::Absent,
         // Can't be read now (in use, say): unknown, so not something else.
-        Err(_) => Version::Binary(String::new()),
+        Err(_) => return Version::Binary(String::new()),
+    };
+    if metadata.len() > MAX_UNTRACKED_FILE_BYTES {
+        return Version::Binary(String::new());
     }
+    let bytes = match std::fs::read(abs_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Version::Absent,
+        Err(_) => return Version::Binary(String::new()),
+    };
+    let stamp = (metadata.len(), metadata.modified().ok());
+    Version::from_bytes(bytes, || {
+        let mut hashed = BINARY_HASHES.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some((size, modified, id)) = hashed.get(abs_path)
+            && (*size, *modified) == stamp
+        {
+            return Some(id.clone());
+        }
+        drop(hashed);
+        let id = store.hash_files(&[abs_path.to_path_buf()]).pop().flatten()?;
+        hashed = BINARY_HASHES.lock().unwrap_or_else(|error| error.into_inner());
+        if hashed.len() >= MAX_BINARY_HASHES {
+            hashed.clear();
+        }
+        hashed.insert(abs_path.to_path_buf(), (stamp.0, stamp.1, id.clone()));
+        Some(id)
+    })
 }
 
+/// The blob ids of files that aren't text, by path, with the size and time
+/// they had: not hashed again while those are the same.
+static BINARY_HASHES: LazyLock<Mutex<HashMap<PathBuf, (u64, Option<SystemTime>, String)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::default()));
+const MAX_BINARY_HASHES: usize = 10_000;
 /// What a turn's end does to a terminal's pending changes.
 pub(crate) struct TurnEnd {
     pub store: Arc<SnapshotStore>,
@@ -216,7 +245,9 @@ pub(crate) struct TurnEnd {
     /// The files the review changed while the turn was under way: what
     /// changed in them from before the turn includes the review's change,
     /// not someone else's to take in.
-    pub reviewed: BTreeSet<String>,
+    /// With each, the file as the review left it (also when that left it
+    /// with nothing pending).
+    pub reviewed: BTreeMap<String, PendingFile>,
 }
 
 /// The pending changes after `turn`: the files it changed are pending (from
@@ -252,8 +283,13 @@ pub(crate) fn end_turn(
         };
         let committed = if repository { versions.next() } else { None };
         let changed = turn.changed.iter().any(|file| file.path == path);
-        let mut file = match files.get(path) {
-            Some(file) if changed && turn.reviewed.contains(path) => PendingFile {
+        // A file the review accepted or rejected whole during the turn has
+        // nothing pending, but isn't new: it's as the review left it.
+        let known = files
+            .get(path)
+            .or_else(|| turn.reviewed.get(path).filter(|_| changed));
+        let mut file = match known {
+            Some(file) if changed && turn.reviewed.contains_key(path) => PendingFile {
                 left: after.clone(),
                 ..file.clone()
             },
@@ -455,6 +491,29 @@ pub(crate) fn save(
     directory: &Path,
     files: &BTreeMap<String, PendingFile>,
 ) -> Result<Vec<TreeId>> {
+    // A file's blob that's gone (collected before a record named it) is
+    // stored again from the file, if it's still as it was.
+    let binary: Vec<(&String, &String)> = files
+        .iter()
+        .flat_map(|(path, file)| [(path, &file.accepted), (path, &file.left)])
+        .filter_map(|(path, version)| match version {
+            Version::Binary(blob) if !blob.is_empty() => Some((path, blob)),
+            _ => None,
+        })
+        .collect();
+    if !binary.is_empty() {
+        let blobs: Vec<String> = binary.iter().map(|(_, blob)| (*blob).clone()).collect();
+        let present = store.object_ids(&blobs)?;
+        let missing: Vec<PathBuf> = binary
+            .iter()
+            .zip(&present)
+            .filter(|(_, present)| present.is_none())
+            .map(|((path, _), _)| store.abs_path(path))
+            .collect();
+        if !missing.is_empty() {
+            store.hash_files(&missing);
+        }
+    }
     let lock = store.lock()?;
     if files.is_empty() {
         lock.remove_record(key);
@@ -510,12 +569,18 @@ pub(crate) fn save(
             while_closed: file.while_closed.as_ref().map(|_| (from, to)),
         });
     }
-    let mut trees = Vec::new();
-    for kind in &entries {
-        if !kind.is_empty() {
-            trees.push(lock.write_tree(kind)?);
-        }
-    }
+    // One tree with a folder for each kind of version: one git index, not
+    // one for each.
+    let combined: Vec<(String, String)> = ["accepted", "left", "closed-from", "closed-to"]
+        .iter()
+        .zip(&entries)
+        .flat_map(|(kind, entries)| {
+            entries
+                .iter()
+                .map(move |(path, blob)| (format!("{kind}/{path}"), blob.clone()))
+        })
+        .collect();
+    let trees = vec![lock.write_tree(&combined)?];
     let record = Record {
         version: 1,
         directory: directory.to_path_buf(),
@@ -523,6 +588,12 @@ pub(crate) fn save(
         files: recorded,
     };
     lock.write_record(key, &serde_json::to_vec(&record)?)?;
+    let binary: Vec<String> = entries
+        .iter()
+        .flatten()
+        .map(|(_, blob)| blob.clone())
+        .collect();
+    lock.recorded(&binary);
     Ok(trees)
 }
 
