@@ -3201,7 +3201,10 @@ mod tests {
                 })
                 .collect()
         };
-        committed_repository(&repository, &[("a.txt", &lines(&[]))]);
+        // Committed with another second line than the one the agent starts
+        // from, so what's committed doesn't hide what's pending.
+        committed_repository(&repository, &[("a.txt", &lines(&[(2, "old 2")]))]);
+        std::fs::write(repository.join("a.txt"), lines(&[])).unwrap();
         let terminal_view = display_terminal(cx);
         let terminal_id = terminal_view.entity_id();
         let turns = cx.update(|cx| AgentTurns::global(cx));
