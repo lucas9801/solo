@@ -9283,7 +9283,7 @@ impl Editor {
                 Self::open_locations_in_multibuffer(
                     workspace,
                     locations,
-                    format!("Selections for '{title}'"),
+                    navigation::selections_title(&title, util::i18n::is_chinese()),
                     false,
                     false,
                     MultibufferSelectionMode::All,
