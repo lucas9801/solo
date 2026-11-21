@@ -7,11 +7,14 @@ Agents often change a dozen files in one go. Looking at `git diff` once they're 
 ## How it works
 
 1. Run an agent in a Solo terminal as usual, `claude` for example.
-2. When it finishes a turn, the terminal's tab shows **"N files changed"**.
-3. Open it to review that turn, file by file:
-   - **keep** or **reject** each hunk, or all of them;
-   - comment on lines, then **send all the comments to the agent at once**;
-   - **roll back to before the turn** if needed; a rollback can be undone.
+2. What it changes is pending until you accept it: the terminal's tab shows **"N files to review"**.
+3. Open it to review the **pending changes**: each file against what you last accepted of it, so a file two turns changed shows both turns' hunks, each marked with its turn (with more than one turn, you can show one turn's at a time):
+   - **keep** or **reject** each hunk, or all of them; rejecting works after a later turn changed the same file too;
+   - comment on lines, then **send the comments and what you rejected to the agent at once** (pasted into its prompt, not sent);
+   - files the agent is changing in the turn under way are locked until it ends;
+   - **Turns** lists the turns: **View** shows what one turn changed, read only, and you can **roll back to before it**; a rollback can be undone.
+
+Changes you don't review stay pending until the next turn ends, then they're accepted (not while the review is open). What you change yourself that doesn't touch the agent's hunks, and what you commit, isn't pending. The pending changes stay after Solo restarts; what the agent changed while Solo was closed (its terminal kept running) is pending too, marked "While Solo was closed".
 
 ## Diagnostics: did this turn break anything?
 

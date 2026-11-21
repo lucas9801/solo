@@ -190,23 +190,38 @@ only these numbers and the files its patches edited, in memory); in those
 terminals `OTEL_BLRP_SCHEDULE_DELAY` is 200 unless you set it, so Codex sends
 it every 200 ms rather than every second.
 
-### Per-turn review
+### Pending changes
 Solo takes a snapshot of the working directory when each agent turn starts
-and ends (for which agents, see section 7). After a turn, the tab shows
-**"N files changed"** (command: `terminal: review agent turn`). In the review
-you can:
+and ends (for which agents, see section 7). What the agent changed is pending
+until you accept it: for each file, Solo keeps what you last accepted of it,
+and the tab shows **"N files to review"** (command:
+`terminal: review agent turn`). The review compares each file with what you
+accepted, so changes from several turns show together, each hunk marked with
+its turn, and with more than one turn you can show one turn's at a time. In
+the review you can:
 
-- **Keep** or **Reject** each hunk, or **Keep All** / **Reject All**.
-  Rejecting a file the turn created moves it to the recycle bin; a file that
-  was already there before the turn (ignored by `.gitignore` then, say) is
-  left alone;
-- comment on lines and send the comments to the agent;
-- **Roll Back** the work tree to before any recorded turn;
+- **Keep** or **Reject** each hunk, or **Keep All** / **Reject All**, also
+  after a later turn changed the same file. Rejecting a file the agent
+  created moves it to the recycle bin; a file that was already there before
+  (ignored by `.gitignore` then, say) is left alone. A file with unsaved
+  edits in the editor isn't rejected;
+- comment on lines and send the comments, and what you rejected, to the agent
+  in one message (pasted into its prompt, not sent);
+- **Turns**: **View** shows what one turn changed, read only, and **Roll
+  Back** puts the work tree back to before any recorded turn;
 - see what the turn did to the language servers' diagnostics: the errors and
   warnings it added in the files it changed, and the errors it fixed (click
   one to go there);
 - read the code as in the editor: go to definition, find references and
   search work, and a line above each hunk names the function or type it's in.
+
+Files the turn under way is changing are locked until it ends. Changes you
+don't review are accepted when the next turn ends (not while the review is
+open). What you change yourself that doesn't touch the agent's hunks, and what
+you commit, isn't pending. The pending changes are kept across restarts; what
+the agent changed while Solo was closed (its terminal kept running) is
+pending too, marked "While Solo was closed". Closing the agent's terminal
+forgets them.
 
 Snapshots are kept in Solo's data folder. They never touch your branch, HEAD,
 index, stash list or git object database, and ignored files aren't included.
@@ -224,7 +239,7 @@ session only; with `[otel]` in your own Codex config, which replaces Solo's,
 `"terminal": {"codex_edit_hooks": true}` reports them through a hook instead,
 which adds about a second per patch on Windows): files
 you or another agent in the same repository changed meanwhile aren't in it,
-and **Reject All**, which says how many files it puts back, leaves them alone.
+and **Reject All** leaves them alone.
 The page lists the other files that changed during the turn, including what
 the agent's own commands changed. For an agent that doesn't report its edits,
 the turn is everything that changed in the folder, and the page says some of

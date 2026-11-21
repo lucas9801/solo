@@ -40,9 +40,9 @@ Each project folder is a workspace with a tab in the title bar, holding its own 
 
 ![Workspace tabs: five projects in the title bar, with the godot tab's menu open, listing its three agents](docs/media/en/workspaces.png)
 
-### Per-turn review and roll back
+### Pending changes and roll back
 
-When an agent finishes a turn, its terminal tab shows "N files changed". Open it to see everything the turn changed: keep or reject each hunk, comment on lines and send all the comments to the agent at once. Solo also tells you how many errors and warnings the turn **added**, and how many it fixed. You can roll back to before any turn, and undo the rollback; snapshots are kept in Solo's own folder, never touching your branch, index or stash. [More →](docs/site/en/features/review.md)
+What an agent changed is pending until you accept it, and its terminal tab shows "N files to review". Open it: each file is compared with what you last accepted of it, so changes from several turns show together, each hunk marked with its turn. Keep or reject each hunk (also after a later turn changed the same file), comment on lines and send the comments and what you rejected to the agent at once. Changes you don't review are accepted when the next turn ends; your own edits and what you commit aren't pending. Solo also tells you how many errors and warnings the turn **added**, and how many it fixed. You can roll back to before any turn, and undo the rollback; snapshots are kept in Solo's own folder, never touching your branch, index or stash. [More →](docs/site/en/features/review.md)
 
 ![Per-turn review: the files Claude Code's turn changed, a review comment on a line of code, and sending the comments to the agent at the top](docs/media/en/review.png)
 
