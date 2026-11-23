@@ -18,7 +18,7 @@ mod webview2;
 use gpui::{App, AppContext as _, Context, WeakEntity, Window};
 use settings::{RegisterSetting, Settings};
 use solo_actions::browser::{OpenBrowser, OpenUrl};
-use workspace::Workspace;
+use workspace::{Toast, Workspace, notifications::NotificationId};
 
 pub use address::{LinkTarget, OpenLinksIn, link_target};
 pub use browser_view::{BrowserEvent, BrowserView, Viewport};
@@ -110,6 +110,21 @@ pub fn open_url(
     } else {
         LinkTarget::System
     };
+    // SOLO: draft text, awaiting the user's confirmation.
+    if remote_port_notice_needed(&action.url, workspace.project().read(cx).is_remote()) {
+        struct RemotePortToast;
+        workspace.show_toast(
+            Toast::new(
+                NotificationId::unique::<RemotePortToast>(),
+                util::i18n::tr(
+                    "This opens the port on this computer, not on the remote machine.",
+                    "打开的是本机的这个端口，不是远端的。",
+                ),
+            )
+            .autohide(),
+            cx,
+        );
+    }
     match target {
         LinkTarget::System => cx.open_url(&action.url),
         LinkTarget::Solo => {
@@ -124,6 +139,15 @@ pub fn open_url(
             );
         }
     }
+}
+
+/// Whether opening `url` from a remote project should say that a localhost
+/// address is this computer's, not the remote machine's.
+fn remote_port_notice_needed(url: &str, project_is_remote: bool) -> bool {
+    project_is_remote
+        && url::Url::parse(url)
+            .ok()
+            .is_some_and(|url| matches!(url.scheme(), "http" | "https") && address::is_local(&url))
 }
 
 /// Shows a window a page opened in a new tab of Solo's browser.
@@ -161,4 +185,20 @@ fn show_page(
     }
     let view = cx.new(|cx| BrowserView::new(Some(url), weak, window, cx));
     workspace.add_item_to_active_pane(Box::new(view), None, focus, window, cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remote_port_notice_needed;
+
+    #[test]
+    fn remote_projects_get_a_note_about_local_ports() {
+        assert!(remote_port_notice_needed("http://localhost:5173/", true));
+        assert!(remote_port_notice_needed("http://127.0.0.1:3000", true));
+        assert!(remote_port_notice_needed("http://[::1]:8080/", true));
+        assert!(!remote_port_notice_needed("http://localhost:5173/", false));
+        assert!(!remote_port_notice_needed("https://example.com/", true));
+        assert!(!remote_port_notice_needed("file:///C:/a.html", true));
+        assert!(!remote_port_notice_needed("not a url", true));
+    }
 }
