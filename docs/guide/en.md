@@ -383,8 +383,9 @@ without it, the tab says so and offers the download).
   In**: local addresses (localhost, 127.0.0.1, [::1], *.localhost) in Solo and
   the rest in the system browser by default, or all in Solo, or all in the
   system browser. `ctrl-shift`-click opens a link the other way. A page that
-  is already open is switched to rather than opened again. The command
-  palette's **browser: open browser** opens an empty tab.
+  is already open is switched to rather than opened again. The editor
+  pane's **+** menu (**New Web Page**) and the command palette's
+  **browser: open browser** open an empty tab.
 - **Toolbar**: back, forward, reload (right-click: reload without the cache),
   the address (`5173` and `localhost:5173` both mean
   `http://localhost:5173/`; only http, https and local HTML files open), the

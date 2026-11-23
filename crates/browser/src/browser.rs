@@ -162,3 +162,125 @@ fn show_page(
     let view = cx.new(|cx| BrowserView::new(Some(url), weak, window, cx));
     workspace.add_item_to_active_pane(Box::new(view), None, focus, window, cx);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
+    use project::Project;
+    use settings::SettingsStore;
+    use workspace::{Pane, SplitDirection};
+
+    fn init_test(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            cx.set_global(db::AppDatabase::test_new());
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            init(cx);
+        });
+    }
+
+    /// Opens the "+" menu of `pane` the way a click does: the pane focused,
+    /// the button's menu shown.
+    fn show_new_menu(
+        pane: &Entity<Pane>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<ui::ContextMenu> {
+        pane.update_in(cx, |pane, window, cx| {
+            window.focus(&pane.focus_handle(cx), cx)
+        });
+        cx.run_until_parked();
+        let handle = pane.read_with(cx, |pane, _| pane.new_item_context_menu_handle.clone());
+        cx.update(|window, cx| handle.show(window, cx));
+        cx.run_until_parked();
+        handle.menu().expect("the + menu is shown")
+    }
+
+    #[gpui::test]
+    async fn test_new_web_page_in_the_pane_of_the_plus(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = fs::FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) = cx.add_window_view(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let workspace = multi_workspace.read_with(cx, |multi, _| multi.workspace().clone());
+        let left = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        let right = workspace.update_in(cx, |workspace, window, cx| {
+            workspace.split_pane(left.clone(), SplitDirection::Right, window, cx)
+        });
+        // Panes without tabs draw no tab bar, hence no "+".
+        for pane in [&left, &right] {
+            workspace.update_in(cx, |workspace, window, cx| {
+                let item = cx.new(workspace::item::test::TestItem::new);
+                workspace.add_item(pane.clone(), Box::new(item), None, false, false, window, cx);
+            });
+        }
+        left.update_in(cx, |pane, window, cx| {
+            window.focus(&pane.focus_handle(cx), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(cx, |workspace, _| workspace.active_pane().clone()),
+            left
+        );
+
+        let menu = show_new_menu(&right, cx);
+        let labels: Vec<_> = menu.read_with(cx, |menu, _| {
+            menu.entry_labels()
+                .into_iter()
+                .map(|label| label.to_string())
+                .collect()
+        });
+        assert_eq!(
+            labels,
+            [
+                "New File",
+                "New Web Page",
+                "Open File",
+                "Search Project",
+                "Search Symbols"
+            ]
+        );
+
+        menu.update_in(cx, |menu, window, cx| {
+            menu.select_first(&menu::SelectFirst, window, cx);
+            menu.select_next(&menu::SelectNext, window, cx);
+            menu.confirm(&menu::Confirm, window, cx);
+        });
+        cx.run_until_parked();
+
+        let browser_pages = |pane: &Entity<Pane>, cx: &mut VisualTestContext| {
+            pane.read_with(cx, |pane, cx| {
+                pane.items()
+                    .filter(|item| item.act_as::<BrowserView>(cx).is_some())
+                    .count()
+            })
+        };
+        assert_eq!(browser_pages(&right, cx), 1, "the page opens on the right");
+        assert_eq!(browser_pages(&left, cx), 0);
+        assert_eq!(
+            workspace.read_with(cx, |workspace, _| workspace.active_pane().clone()),
+            right
+        );
+        right.read_with(cx, |pane, cx| {
+            let view = pane
+                .active_item()
+                .and_then(|item| item.act_as::<BrowserView>(cx))
+                .expect("the new page is the active tab");
+            assert_eq!(view.read(cx).url(), "", "the address bar starts empty");
+        });
+    }
+
+    /// The menu and the command palette name the action alike, in Chinese.
+    #[test]
+    fn test_new_web_page_names_in_chinese() {
+        assert_eq!(util::i18n::chinese("New Web Page"), Some("新建网页"));
+        assert_eq!(
+            util::i18n::chinese("browser: open browser"),
+            Some("浏览器: 新建网页")
+        );
+    }
+}
