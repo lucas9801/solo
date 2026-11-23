@@ -3231,7 +3231,7 @@ mod tests {
         let (_, detail) = cx.pending_prompt().expect("the link asks first");
         assert!(detail.contains(path!("/project/file.txt")), "{detail}");
         assert_eq!(cx.windows().len(), 1);
-        cx.simulate_prompt_answer("Cancel");
+        cx.simulate_prompt_answer(util::i18n::tr("Cancel", "取消"));
         cx.run_until_parked();
         assert!(!cx.has_pending_prompt());
         assert_eq!(cx.windows().len(), 1);
@@ -3239,7 +3239,7 @@ mod tests {
         // Allowed: it opens.
         open_link(cx);
         assert!(cx.has_pending_prompt());
-        cx.simulate_prompt_answer("Allow");
+        cx.simulate_prompt_answer(util::i18n::tr("Allow", "允许"));
         cx.run_until_parked();
         assert_eq!(cx.windows().len(), 2);
     }

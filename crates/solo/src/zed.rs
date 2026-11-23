@@ -6501,6 +6501,7 @@ mod tests {
                 "text_finder",
                 "theme",
                 "theme_selector",
+                "title_bar",
                 "toast",
                 "toolchain",
                 "variable_list",

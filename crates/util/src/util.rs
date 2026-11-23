@@ -689,7 +689,12 @@ pub fn dev_repo_root() -> Option<&'static std::path::Path> {
     static ROOT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
         let exe = std::env::current_exe().ok();
+        // SOLO: `cargo test` and `cargo run` set this to the crate being run,
+        // so a `target/` shared with another checkout doesn't make the
+        // executable's own path find that checkout's assets.
+        let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
         let candidates = [
+            manifest_dir,
             exe.clone(),
             exe.and_then(|exe| exe.canonicalize().ok()),
             std::env::current_dir().ok(),

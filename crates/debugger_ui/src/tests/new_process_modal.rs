@@ -183,6 +183,9 @@ async fn test_save_debug_scenario_to_file(executor: BackgroundExecutor, cx: &mut
     let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
     let workspace = init_test_workspace(&project, cx).await;
     let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    // SOLO: The project's `debug.json` is read once the worktree is scanned;
+    // the modal lists its scenarios as it opens.
+    cx.run_until_parked();
 
     workspace
         .update(cx, |multi, window, cx| {
@@ -215,7 +218,7 @@ async fn test_save_debug_scenario_to_file(executor: BackgroundExecutor, cx: &mut
         .unwrap();
 
     let debug_json_content = fs
-        .load(path!("/project/.zed/debug.json").as_ref())
+        .load(path!("/project/.solo/debug.json").as_ref())
         .await
         .expect("debug.json should exist")
         .lines()
@@ -278,7 +281,7 @@ async fn test_save_debug_scenario_to_file(executor: BackgroundExecutor, cx: &mut
         ]"#};
 
     let debug_json_content = fs
-        .load(path!("/project/.zed/debug.json").as_ref())
+        .load(path!("/project/.solo/debug.json").as_ref())
         .await
         .expect("debug.json should exist")
         .lines()
@@ -290,6 +293,80 @@ async fn test_save_debug_scenario_to_file(executor: BackgroundExecutor, cx: &mut
 
 #[gpui::test]
 async fn test_debug_modal_subtitles_with_multiple_worktrees(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+
+    fs.insert_tree(
+        path!("/workspace1"),
+        json!({
+            ".solo": {
+                "debug.json": r#"[
+                    {
+                        "adapter": "fake-adapter",
+                        "label": "Debug App 1",
+                        "request": "launch",
+                        "program": "./app1",
+                        "cwd": "."
+                    },
+                    {
+                        "adapter": "fake-adapter",
+                        "label": "Debug Tests 1",
+                        "request": "launch",
+                        "program": "./test1",
+                        "cwd": "."
+                    }
+                ]"#
+            },
+            "main.rs": "fn main() {}"
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs.clone(), [path!("/workspace1").as_ref()], cx).await;
+
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    // SOLO: The project's `debug.json` is read once the worktree is scanned;
+    // the modal lists its scenarios as it opens.
+    cx.run_until_parked();
+
+    workspace
+        .update(cx, |multi, window, cx| {
+            multi.workspace().update(cx, |workspace, cx| {
+                NewProcessModal::show(workspace, window, NewProcessMode::Debug, None, cx);
+            });
+        })
+        .unwrap();
+
+    cx.run_until_parked();
+
+    let modal = workspace
+        .update(cx, |workspace, _, cx| {
+            workspace.active_modal::<NewProcessModal>(cx)
+        })
+        .unwrap()
+        .expect("Modal should be active");
+
+    cx.executor().run_until_parked();
+
+    let subtitles = modal.update_in(cx, |modal, _, cx| {
+        modal.debug_picker_candidate_subtitles(cx)
+    });
+
+    assert_eq!(
+        subtitles.as_slice(),
+        [path!(".solo/debug.json"), path!(".solo/debug.json")]
+    );
+}
+
+// SOLO: A project that only has the previous editor's `.zed/debug.json` still
+// shows its scenarios.
+#[gpui::test]
+async fn test_debug_modal_reads_scenarios_from_previous_folder(
     executor: BackgroundExecutor,
     cx: &mut TestAppContext,
 ) {
@@ -327,6 +404,9 @@ async fn test_debug_modal_subtitles_with_multiple_worktrees(
 
     let workspace = init_test_workspace(&project, cx).await;
     let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    // SOLO: The project's `debug.json` is read once the worktree is scanned;
+    // the modal lists its scenarios as it opens.
+    cx.run_until_parked();
 
     workspace
         .update(cx, |multi, window, cx| {

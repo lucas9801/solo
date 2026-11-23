@@ -289,6 +289,19 @@ async fn test_escape_code_processing(executor: BackgroundExecutor, cx: &mut Test
 
     cx.run_until_parked();
 
+    // SOLO: The debug panel is docked on the right and narrow, which would wrap
+    // the console's lines and move the rows this test checks.
+    active_debug_session_panel(workspace, cx).update(cx, |item, cx| {
+        item.running_state().update(cx, |state, cx| {
+            state.console().update(cx, |console, cx| {
+                console.editor().update(cx, |editor, cx| {
+                    editor.set_soft_wrap_mode(language::language_settings::SoftWrap::None, cx)
+                })
+            })
+        })
+    });
+    cx.run_until_parked();
+
     let _running_state =
         active_debug_session_panel(workspace, cx).update_in(cx, |item, window, cx| {
             cx.focus_self(window);
