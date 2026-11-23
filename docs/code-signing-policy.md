@@ -54,7 +54,7 @@ code at version 2.2.0):
 
 | What | Where | When | How to turn it off |
 |---|---|---|---|
-| Update check | Solo Code from the Microsoft Store asks the Store (Windows' `StoreContext`); other builds (installed with the GitHub installer, or from source) ask `api.github.com` (this repository's releases) | 30 s after start, then every 6 hours | `"auto_update": false` |
+| Update check | Solo Code from the Microsoft Store asks the Store (Windows' `StoreContext`); other builds (installed with the GitHub installer, or from source) ask `api.github.com` (this repository's releases) | 30 s after start, then every hour | `"auto_update": false` |
 | Language servers and Node.js | GitHub releases, the npm registry, `nodejs.org` | When a file of a language is opened whose language server isn't installed yet (and checks for newer versions) | `"enable_language_server": false`, per language `"language_servers"`, or a language server's `binary.path` in `"lsp"` |
 | Extension updates | Zed's extension API (`api.zed.dev`) | Only when extensions are installed | Don't install extensions, or `"auto_update_extensions": { "<id>": false }` |
 | Git avatars | `avatars.githubusercontent.com` / GitHub API | When commit details of a GitHub repository are shown | `"git": { "blame": { "show_avatar": false } }` |

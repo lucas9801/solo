@@ -59,7 +59,7 @@ AppId and updates that Solo in its folder. Releases have no zip.
 
 ## Updates and releases
 
-Solo checks for a newer version 30 seconds after it starts and every 6 hours
+Solo checks for a newer version 30 seconds after it starts and every hour
 after that (turn this off with `"auto_update": false`; **Check for Updates**
 in the command palette always checks). The Store package asks the Store,
 which installs the update. Other builds (installed with the GitHub
