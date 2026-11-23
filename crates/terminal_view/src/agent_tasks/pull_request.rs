@@ -7,15 +7,23 @@
     reason = "runs gh and git synchronously, only from background tasks"
 )]
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
-use std::process::Output;
+use std::process::{Output, Stdio};
+use std::sync::{Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 use util::i18n::{is_chinese, tr};
 
 use super::git::{self, AgentTask};
+
+/// How many `gh` processes run at once, whoever started them.
+const MAX_GH_PROCESSES: usize = 2;
+/// How long a `gh` run for the periodic check may take before it's killed, so
+/// that a hung one doesn't hold one of the two places forever.
+const POLL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct PullRequest {
@@ -25,16 +33,33 @@ pub struct PullRequest {
     pub state: String,
 }
 
+impl PullRequest {
+    pub fn is_open(&self) -> bool {
+        self.state == "OPEN"
+    }
+}
+
 /// A check that failed, with where to read its log.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FailedCheck {
     pub name: String,
     pub link: Option<String>,
+    /// The commit it ran on: the same check failing on a new commit is new.
+    pub commit: String,
+}
+
+impl FailedCheck {
+    /// What tells this failure from others.
+    pub fn key(&self) -> String {
+        format!("{}@{}", self.name, self.commit)
+    }
 }
 
 /// A comment on the pull request or on a line of its diff.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PrComment {
+    /// What tells new comments from those already sent.
+    pub id: String,
     pub author: String,
     pub body: String,
     pub path: Option<String>,
@@ -53,21 +78,149 @@ impl PrFeedback {
     }
 }
 
+/// `gh` isn't installed, or isn't logged in.
+#[derive(Debug)]
+pub struct GhUnavailable(pub String);
+
+impl std::fmt::Display for GhUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for GhUnavailable {}
+
+fn gh_missing() -> GhUnavailable {
+    GhUnavailable(
+        tr(
+            "failed to run gh, GitHub's CLI; install it and run `gh auth login`",
+            "无法运行 GitHub 的命令行工具 gh；请安装它并运行 `gh auth login`",
+        )
+        .to_string(),
+    )
+}
+
+struct ProcessGate {
+    running: Mutex<usize>,
+    released: Condvar,
+}
+
+static PROCESS_GATE: ProcessGate = ProcessGate {
+    running: Mutex::new(0),
+    released: Condvar::new(),
+};
+
+struct ProcessPermit;
+
+impl ProcessGate {
+    fn acquire(&'static self) -> ProcessPermit {
+        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        while *running >= MAX_GH_PROCESSES {
+            running = self
+                .released
+                .wait(running)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *running += 1;
+        ProcessPermit
+    }
+}
+
+impl Drop for ProcessPermit {
+    fn drop(&mut self) {
+        let mut running = PROCESS_GATE
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *running = running.saturating_sub(1);
+        PROCESS_GATE.released.notify_one();
+    }
+}
+
+fn read_pipe(
+    pipe: Option<impl std::io::Read + Send + 'static>,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe
+            && let Err(error) = pipe.read_to_end(&mut bytes)
+        {
+            log::warn!("failed to read gh's output: {error}");
+        }
+        bytes
+    })
+}
+
+/// Runs `gh` in `directory`, once fewer than [`MAX_GH_PROCESSES`] run.
+fn run_gh<I, S>(directory: &Path, arguments: I, timeout: Option<Duration>) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let arguments: Vec<OsString> = arguments
+        .into_iter()
+        .map(|argument| argument.as_ref().to_owned())
+        .collect();
+    let _permit = PROCESS_GATE.acquire();
+    let mut child = util::command::new_std_command("gh")
+        .current_dir(directory)
+        .args(&arguments)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                anyhow::Error::new(gh_missing())
+            } else {
+                anyhow::Error::new(error).context(tr(
+                    "failed to run gh, GitHub's CLI; install it and run `gh auth login`",
+                    "无法运行 GitHub 的命令行工具 gh；请安装它并运行 `gh auth login`",
+                ))
+            }
+        })?;
+    let stdout = read_pipe(child.stdout.take());
+    let stderr = read_pipe(child.stderr.take());
+    let status = match timeout {
+        None => child.wait()?,
+        Some(timeout) => {
+            let deadline = Instant::now() + timeout;
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    break status;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().context("failed to stop gh")?;
+                    child.wait()?;
+                    bail!("gh didn't finish in {} seconds", timeout.as_secs());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
 fn gh<I, S>(directory: &Path, arguments: I) -> Result<Output>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    util::command::new_std_command("gh")
-        .current_dir(directory)
-        .args(arguments)
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("NO_COLOR", "1")
-        .output()
-        .context(tr(
-            "failed to run gh, GitHub's CLI; install it and run `gh auth login`",
-            "无法运行 GitHub 的命令行工具 gh；请安装它并运行 `gh auth login`",
-        ))
+    run_gh(directory, arguments, None)
+}
+
+fn gh_polled<I, S>(directory: &Path, arguments: I) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_gh(directory, arguments, Some(POLL_TIMEOUT))
 }
 
 fn stdout(output: &Output) -> String {
@@ -76,6 +229,23 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+/// What gh prints when it isn't logged in.
+fn is_not_logged_in(error: &str) -> bool {
+    let error = error.to_lowercase();
+    error.contains("gh auth login")
+        || error.contains("not logged in")
+        || error.contains("authentication required")
+}
+
+/// A failed `gh` run's error; one for want of a login is [`GhUnavailable`].
+fn gh_failure(what: &str, output: &Output) -> anyhow::Error {
+    let error = stderr(output);
+    if is_not_logged_in(&error) {
+        return anyhow::Error::new(GhUnavailable(format!("{what}: {error}")));
+    }
+    anyhow::anyhow!("{what}: {error}")
 }
 
 /// The pull request of `branch`, if it has one.
@@ -89,7 +259,7 @@ pub fn find_pull_request(worktree: &Path, branch: &str) -> Result<Option<PullReq
         if error.to_lowercase().contains("no pull requests found") {
             return Ok(None);
         }
-        bail!("{error}");
+        return Err(gh_failure("gh pr view failed", &output));
     }
     Ok(Some(
         serde_json::from_str(&stdout(&output)).context("unexpected output from gh pr view")?,
@@ -171,17 +341,47 @@ struct Check {
     link: Option<String>,
 }
 
-pub(crate) fn failed_checks(json: &str) -> Result<Vec<FailedCheck>> {
+/// One of the pull request's checks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckRun {
+    pub name: String,
+    pub bucket: String,
+    pub link: Option<String>,
+}
+
+impl CheckRun {
+    pub fn is_pending(&self) -> bool {
+        self.bucket == "pending"
+    }
+
+    pub fn is_failed(&self) -> bool {
+        self.bucket == "fail"
+    }
+}
+
+pub(crate) fn check_runs(json: &str) -> Result<Vec<CheckRun>> {
     let checks: Vec<Check> =
         serde_json::from_str(json).context("unexpected output from gh pr checks")?;
     Ok(checks
         .into_iter()
-        .filter(|check| check.bucket == "fail")
-        .map(|check| FailedCheck {
+        .map(|check| CheckRun {
             name: check.name,
+            bucket: check.bucket,
             link: check.link.filter(|link| !link.is_empty()),
         })
         .collect())
+}
+
+fn failed_runs(checks: &[CheckRun], commit: &str) -> Vec<FailedCheck> {
+    checks
+        .iter()
+        .filter(|check| check.is_failed())
+        .map(|check| FailedCheck {
+            name: check.name.clone(),
+            link: check.link.clone(),
+            commit: commit.to_string(),
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -191,22 +391,19 @@ struct Author {
 
 #[derive(Deserialize)]
 struct Comment {
-    author: Author,
+    #[serde(default)]
+    id: String,
+    /// Null for an account that's been deleted.
+    author: Option<Author>,
     body: String,
 }
 
-#[derive(Deserialize)]
-struct Review {
-    author: Author,
-    body: String,
-}
-
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct Conversation {
     #[serde(default)]
     comments: Vec<Comment>,
     #[serde(default)]
-    reviews: Vec<Review>,
+    reviews: Vec<Comment>,
 }
 
 #[derive(Deserialize)]
@@ -216,90 +413,208 @@ struct User {
 
 #[derive(Deserialize)]
 struct LineComment {
-    user: User,
+    #[serde(default)]
+    id: u64,
+    user: Option<User>,
     body: String,
     path: String,
     line: Option<u64>,
     original_line: Option<u64>,
 }
 
-/// The comments and review summaries on the pull request (`gh pr view
-/// --json comments,reviews`), then those on lines of its diff (`gh api
-/// .../pulls/N/comments`), skipping empty ones.
-pub(crate) fn pr_comments(conversation: &str, line_comments: &str) -> Result<Vec<PrComment>> {
-    let conversation: Conversation =
-        serde_json::from_str(conversation).context("unexpected output from gh pr view")?;
+fn comment_from(kind: &str, comment: Comment) -> PrComment {
+    let author = comment
+        .author
+        .map_or_else(|| "ghost".to_string(), |author| author.login);
+    // Without an id, what it says still tells it from the others.
+    let id = if comment.id.is_empty() {
+        format!("{kind}:{author}:{}", comment.body)
+    } else {
+        comment.id
+    };
+    PrComment {
+        id,
+        author,
+        body: comment.body,
+        path: None,
+        line: None,
+    }
+}
+
+fn comments_of(conversation: Conversation, line_comments: &str) -> Result<Vec<PrComment>> {
     let line_comments: Vec<LineComment> =
         serde_json::from_str(line_comments).context("unexpected output from gh api")?;
     let mut comments: Vec<PrComment> = conversation
         .comments
         .into_iter()
-        .map(|comment| (comment.author.login, comment.body))
+        .map(|comment| comment_from("comment", comment))
         .chain(
             conversation
                 .reviews
                 .into_iter()
-                .map(|review| (review.author.login, review.body)),
+                .map(|review| comment_from("review", review)),
         )
-        .map(|(author, body)| PrComment {
-            author,
-            body,
-            path: None,
-            line: None,
-        })
         .collect();
-    comments.extend(line_comments.into_iter().map(|comment| PrComment {
-        author: comment.user.login,
-        body: comment.body,
-        path: Some(comment.path),
-        line: comment.line.or(comment.original_line),
+    comments.extend(line_comments.into_iter().map(|comment| {
+        PrComment {
+            id: format!("line:{}", comment.id),
+            author: comment
+                .user
+                .map_or_else(|| "ghost".to_string(), |user| user.login),
+            body: comment.body,
+            path: Some(comment.path),
+            line: comment.line.or(comment.original_line),
+        }
     }));
     comments.retain(|comment| !comment.body.trim().is_empty());
     Ok(comments)
 }
 
-/// What the pull request's checks and reviewers said.
-pub fn pull_request_feedback(worktree: &Path, number: u64) -> Result<PrFeedback> {
-    let number = number.to_string();
+/// The comments and review summaries on the pull request (`gh pr view
+/// --json comments,reviews`), then those on lines of its diff (`gh api
+/// .../pulls/N/comments`), skipping empty ones.
+#[cfg(test)]
+pub(crate) fn pr_comments(conversation: &str, line_comments: &str) -> Result<Vec<PrComment>> {
+    let conversation: Conversation =
+        serde_json::from_str(conversation).context("unexpected output from gh pr view")?;
+    comments_of(conversation, line_comments)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrView {
+    number: u64,
+    url: String,
+    state: String,
+    #[serde(default)]
+    head_ref_oid: String,
+    /// `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`, or empty.
+    #[serde(default)]
+    review_decision: Option<String>,
+    /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN`.
+    #[serde(default)]
+    mergeable: Option<String>,
+    #[serde(flatten)]
+    conversation: Conversation,
+}
+
+/// Everything the periodic check learns of a pull request.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrSnapshot {
+    pub pull_request: PullRequest,
+    pub head_commit: String,
+    pub checks: Vec<CheckRun>,
+    pub review_decision: Option<String>,
+    pub mergeable: Option<String>,
+    pub comments: Vec<PrComment>,
+}
+
+impl PrSnapshot {
+    /// From the output of `gh pr view --json
+    /// number,url,state,headRefOid,reviewDecision,mergeable,comments,reviews`,
+    /// `gh pr checks --json name,bucket,link` and `gh api
+    /// .../pulls/N/comments`. The last two are left out for a pull request
+    /// that isn't open.
+    pub fn from_json(
+        view: &str,
+        checks: Option<&str>,
+        line_comments: Option<&str>,
+    ) -> Result<Self> {
+        let view: PrView =
+            serde_json::from_str(view).context("unexpected output from gh pr view")?;
+        Ok(Self {
+            pull_request: PullRequest {
+                number: view.number,
+                url: view.url,
+                state: view.state,
+            },
+            head_commit: view.head_ref_oid,
+            checks: checks.map(check_runs).transpose()?.unwrap_or_default(),
+            review_decision: view.review_decision.filter(|decision| !decision.is_empty()),
+            mergeable: view.mergeable,
+            comments: comments_of(view.conversation, line_comments.unwrap_or("[]"))?,
+        })
+    }
+
+    pub fn has_pending_checks(&self) -> bool {
+        self.checks.iter().any(CheckRun::is_pending)
+    }
+
+    pub fn failed_checks(&self) -> Vec<FailedCheck> {
+        failed_runs(&self.checks, &self.head_commit)
+    }
+
+    /// Everything the checks and reviewers said.
+    pub fn feedback(&self) -> PrFeedback {
+        PrFeedback {
+            failed_checks: self.failed_checks(),
+            comments: self.comments.clone(),
+        }
+    }
+}
+
+const VIEW_FIELDS: &str = "number,url,state,headRefOid,reviewDecision,mergeable,comments,reviews";
+
+/// Reads a pull request (found by its branch or number) with its checks and
+/// comments, with at most one `gh` process at a time. `None` if there's none.
+pub fn fetch_snapshot(worktree: &Path, selector: &str) -> Result<Option<PrSnapshot>> {
+    let view = gh_polled(worktree, ["pr", "view", selector, "--json", VIEW_FIELDS])?;
+    if !view.status.success() {
+        if stderr(&view)
+            .to_lowercase()
+            .contains("no pull requests found")
+        {
+            return Ok(None);
+        }
+        return Err(gh_failure("gh pr view failed", &view));
+    }
+    let view_json = stdout(&view);
+    let pull_request: PullRequest =
+        serde_json::from_str(&view_json).context("unexpected output from gh pr view")?;
+    if !pull_request.is_open() {
+        return PrSnapshot::from_json(&view_json, None, None).map(Some);
+    }
+    let number = pull_request.number.to_string();
     // gh exits with an error when checks fail or are pending; what it printed
     // still says which.
-    let checks = gh(
+    let checks = gh_polled(
         worktree,
         ["pr", "checks", &number, "--json", "name,bucket,link"],
     )?;
-    let failed_checks = match stdout(&checks).trim() {
-        "" if checks.status.success() => Vec::new(),
+    let checks_json = match stdout(&checks).trim() {
+        "" if checks.status.success() => "[]".to_string(),
         "" => {
-            let error = stderr(&checks);
-            if error.to_lowercase().contains("no checks") {
-                Vec::new()
+            if stderr(&checks).to_lowercase().contains("no checks") {
+                "[]".to_string()
             } else {
-                bail!("gh pr checks failed: {error}");
+                return Err(gh_failure("gh pr checks failed", &checks));
             }
         }
-        json => failed_checks(json)?,
+        json => json.to_string(),
     };
-    let conversation = gh(
-        worktree,
-        ["pr", "view", &number, "--json", "comments,reviews"],
-    )?;
-    if !conversation.status.success() {
-        bail!("gh pr view failed: {}", stderr(&conversation));
-    }
-    let line_comments = gh(
+    let line_comments = gh_polled(
         worktree,
         [
             "api",
-            &format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments"),
+            &format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments?per_page=100"),
         ],
     )?;
     if !line_comments.status.success() {
-        bail!("gh api failed: {}", stderr(&line_comments));
+        return Err(gh_failure("gh api failed", &line_comments));
     }
-    Ok(PrFeedback {
-        failed_checks,
-        comments: pr_comments(&stdout(&conversation), &stdout(&line_comments))?,
-    })
+    PrSnapshot::from_json(
+        &view_json,
+        Some(&checks_json),
+        Some(&stdout(&line_comments)),
+    )
+    .map(Some)
+}
+
+/// What the pull request's checks and reviewers said.
+pub fn pull_request_feedback(worktree: &Path, number: u64) -> Result<PrFeedback> {
+    let snapshot =
+        fetch_snapshot(worktree, &number.to_string())?.context("the pull request isn't found")?;
+    Ok(snapshot.feedback())
 }
 
 /// The message telling the agent what the pull request's checks and
@@ -362,15 +677,17 @@ mod tests {
             {"name": "deploy", "bucket": "pending"}
         ]"#;
         assert_eq!(
-            failed_checks(json).unwrap(),
+            failed_runs(&check_runs(json).unwrap(), "abc"),
             vec![
                 FailedCheck {
                     name: "test (windows)".into(),
-                    link: Some("https://x/2".into())
+                    link: Some("https://x/2".into()),
+                    commit: "abc".into(),
                 },
                 FailedCheck {
                     name: "lint".into(),
-                    link: None
+                    link: None,
+                    commit: "abc".into(),
                 },
             ]
         );
@@ -386,8 +703,8 @@ mod tests {
             ]
         }"#;
         let line_comments = r#"[
-            {"user": {"login": "cy"}, "body": "Off by one?", "path": "src/lib.rs", "line": 12, "original_line": 10},
-            {"user": {"login": "cy"}, "body": "Outdated.", "path": "src/old.rs", "line": null, "original_line": 4}
+            {"id": 11, "user": {"login": "cy"}, "body": "Off by one?", "path": "src/lib.rs", "line": 12, "original_line": 10},
+            {"id": 12, "user": {"login": "cy"}, "body": "Outdated.", "path": "src/old.rs", "line": null, "original_line": 4}
         ]"#;
         let comments = pr_comments(conversation, line_comments).unwrap();
         assert_eq!(
@@ -407,6 +724,10 @@ mod tests {
                 ("cy", "Outdated.", Some("src/old.rs"), Some(4)),
             ]
         );
+        assert_eq!(
+            comments.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["1", "review:cy:Please rename it.", "line:11", "line:12"]
+        );
     }
 
     #[test]
@@ -420,8 +741,10 @@ mod tests {
             failed_checks: vec![FailedCheck {
                 name: "test".into(),
                 link: Some("https://x/2".into()),
+                commit: "abc".into(),
             }],
             comments: vec![PrComment {
+                id: "1".into(),
                 author: "cy".into(),
                 body: "Off by one?\r\nCheck the end.".into(),
                 path: Some("src/lib.rs".into()),

@@ -308,6 +308,29 @@ that runs or ran an agent and every agent task, with its status, branch, last
 turn's changes, running time and last message. Agents that need input come
 first; click one to go to its terminal.
 
+A task with a pull request has one more row: its number and state, which is
+one of *Checking 3/7*, *1 check failed*, *2 new comments* (both are written
+together when both apply), *Ready to merge*, *Merged* or *Closed*. Solo asks
+GitHub for it with `gh` (GitHub's CLI, which has to be installed and logged
+in; without it nothing is checked and nothing is shown) while it runs: every
+minute while checks run, every five minutes otherwise, and not any more once
+the pull request is merged or closed. *Ready to merge* means the checks passed
+(or there are none), no changes are requested and GitHub says it can be
+merged. Clicking the row opens a menu: send the pull request's feedback to the
+agent, open the pull request in the browser, copy its link. The feedback sent
+is only what's new: failed checks (by name and commit) and comments that
+weren't sent to the agent yet, by this menu, by **Send PR Feedback to Agent**
+in the task list, or automatically; it's pasted into the task's agent without
+pressing Enter, and the board shows a **Send to Agent** button on the row while
+there's something new. Which were sent is remembered across restarts.
+
+When a pull request gets a failed check or a new comment, or can be merged, you
+get one desktop notification (not while you're looking at the task's terminal);
+clicking it shows the task's terminal. Two settings under Settings > Terminal >
+Pull Requests: `check_pull_requests` (default `true`; off: `gh` isn't run in
+the background at all) and `auto_send_pr_feedback` (default `false`: paste new
+failed checks and comments into the agent as soon as it's idle).
+
 ### Workspace tabs in the title bar
 Each project folder is a workspace with its own tab in the title bar, holding
 its own terminals, agents, editors and file tree. Each tab shows one status
@@ -923,6 +946,8 @@ Solo's own settings, under `"terminal"`:
 | `notify_long_commands_after_seconds` | `10` | notify when a long command finishes; 0 turns it off |
 | `agent_input_notifications` | `true` | notify when an agent needs your input or rings the bell |
 | `agent_stopped_notifications` | `false` | notify when an agent stops after working a while |
+| `check_pull_requests` | `true` | check agent tasks' pull requests with `gh` and show them on the agent board; notify about failed checks, new comments and when one can be merged |
+| `auto_send_pr_feedback` | `false` | paste new failed checks and comments of a task's pull request into its agent when the agent is idle |
 | `program_notifications` | `true` | let programs show desktop notifications (OSC 9/777) |
 
 These notifications only show while Solo is in the background. All four are

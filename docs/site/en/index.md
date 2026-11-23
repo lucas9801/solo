@@ -34,7 +34,7 @@ https://github.com/user-attachments/assets/85627f07-1bb5-4f68-8199-c3afbdc9fa3b
 
 - **See who's doing what:** a terminal tab shows the agent's logo, its session name, a traffic-light status (working, waiting for you, done, failed) and its context use; hover it for the model, tokens, time to first token and output speed. With Solo in the background, an agent waiting for you sends a desktop notification.
 - **Workspace tabs:** one tab per project, switching terminals, editors and the file tree together; each tab shows its agents' status, including those in the background.
-- **Agent board:** a sidebar listing every agent and task, those waiting for you first.
+- **Agent board:** a sidebar listing every agent and task, those waiting for you first; a task's pull request shows its checks and new comments, and you're notified when something needs you.
 - **Agent tasks:** each task gets its own git worktree and branch, so agents don't step on each other; merge it, open a pull request or discard it when done. A task can span several repositories in one workspace. [More →](features/parallel.md)
 - **Built-in browser:** local pages open in a tab next to the terminal; pick elements on the page, comment on them and send the comments to an agent with their selectors, HTML and screenshots. With a setting on, agents can open pages, click and take screenshots in it while you watch. [More →](features/browser.md)
 - **Agents can drive Solo:** an agent in a Solo terminal can list, wait for and message the others, or start a new task, with `solo-cli agent`.

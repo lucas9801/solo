@@ -16,11 +16,11 @@ use std::{
 use agent_sessions::AgentSessionEvent;
 use anyhow::Result;
 use gpui::{
-    Action, App, AsyncWindowContext, Context, Entity, EntityId, EventEmitter, FocusHandle,
-    Focusable, Pixels, Render, Subscription, Task, WeakEntity, Window, actions, px,
+    Action, App, AsyncWindowContext, ClipboardItem, Context, Entity, EntityId, EventEmitter,
+    FocusHandle, Focusable, Pixels, Render, Subscription, Task, WeakEntity, Window, actions, px,
 };
 use solo_actions::agent_task::ManageAgentTasks;
-use ui::{Tab, Tooltip, prelude::*};
+use ui::{ButtonLike, ContextMenu, ContextMenuEntry, PopoverMenu, Tab, Tooltip, prelude::*};
 use util::i18n::{is_chinese, tr};
 use workspace::{
     Workspace,
@@ -32,7 +32,11 @@ use workspace::{
 use crate::{
     TerminalView,
     agent_status::AgentStatus,
-    agent_tasks::agent_tasks,
+    agent_tasks::{
+        agent_tasks,
+        pr_tracker::{PrSummary, PrTracker, SendOutcome},
+        show_toast, task_key,
+    },
     agent_turns::AgentTurns,
     command_blocks::{activate_terminal_view, terminal_views},
 };
@@ -75,6 +79,8 @@ struct TerminalSnapshot {
 /// An agent task, with the terminals open in its worktree.
 #[derive(Clone, Debug, PartialEq)]
 struct TaskSnapshot {
+    /// Tells the task from others, as [`task_key`] does.
+    key: String,
     name: String,
     branch: String,
     worktree_path: Option<PathBuf>,
@@ -94,6 +100,8 @@ struct BoardRow {
     elapsed: Option<String>,
     summary: Option<String>,
     worktree_path: Option<PathBuf>,
+    /// The task's pull request, once known.
+    pull_request: Option<(String, PrSummary)>,
 }
 
 /// Where a row goes: agents that need input first, then working ones, then
@@ -115,8 +123,14 @@ fn status_rank(status: Option<AgentStatus>) -> u8 {
 fn board_rows(
     terminals: Vec<TerminalSnapshot>,
     tasks: &[TaskSnapshot],
+    pull_requests: &HashMap<String, PrSummary>,
     chinese: bool,
 ) -> Vec<BoardRow> {
+    let pull_request_of = |task: &TaskSnapshot| {
+        pull_requests
+            .get(&task.key)
+            .map(|summary| (task.key.clone(), summary.clone()))
+    };
     let mut rows: Vec<BoardRow> = terminals
         .iter()
         .map(|terminal| {
@@ -137,6 +151,7 @@ fn board_rows(
                     .map(|elapsed| format_elapsed(elapsed, chinese)),
                 summary: terminal.last_message.as_deref().and_then(summarize),
                 worktree_path: task.and_then(|task| task.worktree_path.clone()),
+                pull_request: task.and_then(pull_request_of),
             }
         })
         .collect();
@@ -159,6 +174,7 @@ fn board_rows(
                 elapsed: None,
                 summary: None,
                 worktree_path: task.worktree_path.clone(),
+                pull_request: pull_request_of(task),
             }),
     );
     rows.sort_by_key(|row| status_rank(row.status));
@@ -276,7 +292,9 @@ impl AgentBoard {
     fn new(workspace_entity: Entity<Workspace>, cx: &mut Context<Self>) -> Self {
         let board = cx.weak_entity();
         let agent_turns = AgentTurns::global(cx);
+        let pull_request_tracker = PrTracker::global(cx);
         let subscriptions = vec![
+            cx.observe(&pull_request_tracker, |this, _, cx| this.refresh(cx)),
             cx.subscribe(&workspace_entity, |this, _, event, cx| match event {
                 workspace::Event::ItemAdded { item } => {
                     if item.downcast::<TerminalView>().is_some() {
@@ -330,6 +348,7 @@ impl AgentBoard {
             return;
         };
         let list = agent_tasks(&workspace, cx);
+        let workspace_id = workspace.entity_id();
         self.list_tasks = cx.spawn(async move |this, cx| {
             let tasks = match list.await {
                 Ok(tasks) => tasks,
@@ -338,9 +357,16 @@ impl AgentBoard {
                     return;
                 }
             };
+            this.update(cx, |_, cx| {
+                PrTracker::global(cx).update(cx, |tracker, cx| {
+                    tracker.set_tasks(workspace_id, &tasks, cx)
+                })
+            })
+            .ok();
             let tasks = tasks
                 .into_iter()
                 .map(|entry| TaskSnapshot {
+                    key: task_key(&entry.task),
                     name: crate::agent_tasks::display_name(&entry.task),
                     branch: entry.task.branch,
                     worktree_path: entry.task.worktree_path,
@@ -394,7 +420,16 @@ impl AgentBoard {
             .iter()
             .filter_map(|view| terminal_snapshot(view, turns, now, cx))
             .collect();
-        let rows = board_rows(terminals, &self.tasks, is_chinese());
+        let pull_requests = PrTracker::try_global(cx)
+            .map(|tracker| {
+                let tracker = tracker.read(cx);
+                self.tasks
+                    .iter()
+                    .filter_map(|task| Some((task.key.clone(), tracker.summary(&task.key)?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let rows = board_rows(terminals, &self.tasks, &pull_requests, is_chinese());
         if rows != self.rows {
             self.rows = rows;
             cx.notify();
@@ -454,6 +489,113 @@ impl AgentBoard {
             return;
         };
         activate_terminal_view(&workspace, &view, window, cx);
+    }
+
+    /// Pastes what's new on the task's pull request into its agent.
+    fn send_pull_request_feedback(
+        &mut self,
+        key: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let outcome =
+            PrTracker::global(cx).update(cx, |tracker, cx| tracker.send_unsent(&key, false, cx));
+        let message = match outcome {
+            SendOutcome::Sent(agent) => {
+                activate_terminal_view(&workspace, &agent, window, cx);
+                tr(
+                    "Sent the failed checks and comments to the task's agent.",
+                    "已把失败的检查和评论发给任务的 agent。",
+                )
+            }
+            SendOutcome::NoAgent(message) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(message));
+                tr(
+                    "No agent is running in the task's terminals; copied the feedback to the clipboard.",
+                    "任务的终端里没有 agent，已把反馈复制到剪贴板。",
+                )
+            }
+            SendOutcome::NothingNew => tr(
+                "No new failed checks or comments on the pull request.",
+                "PR 上没有新的失败检查或评论。",
+            ),
+        };
+        show_toast(&workspace, message.to_string(), cx);
+    }
+
+    /// The row of a task's pull request: its state, which opens a menu, and
+    /// a button to send what's new to the agent.
+    fn render_pull_request(
+        &self,
+        index: usize,
+        key: String,
+        summary: &PrSummary,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let color = summary.color();
+        let board = cx.weak_entity();
+        let url = summary.url.clone();
+        let menu_key = key.clone();
+        let menu_url = url.clone();
+        h_flex()
+            .w_full()
+            .gap_1()
+            .justify_between()
+            .child(
+                PopoverMenu::new(("agent-board-pull-request", index))
+                    .trigger_with_tooltip(
+                        ButtonLike::new(("agent-board-pull-request-state", index))
+                            .style(ButtonStyle::Subtle)
+                            .size(ButtonSize::None)
+                            .child(
+                                h_flex()
+                                    .h_5()
+                                    .gap_1p5()
+                                    .child(
+                                        Icon::new(summary.icon())
+                                            .size(IconSize::XSmall)
+                                            .color(color),
+                                    )
+                                    .child(
+                                        Label::new(summary.line(is_chinese()))
+                                            .size(LabelSize::Small)
+                                            .color(color),
+                                    ),
+                            ),
+                        Tooltip::text(url),
+                    )
+                    .menu(move |window, cx| {
+                        Some(pull_request_menu(
+                            board.clone(),
+                            menu_key.clone(),
+                            menu_url.clone(),
+                            window,
+                            cx,
+                        ))
+                    }),
+            )
+            .when(summary.has_unsent(), |this| {
+                this.child(
+                    Button::new(
+                        ("agent-board-pull-request-send", index),
+                        tr("Send to Agent", "发给 agent"),
+                    )
+                    .style(ButtonStyle::Outlined)
+                    .label_size(LabelSize::XSmall)
+                    .start_icon(
+                        Icon::new(IconName::ArrowUpRight)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.send_pull_request_feedback(key.clone(), window, cx)
+                    })),
+                )
+            })
+            .into_any_element()
     }
 
     fn render_row(&self, index: usize, row: &BoardRow, cx: &mut Context<Self>) -> AnyElement {
@@ -538,6 +680,9 @@ impl AgentBoard {
                     })
                     .truncate(),
             )
+            .when_some(row.pull_request.clone(), |this, (key, summary)| {
+                this.child(self.render_pull_request(index, key, &summary, cx))
+            })
             .when_some(row.summary.clone(), |this, summary| {
                 this.child(
                     Label::new(summary)
@@ -548,6 +693,43 @@ impl AgentBoard {
             })
             .into_any_element()
     }
+}
+
+/// What clicking the pull request's row offers.
+fn pull_request_menu(
+    board: WeakEntity<AgentBoard>,
+    key: String,
+    url: String,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<ContextMenu> {
+    ContextMenu::build(window, cx, move |menu, _, _| {
+        let open_url = url.clone();
+        menu.item(
+            ContextMenuEntry::new(tr("Send PR Feedback to Agent", "把 PR 反馈发给 agent"))
+                .icon(IconName::ArrowUpRight)
+                .handler(move |window, cx| {
+                    board
+                        .update(cx, |board, cx| {
+                            board.send_pull_request_feedback(key.clone(), window, cx)
+                        })
+                        .ok();
+                }),
+        )
+        .item(
+            ContextMenuEntry::new(tr("Open PR in Browser", "在浏览器中打开 PR"))
+                .icon(IconName::PullRequest)
+                .handler(move |window, cx| Workspace::open_web_link(&open_url, window, cx)),
+        )
+        .separator()
+        .item(
+            ContextMenuEntry::new(tr("Copy Link", "复制链接"))
+                .icon(IconName::Copy)
+                .handler(move |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(url.clone()))
+                }),
+        )
+    })
 }
 
 impl Render for AgentBoard {
@@ -692,6 +874,10 @@ mod tests {
 
     fn task(name: &str, terminals: &[u64]) -> TaskSnapshot {
         TaskSnapshot {
+            key: format!(
+                "/repo
+solo/{name}"
+            ),
             name: name.to_string(),
             branch: format!("solo/{name}"),
             worktree_path: Some(PathBuf::from(format!("/work/{name}"))),
@@ -711,6 +897,7 @@ mod tests {
                 terminal(6, AgentStatus::Working),
             ],
             &[task("unstarted", &[])],
+            &HashMap::new(),
             false,
         );
         let order: Vec<_> = rows
@@ -745,6 +932,7 @@ mod tests {
                 task("docs", &[7]),
                 task("gone", &[]),
             ],
+            &HashMap::new(),
             false,
         );
         assert_eq!(
@@ -759,6 +947,7 @@ mod tests {
                 elapsed: Some("2m".to_string()),
                 summary: Some("Done. All tests pass.".to_string()),
                 worktree_path: Some(PathBuf::from("/work/fix-login")),
+                pull_request: None,
             }
         );
         assert_eq!(rows[1].task, None);
@@ -769,6 +958,57 @@ mod tests {
         assert_eq!(rows[3].title, "gone");
         assert_eq!(rows[3].terminal, None);
         assert_eq!(rows.len(), 4);
+    }
+
+    fn pull_request_summary(number: u64, state: &str) -> PrSummary {
+        use crate::agent_tasks::{
+            pr_tracker::{TaskRecord, summarize},
+            pull_request::{PrSnapshot, PullRequest},
+        };
+        summarize(
+            &PrSnapshot {
+                pull_request: PullRequest {
+                    number,
+                    url: format!("https://github.com/o/r/pull/{number}"),
+                    state: state.to_string(),
+                },
+                head_commit: "abc".to_string(),
+                checks: Vec::new(),
+                review_decision: None,
+                mergeable: None,
+                comments: Vec::new(),
+            },
+            &TaskRecord::default(),
+        )
+    }
+
+    #[test]
+    fn test_rows_show_the_pull_request_of_their_task() {
+        let fix = task("fix", &[1]);
+        let docs = task("docs", &[]);
+        let pull_requests = HashMap::from([
+            (fix.key.clone(), pull_request_summary(7, "OPEN")),
+            (docs.key.clone(), pull_request_summary(8, "MERGED")),
+        ]);
+        let rows = board_rows(
+            vec![
+                terminal(1, AgentStatus::Working),
+                terminal(2, AgentStatus::Idle),
+            ],
+            &[fix.clone(), docs.clone()],
+            &pull_requests,
+            false,
+        );
+        let line = |row: &BoardRow| {
+            row.pull_request
+                .as_ref()
+                .map(|(key, summary)| (key.clone(), summary.line(false)))
+        };
+        assert_eq!(line(&rows[0]), Some((fix.key, "#7".to_string())));
+        // A terminal outside any task has none.
+        assert_eq!(line(&rows[1]), None);
+        // A task with no agent terminal shows its pull request too.
+        assert_eq!(line(&rows[2]), Some((docs.key, "#8 · Merged".to_string())));
     }
 
     #[test]

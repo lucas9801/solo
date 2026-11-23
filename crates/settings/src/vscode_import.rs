@@ -993,6 +993,8 @@ impl VsCodeSettings {
             program_notifications: None,
             agent_input_notifications: None,
             agent_stopped_notifications: None,
+            check_pull_requests: None,
+            auto_send_pr_feedback: None,
             restore_contents: None,
             agent_commands: None,
             claude_code_hooks: None,

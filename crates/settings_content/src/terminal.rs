@@ -319,6 +319,18 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: false
     pub agent_stopped_notifications: Option<bool>,
+    /// Whether to check the pull requests of agent tasks with gh (GitHub's
+    /// CLI) every few minutes while Solo runs: their checks, reviews and
+    /// comments show on the agent board, and a desktop notification says when
+    /// something needs you.
+    ///
+    /// Default: true
+    pub check_pull_requests: Option<bool>,
+    /// Whether to paste new failed checks and comments of a task's pull
+    /// request into its agent when the agent is idle (without pressing Enter).
+    ///
+    /// Default: false
+    pub auto_send_pr_feedback: Option<bool>,
     /// Whether terminals show their previous contents and command blocks
     /// again when Solo restarts. The contents are saved in Solo's data
     /// directory. Terminals are reopened either way.
@@ -458,7 +470,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
         ai_command_claude_model, ai_command_codex_model, ai_command_include_last_failure,
         open_links_on_click, link_menu,
         notify_long_commands_after_seconds, program_notifications, agent_input_notifications,
-        agent_stopped_notifications, restore_contents,
+        agent_stopped_notifications, check_pull_requests, auto_send_pr_feedback, restore_contents,
         agent_commands, claude_code_hooks, codex_hooks, codex_edit_hooks, copilot_hooks, opencode_hooks, ide_tools, more_agent_hooks, global_agent_hooks, keep_running_on_quit, follow_working_directory, confirm_close,
         agent_task_command, agent_control, agent_usage_display,
     },
