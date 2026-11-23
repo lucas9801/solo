@@ -133,6 +133,14 @@ impl Editor {
     pub fn diff_review_overlay_count(&self) -> usize {
         self.diff_review_overlays.len()
     }
+
+    /// SOLO: How many open review overlays show the input for a new comment.
+    pub fn diff_review_input_count(&self) -> usize {
+        self.diff_review_overlays
+            .iter()
+            .filter(|overlay| overlay.show_input)
+            .count()
+    }
 }
 
 pub struct DefaultDiffHunkRenderer;
@@ -285,6 +293,10 @@ pub(super) struct DiffReviewOverlay {
     pub(super) hunk_key: DiffHunkKey,
     /// Whether the comments section is expanded.
     pub(super) comments_expanded: bool,
+    /// SOLO: Whether the input for a new comment shows. An overlay that only
+    /// shows comments put back doesn't have it until the user asks to
+    /// comment on those lines.
+    pub(super) show_input: bool,
     /// Editors for comments currently being edited inline.
     /// Key: comment ID, Value: Editor entity for inline editing.
     pub(super) inline_edit_editors: HashMap<usize, Entity<Editor>>,
@@ -708,6 +720,16 @@ impl Editor {
             // Just focus the existing overlay's prompt editor
             if focus {
                 let focus_handle = existing_overlay.prompt_editor.focus_handle(cx);
+                let needs_input = !existing_overlay.show_input;
+                let key = existing_overlay.hunk_key.clone();
+                if needs_input
+                    && let Some(overlay) = self.diff_review_overlays.iter_mut().find(|overlay| {
+                        Self::hunk_keys_match(&overlay.hunk_key, &key, &buffer_snapshot)
+                    })
+                {
+                    overlay.show_input = true;
+                    self.refresh_diff_review_overlay_height(&key, window, cx);
+                }
                 window.focus(&focus_handle, cx);
             }
             return;
@@ -791,11 +813,19 @@ impl Editor {
             prompt_editor: prompt_editor.clone(),
             hunk_key,
             comments_expanded: true,
+            show_input: focus,
             inline_edit_editors: HashMap::default(),
             inline_edit_subscriptions: HashMap::default(),
             user_avatar_uri,
             _subscription: subscription,
         });
+
+        if !focus {
+            let hunk_key = self.diff_review_overlays.last().map(|overlay| overlay.hunk_key.clone());
+            if let Some(hunk_key) = hunk_key {
+                self.refresh_diff_review_overlay_height(&hunk_key, window, cx);
+            }
+        }
 
         // Focus the prompt editor
         if focus {
@@ -2184,7 +2214,13 @@ impl Editor {
         snapshot: &MultiBufferSnapshot,
     ) -> u32 {
         let comment_count = self.hunk_comment_count(hunk_key, snapshot);
-        let base_height: u32 = 2; // Input row with avatar and buttons
+        let show_input = self
+            .diff_review_overlays
+            .iter()
+            .find(|overlay| Self::hunk_keys_match(&overlay.hunk_key, hunk_key, snapshot))
+            .is_none_or(|overlay| overlay.show_input);
+        // Input row with avatar and buttons
+        let base_height: u32 = if show_input || comment_count == 0 { 2 } else { 0 };
 
         if comment_count == 0 {
             base_height
@@ -2642,14 +2678,14 @@ impl Editor {
         let theme = cx.theme();
         let colors = theme.colors();
 
-        let (comments, comments_expanded, inline_editors, user_avatar_uri, line_ranges) =
+        let (comments, comments_expanded, inline_editors, user_avatar_uri, line_ranges, show_input) =
             editor_handle
                 .upgrade()
                 .map(|editor| {
                     let editor = editor.read(cx);
                     let snapshot = editor.buffer().read(cx).snapshot(cx);
                     let comments = editor.comments_for_hunk(hunk_key, &snapshot).to_vec();
-                    let (expanded, editors, avatar_uri, line_ranges) = editor
+                    let (expanded, editors, avatar_uri, line_ranges, show_input) = editor
                         .diff_review_overlays
                         .iter()
                         .find(|overlay| {
@@ -2678,12 +2714,13 @@ impl Editor {
                                 } else {
                                     Some(ranges)
                                 },
+                                o.show_input,
                             )
                         })
-                        .unwrap_or((true, HashMap::default(), None, None));
-                    (comments, expanded, editors, avatar_uri, line_ranges)
+                        .unwrap_or((true, HashMap::default(), None, None, true));
+                    (comments, expanded, editors, avatar_uri, line_ranges, show_input)
                 })
-                .unwrap_or((Vec::new(), true, HashMap::default(), None, None));
+                .unwrap_or((Vec::new(), true, HashMap::default(), None, None, true));
 
         let comment_count = comments.len();
         let avatar_size = px(20.);
@@ -2712,7 +2749,7 @@ impl Editor {
                 }
             })
             // Top row: editable input with user's avatar
-            .child(
+            .when(show_input || comment_count == 0, |el| el.child(
                 h_flex()
                     .w_full()
                     .items_center()
@@ -2776,7 +2813,7 @@ impl Editor {
                                     }),
                             ),
                     ),
-            )
+            ))
             // Expandable comments section (only shown when there are comments)
             .when(comment_count > 0, |el| {
                 el.child(Self::render_comments_section(
