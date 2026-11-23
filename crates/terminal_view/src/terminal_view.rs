@@ -2,6 +2,7 @@ pub mod agent_board;
 pub mod agent_cli;
 mod agent_context;
 mod agent_detection;
+mod agent_install;
 mod agent_resume;
 mod agent_session;
 mod agent_status;
@@ -161,6 +162,7 @@ pub fn init(cx: &mut App) {
     command_notifications::init(cx);
     follow_working_directory::init(cx);
     agent_tasks::init(cx);
+    agent_install::init(cx);
     run_workflow::init(cx);
     agent_turns::init(cx);
     agent_context::init(cx);
@@ -275,6 +277,9 @@ pub struct TerminalView {
     input: Option<Entity<TerminalInput>>,
     /// SOLO: a workflow's command to put in the input once it shows.
     pending_workflow: Option<String>,
+    /// SOLO: a line above the input, such as "Press Enter to run" on an
+    /// install command, until a command starts.
+    install_hint: Option<SharedString>,
     /// SOLO: saves the contents to show them again after a restart.
     save_contents: Task<()>,
     save_contents_scheduled: bool,
@@ -502,6 +507,7 @@ impl TerminalView {
             running_command_ticker: None,
             input: None,
             pending_workflow: None,
+            install_hint: None,
             save_contents: Task::ready(()),
             save_contents_scheduled: false,
             rendered_since_output: true,
@@ -1590,8 +1596,7 @@ impl TerminalView {
     /// SOLO: whether the terminal uses the terminal host `pipe`: its own, or
     /// the one of the saved terminal it was restored from.
     pub(crate) fn uses_host(&self, pipe: &str, cx: &App) -> bool {
-        self.saved_host.as_deref() == Some(pipe)
-            || self.terminal.read(cx).host_pipe() == Some(pipe)
+        self.saved_host.as_deref() == Some(pipe) || self.terminal.read(cx).host_pipe() == Some(pipe)
     }
 
     /// SOLO: the terminal moves to `workspace`, another tab of the window.
@@ -2121,6 +2126,7 @@ impl Render for TerminalView {
                             )
                             // SOLO: the agent's usage, when it's running.
                             .children(self.render_agent_usage_bar(cx))
+                            .children(self.render_install_hint(cx))
                             .children(input),
                     )
                     .when(content_mode.is_scrollable(), |div| {
@@ -2149,6 +2155,34 @@ impl Render for TerminalView {
                 )
                 .with_priority(1)
             }))
+    }
+}
+
+impl TerminalView {
+    pub(crate) fn show_install_hint(&mut self, hint: SharedString, cx: &mut Context<Self>) {
+        self.install_hint = Some(hint);
+        cx.notify();
+    }
+
+    pub(crate) fn clear_install_hint(&mut self, cx: &mut Context<Self>) {
+        if self.install_hint.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn render_install_hint(&self, cx: &App) -> Option<AnyElement> {
+        let hint = self.install_hint.clone()?;
+        Some(
+            h_flex()
+                .id("install-hint")
+                .w_full()
+                .flex_none()
+                .px_2()
+                .py_1()
+                .bg(cx.theme().colors().terminal_background)
+                .child(Label::new(hint).size(LabelSize::Small).color(Color::Muted))
+                .into_any_element(),
+        )
     }
 }
 
@@ -2801,7 +2835,9 @@ impl SerializableItem for TerminalView {
                     workspace_grouping::take_open_terminal(pipe, &workspace, window, cx)
                 })?
             {
-                log::info!("the saved terminal {pipe} is open in another tab, moving it to its own");
+                log::info!(
+                    "the saved terminal {pipe} is open in another tab, moving it to its own"
+                );
                 return Ok(open);
             }
 

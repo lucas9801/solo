@@ -1,10 +1,10 @@
 //! SOLO: what the terminal column of the terminal-first layout shows once its
 //! last terminal closes. The column stays open (the editor area beside it is
 //! often empty too, which left a blank window), with a button for a new
-//! terminal, one for each agent CLI found on the `PATH` and, when there's room,
-//! the file finder.
+//! terminal, one for each of the first few agent CLIs installed, a way to
+//! install more and, when there's room, the file finder.
 
-use gpui::{AnyElement, App, Context, Pixels, Task, Window, canvas, px};
+use gpui::{AnyElement, App, Context, Pixels, Window, canvas, px};
 use settings::{BottomDockLayout, Settings as _};
 use task::RevealStrategy;
 use ui::{ButtonLike, KeyBinding, TabBar, TintColor, Tooltip, prelude::*};
@@ -15,35 +15,19 @@ use workspace::{
 };
 
 use super::TerminalPanel;
-use crate::{agent_tab::render_agent_mark, default_working_directory};
-
-/// Agent CLIs the empty state offers to start: their name and command.
-const AGENTS: &[(&str, &str)] = &[("Claude Code", "claude"), ("Codex", "codex")];
+use crate::{
+    agent_install::{
+        AgentInventory, EMPTY_STATE_LIMIT, agent_button, is_local, listed_agents,
+        new_terminal_label, show_install_window,
+    },
+    default_working_directory,
+};
 
 /// Narrower than this, the column shows the compact empty state.
 const COMPACT_BELOW: Pixels = px(360.);
 
-/// An agent CLI the empty state can start.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Agent {
-    pub name: &'static str,
-    pub command: &'static str,
-}
-
-/// The agents whose command `is_on_path` finds, in [`AGENTS`]' order.
-pub(crate) fn agents_on_path(is_on_path: impl Fn(&str) -> bool) -> Vec<Agent> {
-    AGENTS
-        .iter()
-        .filter(|(_, command)| is_on_path(command))
-        .map(|&(name, command)| Agent { name, command })
-        .collect()
-}
-
 #[derive(Default)]
 pub(super) struct EmptyState {
-    /// The agents found on the `PATH`; `None` until the first look finishes.
-    pub(super) agents: Option<Vec<Agent>>,
-    looking: Option<Task<()>>,
     /// The column's width when last drawn.
     width: Option<Pixels>,
 }
@@ -69,34 +53,6 @@ impl TerminalPanel {
             && self.keeps_column_when_empty(window, cx)
     }
 
-    /// Looks for the agents on the `PATH` again, off the main thread. The
-    /// previous result stays up meanwhile. A remote project's agents would be
-    /// on the remote's `PATH`, so none are offered there.
-    pub(super) fn find_agents(&mut self, cx: &mut Context<Self>) {
-        let is_local = self
-            .workspace
-            .upgrade()
-            .is_some_and(|workspace| workspace.read(cx).project().read(cx).is_local());
-        if !is_local {
-            self.empty_state.agents = Some(Vec::new());
-            return;
-        }
-        self.empty_state.looking = Some(cx.spawn(async move |panel, cx| {
-            let agents = cx
-                .background_spawn(
-                    async move { agents_on_path(|command| which::which(command).is_ok()) },
-                )
-                .await;
-            panel
-                .update(cx, |panel, cx| {
-                    panel.empty_state.agents = Some(agents);
-                    panel.empty_state.looking = None;
-                    cx.notify();
-                })
-                .ok();
-        }));
-    }
-
     /// Opens a terminal in the panel, as the empty state's button does.
     pub(super) fn new_terminal_from_empty_state(
         &mut self,
@@ -114,16 +70,19 @@ impl TerminalPanel {
     }
 
     pub(super) fn render_empty_state(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        if self.empty_state.agents.is_none() && self.empty_state.looking.is_none() {
-            self.find_agents(cx);
-        }
         let compact = self
             .empty_state
             .width
             .is_some_and(|width| width < COMPACT_BELOW);
         let focus_handle = self.focus_handle.clone();
-        let agents = self.empty_state.agents.clone().unwrap_or_default();
         let workspace = self.workspace.clone();
+        let is_local = is_local(&workspace, cx);
+        let scanned = AgentInventory::global(cx).read(cx).scanned();
+        let agents: Vec<_> = listed_agents(&workspace, cx)
+            .into_iter()
+            .take(EMPTY_STATE_LIMIT)
+            .collect();
+        let no_agents_found = is_local && scanned && agents.is_empty();
 
         let new_terminal = Button::new(
             "terminal-empty-new-terminal",
@@ -141,42 +100,59 @@ impl TerminalPanel {
 
         let agent_buttons = agents.into_iter().map(|agent| {
             let label: SharedString = if compact {
-                agent.name.into()
-            } else if is_chinese() {
-                format!("新建 {} 终端", agent.name).into()
+                agent.spec.name.into()
             } else {
-                format!("New {} Terminal", agent.name).into()
+                new_terminal_label(agent.spec.name).into()
             };
             let workspace = workspace.clone();
-            ButtonLike::new(SharedString::from(format!(
-                "terminal-empty-agent-{}",
-                agent.command
-            )))
-            .style(ButtonStyle::Outlined)
-            .size(ButtonSize::Medium)
-            .full_width()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(render_agent_mark(
-                        agent.name,
-                        cx.theme().colors().terminal_background,
-                        cx,
-                    ))
-                    .child(Label::new(label).size(LabelSize::Small).untranslated()),
+            let command = agent.spec.command;
+            agent_button(
+                format!("terminal-empty-agent-{command}").into(),
+                &agent,
+                label,
+                cx.theme().colors().terminal_background,
+                cx,
             )
             .on_click(move |_, window, cx| {
                 workspace
                     .update(cx, |workspace, cx| {
-                        crate::agent_context::start_in_new_terminal(
-                            workspace,
-                            agent.command,
-                            window,
-                            cx,
-                        )
+                        crate::agent_context::start_in_new_terminal(workspace, command, window, cx)
                     })
                     .ok();
             })
+        });
+        let no_agents = no_agents_found.then(|| {
+            div()
+                .debug_selector(|| "terminal-empty-no-agents".into())
+                .child(
+                    Label::new(tr("No agents found", "没找到 agent"))
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                )
+        });
+        let install_agents = is_local.then(|| {
+            let workspace = workspace.clone();
+            let button = ButtonLike::new("terminal-empty-install-agents")
+                .style(ButtonStyle::Outlined)
+                .size(ButtonSize::Medium)
+                .full_width()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Icon::new(IconName::Download)
+                                .size(IconSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(tr("Install Agents…", "安装 agent…")).size(LabelSize::Small),
+                        ),
+                )
+                .on_click(move |_, window, cx| show_install_window(&workspace, window, cx));
+            div()
+                .w_full()
+                .debug_selector(|| "terminal-empty-install-agents".into())
+                .child(button)
         });
 
         let body = if compact {
@@ -193,6 +169,8 @@ impl TerminalPanel {
                 )
                 .child(new_terminal.full_width())
                 .children(agent_buttons)
+                .children(no_agents)
+                .children(install_agents)
                 .into_any_element()
         } else {
             let directory = self
@@ -296,6 +274,8 @@ impl TerminalPanel {
                         .min_w(px(240.))
                         .gap_1()
                         .children(agent_buttons)
+                        .children(no_agents.map(|label| label.py_1()))
+                        .children(install_agents)
                         .child(find_file),
                 )
                 .into_any_element()
@@ -344,29 +324,5 @@ impl TerminalPanel {
                 .inset_0(),
             )
             .into_any_element()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_agents_on_path() {
-        assert_eq!(agents_on_path(|_| false), Vec::new());
-        assert_eq!(
-            agents_on_path(|command| command == "codex"),
-            vec![Agent {
-                name: "Codex",
-                command: "codex"
-            }]
-        );
-        assert_eq!(
-            agents_on_path(|_| true)
-                .iter()
-                .map(|agent| agent.name)
-                .collect::<Vec<_>>(),
-            vec!["Claude Code", "Codex"]
-        );
     }
 }

@@ -301,6 +301,7 @@ pub(crate) fn task_commands(setup: Option<String>, agent: Option<String>) -> Opt
 
 use crate::{
     TerminalView,
+    agent_install::{AgentInventory, AgentSpec, CATALOG},
     command_blocks::{activate_terminal_view, terminal_views},
     follow_working_directory,
     terminal_panel::TerminalPanel,
@@ -701,7 +702,7 @@ fn program_of(command: &str) -> Option<String> {
 /// program. Also the one `configured` picks: none when it's empty.
 pub(crate) fn run_options(
     configured: &str,
-    agents_on_path: &[crate::terminal_panel::empty_state::Agent],
+    agents_on_path: &[&AgentSpec],
 ) -> (Vec<RunOption>, usize) {
     let configured_program = program_of(configured);
     let mut options = vec![RunOption {
@@ -723,11 +724,9 @@ pub(crate) fn run_options(
             }),
         });
     }
-    let is_known_agent = configured_program.as_deref().is_some_and(|program| {
-        crate::terminal_panel::empty_state::agents_on_path(|_| true)
-            .iter()
-            .any(|agent| agent.command == program)
-    });
+    let is_known_agent = configured_program
+        .as_deref()
+        .is_some_and(|program| CATALOG.iter().any(|agent| agent.command == program));
     if let Some(program) = configured_program.filter(|_| !is_known_agent) {
         default = options.len();
         options.push(RunOption {
@@ -755,7 +754,7 @@ pub struct NewAgentTaskModal {
     creating: bool,
     error: Option<SharedString>,
     _load: Task<()>,
-    _find_agents: Task<()>,
+    _find_agents: gpui::Subscription,
 }
 
 impl NewAgentTaskModal {
@@ -855,18 +854,14 @@ impl NewAgentTaskModal {
             })
             .log_err();
         });
-        let find_agents = cx.spawn(async move |this, cx| {
-            let agents = cx
-                .background_spawn(async move {
-                    crate::terminal_panel::empty_state::agents_on_path(|command| {
-                        which::which(command).is_ok()
-                    })
-                })
-                .await;
-            this.update(cx, |this, cx| this.set_agents_on_path(&agents, cx))
-                .log_err();
+        let inventory = AgentInventory::global(cx);
+        // The agents may still be being looked for.
+        let find_agents = cx.observe(&inventory, |this, _, cx| {
+            if this.run_options.is_none() {
+                this.use_inventory(cx);
+            }
         });
-        Self {
+        let mut this = Self {
             workspace,
             editor,
             repository: RepositoryState::Loading,
@@ -882,18 +877,30 @@ impl NewAgentTaskModal {
             creating: false,
             error: None,
             _load: load,
+        };
+        this.use_inventory(cx);
+        this
+    }
+
+    /// Offers the installed agents, once they've been looked for.
+    fn use_inventory(&mut self, cx: &mut Context<Self>) {
+        let inventory = AgentInventory::global(cx).read(cx);
+        if !inventory.scanned() {
+            return;
         }
+        let agents: Vec<&'static AgentSpec> = inventory
+            .installed()
+            .iter()
+            .map(|installed| installed.spec)
+            .collect();
+        self.set_agents_on_path(&agents, cx);
     }
 
     fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(DismissEvent);
     }
 
-    pub(crate) fn set_agents_on_path(
-        &mut self,
-        agents: &[crate::terminal_panel::empty_state::Agent],
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn set_agents_on_path(&mut self, agents: &[&AgentSpec], cx: &mut Context<Self>) {
         let configured = TerminalSettings::get_global(cx).agent_task_command.clone();
         let (options, default) = run_options(&configured, agents);
         self.run_options = Some(options);
@@ -2682,15 +2689,8 @@ mod tests {
     // `terminal.agent_task_command` runs.
     #[test]
     fn run_options_follow_the_setting() {
-        use crate::terminal_panel::empty_state::Agent;
-        let claude = Agent {
-            name: "Claude Code",
-            command: "claude",
-        };
-        let codex = Agent {
-            name: "Codex",
-            command: "codex",
-        };
+        let claude = &CATALOG[0];
+        let codex = &CATALOG[1];
         let commands = |options: &[RunOption]| {
             options
                 .iter()
@@ -2731,7 +2731,6 @@ mod tests {
     // SOLO: "Don't Run" opens just a shell; an agent chosen runs.
     #[gpui::test]
     async fn test_new_worktree_terminal_runs_the_chosen_agent(cx: &mut TestAppContext) {
-        use crate::terminal_panel::empty_state::Agent;
         cx.update(|cx| {
             let store = SettingsStore::test(cx);
             cx.set_global(store);
@@ -2756,19 +2755,7 @@ mod tests {
         });
         // A fake: tests never look up or run real agents.
         modal.update(cx, |modal, cx| {
-            modal.set_agents_on_path(
-                &[
-                    Agent {
-                        name: "Claude Code",
-                        command: "claude",
-                    },
-                    Agent {
-                        name: "Codex",
-                        command: "codex",
-                    },
-                ],
-                cx,
-            )
+            modal.set_agents_on_path(&[&CATALOG[0], &CATALOG[1]], cx)
         });
         cx.run_until_parked();
         let command =

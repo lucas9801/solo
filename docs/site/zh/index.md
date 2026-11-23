@@ -32,6 +32,7 @@ Solo 是一个给 AI agent 用的编辑器，基于 [Zed](https://github.com/zed
 
 - **状态一目了然：** 终端标签上是 agent 的图标、会话名和红绿灯状态点（工作中、等你回复、做完待看、出错），以及上下文用量；悬停看到模型、token、首字时间和输出速度。Solo 在后台时，agent 等你回复会发桌面通知。
 - **工作区标签：** 一个项目一个标签，切换时终端、编辑器、文件树一起换；标签上显示这个项目里 agent 的状态，后台项目有 agent 在等你也看得到。
+- **发现和安装 agent：** + 菜单和空的终端栏列出你装了的 agent（Claude Code、Codex、Gemini CLI、Copilot CLI、OpenCode、Qwen Code 等）；**安装 agent…** 列出没装的，把安装命令填进新终端，由你按 Enter 运行。
 - **agent 看板：** 左侧栏列出所有 agent 和任务，等你回复的排在最前面。
 - **agent 任务：** 一个任务一个 git worktree 和分支，互不干扰；做完合并、开 PR 或丢弃。工作区里有几个仓库时，一个任务可以同时横跨它们。[详细 →](features/parallel.md)
 - **内置浏览器：** 本机网页在终端旁边的标签页里打开；在页面上点选元素写批注，一次发给 agent，带上选择器、HTML 和截图。打开设置后，agent 也能在里面打开网页、点击、截图，你看着它操作。[详细 →](features/browser.md)

@@ -1,7 +1,9 @@
 use std::{cmp, path::PathBuf, process::ExitStatus, sync::Arc, time::Duration};
 
 use crate::{
-    TerminalView, default_working_directory,
+    TerminalView,
+    agent_install::{AgentInventory, install_menu_entries},
+    default_working_directory,
     persistence::{
         SerializedItems, SerializedTerminalPanel, deserialize_terminal_panel, serialize_pane_group,
     },
@@ -22,8 +24,8 @@ use settings::{Settings, TerminalDockPosition};
 use task::{RevealStrategy, RevealTarget, Shell, ShellBuilder, SpawnInTerminal, TaskId};
 use terminal::{Terminal, terminal_settings::TerminalSettings};
 use ui::{
-    ButtonLike, Clickable, CommonAnimationExt, ContextMenu, FluentBuilder, PopoverMenu,
-    SplitButton, Toggleable, Tooltip, prelude::*,
+    ButtonLike, Clickable, CommonAnimationExt, ContextMenu, ContextMenuEntry, FluentBuilder,
+    PopoverMenu, SplitButton, Toggleable, Tooltip, prelude::*,
 };
 use util::{ResultExt, TryFutureExt, defer};
 use workspace::{
@@ -97,6 +99,7 @@ pub struct TerminalPanel {
     active: bool,
     // SOLO
     empty_state: empty_state::EmptyState,
+    _agent_inventory: gpui::Subscription,
 }
 
 impl TerminalPanel {
@@ -104,6 +107,7 @@ impl TerminalPanel {
         let project = workspace.project();
         let pane = new_terminal_pane(workspace.weak_handle(), project.clone(), false, window, cx);
         let center = PaneGroup::new(pane.clone());
+        let agent_inventory = AgentInventory::global(cx);
         let terminal_panel = Self {
             center,
             active_pane: pane,
@@ -118,6 +122,7 @@ impl TerminalPanel {
             assistant_enabled: false,
             active: false,
             empty_state: Default::default(),
+            _agent_inventory: cx.observe(&agent_inventory, |_, _, cx| cx.notify()),
         };
         terminal_panel
     }
@@ -164,6 +169,7 @@ fn set_terminal_tab_bar_buttons(
             return (None, None);
         }
         let focus_handle = pane.focus_handle(cx);
+        let menu_panel = terminal_panel.clone();
         let right_children = h_flex()
             .gap(DynamicSpacing::Base02.rems(cx))
             .child(
@@ -176,15 +182,48 @@ fn set_terminal_tab_bar_buttons(
                     .with_handle(pane.new_item_context_menu_handle.clone())
                     .menu(move |window, cx| {
                         let focus_handle = focus_handle.clone();
-                        let menu = ContextMenu::build(window, cx, |menu, _, _| {
+                        // SOLO: the installed agents, and a way to install more.
+                        let workspace = menu_panel
+                            .upgrade()
+                            .map(|terminal_panel| terminal_panel.read(cx).workspace.clone());
+                        let (agents, can_install) = install_menu_entries(workspace.as_ref(), cx);
+                        let menu = ContextMenu::build(window, cx, |menu, _, cx| {
                             // SOLO: a terminal in a new git
                             // worktree, and workflows (with the
                             // project's tasks) in place of Spawn Task.
-                            menu.context(focus_handle.clone())
-                                .action(
-                                    "New Terminal",
-                                    workspace::NewTerminal::default().boxed_clone(),
-                                )
+                            let mut menu = menu.context(focus_handle.clone()).action(
+                                "New Terminal",
+                                workspace::NewTerminal::default().boxed_clone(),
+                            );
+                            let background = cx.theme().colors().elevated_surface_background;
+                            for agent in agents {
+                                let workspace = workspace.clone();
+                                let command = agent.spec.command;
+                                let mut entry = ContextMenuEntry::new(agent.spec.name);
+                                if let Some((icon, color)) = crate::agent_tab::agent_logo_icon(
+                                    agent.spec.name,
+                                    background,
+                                    cx,
+                                ) {
+                                    entry = entry
+                                        .icon(icon)
+                                        .icon_position(IconPosition::Start)
+                                        .icon_color(Color::Custom(color));
+                                }
+                                menu = menu.item(entry.handler(move |window, cx| {
+                                    if let Some(workspace) = &workspace {
+                                        workspace
+                                            .update(cx, |workspace, cx| {
+                                                crate::agent_context::start_in_new_terminal(
+                                                    workspace, command, window, cx,
+                                                )
+                                            })
+                                            .log_err();
+                                    }
+                                }));
+                            }
+                            menu = menu
+                                .separator()
                                 .action(
                                     util::i18n::tr(
                                         "New Terminal in New Worktree…",
@@ -192,11 +231,17 @@ fn set_terminal_tab_bar_buttons(
                                     ),
                                     solo_actions::agent_task::NewAgentTask.boxed_clone(),
                                 )
-                                .separator()
                                 .action(
                                     util::i18n::tr("Run Workflow…", "运行工作流…"),
                                     crate::run_workflow::RunWorkflow.boxed_clone(),
-                                )
+                                );
+                            if can_install {
+                                menu = menu.separator().action(
+                                    util::i18n::tr("Install Agents…", "安装 agent…"),
+                                    crate::agent_install::InstallAgents.boxed_clone(),
+                                );
+                            }
+                            menu
                         });
 
                         Some(menu)
@@ -219,10 +264,9 @@ fn set_terminal_tab_bar_buttons(
                     .menu({
                         move |window, cx| {
                             ContextMenu::build(window, cx, |menu, _, _| {
-                                menu.when_some(
-                                    split_context.clone(),
-                                    |menu, split_context| menu.context(split_context),
-                                )
+                                menu.when_some(split_context.clone(), |menu, split_context| {
+                                    menu.context(split_context)
+                                })
                                 .action("Split Right", SplitRight::default().boxed_clone())
                                 .action("Split Left", SplitLeft::default().boxed_clone())
                                 .action("Split Up", SplitUp::default().boxed_clone())
@@ -258,10 +302,7 @@ fn set_terminal_tab_bar_buttons(
                         .icon_size(IconSize::Small)
                         .aria_label(tooltip)
                         .on_click(|_, window, cx| {
-                            window.dispatch_action(
-                                workspace::ToggleBottomDock.boxed_clone(),
-                                cx,
-                            )
+                            window.dispatch_action(workspace::ToggleBottomDock.boxed_clone(), cx)
                         })
                         .tooltip(move |_window, cx| {
                             Tooltip::for_action(tooltip, &workspace::ToggleBottomDock, cx)
@@ -494,7 +535,8 @@ impl TerminalPanel {
                     // SOLO: the terminal-first layout keeps its terminal column
                     // and shows the empty state in it.
                     if self.keeps_column_when_empty(window, cx) {
-                        self.find_agents(cx);
+                        AgentInventory::global(cx)
+                            .update(cx, |inventory, cx| inventory.look(false, cx));
                         cx.notify();
                     } else {
                         cx.emit(PanelEvent::Close);
@@ -2552,6 +2594,17 @@ mod tests {
         });
     }
 
+    /// SOLO: the agents the machine is taken to have.
+    fn set_installed(commands: &[&str], npm_found: bool, cx: &mut VisualTestContext) {
+        cx.update(|_, cx| {
+            AgentInventory::global(cx).update(cx, |inventory, cx| {
+                inventory.set_installed_for_test(commands, npm_found);
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+    }
+
     /// SOLO: what the "+" of `pane` offers, as the user opens it: the pane
     /// focused, its tab bar drawn, the button's menu shown.
     fn new_menu_labels(pane: &Entity<Pane>, cx: &mut VisualTestContext) -> Vec<String> {
@@ -2584,17 +2637,30 @@ mod tests {
         assistant: bool,
         cx: &mut VisualTestContext,
     ) {
-        let panes: Vec<_> =
-            panel.read_with(cx, |panel, _| panel.center.panes().into_iter().cloned().collect());
+        let panes: Vec<_> = panel.read_with(cx, |panel, _| {
+            panel.center.panes().into_iter().cloned().collect()
+        });
+        let installed: Vec<String> = cx.update(|_, cx| {
+            AgentInventory::global(cx)
+                .read(cx)
+                .installed()
+                .iter()
+                .map(|agent| agent.spec.name.to_string())
+                .collect()
+        });
         for (ix, pane) in panes.iter().enumerate() {
             let labels = new_menu_labels(pane, cx);
+            let mut expected = vec!["New Terminal".to_string()];
+            expected.extend(installed.clone());
+            expected.extend([
+                util::i18n::tr("New Terminal in New Worktree…", "在新工作树中新建终端…")
+                    .to_string(),
+                util::i18n::tr("Run Workflow…", "运行工作流…").to_string(),
+                util::i18n::tr("Install Agents…", "安装 agent…").to_string(),
+            ]);
             assert_eq!(
                 labels,
-                [
-                    "New Terminal",
-                    util::i18n::tr("New Terminal in New Worktree…", "在新工作树中新建终端…"),
-                    util::i18n::tr("Run Workflow…", "运行工作流…"),
-                ],
+                expected,
                 "the + of terminal pane {ix} of {}",
                 panes.len()
             );
@@ -2701,11 +2767,7 @@ mod tests {
                 let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
                 let panes = terminal_panel.read_with(cx, |panel, _| panel.center.panes().len());
                 assert_eq!(panes, if split { 2 } else { 1 }, "{assistant:?}");
-                assert_terminal_menus(
-                    &terminal_panel,
-                    matches!(assistant, Assistant::Enabled),
-                    cx,
-                );
+                assert_terminal_menus(&terminal_panel, matches!(assistant, Assistant::Enabled), cx);
                 cx.update(|window, _| window.remove_window());
                 cx.run_until_parked();
             }
@@ -2718,8 +2780,12 @@ mod tests {
     async fn test_moved_split_pane_has_terminal_buttons(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         init_test(cx);
-        let (window_handle, terminal_panel) =
-            restore_panel(SerializedItems::NoSplits(vec![1, 2]), Assistant::NeverSet, cx).await;
+        let (window_handle, terminal_panel) = restore_panel(
+            SerializedItems::NoSplits(vec![1, 2]),
+            Assistant::NeverSet,
+            cx,
+        )
+        .await;
         let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
         let pane = terminal_panel.read_with(cx, |panel, _| panel.active_pane.clone());
         assert_eq!(pane.read_with(cx, |pane, _| pane.items_len()), 2);
@@ -3744,13 +3810,10 @@ mod tests {
         );
         terminal_panel.update_in(cx, |panel, window, cx| {
             assert!(panel.shows_empty_state(window, cx));
-            // A fake: tests never look up or run real agents.
-            panel.empty_state.agents = Some(vec![empty_state::Agent {
-                name: "Claude Code",
-                command: "claude",
-            }]);
             cx.notify();
         });
+        // A fake: tests never look up or run real agents.
+        set_installed(&["claude"], true, cx);
         cx.run_until_parked();
         assert!(
             cx.debug_bounds("terminal-empty-state").is_some(),
@@ -3785,6 +3848,244 @@ mod tests {
         cx.run_until_parked();
         assert!(terminal_dock_open(window_handle, cx));
         assert_eq!(panel_terminal_count(&terminal_panel, cx), 1);
+    }
+
+    // SOLO: the empty state lists the installed agents in the catalog's
+    // order, at most four, then "Install Agents…"; with none installed it
+    // says so in the buttons' place.
+    #[gpui::test]
+    async fn test_empty_state_lists_installed_agents(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        init_test(cx);
+        set_bottom_dock_layout(cx, settings::BottomDockLayout::TerminalFirst);
+
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        open_and_close_panel_terminal(&terminal_panel, cx).await;
+
+        // As on a machine with nothing installed.
+        set_installed(&[], false, cx);
+        assert!(cx.debug_bounds("terminal-empty-no-agents").is_some());
+        assert!(cx.debug_bounds("terminal-empty-install-agents").is_some());
+        assert!(cx.debug_bounds("agent-logo-AiClaude").is_none());
+
+        // Only Claude Code, as on the acceptance machine.
+        set_installed(&["claude"], true, cx);
+        assert!(cx.debug_bounds("terminal-empty-no-agents").is_none());
+        assert!(cx.debug_bounds("agent-logo-AiClaude").is_some());
+        assert!(cx.debug_bounds("agent-logo-AiGemini").is_none());
+        assert!(cx.debug_bounds("terminal-empty-install-agents").is_some());
+
+        // Six of the common agents are installed: the first four show.
+        set_installed(
+            &["opencode", "copilot", "gemini", "codex", "claude", "qwen"],
+            true,
+            cx,
+        );
+        for shown in [
+            "agent-logo-AiClaude",
+            "agent-logo-AiOpenAi",
+            "agent-logo-AiGemini",
+            "agent-logo-Copilot",
+        ] {
+            assert!(cx.debug_bounds(shown).is_some(), "{shown}");
+        }
+        assert!(cx.debug_bounds("agent-logo-AiOpenCode").is_none());
+        assert!(cx.debug_bounds("agent-initial").is_none());
+
+        // "Install Agents…" opens the window.
+        let button = cx
+            .debug_bounds("terminal-empty-install-agents")
+            .expect("the install button");
+        cx.simulate_click(button.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        let workspace = terminal_panel
+            .read_with(cx, |panel, _| panel.workspace.upgrade())
+            .unwrap();
+        assert!(workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_modal::<crate::agent_install::InstallAgentsModal>(cx)
+                .is_some()
+        }));
+    }
+
+    // SOLO: the "+" menu offers the installed agents and "Install Agents…",
+    // and in Chinese has no English: run with `SOLO_LANGUAGE=zh` to see it.
+    #[gpui::test]
+    async fn test_plus_menu_lists_installed_agents(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        init_test(cx);
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        terminal_panel.update_in(cx, |panel, window, cx| {
+            panel.new_terminal_from_empty_state(window, cx)
+        });
+        cx.run_until_parked();
+
+        set_installed(&["codex", "claude", "gemini", "kimi"], true, cx);
+        assert_terminal_menus(&terminal_panel, false, cx);
+        let pane = terminal_panel.read_with(cx, |panel, _| panel.active_pane.clone());
+        let labels = new_menu_labels(&pane, cx);
+        assert_eq!(
+            &labels[..5],
+            [
+                "New Terminal",
+                "Claude Code",
+                "Codex",
+                "Gemini CLI",
+                "Kimi Code CLI"
+            ]
+        );
+        if util::i18n::is_chinese() {
+            let agents = ["Claude Code", "Codex", "Gemini CLI", "Kimi Code CLI"];
+            for label in &labels {
+                assert!(
+                    agents.contains(&label.as_str())
+                        || !label.is_ascii()
+                        || util::i18n::chinese(label).is_some(),
+                    "{label:?} has no Chinese"
+                );
+            }
+        }
+
+        set_installed(&[], false, cx);
+        assert_terminal_menus(&terminal_panel, false, cx);
+    }
+
+    // SOLO: "Install" opens a terminal titled for the agent with its install
+    // command in the input, not run; once a command that was started there
+    // finishes, the agents are looked for again with the registry's `PATH`.
+    #[gpui::test]
+    async fn test_install_fills_the_command_without_running_it(cx: &mut TestAppContext) {
+        use crate::agent_install::{
+            AgentInventory, CATALOG, InstalledAgent, Scan, install_in_new_terminal,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static READ_REGISTRY: AtomicBool = AtomicBool::new(false);
+        fn after_install(read_registry: bool) -> Scan {
+            READ_REGISTRY.store(read_registry, Ordering::SeqCst);
+            Scan {
+                installed: vec![InstalledAgent {
+                    spec: &CATALOG[2],
+                    version: Some("0.9.1".into()),
+                }],
+                npm_found: true,
+            }
+        }
+
+        cx.executor().allow_parking();
+        init_test(cx);
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        set_installed(&[], true, cx);
+        cx.update(|_, cx| {
+            AgentInventory::global(cx)
+                .update(cx, |inventory, _| inventory.set_scanner(after_install))
+        });
+        let workspace = terminal_panel
+            .read_with(cx, |panel, _| panel.workspace.upgrade())
+            .unwrap();
+
+        cx.update(|window, cx| install_in_new_terminal(&workspace, &CATALOG[2], window, cx));
+        cx.run_until_parked();
+        let views = cx.update(|_, cx| crate::command_blocks::terminal_views(&workspace, cx));
+        assert_eq!(views.len(), 1);
+        let view = &views[0];
+        let terminal = view.read_with(cx, |view, _| view.terminal().clone());
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                view.custom_title(),
+                Some(util::i18n::tr("Install Gemini CLI", "安装 Gemini CLI"))
+            );
+            assert_eq!(
+                view.pending_workflow.as_deref(),
+                Some("npm install -g @google/gemini-cli"),
+                "the command is in the input"
+            );
+            assert!(view.install_hint.is_some(), "the hint to press Enter");
+            let terminal = view.terminal().read(cx);
+            assert!(!terminal.keyboard_input_sent());
+            assert!(
+                terminal.shell_integration().blocks().is_empty(),
+                "nothing ran"
+            );
+        });
+
+        // The shell's own commands don't count; the ones the user starts do.
+        terminal.update(cx, |_, cx| cx.emit(terminal::Event::CommandFinished));
+        cx.run_until_parked();
+        let installed = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| AgentInventory::global(cx).read(cx).installed().len())
+        };
+        assert_eq!(installed(cx), 0);
+        terminal.update(cx, |_, cx| cx.emit(terminal::Event::CommandStarted));
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| assert!(view.install_hint.is_none()));
+        assert_eq!(installed(cx), 0);
+        terminal.update(cx, |_, cx| cx.emit(terminal::Event::CommandFinished));
+        cx.run_until_parked();
+        assert_eq!(installed(cx), 1);
+        assert!(
+            READ_REGISTRY.load(Ordering::SeqCst),
+            "looked with the registry's PATH"
+        );
+    }
+
+    // SOLO: the window's "Install" for an agent, and "Node.js Website" for
+    // one that needs npm when npm isn't there.
+    #[gpui::test]
+    async fn test_install_window_buttons(cx: &mut TestAppContext) {
+        use crate::agent_install::InstallAgentsModal;
+        cx.executor().allow_parking();
+        init_test(cx);
+        let (window_handle, terminal_panel) = init_workspace_with_panel(cx).await;
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let workspace = terminal_panel
+            .read_with(cx, |panel, _| panel.workspace.upgrade())
+            .unwrap();
+        let modal_open = |cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |workspace, cx| {
+                workspace.active_modal::<InstallAgentsModal>(cx).is_some()
+            })
+        };
+
+        // From the command palette's action; no npm.
+        set_installed(&["claude"], false, cx);
+        cx.dispatch_action(crate::agent_install::InstallAgents);
+        cx.run_until_parked();
+        assert!(modal_open(cx));
+        let node = cx
+            .debug_bounds("install-agents-action-gemini")
+            .expect("Gemini CLI's row");
+        cx.simulate_click(node.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://nodejs.org/en/download")
+        );
+        assert!(modal_open(cx), "the window stays");
+        assert_eq!(
+            cx.update(|_, cx| crate::command_blocks::terminal_views(&workspace, cx).len()),
+            0,
+            "nothing was installed"
+        );
+
+        // npm is there: "Install" opens the terminal and closes the window.
+        set_installed(&["claude"], true, cx);
+        let install = cx
+            .debug_bounds("install-agents-action-gemini")
+            .expect("Gemini CLI's row");
+        cx.simulate_click(install.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(!modal_open(cx));
+        let views = cx.update(|_, cx| crate::command_blocks::terminal_views(&workspace, cx));
+        assert_eq!(views.len(), 1);
+        views[0].read_with(cx, |view, _| {
+            assert_eq!(
+                view.pending_workflow.as_deref(),
+                Some("npm install -g @google/gemini-cli")
+            );
+        });
     }
 
     // SOLO: the terminal-first layout hides its terminal column from the

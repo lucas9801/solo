@@ -177,7 +177,8 @@ A newer version shows an update button at the right of the title bar, with no no
 - **Agent tasks**: each task gets a branch and a git worktree, with a terminal there running an agent; when done, merge it into the branch it started from, open a pull request or delete it; with uncommitted changes, the agent can be asked to commit them.
 - A task can span several repositories in a workspace.
 - A repository's `.solo/worktrees.json` sets where worktrees go, which ignored files they get a copy of (such as `.env`), the commands to run before and after, and a port for each task.
-- "New Terminal in New Worktree…" in the + menu opens an empty shell, Claude Code or Codex in a new worktree.
+- "New Terminal in New Worktree…" in the + menu opens an empty shell or any installed agent in a new worktree.
+- **Install Agents…** (the + menu, the empty terminal column, the command palette) lists the 11 agents Solo can follow: the installed ones with their versions, and an **Install** button for the rest that fills the install command into a new terminal's input without running it. The + menu lists the installed agents.
 - **`solo-cli agent`**: an agent in a terminal can list the other terminals, send them messages, wait for them to finish, read their answers, or start a new task ([details](docs/agent-cli.md)); the `agent_control` setting limits how far it can go.
 
 **Terminals that keep running**

@@ -277,8 +277,8 @@ Local projects only.
 **New Terminal in New Worktree…** in the terminal column's **+** menu (and in
 the workspace tab menu) opens the same dialog: give it a name (the branch, `agent/<name>`, shows below it)
 and choose what runs in the terminal: nothing (just a shell), Claude Code or
-Codex (the ones on the `PATH`; `terminal.agent_task_command` picks the
-default). The menu's **Run Workflow…** (alt-shift-t) lists your workflows and
+Codex, or any other agent Solo knows that is installed (found on the `PATH`;
+`terminal.agent_task_command` picks the default). The menu's **Run Workflow…** (alt-shift-t) lists your workflows and
 the project's tasks: a workflow fills a new terminal's input with its first
 `{{argument}}` selected, without running it; a task runs as Spawn Task runs
 it.
@@ -505,8 +505,10 @@ typed in an editor at the bottom of the terminal.
 - After a restart, a terminal that was running an agent and couldn't be kept
   offers to continue its session (for example `claude --continue`).
 - Closing the last terminal keeps the terminal column open, with buttons for a
-  new terminal (Ctrl+Shift+`), one running Claude Code or Codex (whichever is
-  on the `PATH`) and the file finder. With the column hidden (Ctrl+`) and no
+  new terminal (Ctrl+Shift+`), one for each of the first four agents installed
+  (in the order Claude Code, Codex, Gemini CLI, Copilot CLI, OpenCode, Qwen
+  Code, then Pi, oh-my-pi, Kilo Code CLI, Kimi Code CLI and MastraCode; "No
+  agents found" when none is), **Install Agents…** and the file finder. With the column hidden (Ctrl+`) and no
   files open, the editor area shows the same shortcuts.
 - The button at the right end of the terminal column's tab bar hides the
   column (Ctrl+J); its terminals and agents keep running. The terminal icon
@@ -597,6 +599,26 @@ if it isn't running yet.
   restart keeps the old address; open a new terminal to get the tools again.
 - To turn them off: `"terminal": {"ide_tools": false}` (new terminals don't
   get them, and older ones are refused).
+
+### Finding and installing agents
+Solo looks for the agents it can follow (the table in section 7) on the
+`PATH`, in the background, and reads each one's version with `--version` (a
+version that takes more than 2 seconds stays blank). The terminal column's
+**+** menu lists the installed ones with their logos, after **New Terminal**;
+a click opens a terminal running that agent. In a remote project no agents are
+listed.
+
+**Install Agents…** (the **+** menu, the empty terminal column, or **terminal
+panel: install agents** in the command palette) opens a window with the six
+common agents (**More** shows the other five): an installed one shows its
+version and **New Terminal**; one that isn't shows **Install**, which opens a
+terminal titled "Install <name>" with the agent's install command in its
+input and "Press Enter to run" below it. Solo does not run it for you. Agents
+installed with npm say "Install Node.js first" when npm isn't found, with a
+button to Node.js's download page. When a command you started in that
+terminal finishes, Solo looks again; **Check Again** does it any time. Both
+read the `PATH` from the registry first, because an installer changes it
+where the running Solo can't see.
 
 ## 7. Supported agents
 
