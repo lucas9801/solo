@@ -17,7 +17,7 @@ https://github.com/user-attachments/assets/85627f07-1bb5-4f68-8199-c3afbdc9fa3b
 - **Pending changes.** What an agent changed is pending until you accept it; its terminal tab shows "N files to review". Open it to see each file against what you last accepted, keep or reject each hunk, comment on lines and send the comments and what you rejected back at once. [More →](features/review.md)
 - **Diagnostics per turn.** After a turn, Solo has the language servers check the changed files and tells you how many errors and warnings the turn **added**, and how many it fixed.
 - **Navigate while reviewing.** The review is an editor: go to definition, find references and search all work, and each hunk is labeled with the function it's in.
-- **Click to look.** A file path in the terminal's output opens with a click: code in the editor, Markdown in a rendered preview, images in the image viewer. A `mermaid` block in an agent's output opens as a diagram. External web addresses, files Solo can't open, a file name several files have and files only another project tab has show a small menu instead (`terminal.link_menu`).
+- **Click to look.** A file path in the terminal's output opens with a click: code in the editor, Markdown in a rendered preview, images in the image viewer. A `mermaid` block in an agent's output opens as a diagram. External web addresses, files Solo can't open, a file name several files have and files only another project tab has show a small menu instead, and so do HTML, CSV, SVG and PDF files, with the preview as the first row (`Ctrl`+click does it; `terminal.link_menu`).
 
   ![The link menu: clicking a web address in the agent's output shows a menu first: open it in the browser or in Solo, or copy it](../../media/en/link-menu.png)
 

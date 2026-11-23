@@ -44,7 +44,7 @@ pub fn link_target(url: &str, setting: OpenLinksIn, alternate: bool) -> LinkTarg
     }
 }
 
-/// http, https, and HTML files on this computer.
+/// http, https, and HTML and PDF files on this computer.
 pub fn is_allowed_in_solo(url: &Url) -> bool {
     match url.scheme() {
         "http" | "https" => url.host().is_some(),
@@ -55,7 +55,7 @@ pub fn is_allowed_in_solo(url: &Url) -> bool {
                 path.extension()
                     .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
             })
-            .is_some_and(|extension| extension == "html" || extension == "htm"),
+            .is_some_and(|extension| matches!(extension.as_str(), "html" | "htm" | "pdf")),
         "about" => url.as_str() == "about:blank",
         _ => false,
     }
@@ -269,6 +269,40 @@ mod tests {
         assert_eq!(
             normalize_address("file:///C:/site/page.HTM").as_deref(),
             Some("file:///C:/site/page.HTM")
+        );
+    }
+
+    #[test]
+    fn local_pdf_files_open_in_solo() {
+        let allowed = |url: &str| is_allowed_in_solo(&Url::parse(url).unwrap());
+        assert!(allowed("file:///C:/reports/capture.pdf"));
+        assert!(allowed("file:///C:/reports/CAPTURE.PDF"));
+        assert!(allowed("file:///C:/site/index.html"));
+        assert!(!allowed("file:///C:/reports/capture.pdf.exe"));
+        assert!(!allowed("file:///C:/reports/capture.docx"));
+        assert!(!allowed("file:///C:/reports/pdf"));
+        // A web address ending in .pdf is allowed because it is a web address.
+        assert!(allowed("https://example.com/a.pdf"));
+        assert_eq!(
+            link_target("file:///C:/reports/capture.pdf", OpenLinksIn::LocalInSolo, false),
+            LinkTarget::Solo
+        );
+        assert_eq!(
+            link_target("file:///C:/reports/capture.pdf", OpenLinksIn::AllInSystem, false),
+            LinkTarget::System
+        );
+        assert_eq!(
+            link_target("file:///C:/reports/capture.docx", OpenLinksIn::AllInSolo, false),
+            LinkTarget::System
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pdf_paths_become_file_urls() {
+        assert_eq!(
+            normalize_address(r"C:\reports\capture.pdf").as_deref(),
+            Some("file:///C:/reports/capture.pdf")
         );
     }
 

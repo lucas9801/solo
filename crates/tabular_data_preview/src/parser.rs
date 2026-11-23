@@ -31,7 +31,7 @@ pub(crate) enum TabularFormat {
     JsonLines,
 }
 
-const TABULAR_FORMATS: &[(&str, TabularFormat)] = &[
+pub(crate) const TABULAR_FORMATS: &[(&str, TabularFormat)] = &[
     ("csv", TabularFormat::Csv),
     ("tsv", TabularFormat::Tsv),
     ("psv", TabularFormat::Psv),

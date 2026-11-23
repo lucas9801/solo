@@ -3,7 +3,7 @@ use workspace::Workspace;
 
 pub mod svg_preview_view;
 
-pub use solo_actions::preview::svg::{OpenPreview, OpenPreviewToTheSide};
+pub use solo_actions::preview::svg::{OpenPreview, OpenPreviewForPath, OpenPreviewToTheSide};
 
 actions!(
     svg,
