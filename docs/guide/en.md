@@ -823,10 +823,16 @@ those entries stay hidden, and using one says it isn't available yet. `ssh`
 and `wsl` in the terminal work as usual. To try it, set the environment
 variable `SOLO_REMOTE_DEVELOPMENT=1` and start Solo again: connecting then
 downloads the remote server of your Solo version from Solo's GitHub release
-(`github.com`, checked against the SHA-256 GitHub reports), uploads it to the
+(`github.com`, checked against the SHA-256 GitHub reports; like other
+downloads it follows offline mode and `downloads.mode`, so it asks first
+unless you allowed `remote-server`), uploads it to the
 remote host, which runs it from `~/.solo_server`, and keeps its data in
 `~/.local/share/solo`, apart from Zed's. Zed's servers are never contacted.
-Remote macOS and Windows hosts aren't supported.
+Remote macOS and Windows hosts aren't supported. Solo's own features are
+written for local projects: in a remote project, expect no command blocks,
+agent status hooks or built-in browser integration in its terminals, terminals
+that don't outlive the window, and agent tasks that say they only work in local
+projects. This hasn't been tested on real hosts yet.
 
 ## 10. Troubleshooting
 

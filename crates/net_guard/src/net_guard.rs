@@ -105,6 +105,15 @@ impl Component {
         Self::new("prettier", "Prettier", Some(NPM))
     }
 
+    /// The remote server Solo uploads to SSH, WSL and dev container hosts.
+    pub fn remote_server() -> Self {
+        Self::new(
+            "remote-server",
+            tr("Remote server", "远程服务器"),
+            Some(GITHUB),
+        )
+    }
+
     /// GitHub Copilot's language server.
     pub fn copilot() -> Self {
         Self::new("copilot", "GitHub Copilot", Some(NPM))
