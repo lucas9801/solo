@@ -44,6 +44,10 @@ AppId and updates that Solo in its folder. Releases have no zip.
   ```
 
   `script\package-solo.ps1` builds and places all of them.
+
+  The terminal crate's host tests start `target\debug\solo-terminal-host.exe`
+  and fail without it (`host_pipe()` is `None`): run `cargo build -p
+  solo_terminal_host` before `cargo test -p terminal`.
 - **Disk.** Measured on the maintainer's machine (2026-11-12, sizes of the
   files under each folder): a `solo-dist` build (what `package-solo.ps1`
   builds) takes 14.3 GB in `target\solo-dist`; the Rust toolchain about
