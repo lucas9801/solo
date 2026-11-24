@@ -234,6 +234,8 @@ try {
             if (-not $oldProcess.HasExited) { Save-SoloShot $oldProcess (Join-Path $out 'old-restart.png') }
             throw
         }
+        # From now on the new build runs: solo-cli asks its instance.
+        $script:IsolatedSolo = [bool]$IsolatedNewBuild
         $isNew = (Get-FileHash $solo.Path).Hash -eq (Get-FileHash (Join-Path $NewDir 'solo.exe')).Hash
         Add-Result 'update' 'the restarted Solo is the new build' $isNew $solo.Path
         Add-Result 'update' 'the agents outlived the old Solo' (@(Get-FakeAgents $Root | Where-Object { $_.alive }).Count -eq $agentsBefore.Count)
