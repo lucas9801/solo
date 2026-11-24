@@ -708,6 +708,21 @@ fn has_extension(text: &str) -> bool {
     })
 }
 
+/// SOLO: whether `text` (a line without its indent) starts with digits and
+/// the first character after them ends a position: `4969）` or `4969,`, not
+/// `12个文件`, `12 files`, `50% done`, `/etc/hosts` or `--verbose`.
+fn number_then_punctuation(text: impl Iterator<Item = char>) -> bool {
+    let mut text = text.peekable();
+    let mut digits = 0;
+    while text.next_if(char::is_ascii_digit).is_some() {
+        digits += 1;
+    }
+    digits > 0
+        && text
+            .next()
+            .is_some_and(|c| matches!(c, '）' | ')' | ']' | '】' | ',' | '，' | '。' | '.' | ';' | '；' | ':' | '：' | '-'))
+}
+
 /// SOLO: how far from the right edge a line broken by the program in the
 /// middle of a path may end (a wide character that didn't fit leaves a gap).
 const BROKEN_LINE_SLACK: usize = 2;
@@ -795,14 +810,17 @@ fn broken_path_ends<T>(
     if columns < MIN_BROKEN_LINE_COLUMNS
         || last_column.0 + 1 + BROKEN_LINE_SLACK < columns
         || !is_path_char(last_char)
-        // `path:` at the end of a line is followed by what's said about it.
-        || last_char == ':'
     {
         return None;
     }
     let second = row_chars(next.line);
     let &(indent, first_char) = second.iter().find(|(_, c)| !matches!(c, ' ' | '\t'))?;
     if indent.0 > CONTINUATION_INDENT || !is_path_char(first_char) {
+        return None;
+    }
+    // `path:` at the end of a line is followed by what's said about it, unless
+    // that is a number that ends in punctuation (`4969）`).
+    if last_char == ':' && !number_then_punctuation(second.iter().map(|(_, c)| *c).skip(indent.0)) {
         return None;
     }
     let mut tail = first
@@ -814,8 +832,10 @@ fn broken_path_ends<T>(
     tail.reverse();
     let tail = tail.into_iter().collect::<String>();
     // Ignoring a position after it, as in `src/main.rs:12:`.
-    let tail = tail.trim_end_matches(|c: char| c == ':' || c.is_ascii_digit());
-    if has_extension(tail) && !matches!(first_char, ':' | '/' | '\\' | '.') {
+    let name = tail.trim_end_matches(|c: char| c == ':' || c.is_ascii_digit());
+    // A line number broken in the middle (`a.cpp:496` and `9）`).
+    let in_position = first_char.is_ascii_digit() && tail[name.len()..].starts_with(':');
+    if has_extension(name) && !in_position && !matches!(first_char, ':' | '/' | '\\' | '.') {
         return None;
     }
     Some((
@@ -943,6 +963,19 @@ fn path_match<T>(
                 if digits > 0 {
                     link_range.end += 1 + digits;
                 }
+            }
+
+            // SOLO: a position after full-width punctuation (`、:476` of
+            // `class.h:180、:476`, `创建，:4795`) matches with the prose in
+            // front of it: it's the position alone, in the file named before.
+            let path_text = &line[path_range.clone()];
+            if let Some(colon) = path_text.find(':')
+                && path_text[..colon].ends_with(PROSE_PUNCTUATION)
+                && path_text[..colon].chars().all(|c| !c.is_ascii())
+                && bare_position(&path_text[colon..]) == Some(&path_text[colon..])
+            {
+                path_range.start += colon;
+                link_range.start = link_range.start.max(path_range.start);
             }
 
             // SOLO: a match written into Chinese prose can hold several paths, as in
@@ -1118,6 +1151,242 @@ mod tests {
             check(&position, 26, (1, 1)).map(|found| found.0),
             Some("src/main.rs:12".to_string())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_positions_broken_across_lines() -> anyhow::Result<()> {
+        // SOLO: a program that breaks lines itself may break one inside a
+        // position, as `:496` and `9）` of `:4969）`.
+        let content = settings::parse_json_with_comments(&settings::default_settings())?;
+        let settings = TerminalSettings::from_settings(&content);
+        let mut searches = RegexSearches::new(
+            &settings.path_hyperlink_regexes,
+            Duration::from_millis(settings.path_hyperlink_timeout_ms),
+        );
+        let width = |text: &str| {
+            text.chars()
+                .map(|c| if c.is_ascii() { 1 } else { 2 })
+                .sum::<usize>()
+        };
+        let mut check = |lines: &[&str], hovered: (i32, usize)| {
+            let mut term = Term::new(
+                Config::default(),
+                &TermSize::new(width(lines[0]), lines.len() + 1),
+                VoidListener,
+            );
+            for line in lines {
+                for c in line.chars() {
+                    term.input(c);
+                }
+                term.carriage_return();
+                term.linefeed();
+            }
+            let point = AlacPoint::new(Line(hovered.0), Column(hovered.1));
+            find_from_grid_point(&term, point, &mut searches, PathStyle::local())
+                .map(|found| (found.text, found.range.end.line, found.range.end.column))
+        };
+
+        let lines = ["说明（src/core/object_globals.cpp:496", "9）。"];
+        let first_row_end = width(lines[0]) - 1;
+        let joined = |text: &str| Some((text.to_string(), 1, 0));
+        for hovered in [(0, 6), (0, first_row_end), (1, 0)] {
+            assert_eq!(
+                check(&lines, hovered),
+                joined("src/core/object_globals.cpp:4969"),
+                "hovering {hovered:?}"
+            );
+        }
+
+        let range = ["see the code at a.cpp:12-3", "4"];
+        assert_eq!(
+            check(&range, (1, 0)).map(|found| found.0),
+            Some("a.cpp:12".to_string())
+        );
+        assert_eq!(check(&range, (1, 0)).map(|found| found.1), Some(1));
+        let column = ["see the code at a.cpp:12:3", "4"];
+        assert_eq!(
+            check(&column, (0, 20)),
+            joined("a.cpp:12:34"),
+        );
+        let after_colon = ["see the code at a.cpp:", "4969）"];
+        for hovered in [(0, 18), (1, 1)] {
+            assert_eq!(
+                check(&after_colon, hovered),
+                Some(("a.cpp:4969".to_string(), 1, 3)),
+                "hovering {hovered:?}"
+            );
+        }
+        let indented = ["see the code at a.cpp:", "    4969,"];
+        assert_eq!(
+            check(&indented, (1, 5)).map(|found| found.0),
+            Some("a.cpp:4969".to_string())
+        );
+
+        // Digits followed by text, or by nothing: what the file says about
+        // the line, not the line.
+        for lines in [
+            ["see the code at a.cpp:", "12个文件"],
+            ["see the code at a.cpp:", "12 files"],
+            ["see the code at a.cpp:", "12"],
+        ] {
+            assert_eq!(
+                check(&lines, (0, 18)).map(|found| found.0),
+                Some("a.cpp".to_string()),
+                "{lines:?}"
+            );
+            assert_ne!(
+                check(&lines, (1, 0)).map(|found| found.0),
+                Some("a.cpp:12".to_string()),
+                "{lines:?}"
+            );
+        }
+        // What follows the colon isn't a number, or the number isn't ended by
+        // punctuation.
+        for lines in [
+            ["see the code at a.cpp:", "/etc/hosts"],
+            ["run the tool as in Usage:", "--verbose"],
+            ["see the file config.yml:", "./run.sh"],
+            ["see the code at a.cpp:", "50% 完成"],
+            ["see the code at a.cpp:", "7>3"],
+            ["see the code at a.cpp:", "5/6 done"],
+        ] {
+            for hovered in [(0, width(lines[0]) - 2), (0, width(lines[0]) - 1)] {
+                assert!(
+                    check(&lines, hovered).is_none_or(|found| found.1 == 0),
+                    "{lines:?} {hovered:?}"
+                );
+            }
+        }
+        // Not at the right edge: as before.
+        let short = ["see the code at a.cpp:12     ", "3）"];
+        assert_eq!(
+            check(&short, (0, 18)).map(|found| found.0),
+            Some("a.cpp:12".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_positions_after_full_width_punctuation() -> anyhow::Result<()> {
+        // SOLO: an agent lists the lines of a file after the file with `、`
+        // or `，`: each `:476` is in the file named before it.
+        let content = settings::parse_json_with_comments(&settings::default_settings())?;
+        let settings = TerminalSettings::from_settings(&content);
+        let mut searches = RegexSearches::new(
+            &settings.path_hyperlink_regexes,
+            Duration::from_millis(settings.path_hyperlink_timeout_ms),
+        );
+        let width = |text: &str| {
+            text.chars()
+                .map(|c| if c.is_ascii() { 1 } else { 2 })
+                .sum::<usize>()
+        };
+        let mut check = |line: &str, before_hovered: &str| {
+            let mut term = Term::new(Config::default(), &TermSize::new(100, 2), VoidListener);
+            for c in line.chars() {
+                term.input(c);
+            }
+            let point = AlacPoint::new(Line(0), Column(width(before_hovered)));
+            find_from_grid_point(&term, point, &mut searches, PathStyle::local())
+                .map(|found| (found.text, found.range.start.column, found.range.end.column))
+        };
+        let found = |text: &str, before: &str, length: usize| {
+            Some((
+                text.to_string(),
+                width(before),
+                width(before) + length - 1,
+            ))
+        };
+
+        let line = "继承关系（src/core/class.h:180、:476、:1719）：";
+        let before = "继承关系（src/core/class.h:180、";
+        assert_eq!(check(line, &format!("{before}:")), found("src/core/class.h:476", before, 4));
+        assert_eq!(check(line, &format!("{before}:476、:1")), found("src/core/class.h:1719", "继承关系（src/core/class.h:180、:476、", 5));
+        assert_eq!(
+            check(line, "继承关系（src/core/class.h").map(|found| found.0),
+            Some("src/core/class.h:180".to_string())
+        );
+        // The punctuation itself is not a link.
+        assert_eq!(check(line, "继承关系（src/core/class.h:180"), None);
+
+        let line = "（`delegates.h:931`、:454、:458）";
+        assert_eq!(
+            check(line, "（`delegates.h:931`、:4").map(|found| found.0),
+            Some("delegates.h:454".to_string())
+        );
+        assert_eq!(
+            check(line, "（`delegates.h:931`、:454、:4").map(|found| found.0),
+            Some("delegates.h:458".to_string())
+        );
+
+        let line = "loop.cpp:4714 创建，:4795 才加载";
+        assert_eq!(
+            check(line, "loop.cpp:4714 创建，:4").map(|found| found.0),
+            Some("loop.cpp:4795".to_string())
+        );
+        assert_eq!(
+            check(line, "loop.cpp:47").map(|found| found.0),
+            Some("loop.cpp:4714".to_string())
+        );
+
+        // As before: a position after an opening parenthesis, a position and
+        // a range, a name with `、` in it, and what is not a position.
+        assert_eq!(
+            check("fixed a.rs:3 (:403-405) now", "fixed a.rs:3 (:4").map(|found| found.0),
+            Some("a.rs:403".to_string())
+        );
+        assert_eq!(
+            check("改动 a.rs:3（:333、:340", "改动 a.rs:3（:3").map(|found| found.0),
+            Some("a.rs:333".to_string())
+        );
+        assert_eq!(
+            check("见 test、2.txt 文件", "见 test、2").map(|found| found.0),
+            Some("test、2.txt".to_string())
+        );
+        for (line, before_hovered) in [
+            ("see a.rs:3 、:abc here", "see a.rs:3 、"),
+            ("see a.rs:3 、 here", "see a.rs:3 "),
+            ("see a.rs:3，:  here", "see a.rs:3，"),
+        ] {
+            // The punctuation alone may be a one-character name, as before;
+            // what it never is, is a position in the file before it.
+            assert!(
+                check(line, before_hovered).is_none_or(|found| !found.0.contains("a.rs")),
+                "{line}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_broken_position_from_program_output() -> anyhow::Result<()> {
+        // SOLO: the same, as the bytes of a program writing into a terminal,
+        // with the line ended by a line break or just by running into the edge.
+        let content = settings::parse_json_with_comments(&settings::default_settings())?;
+        let settings = TerminalSettings::from_settings(&content);
+        let mut searches = RegexSearches::new(
+            &settings.path_hyperlink_regexes,
+            Duration::from_millis(settings.path_hyperlink_timeout_ms),
+        );
+        let columns = 121;
+        let path = "（src/core/object_globals.cpp:496";
+        let padding = " ".repeat(columns - path.chars().count() - 1);
+        for line_break in ["\r\n", ""] {
+            let mut term = Term::new(Config::default(), &TermSize::new(columns, 40), VoidListener);
+            let mut processor = alacritty_terminal::vte::ansi::Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::default();
+            let output = format!("prompt > command\r\n{padding}{path}{line_break}9）。\r\n\r\nnext\r\n");
+            processor.advance(&mut term, output.as_bytes());
+            for (line, column) in [(1, columns - 10), (1, columns - 1), (2, 0)] {
+                let point = AlacPoint::new(Line(line), Column(column));
+                let found = find_from_grid_point(&term, point, &mut searches, PathStyle::local());
+                assert_eq!(
+                    found.map(|found| found.text),
+                    Some("src/core/object_globals.cpp:4969".to_string()),
+                    "hovering ({line}, {column}) after {line_break:?}"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -2994,7 +3263,16 @@ mod path_link_timing {
             );
             10
         ];
+        let broken_position = vec![
+            "这个函数在对象初始化之前就会被调用，所以那里的全局表还没有建好，调用方需要自己等待（src/core/object_globals.cpp:496".to_string(),
+            "9）。".to_string(),
+        ];
+        let broken_columns = broken_position[0]
+            .chars()
+            .map(|c| if c.is_ascii() { 1 } else { 2 })
+            .sum();
         vec![
+            ("position broken at the right edge", broken_position, broken_columns),
             ("long Chinese paragraph, 120 columns", vec![chinese.clone()], 120),
             ("long Chinese paragraph, 80 columns", vec![chinese], 80),
             ("table, 120 columns", table, 120),
