@@ -1469,7 +1469,7 @@ impl AgentTasksModal {
         let Some(pull_request) = self.pull_requests.get(&key).cloned() else {
             return;
         };
-        let Some(worktree) = entry.task.worktree_path.clone() else {
+        let Some(worktree) = entry.task.worktree_path else {
             return;
         };
         let Some(workspace) = self.workspace.upgrade() else {

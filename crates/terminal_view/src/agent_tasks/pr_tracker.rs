@@ -510,7 +510,11 @@ pub(crate) fn send_new_feedback(
         PrTracker::global(cx).update(cx, |tracker, cx| tracker.send_unsent(key, false, cx));
     let message = match outcome {
         SendOutcome::Sent(agent) => {
-            activate_terminal_view(workspace, &agent, window, cx);
+            // After this update: switching workspaces reads the window's root.
+            let workspace = workspace.clone();
+            window.defer(cx, move |window, cx| {
+                activate_terminal_view(&workspace, &agent, window, cx)
+            });
             tr(
                 "Sent the failed checks and comments to the task's agent.",
                 "已把失败的检查和评论发给任务的 agent。",
@@ -714,7 +718,6 @@ impl PrTracker {
             tracked.checked_at = None;
             tracked.snapshot = None;
             tracked.suspended = false;
-            tracked.last_error = None;
         }
     }
 
@@ -1936,7 +1939,7 @@ mod tests {
         assert!(!is_ready(&blocked));
 
         // GitHub's merge state decides when it has one.
-        let mut clean = ready.clone();
+        let mut clean = ready;
         clean.mergeable = None;
         clean.merge_state = Some("CLEAN".into());
         assert!(is_ready(&clean));
@@ -1965,6 +1968,9 @@ mod tests {
         set_tasks(&tracker, &[entry("a", vec![view.clone()])], cx);
         cx.update(|cx| cx.set_global(GlobalPrTracker(tracker.clone())));
         let send = |cx: &mut TestAppContext| {
+            view.update(cx, |view, _| {
+                view.set_agent_status_for_test("claude", AgentStatus::Idle)
+            });
             window
                 .update(cx, |_, window, cx| {
                     send_new_feedback(&workspace, &key("a"), window, cx)
