@@ -8,15 +8,19 @@
 #  1. Starts the previous release (-OldDir: its program files, solo.exe and
 #     the rest) with 3 project tabs (git repositories), an agent in each
 #     tab's terminal (claude, codex, claude), and stops in the first tab.
-#  2. "Updates": quits it, as "Update and Restart" does, and starts the new
-#     build (-NewDir) with the same data folder. Releases up to 2.5.3 keep
-#     terminals running an agent when they quit, which is what an update's
-#     restart does; this script doesn't run the installer (it would register
-#     Solo for the user: solo:// links, the Explorer menu, an uninstall
-#     entry), so the "update" is quitting the old files and starting the new
-#     ones. On a throwaway machine (a CI runner) the installer could do it
-#     instead: Solo-Setup-<old>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-#     /DIR=<folder>, then pass that folder as -OldDir.
+#  2. "Updates" the way "Update and Restart" does: the previous release runs
+#     from a copy of its files (<Root>\install), which the new build's files
+#     (-NewDir) replace in place, as the installer does (a running program's
+#     files can be renamed, not overwritten: the old ones are renamed
+#     *.replaced first); then the previous release restarts ("workspace:
+#     reload", which prepares the windows to restart as "Update and Restart"
+#     does: agents keep running, nothing asks) and starts the new solo.exe
+#     from the same folder. This script doesn't run the installer (it would
+#     register Solo for the user: solo:// links, the Explorer menu, an
+#     uninstall entry). On a throwaway machine (a CI runner) the installer
+#     could do it instead: Solo-Setup-<old>.exe /VERYSILENT
+#     /SUPPRESSMSGBOXES /NORESTART /DIR=<folder>, then pass that folder as
+#     -OldDir.
 #  3. Waits -WaitSeconds (90) without opening the other tabs, then opens
 #     them one by one.
 #  4. Checks, from `solo-cli agent ls --json`, the fake agents' pid files and
@@ -106,6 +110,31 @@ New-Item -ItemType Directory -Force $out | Out-Null
 Set-ScenarioEnvironment $Root $Language
 Assert-FakeAgentsFirst $Root
 
+# The previous release runs from its own copy, which the update replaces.
+if (-not $sameBuild) {
+    $installDir = Join-Path $Root 'install'
+    if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
+    New-Item -ItemType Directory -Force $installDir | Out-Null
+    Copy-Item -Path (Join-Path $OldDir '*') -Destination $installDir -Recurse -Force
+    $oldExe = Join-Path $installDir 'solo.exe'
+}
+
+# Puts the new build's files into $installDir, as the installer does: those
+# in use (solo.exe, a DLL) can't be overwritten but can be renamed.
+function Install-SoloFiles([string]$from, [string]$to) {
+    $from = (Resolve-Path $from).Path
+    foreach ($file in Get-ChildItem $from -File -Recurse) {
+        $target = Join-Path $to $file.FullName.Substring($from.Length).TrimStart('\')
+        New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+        if (Test-Path $target) {
+            $n = 0
+            while (Test-Path "$target.$n.replaced") { $n++ }
+            Move-Item $target "$target.$n.replaced"
+        }
+        Copy-Item $file.FullName $target
+    }
+}
+
 function Wait-Until([scriptblock]$condition, [int]$seconds) {
     $deadline = (Get-Date).AddSeconds($seconds)
     while ((Get-Date) -lt $deadline) {
@@ -188,23 +217,26 @@ try {
     Save-SoloShot $solo (Join-Path $out 'old-running.png')
     $agentsBefore = @(Get-FakeAgents $Root | Where-Object { $_.alive })
 
-    # 2. "Update": the old release quits keeping its agents; the new one starts.
+    # 2. "Update": the old release restarts keeping its agents; the new one starts.
     $offset = Get-SoloLogLength $dataDir
     if ($sameBuild) {
         Write-Step '2. update: the new build restarts itself (workspace: reload)'
         $solo = Invoke-SoloRestart $solo $newExe
         Add-Result 'update' 'the agents outlived the restart' (@(Get-FakeAgents $Root | Where-Object { $_.alive }).Count -eq $agentsBefore.Count)
     } else {
-        Write-Step '2. update: quitting the previous release, starting the new build'
-        Close-SoloWindow $solo
-        if (-not $solo.WaitForExit(30000)) {
-            Save-SoloShot $solo (Join-Path $out 'old-quit-prompt.png')
-            throw 'the previous release asked before quitting; this script expects it to keep its agents (up to 2.5.3)'
+        Write-Step "2. update: the new build's files replace the previous release's, which restarts into them (workspace: reload)"
+        Install-SoloFiles $NewDir $installDir
+        $newExe = $oldExe
+        $oldProcess = $solo
+        try {
+            $solo = Invoke-SoloRestart $solo $newExe
+        } catch {
+            if (-not $oldProcess.HasExited) { Save-SoloShot $oldProcess (Join-Path $out 'old-restart.png') }
+            throw
         }
-        Start-Sleep -Seconds 3
+        $isNew = (Get-FileHash $solo.Path).Hash -eq (Get-FileHash (Join-Path $NewDir 'solo.exe')).Hash
+        Add-Result 'update' 'the restarted Solo is the new build' $isNew $solo.Path
         Add-Result 'update' 'the agents outlived the old Solo' (@(Get-FakeAgents $Root | Where-Object { $_.alive }).Count -eq $agentsBefore.Count)
-        $offset = Get-SoloLogLength $dataDir
-        $solo = Start-Solo $newExe $dataDir -Isolated:$IsolatedNewBuild
     }
 
     # 3. Not opening the other tabs for a while.
