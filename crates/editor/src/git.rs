@@ -717,19 +717,19 @@ impl Editor {
         if let Some(existing_overlay) = self.diff_review_overlays.iter().find(|overlay| {
             Self::hunk_keys_match(&overlay.hunk_key, &new_hunk_key, &buffer_snapshot)
         }) {
-            // Just focus the existing overlay's prompt editor
+            // Show the input if asked to comment, and fit the height to the
+            // comments, which a comment put back may have added
+            let key = existing_overlay.hunk_key.clone();
+            let focus_handle = existing_overlay.prompt_editor.focus_handle(cx);
+            if focus
+                && let Some(overlay) = self.diff_review_overlays.iter_mut().find(|overlay| {
+                    Self::hunk_keys_match(&overlay.hunk_key, &key, &buffer_snapshot)
+                })
+            {
+                overlay.show_input = true;
+            }
+            self.refresh_diff_review_overlay_height(&key, window, cx);
             if focus {
-                let focus_handle = existing_overlay.prompt_editor.focus_handle(cx);
-                let needs_input = !existing_overlay.show_input;
-                let key = existing_overlay.hunk_key.clone();
-                if needs_input
-                    && let Some(overlay) = self.diff_review_overlays.iter_mut().find(|overlay| {
-                        Self::hunk_keys_match(&overlay.hunk_key, &key, &buffer_snapshot)
-                    })
-                {
-                    overlay.show_input = true;
-                    self.refresh_diff_review_overlay_height(&key, window, cx);
-                }
                 window.focus(&focus_handle, cx);
             }
             return;
@@ -821,7 +821,10 @@ impl Editor {
         });
 
         if !focus {
-            let hunk_key = self.diff_review_overlays.last().map(|overlay| overlay.hunk_key.clone());
+            let hunk_key = self
+                .diff_review_overlays
+                .last()
+                .map(|overlay| overlay.hunk_key.clone());
             if let Some(hunk_key) = hunk_key {
                 self.refresh_diff_review_overlay_height(&hunk_key, window, cx);
             }
@@ -2220,7 +2223,11 @@ impl Editor {
             .find(|overlay| Self::hunk_keys_match(&overlay.hunk_key, hunk_key, snapshot))
             .is_none_or(|overlay| overlay.show_input);
         // Input row with avatar and buttons
-        let base_height: u32 = if show_input || comment_count == 0 { 2 } else { 0 };
+        let base_height: u32 = if show_input || comment_count == 0 {
+            2
+        } else {
+            0
+        };
 
         if comment_count == 0 {
             base_height
@@ -2718,7 +2725,14 @@ impl Editor {
                             )
                         })
                         .unwrap_or((true, HashMap::default(), None, None, true));
-                    (comments, expanded, editors, avatar_uri, line_ranges, show_input)
+                    (
+                        comments,
+                        expanded,
+                        editors,
+                        avatar_uri,
+                        line_ranges,
+                        show_input,
+                    )
                 })
                 .unwrap_or((Vec::new(), true, HashMap::default(), None, None, true));
 
@@ -2749,71 +2763,75 @@ impl Editor {
                 }
             })
             // Top row: editable input with user's avatar
-            .when(show_input || comment_count == 0, |el| el.child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1p5()
-                    .rounded_md()
-                    .bg(colors.surface_background)
-                    .child(
-                        div()
-                            .size(avatar_size)
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .overflow_hidden()
-                            .child(if let Some(ref avatar_uri) = user_avatar_uri {
-                                Avatar::new(avatar_uri.clone())
-                                    .size(avatar_size)
-                                    .into_any_element()
-                            } else {
-                                Icon::new(IconName::Person)
-                                    .size(IconSize::Small)
-                                    .color(ui::Color::Muted)
-                                    .into_any_element()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .border_1()
-                            .border_color(colors.border)
-                            .rounded_md()
-                            .bg(colors.editor_background)
-                            .px_2()
-                            .py_1()
-                            .child(prompt_editor.clone()),
-                    )
-                    .child(
-                        h_flex()
-                            .flex_shrink_0()
-                            .gap_1()
-                            .child(
-                                IconButton::new("diff-review-close", IconName::Close)
-                                    .icon_color(ui::Color::Muted)
-                                    .icon_size(action_icon_size)
-                                    .tooltip(Tooltip::text("Close"))
-                                    .on_click(|_, window, cx| {
-                                        window
-                                            .dispatch_action(Box::new(crate::actions::Cancel), cx);
-                                    }),
-                            )
-                            .child(
-                                IconButton::new("diff-review-add", IconName::Return)
-                                    .icon_color(ui::Color::Muted)
-                                    .icon_size(action_icon_size)
-                                    .tooltip(Tooltip::text("Add comment"))
-                                    .on_click(|_, window, cx| {
-                                        window.dispatch_action(
-                                            Box::new(crate::actions::SubmitDiffReviewComment),
-                                            cx,
-                                        );
-                                    }),
-                            ),
-                    ),
-            ))
+            .when(show_input || comment_count == 0, |el| {
+                el.child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1p5()
+                        .rounded_md()
+                        .bg(colors.surface_background)
+                        .child(
+                            div()
+                                .size(avatar_size)
+                                .flex_shrink_0()
+                                .rounded_full()
+                                .overflow_hidden()
+                                .child(if let Some(ref avatar_uri) = user_avatar_uri {
+                                    Avatar::new(avatar_uri.clone())
+                                        .size(avatar_size)
+                                        .into_any_element()
+                                } else {
+                                    Icon::new(IconName::Person)
+                                        .size(IconSize::Small)
+                                        .color(ui::Color::Muted)
+                                        .into_any_element()
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .border_1()
+                                .border_color(colors.border)
+                                .rounded_md()
+                                .bg(colors.editor_background)
+                                .px_2()
+                                .py_1()
+                                .child(prompt_editor.clone()),
+                        )
+                        .child(
+                            h_flex()
+                                .flex_shrink_0()
+                                .gap_1()
+                                .child(
+                                    IconButton::new("diff-review-close", IconName::Close)
+                                        .icon_color(ui::Color::Muted)
+                                        .icon_size(action_icon_size)
+                                        .tooltip(Tooltip::text("Close"))
+                                        .on_click(|_, window, cx| {
+                                            window.dispatch_action(
+                                                Box::new(crate::actions::Cancel),
+                                                cx,
+                                            );
+                                        }),
+                                )
+                                .child(
+                                    IconButton::new("diff-review-add", IconName::Return)
+                                        .icon_color(ui::Color::Muted)
+                                        .icon_size(action_icon_size)
+                                        .tooltip(Tooltip::text("Add comment"))
+                                        .on_click(|_, window, cx| {
+                                            window.dispatch_action(
+                                                Box::new(crate::actions::SubmitDiffReviewComment),
+                                                cx,
+                                            );
+                                        }),
+                                ),
+                        ),
+                )
+            })
             // Expandable comments section (only shown when there are comments)
             .when(comment_count > 0, |el| {
                 el.child(Self::render_comments_section(
