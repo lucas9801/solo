@@ -227,6 +227,19 @@ where
     // padding to avoid tooltip appearing right below the mouse cursor
     div().pl_2().pt_2p5().child(
         v_flex()
+            // SOLO: only the card is drawn; the padding around it is see-through, so
+            // that is what a native child window (the web view) has to leave open.
+            .child(
+                gpui::canvas(
+                    |bounds, window, _| window.set_tooltip_card_bounds(bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom_0(),
+            )
             .elevation_2(app)
             .font(ui_font)
             .text_ui(app)

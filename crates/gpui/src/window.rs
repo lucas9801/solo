@@ -1254,6 +1254,7 @@ pub struct Window {
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     drag_preview_bounds: Option<Bounds<Pixels>>,
+    tooltip_card_bounds: Option<Bounds<Pixels>>,
     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SingleSubscriberSet<AnyWindowFocusListener>,
@@ -2236,6 +2237,7 @@ impl Window {
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
             drag_preview_bounds: None,
+            tooltip_card_bounds: None,
             dirty_views: FxHashSet::default(),
             focus_listeners: SingleSubscriberSet::new(),
             focus_lost_listeners: SingleSubscriberSet::new(),
@@ -3742,6 +3744,7 @@ impl Window {
         self.invalidator.set_phase(DrawPhase::Prepaint);
         self.tooltip_bounds.take();
         self.drag_preview_bounds.take();
+        self.tooltip_card_bounds.take();
 
         self.a11y.sync_active_flag();
         if self.a11y.is_active() {
@@ -5602,6 +5605,13 @@ impl Window {
         subscription
     }
 
+    /// Called while a tooltip is prepainted by the part of it that is visible, when the
+    /// tooltip's own bounds have transparent padding around it (so it doesn't sit under the
+    /// cursor): [`Window::hitbox_occlusion`] then reports this instead of the whole tooltip.
+    pub fn set_tooltip_card_bounds(&mut self, bounds: Bounds<Pixels>) {
+        self.tooltip_card_bounds = Some(bounds);
+    }
+
     /// Looks up a hitbox in the last rendered frame. Returns `None` when the frame did not
     /// contain it (its element was not drawn). Otherwise returns the hitbox's visible bounds
     /// and the visible bounds of every mouse-blocking hitbox inserted after it that overlaps
@@ -5619,7 +5629,10 @@ impl Window {
             .iter()
             .filter(|hitbox| hitbox.behavior != HitboxBehavior::Normal)
             .map(|hitbox| hitbox.bounds.intersect(&hitbox.content_mask.bounds))
-            .chain(self.tooltip_bounds.as_ref().map(|tooltip| tooltip.bounds))
+            .chain(
+                self.tooltip_card_bounds
+                    .or_else(|| self.tooltip_bounds.as_ref().map(|tooltip| tooltip.bounds)),
+            )
             .chain(self.drag_preview_bounds)
             .filter(|bounds| bounds.size.width > px(0.) && bounds.size.height > px(0.))
             .filter(|bounds| bounds.intersects(&own))
@@ -8616,6 +8629,28 @@ mod tests {
 
     struct OcclusionProbe {
         surface: Rc<Cell<Option<crate::HitboxId>>>,
+        padded_tooltip: bool,
+    }
+
+    /// Like the interface's tooltips: a see-through margin around the card.
+    struct PaddedProbeTooltip;
+
+    impl Render for PaddedProbeTooltip {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().pl(px(8.)).pt(px(10.)).child(
+                div().w(px(30.)).h(px(12.)).child(
+                    canvas(
+                        |bounds, window, _| window.set_tooltip_card_bounds(bounds),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0(),
+                ),
+            )
+        }
     }
 
     struct ProbePreview;
@@ -8648,7 +8683,16 @@ mod tests {
                         .id("target")
                         .w(px(50.))
                         .h(px(50.))
-                        .tooltip(|_, cx| cx.new(|_| ProbePreview).into())
+                        .tooltip({
+                            let padded = self.padded_tooltip;
+                            move |_, cx| {
+                                if padded {
+                                    cx.new(|_| PaddedProbeTooltip).into()
+                                } else {
+                                    cx.new(|_| ProbePreview).into()
+                                }
+                            }
+                        })
                         .on_drag(0usize, |_, _, _, cx| cx.new(|_| ProbePreview)),
                 )
         }
@@ -8693,7 +8737,10 @@ mod tests {
         let surface = Rc::new(Cell::new(None));
         let window = cx.add_window({
             let surface = surface.clone();
-            move |_, _| OcclusionProbe { surface }
+            move |_, _| OcclusionProbe {
+                surface,
+                padded_tooltip: false,
+            }
         });
         let handle: AnyWindowHandle = window.into();
 
@@ -8720,12 +8767,39 @@ mod tests {
     }
 
     #[test]
+    fn test_hitbox_occlusion_reports_the_tooltip_card_not_its_margin() {
+        let mut cx = TestAppContext::single();
+        let surface = Rc::new(Cell::new(None));
+        let window = cx.add_window({
+            let surface = surface.clone();
+            move |_, _| OcclusionProbe {
+                surface,
+                padded_tooltip: true,
+            }
+        });
+        let handle: AnyWindowHandle = window.into();
+        occlusion_holes(&mut cx, handle, &surface);
+
+        move_mouse(&mut cx, handle, 10., 10., false);
+        cx.dispatcher.advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert_eq!(
+            occlusion_holes(&mut cx, handle, &surface),
+            [Bounds::new(point(px(19.), px(21.)), size(px(30.), px(12.)))],
+            "the hole is the card, without the 8px and 10px of margin"
+        );
+    }
+
+    #[test]
     fn test_hitbox_occlusion_includes_drag_preview_while_dragging() {
         let mut cx = TestAppContext::single();
         let surface = Rc::new(Cell::new(None));
         let window = cx.add_window({
             let surface = surface.clone();
-            move |_, _| OcclusionProbe { surface }
+            move |_, _| OcclusionProbe {
+                surface,
+                padded_tooltip: false,
+            }
         });
         let handle: AnyWindowHandle = window.into();
         occlusion_holes(&mut cx, handle, &surface);
