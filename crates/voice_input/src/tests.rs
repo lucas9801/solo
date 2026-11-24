@@ -47,7 +47,7 @@ struct Fixture {
     microphones_opened: Arc<AtomicUsize>,
     models_loaded: Arc<AtomicUsize>,
     requests: Arc<AtomicUsize>,
-    forgotten: Rc<RefCell<Vec<String>>>,
+    forgotten: Arc<Mutex<Vec<String>>>,
     directory: PathBuf,
     model: &'static ModelInfo,
 }
@@ -108,7 +108,7 @@ fn fixture(options: Options, cx: &mut TestAppContext) -> Fixture {
     let engine_fails = options.engine_fails;
     let microphone_works = options.microphone_works;
     let rules = options.rules;
-    let forgotten: Rc<RefCell<Vec<String>>> = Rc::default();
+    let forgotten: Arc<Mutex<Vec<String>>> = Arc::default();
 
     let parts = Parts {
         load_recognizer: Arc::new({
@@ -136,7 +136,7 @@ fn fixture(options: Options, cx: &mut TestAppContext) -> Fixture {
         remember_download: Arc::new(|_, _| {}),
         forget_download: Arc::new({
             let forgotten = forgotten.clone();
-            move |id, _| forgotten.borrow_mut().push(id)
+            move |id, _| forgotten.lock().push(id)
         }),
         models_directory: directory.clone(),
     };
@@ -716,7 +716,7 @@ fn test_deleting_a_model_cancels_forgets_the_answer_and_removes_the_files(cx: &m
     );
     assert!(!model.is_downloaded(&fixture.directory));
     assert!(!model.path(&fixture.directory).exists());
-    assert_eq!(*fixture.forgotten.borrow(), vec![model.component_id()]);
+    assert_eq!(*fixture.forgotten.lock(), vec![model.component_id()]);
     assert!(fixture.delivered().is_empty());
 }
 

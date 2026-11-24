@@ -5331,8 +5331,8 @@ fn render_microphone(
 #[derive(Default)]
 struct ShortcutRecording {
     active: bool,
-    interceptor: Option<gpui::Subscription>,
-    watcher: Option<gpui::Task<()>>,
+    _interceptor: Option<gpui::Subscription>,
+    _watcher: Option<gpui::Task<()>>,
 }
 
 impl gpui::Global for ShortcutRecording {}
@@ -5479,8 +5479,8 @@ fn record_voice_shortcut(window: &mut Window, cx: &mut App) {
     });
     *cx.default_global::<ShortcutRecording>() = ShortcutRecording {
         active: true,
-        interceptor: Some(interceptor),
-        watcher: Some(watcher),
+        _interceptor: Some(interceptor),
+        _watcher: Some(watcher),
     };
 }
 
