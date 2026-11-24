@@ -6506,6 +6506,7 @@ mod tests {
                 "toolchain",
                 "variable_list",
                 "vim",
+                "voice_input",
                 "which_key",
                 "window",
                 "workspace",
