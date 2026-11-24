@@ -708,6 +708,15 @@ fn has_extension(text: &str) -> bool {
     })
 }
 
+/// SOLO: whether `text` (a line without its indent) starts with digits and
+/// the first character after them is punctuation: `4969）`, not `12个文件`,
+/// `12 files` or `12` at the end of the line.
+fn number_then_punctuation(text: impl Iterator<Item = char>) -> bool {
+    let mut text = text.skip_while(char::is_ascii_digit);
+    text.next()
+        .is_some_and(|c| !c.is_alphanumeric() && !c.is_whitespace())
+}
+
 /// SOLO: how far from the right edge a line broken by the program in the
 /// middle of a path may end (a wide character that didn't fit leaves a gap).
 const BROKEN_LINE_SLACK: usize = 2;
@@ -795,14 +804,17 @@ fn broken_path_ends<T>(
     if columns < MIN_BROKEN_LINE_COLUMNS
         || last_column.0 + 1 + BROKEN_LINE_SLACK < columns
         || !is_path_char(last_char)
-        // `path:` at the end of a line is followed by what's said about it.
-        || last_char == ':'
     {
         return None;
     }
     let second = row_chars(next.line);
     let &(indent, first_char) = second.iter().find(|(_, c)| !matches!(c, ' ' | '\t'))?;
     if indent.0 > CONTINUATION_INDENT || !is_path_char(first_char) {
+        return None;
+    }
+    // `path:` at the end of a line is followed by what's said about it, unless
+    // that is a number that ends in punctuation (`4969）`).
+    if last_char == ':' && !number_then_punctuation(second.iter().map(|(_, c)| *c).skip(indent.0)) {
         return None;
     }
     let mut tail = first
@@ -814,8 +826,10 @@ fn broken_path_ends<T>(
     tail.reverse();
     let tail = tail.into_iter().collect::<String>();
     // Ignoring a position after it, as in `src/main.rs:12:`.
-    let tail = tail.trim_end_matches(|c: char| c == ':' || c.is_ascii_digit());
-    if has_extension(tail) && !matches!(first_char, ':' | '/' | '\\' | '.') {
+    let name = tail.trim_end_matches(|c: char| c == ':' || c.is_ascii_digit());
+    // A line number broken in the middle (`a.cpp:496` and `9）`).
+    let in_position = first_char.is_ascii_digit() && tail[name.len()..].starts_with(':');
+    if has_extension(name) && !in_position && !matches!(first_char, ':' | '/' | '\\' | '.') {
         return None;
     }
     Some((
@@ -1117,6 +1131,102 @@ mod tests {
         assert_eq!(
             check(&position, 26, (1, 1)).map(|found| found.0),
             Some("src/main.rs:12".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_positions_broken_across_lines() -> anyhow::Result<()> {
+        // SOLO: a program that breaks lines itself may break one inside a
+        // position, as `:496` and `9）` of `:4969）`.
+        let content = settings::parse_json_with_comments(&settings::default_settings())?;
+        let settings = TerminalSettings::from_settings(&content);
+        let mut searches = RegexSearches::new(
+            &settings.path_hyperlink_regexes,
+            Duration::from_millis(settings.path_hyperlink_timeout_ms),
+        );
+        let width = |text: &str| {
+            text.chars()
+                .map(|c| if c.is_ascii() { 1 } else { 2 })
+                .sum::<usize>()
+        };
+        let mut check = |lines: &[&str], hovered: (i32, usize)| {
+            let mut term = Term::new(
+                Config::default(),
+                &TermSize::new(width(lines[0]), lines.len() + 1),
+                VoidListener,
+            );
+            for line in lines {
+                for c in line.chars() {
+                    term.input(c);
+                }
+                term.carriage_return();
+                term.linefeed();
+            }
+            let point = AlacPoint::new(Line(hovered.0), Column(hovered.1));
+            find_from_grid_point(&term, point, &mut searches, PathStyle::local())
+                .map(|found| (found.text, found.range.end.line, found.range.end.column))
+        };
+
+        let lines = ["说明（src/core/object_globals.cpp:496", "9）。"];
+        let first_row_end = width(lines[0]) - 1;
+        let joined = |text: &str| Some((text.to_string(), 1, 0));
+        for hovered in [(0, 6), (0, first_row_end), (1, 0)] {
+            assert_eq!(
+                check(&lines, hovered),
+                joined("src/core/object_globals.cpp:4969"),
+                "hovering {hovered:?}"
+            );
+        }
+
+        let range = ["see the code at a.cpp:12-3", "4"];
+        assert_eq!(
+            check(&range, (1, 0)).map(|found| found.0),
+            Some("a.cpp:12".to_string())
+        );
+        assert_eq!(check(&range, (1, 0)).map(|found| found.1), Some(1));
+        let column = ["see the code at a.cpp:12:3", "4"];
+        assert_eq!(
+            check(&column, (0, 20)),
+            joined("a.cpp:12:34"),
+        );
+        let after_colon = ["see the code at a.cpp:", "4969）"];
+        for hovered in [(0, 18), (1, 1)] {
+            assert_eq!(
+                check(&after_colon, hovered),
+                Some(("a.cpp:4969".to_string(), 1, 3)),
+                "hovering {hovered:?}"
+            );
+        }
+        let indented = ["see the code at a.cpp:", "    4969,"];
+        assert_eq!(
+            check(&indented, (1, 5)).map(|found| found.0),
+            Some("a.cpp:4969".to_string())
+        );
+
+        // Digits followed by text, or by nothing: what the file says about
+        // the line, not the line.
+        for lines in [
+            ["see the code at a.cpp:", "12个文件"],
+            ["see the code at a.cpp:", "12 files"],
+            ["see the code at a.cpp:", "12"],
+        ] {
+            assert_eq!(
+                check(&lines, (0, 18)).map(|found| found.0),
+                Some("a.cpp".to_string()),
+                "{lines:?}"
+            );
+            assert_ne!(
+                check(&lines, (1, 0)).map(|found| found.0),
+                Some("a.cpp:12".to_string()),
+                "{lines:?}"
+            );
+        }
+        // Not at the right edge: as before.
+        let short = ["see the code at a.cpp:12     ", "3）"];
+        assert_eq!(
+            check(&short, (0, 18)).map(|found| found.0),
+            Some("a.cpp:12".to_string())
         );
         Ok(())
     }
