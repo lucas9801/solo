@@ -1738,7 +1738,7 @@
   //   "zh": Simplified Chinese
   "ui_language": "system",
   // Automatically check for Solo updates. Solo checks its GitHub Releases
-  // (github.com/lucas9801/solo) shortly after startup and then every 6 hours,
+  // (github.com/lucas9801/solo) shortly after startup and then every hour,
   // and asks before installing anything. Stable builds only.
   "auto_update": true,
   // Offline mode. Solo then only connects to this computer and the local

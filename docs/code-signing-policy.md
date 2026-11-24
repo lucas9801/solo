@@ -54,7 +54,7 @@ code at version 2.2.0):
 
 | What | Where | When | How to turn it off |
 |---|---|---|---|
-| Update check | Solo Code from the Microsoft Store asks the Store (Windows' `StoreContext`); other builds (installed with the GitHub installer, or from source) ask `api.github.com` (this repository's releases) | 30 s after start, then every 6 hours | `"auto_update": false` |
+| Update check | Solo Code from the Microsoft Store asks the Store (Windows' `StoreContext`); other builds (installed with the GitHub installer, or from source) ask `api.github.com` (this repository's releases) | 30 s after start, then every hour | `"auto_update": false` |
 | Language servers and Node.js | GitHub releases, the npm registry, `nodejs.org` | When a file of a language is opened whose language server isn't installed yet (and checks for newer versions) | `"enable_language_server": false`, per language `"language_servers"`, or a language server's `binary.path` in `"lsp"` |
 | Extension updates | Zed's extension API (`api.zed.dev`) | Only when extensions are installed | Don't install extensions, or `"auto_update_extensions": { "<id>": false }` |
 | Git avatars | `avatars.githubusercontent.com` / GitHub API | When commit details of a GitHub repository are shown | `"git": { "blame": { "show_avatar": false } }` |
@@ -90,7 +90,7 @@ Solo 是代码编辑器，它的联网大多是用户要求的：用户自己配
 
 | 做什么 | 访问哪里 | 什么时候 | 怎么关 |
 |---|---|---|---|
-| 检查更新 | 从 Microsoft Store 装的 Solo Code 问 Store（Windows 的 `StoreContext`）；其他版本（GitHub 安装程序装的，或从源码构建的）问 `api.github.com`（本仓库的 releases） | 启动 30 秒后，之后每 6 小时 | `"auto_update": false` |
+| 检查更新 | 从 Microsoft Store 装的 Solo Code 问 Store（Windows 的 `StoreContext`）；其他版本（GitHub 安装程序装的，或从源码构建的）问 `api.github.com`（本仓库的 releases） | 启动 30 秒后，之后每小时 | `"auto_update": false` |
 | 语言服务器和 Node.js | GitHub releases、npm 仓库、`nodejs.org` | 打开某种语言的文件而它的语言服务器还没装时（也会检查新版本） | `"enable_language_server": false`、按语言设置 `"language_servers"`，或在 `"lsp"` 里给语言服务器指定 `binary.path` |
 | 扩展更新 | Zed 的扩展 API（`api.zed.dev`） | 只在装了扩展时 | 不装扩展，或设置 `"auto_update_extensions": { "<扩展 id>": false }` |
 | Git 头像 | `avatars.githubusercontent.com` / GitHub API | 显示 GitHub 仓库的提交详情时 | `"git": { "blame": { "show_avatar": false } }` |

@@ -5786,6 +5786,73 @@ mod tests {
         });
     }
 
+    /// SOLO: A comment put back on the pending changes page shows without an
+    /// empty input for a new comment; the input shows once the user comments
+    /// on those lines.
+    #[gpui::test]
+    async fn test_restored_comment_has_no_empty_input(cx: &mut TestAppContext) {
+        let mut test = mirrored(cx, &[("a.txt", &ten_lines(&[]))]).await;
+        test.start_turn();
+        test.write("a.txt", &ten_lines(&[(2, "TWO")])).await;
+        test.end_turn();
+        let review = test.open_review();
+        review.update_in(test.cx, |review, window, cx| {
+            let file = review.files.iter().find(|file| file.path == "a.txt").unwrap();
+            let buffer = file.buffer.read(cx).snapshot();
+            let snapshot = review.multibuffer.read(cx).snapshot(cx);
+            let start = snapshot
+                .anchor_in_excerpt(buffer.anchor_after(Point::new(1, 0)))
+                .unwrap();
+            let end = snapshot
+                .anchor_in_excerpt(buffer.anchor_before(Point::new(1, buffer.line_len(1))))
+                .unwrap();
+            review.editor.update(cx, |editor, cx| {
+                editor.restore_review_comment(start..end, "Why two?".to_string(), window, cx);
+                assert_eq!(editor.diff_review_overlay_count(), 1);
+                assert_eq!(editor.diff_review_input_count(), 0);
+
+                let snapshot = editor.snapshot(window, cx);
+                let multibuffer = editor.buffer().read(cx).snapshot(cx);
+                let row = snapshot
+                    .display_snapshot
+                    .point_to_display_point(start.to_point(&multibuffer), language::Bias::Left)
+                    .row();
+                editor.show_diff_review_overlay(row..row, window, cx);
+                assert_eq!(editor.diff_review_overlay_count(), 1);
+                assert_eq!(editor.diff_review_input_count(), 1);
+            });
+        });
+    }
+
+    /// SOLO: A second comment put back on the same lines makes the overlay
+    /// taller, so it shows.
+    #[gpui::test]
+    async fn test_restoring_two_comments_on_a_line_resizes_the_overlay(cx: &mut TestAppContext) {
+        let mut test = mirrored(cx, &[("a.txt", &ten_lines(&[]))]).await;
+        test.start_turn();
+        test.write("a.txt", &ten_lines(&[(2, "TWO")])).await;
+        test.end_turn();
+        let review = test.open_review();
+        review.update_in(test.cx, |review, window, cx| {
+            let file = review.files.iter().find(|file| file.path == "a.txt").unwrap();
+            let buffer = file.buffer.read(cx).snapshot();
+            let snapshot = review.multibuffer.read(cx).snapshot(cx);
+            let start = snapshot
+                .anchor_in_excerpt(buffer.anchor_after(Point::new(1, 0)))
+                .unwrap();
+            let end = snapshot
+                .anchor_in_excerpt(buffer.anchor_before(Point::new(1, buffer.line_len(1))))
+                .unwrap();
+            review.editor.update(cx, |editor, cx| {
+                editor.restore_review_comment(start..end, "Why two?".to_string(), window, cx);
+                let rows = editor.snapshot(window, cx).max_point().row().0;
+                editor.restore_review_comment(start..end, "And again?".to_string(), window, cx);
+                assert_eq!(editor.diff_review_overlay_count(), 1);
+                assert_eq!(editor.snapshot(window, cx).max_point().row().0, rows + 2);
+            });
+        });
+    }
+
     /// SOLO: A comment from before is found where its code is now, in all of
     /// the file: also when it was further down than the file now goes.
     #[test]

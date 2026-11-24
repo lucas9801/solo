@@ -679,8 +679,12 @@ pub fn asset_str<A: rust_embed::RustEmbed>(path: &str) -> Cow<'static, str> {
 /// and, under corgi, is rejected because artifacts must be checkout-independent
 /// to be shared across worktrees.
 ///
-/// The executable's launch path is tried first, then its canonical form, then
-/// the working directory. In CI, `target/` (or the checkout root) can be a
+/// A test program (its folder is `deps`) starts from the `CARGO_MANIFEST_DIR`
+/// that `cargo test` sets, so a `target/` shared with another checkout doesn't
+/// make the program's own path find that checkout's assets. Any other program
+/// ignores that variable, which a terminal started by `cargo run` hands on to
+/// every program run from it. Then the executable's launch path is tried, then
+/// its canonical form, then the working directory. In CI, `target/` (or the checkout root) can be a
 /// symlink onto another volume, so canonicalizing the executable alone can walk
 /// off the checkout and miss `.git`; the launch path and the test runner's cwd
 /// (a crate dir under the checkout) stay inside it.
@@ -689,7 +693,14 @@ pub fn dev_repo_root() -> Option<&'static std::path::Path> {
     static ROOT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
         let exe = std::env::current_exe().ok();
+        // SOLO: see the doc comment.
+        let manifest_dir = if exe.as_deref().is_some_and(is_test_program) {
+            std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from)
+        } else {
+            None
+        };
         let candidates = [
+            manifest_dir,
             exe.clone(),
             exe.and_then(|exe| exe.canonicalize().ok()),
             std::env::current_dir().ok(),
@@ -704,6 +715,13 @@ pub fn dev_repo_root() -> Option<&'static std::path::Path> {
         })
     })
     .as_deref()
+}
+
+/// Whether `exe` is a test program: cargo builds those into `target/<profile>/deps`.
+fn is_test_program(exe: &std::path::Path) -> bool {
+    exe.parent()
+        .and_then(std::path::Path::file_name)
+        .is_some_and(|name| name == "deps")
 }
 
 /// Re-exports that back [`fs_embed!`] so a caller only needs to depend on `util`,
@@ -1051,6 +1069,16 @@ impl<O> From<anyhow::Result<O>> for ConnectionResult<O> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_only_test_programs_use_the_manifest_dir() {
+        use std::path::Path;
+        assert!(is_test_program(Path::new(
+            "D:/a/target/debug/deps/solo-1f2e.exe"
+        )));
+        assert!(!is_test_program(Path::new("D:/a/target/debug/solo.exe")));
+        assert!(!is_test_program(Path::new("solo.exe")));
+    }
 
     #[test]
     fn test_fs_embed_iter_and_get() {

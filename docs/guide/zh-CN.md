@@ -28,7 +28,7 @@ Solo 是一个以终端为中心的编辑器，基于 [Zed](https://github.com/z
 
 ## 3. 更新
 
-- Solo 启动 30 秒后检查一次有没有新版本，之后每 6 小时检查一次（只有稳定版会检查）：Solo Code 问 Microsoft Store；其他版本（GitHub 安装程序装的、从源码构建的）查 [GitHub Releases](https://github.com/lucas9801/solo/releases)。
+- Solo 启动 30 秒后检查一次有没有新版本，之后每小时检查一次（只有稳定版会检查）：Solo Code 问 Microsoft Store；其他版本（GitHub 安装程序装的、从源码构建的）查 [GitHub Releases](https://github.com/lucas9801/solo/releases)。
 - 有新版本时，标题栏最右边（窗口按钮左侧）出现“↑ 更新到 <版本>”按钮，不弹通知。点开是一句更新概要和“更新并重启”“退出时安装”“查看更新内容”“跳过此版本”；有 agent 在运行时会提示现在更新会结束哪些，并把“退出时安装”放在前面。下载进度、“退出时更新到 <版本>”和“更新失败”（菜单里写原因，可以“重试”）也显示在这个按钮上。跳过的版本不再提示，有更新的版本时按钮再出现。Solo 不会在你没同意的情况下安装任何东西。
 - 从 Microsoft Store 装的 Solo Code 也在 Solo 里更新，用同一个按钮，不打开商店：商店允许时（商店里开着“自动更新应用”、网络不按流量计费）先在后台静默下载；“更新并重启”交给商店安装，装完 Windows 会重新打开 Solo。商店不允许静默安装时，会弹出商店的小确认框。
 - **关于 Solo** 窗口显示版本、发布日期和提交号（点击可复制），是否已是最新，以及“检查更新”按钮；还有用户指南、本版本发行说明、GitHub 仓库和许可的链接。“复制”按钮复制版本、提交号和系统信息，方便报告问题。
@@ -262,7 +262,7 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 
 | 地址 | 用途 | 怎么关 |
 | --- | --- | --- |
-| Microsoft Store（Solo Code）或 `api.github.com`（其他版本） | 检查 Solo 更新（启动 30 秒后，之后每 6 小时） | `"auto_update": false` |
+| Microsoft Store（Solo Code）或 `api.github.com`（其他版本） | 检查 Solo 更新（启动 30 秒后，之后每小时） | `"auto_update": false` |
 
 **只在你用到某个功能时才访问：**
 

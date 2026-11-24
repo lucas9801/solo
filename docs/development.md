@@ -44,6 +44,10 @@ AppId and updates that Solo in its folder. Releases have no zip.
   ```
 
   `script\package-solo.ps1` builds and places all of them.
+
+  The terminal crate's host tests start `target\debug\solo-terminal-host.exe`
+  and fail without it (`host_pipe()` is `None`): run `cargo build -p
+  solo_terminal_host` before `cargo test -p terminal`.
 - **Disk.** Measured on the maintainer's machine (2026-11-12, sizes of the
   files under each folder): a `solo-dist` build (what `package-solo.ps1`
   builds) takes 14.3 GB in `target\solo-dist`; the Rust toolchain about
@@ -59,7 +63,7 @@ AppId and updates that Solo in its folder. Releases have no zip.
 
 ## Updates and releases
 
-Solo checks for a newer version 30 seconds after it starts and every 6 hours
+Solo checks for a newer version 30 seconds after it starts and every hour
 after that (turn this off with `"auto_update": false`; **Check for Updates**
 in the command palette always checks). The Store package asks the Store,
 which installs the update. Other builds (installed with the GitHub
