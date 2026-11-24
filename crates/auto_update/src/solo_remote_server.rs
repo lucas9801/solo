@@ -524,7 +524,9 @@ mod tests {
             async move { download_under(&guard, &requests, &platform_dir).await }
         });
         while guard.pending().is_empty() {
-            smol::Timer::after(std::time::Duration::from_millis(10)).await;
+            cx.background_executor
+                .timer(std::time::Duration::from_millis(10))
+                .await;
         }
         assert_eq!(guard.pending()[0].id, "remote-server");
         assert_eq!(requests.load(Ordering::SeqCst), 0);
