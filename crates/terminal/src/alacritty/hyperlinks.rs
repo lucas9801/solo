@@ -709,12 +709,18 @@ fn has_extension(text: &str) -> bool {
 }
 
 /// SOLO: whether `text` (a line without its indent) starts with digits and
-/// the first character after them is punctuation: `4969）`, not `12个文件`,
-/// `12 files` or `12` at the end of the line.
+/// the first character after them ends a position: `4969）` or `4969,`, not
+/// `12个文件`, `12 files`, `50% done`, `/etc/hosts` or `--verbose`.
 fn number_then_punctuation(text: impl Iterator<Item = char>) -> bool {
-    let mut text = text.skip_while(char::is_ascii_digit);
-    text.next()
-        .is_some_and(|c| !c.is_alphanumeric() && !c.is_whitespace())
+    let mut text = text.peekable();
+    let mut digits = 0;
+    while text.next_if(char::is_ascii_digit).is_some() {
+        digits += 1;
+    }
+    digits > 0
+        && text
+            .next()
+            .is_some_and(|c| matches!(c, '）' | ')' | ']' | '】' | ',' | '，' | '。' | '.' | ';' | '；' | ':' | '：' | '-'))
 }
 
 /// SOLO: how far from the right edge a line broken by the program in the
@@ -1235,6 +1241,23 @@ mod tests {
                 "{lines:?}"
             );
         }
+        // What follows the colon isn't a number, or the number isn't ended by
+        // punctuation.
+        for lines in [
+            ["see the code at a.cpp:", "/etc/hosts"],
+            ["run the tool as in Usage:", "--verbose"],
+            ["see the file config.yml:", "./run.sh"],
+            ["see the code at a.cpp:", "50% 完成"],
+            ["see the code at a.cpp:", "7>3"],
+            ["see the code at a.cpp:", "5/6 done"],
+        ] {
+            for hovered in [(0, width(lines[0]) - 2), (0, width(lines[0]) - 1)] {
+                assert!(
+                    check(&lines, hovered).is_none_or(|found| found.1 == 0),
+                    "{lines:?} {hovered:?}"
+                );
+            }
+        }
         // Not at the right edge: as before.
         let short = ["see the code at a.cpp:12     ", "3）"];
         assert_eq!(
@@ -1321,8 +1344,17 @@ mod tests {
             check("见 test、2.txt 文件", "见 test、2").map(|found| found.0),
             Some("test、2.txt".to_string())
         );
-        for line in ["see a.rs:3 、:abc here", "see a.rs:3 、 here", "see a.rs:3，:  here"] {
-            assert_eq!(check(line, "see a.rs:3 、"), None, "{line}");
+        for (line, before_hovered) in [
+            ("see a.rs:3 、:abc here", "see a.rs:3 、"),
+            ("see a.rs:3 、 here", "see a.rs:3 "),
+            ("see a.rs:3，:  here", "see a.rs:3，"),
+        ] {
+            // The punctuation alone may be a one-character name, as before;
+            // what it never is, is a position in the file before it.
+            assert!(
+                check(line, before_hovered).is_none_or(|found| !found.0.contains("a.rs")),
+                "{line}"
+            );
         }
         Ok(())
     }
@@ -3235,8 +3267,12 @@ mod path_link_timing {
             "这个函数在对象初始化之前就会被调用，所以那里的全局表还没有建好，调用方需要自己等待（src/core/object_globals.cpp:496".to_string(),
             "9）。".to_string(),
         ];
+        let broken_columns = broken_position[0]
+            .chars()
+            .map(|c| if c.is_ascii() { 1 } else { 2 })
+            .sum();
         vec![
-            ("position broken at the edge, 112 columns", broken_position, 112),
+            ("position broken at the right edge", broken_position, broken_columns),
             ("long Chinese paragraph, 120 columns", vec![chinese.clone()], 120),
             ("long Chinese paragraph, 80 columns", vec![chinese], 80),
             ("table, 120 columns", table, 120),
