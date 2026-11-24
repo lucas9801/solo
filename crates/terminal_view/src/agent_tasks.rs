@@ -855,6 +855,7 @@ impl NewAgentTaskModal {
             .log_err();
         });
         let inventory = AgentInventory::global(cx);
+        inventory.update(cx, |inventory, cx| inventory.look_once(cx));
         // The agents may still be being looked for.
         let find_agents = cx.observe(&inventory, |this, _, cx| {
             if this.run_options.is_none() {

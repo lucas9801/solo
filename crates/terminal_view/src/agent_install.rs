@@ -8,7 +8,7 @@
 //! see.
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     ffi::{OsStr, OsString},
     io::Read as _,
     path::{Path, PathBuf},
@@ -22,7 +22,9 @@ use gpui::{
     App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     Global, Render, SharedString, Task, WeakEntity, Window, actions,
 };
+use settings::Settings as _;
 use task::RevealStrategy;
+use terminal::terminal_settings::TerminalSettings;
 use ui::{ButtonLike, ButtonStyle, TintColor, prelude::*};
 use util::{
     ResultExt as _,
@@ -116,9 +118,9 @@ pub(crate) const CATALOG: [AgentSpec; 11] = [
     AgentSpec {
         name: "Pi",
         command: "pi",
-        install_command: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
+        install_command: r#"powershell -ExecutionPolicy Bypass -c "irm https://pi.dev/install.ps1 | iex""#,
         docs_url: "https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent",
-        needs_npm: true,
+        needs_npm: false,
     },
     AgentSpec {
         name: "oh-my-pi",
@@ -219,25 +221,27 @@ pub(crate) fn path_among(variables: &[(String, String)]) -> Option<OsString> {
         .map(|(_, value)| OsString::from(value))
 }
 
-/// The `PATH` to look in: the registry's current one when `fresh`, the
-/// process's own otherwise. Development builds can pin it with
+/// The `PATH` to look in: the process's own with what the registry adds
+/// (Solo started from Explorer can lack the user's `Path`; an install changes
+/// the registry's). Development builds can pin it with
 /// `SOLO_AGENT_SEARCH_PATH`, so a test never sees (or runs) the agents of the
 /// machine it's on.
-fn search_path(fresh: bool) -> Option<OsString> {
+fn search_path() -> Option<OsString> {
     if let Some(pinned) = std::env::var_os("SOLO_AGENT_SEARCH_PATH") {
         return Some(pinned);
     }
-    if fresh {
-        return path_among(&util::registry_environment::current_fresh_variables());
-    }
-    None
+    path_among(&util::registry_environment::current_fresh_variables())
 }
 
-fn scan_machine(fresh_path: bool) -> Scan {
-    let search_path = search_path(fresh_path);
+fn scan_machine(with_versions: bool) -> Scan {
+    let search_path = search_path();
     scan_with(
         |command| locate(command, search_path.as_deref()),
-        |program| read_version(program, VERSION_TIMEOUT),
+        |program| {
+            with_versions
+                .then(|| read_version(program, VERSION_TIMEOUT))
+                .flatten()
+        },
     )
 }
 
@@ -275,6 +279,21 @@ pub(crate) fn read_version(program: &Path, timeout: Duration) -> Option<String> 
             parse_version(&output)
         }
         Err(_) => {
+            // A `.cmd` agent runs node in a child process of its own: ending
+            // `cmd.exe` alone would leave it running. Only the tree of the
+            // process started here is ended.
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt as _;
+                Command::new("taskkill")
+                    .args(["/T", "/F", "/PID", &child.id().to_string()])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .creation_flags(0x0800_0000)
+                    .status()
+                    .log_err();
+            }
             child.kill().ok();
             child.wait().ok();
             None
@@ -308,12 +327,18 @@ pub(crate) struct AgentInventory {
     /// Whether a look has finished.
     scanned: bool,
     checking: bool,
-    /// Whether the registry's `PATH` has been read: from then on every look
-    /// uses it, so a later look doesn't lose what an install added.
-    fresh_path: bool,
+    /// Asked to look again while a look was running: it runs once more when
+    /// that one ends (an install may have finished meanwhile), asking for
+    /// versions if any asker did.
+    look_again: Option<bool>,
+    /// Takes whether to read the versions too.
     scanner: fn(bool) -> Scan,
     looking: Option<Task<()>>,
 }
+
+struct GlobalAgentInventory(Entity<AgentInventory>);
+
+impl Global for GlobalAgentInventory {}
 
 /// Tests never look up or run real agents.
 fn default_scanner() -> fn(bool) -> Scan {
@@ -324,27 +349,20 @@ fn default_scanner() -> fn(bool) -> Scan {
     }
 }
 
-struct GlobalAgentInventory(Entity<AgentInventory>);
-
-impl Global for GlobalAgentInventory {}
-
 impl AgentInventory {
-    /// The inventory, which starts looking when first asked for.
+    /// The inventory. It looks only when asked to ([`Self::look`]), so a
+    /// remote project never makes Solo look at this machine.
     pub(crate) fn global(cx: &mut App) -> Entity<Self> {
         if let Some(inventory) = cx.try_global::<GlobalAgentInventory>() {
             return inventory.0.clone();
         }
-        let inventory = cx.new(|cx| {
-            let mut inventory = Self {
-                scan: Scan::default(),
-                scanned: false,
-                checking: false,
-                fresh_path: false,
-                scanner: default_scanner(),
-                looking: None,
-            };
-            inventory.look(false, cx);
-            inventory
+        let inventory = cx.new(|_| Self {
+            scan: Scan::default(),
+            scanned: false,
+            checking: false,
+            look_again: None,
+            scanner: default_scanner(),
+            looking: None,
         });
         cx.set_global(GlobalAgentInventory(inventory.clone()));
         inventory
@@ -374,23 +392,45 @@ impl AgentInventory {
         self.checking
     }
 
-    /// Looks again, with the `PATH` the registry has now when `read_registry`
-    /// (an install may have changed it).
-    pub(crate) fn look(&mut self, read_registry: bool, cx: &mut Context<Self>) {
-        self.fresh_path |= read_registry;
+    /// The first look, if none has started.
+    pub(crate) fn look_once(&mut self, cx: &mut Context<Self>) {
+        if !self.scanned && !self.checking {
+            self.look(false, cx);
+        }
+    }
+
+    /// Looks again, reading each agent's version too when `with_versions`
+    /// (the versions are only shown in the install window). A look asked for
+    /// while one runs waits for it and then runs once.
+    pub(crate) fn look(&mut self, with_versions: bool, cx: &mut Context<Self>) {
+        if self.checking {
+            let with_versions = with_versions || self.look_again.unwrap_or(false);
+            self.look_again = Some(with_versions);
+            return;
+        }
         self.checking = true;
         let scanner = self.scanner;
-        let fresh_path = self.fresh_path;
         self.looking = Some(cx.spawn(async move |inventory, cx| {
-            let scan = cx
-                .background_spawn(async move { scanner(fresh_path) })
+            let mut scan = cx
+                .background_spawn(async move { scanner(with_versions) })
                 .await;
             inventory
                 .update(cx, |inventory, cx| {
+                    if !with_versions {
+                        // Versions already read stay.
+                        for agent in &mut scan.installed {
+                            agent.version = inventory
+                                .is_installed(agent.spec)
+                                .and_then(|known| known.version.clone());
+                        }
+                    }
                     inventory.scan = scan;
                     inventory.scanned = true;
                     inventory.checking = false;
                     inventory.looking = None;
+                    if let Some(with_versions) = inventory.look_again.take() {
+                        inventory.look(with_versions, cx);
+                    }
                     cx.notify();
                 })
                 .log_err();
@@ -451,7 +491,12 @@ pub(crate) fn is_local(workspace: &WeakEntity<Workspace>, cx: &App) -> bool {
 }
 
 pub(crate) fn init(cx: &mut App) {
-    cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
+    cx.observe_new(|workspace: &mut Workspace, _window, cx| {
+        // Without a handler, the command palette doesn't list the action:
+        // a remote project's agents aren't on this machine.
+        if !workspace.project().read(cx).is_local() {
+            return;
+        }
         workspace.register_action(|workspace, _: &InstallAgents, window, cx| {
             InstallAgentsModal::toggle(workspace, window, cx);
         });
@@ -481,9 +526,16 @@ pub(crate) fn new_terminal_label(name: &str) -> String {
     }
 }
 
+/// How long to wait for the new terminal's input to show before typing the
+/// command into the shell instead.
+const INPUT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Opens a terminal titled "Install <name>" with the agent's install command
-/// in its input, for the user to run with Enter. Once a command has run
-/// there, the inventory looks again.
+/// in its input (with "Press Enter to run" below it), for the user to run
+/// with Enter. When the terminal has no input (turned off, or a shell
+/// without Solo's integration), the command is typed into the shell instead,
+/// still without Enter. Once a command has run there, the inventory looks
+/// again.
 pub(crate) fn install_in_new_terminal(
     workspace: &Entity<Workspace>,
     spec: &'static AgentSpec,
@@ -501,17 +553,14 @@ pub(crate) fn install_in_new_terminal(
     window
         .spawn(cx, async move |cx| {
             let terminal = terminal.await?;
-            cx.update(|_, cx| {
+            let view = cx.update(|_, cx| {
                 let (Some(workspace), Some(terminal)) = (workspace.upgrade(), terminal.upgrade())
                 else {
-                    return;
+                    return None;
                 };
-                let Some(view) = terminal_views(&workspace, cx)
+                let view = terminal_views(&workspace, cx)
                     .into_iter()
-                    .find(|view| view.read(cx).terminal() == &terminal)
-                else {
-                    return;
-                };
+                    .find(|view| view.read(cx).terminal() == &terminal)?;
                 let title = if is_chinese() {
                     format!("安装 {}", spec.name)
                 } else {
@@ -519,37 +568,60 @@ pub(crate) fn install_in_new_terminal(
                 };
                 view.update(cx, |view, cx| {
                     view.set_custom_title(Some(title), cx);
-                    view.show_install_hint(tr("Press Enter to run", "按 Enter 运行").into(), cx);
-                    view.fill_input_when_ready(spec.install_command.to_string(), cx);
+                    view.queue_install_command(
+                        spec.install_command.to_string(),
+                        tr("Press Enter to run", "按 Enter 运行").into(),
+                        cx,
+                    );
                 });
                 look_again_after_commands(&terminal, view.downgrade(), cx);
-            })
+                Some(view)
+            })?;
+            let Some(view) = view else {
+                return anyhow::Ok(());
+            };
+            if cx.update(|_, cx| TerminalSettings::get_global(cx).input_editor)? {
+                cx.background_executor().timer(INPUT_TIMEOUT).await;
+            }
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    // Still waiting: the input never showed.
+                    if view.take_pending_install().is_none() {
+                        return;
+                    }
+                    view.terminal().update(cx, |terminal, _| {
+                        terminal.write_init_command(spec.install_command.as_bytes().to_vec());
+                    });
+                })
+            })?;
+            anyhow::Ok(())
         })
         .detach_and_log_err(cx);
 }
 
-/// Looks for the agents again, with the registry's `PATH`, whenever a command
-/// that was started in `terminal` finishes.
+/// Looks for the agents again when a command that was started in `terminal`
+/// finishes, once: the subscription ends then.
 fn look_again_after_commands(
     terminal: &Entity<terminal::Terminal>,
     view: WeakEntity<crate::TerminalView>,
     cx: &mut App,
 ) {
     let started = Rc::new(Cell::new(false));
-    cx.subscribe(
-        terminal,
+    let subscription: Rc<RefCell<Option<gpui::Subscription>>> = Rc::default();
+    *subscription.borrow_mut() = Some(cx.subscribe(terminal, {
+        let subscription = subscription.clone();
         move |_, event: &terminal::Event, cx| match event {
             terminal::Event::CommandStarted => {
                 started.set(true);
                 view.update(cx, |view, cx| view.clear_install_hint(cx)).ok();
             }
             terminal::Event::CommandFinished if started.replace(false) => {
-                AgentInventory::global(cx).update(cx, |inventory, cx| inventory.look(true, cx));
+                AgentInventory::global(cx).update(cx, |inventory, cx| inventory.look(false, cx));
+                subscription.borrow_mut().take();
             }
             _ => {}
-        },
-    )
-    .detach();
+        }
+    }));
 }
 
 /// What a row of the window says about an agent.
@@ -585,6 +657,7 @@ impl InstallAgentsModal {
         }
         workspace.toggle_modal(window, cx, move |_, cx| {
             let inventory = AgentInventory::global(cx);
+            inventory.update(cx, |inventory, cx| inventory.look(true, cx));
             Self {
                 workspace: weak_workspace,
                 _observe_inventory: cx.observe(&inventory, |_, _, cx| cx.notify()),
@@ -854,6 +927,45 @@ mod tests {
         assert_eq!(scan, Scan::default());
     }
 
+    // Looks asked for while one runs run once more, not once each; versions
+    // already read stay when a look doesn't read them.
+    #[gpui::test]
+    async fn looks_asked_for_while_one_runs_run_once_more(cx: &mut gpui::TestAppContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn scanner(with_versions: bool) -> Scan {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Scan {
+                installed: vec![InstalledAgent {
+                    spec: &CATALOG[0],
+                    version: with_versions.then(|| "2.4.6".to_string()),
+                }],
+                npm_found: true,
+            }
+        }
+        let inventory = cx.update(AgentInventory::global);
+        inventory.update(cx, |inventory, _| inventory.set_scanner(scanner));
+        inventory.update(cx, |inventory, cx| {
+            inventory.look(false, cx);
+            inventory.look(false, cx);
+            inventory.look(false, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        inventory.read_with(cx, |inventory, _| {
+            assert_eq!(inventory.installed()[0].version, None);
+        });
+
+        inventory.update(cx, |inventory, cx| inventory.look(true, cx));
+        cx.run_until_parked();
+        inventory.update(cx, |inventory, cx| inventory.look(false, cx));
+        cx.run_until_parked();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 4);
+        inventory.read_with(cx, |inventory, _| {
+            assert_eq!(inventory.installed()[0].version.as_deref(), Some("2.4.6"));
+        });
+    }
+
     #[test]
     fn a_row_says_installed_needs_node_or_not_installed() {
         let mut inventory = AgentInventory {
@@ -866,7 +978,7 @@ mod tests {
             },
             scanned: true,
             checking: false,
-            fresh_path: false,
+            look_again: None,
             scanner: |_| Scan::default(),
             looking: None,
         };

@@ -140,9 +140,17 @@ impl TerminalPanel {
                     h_flex()
                         .gap_2()
                         .child(
-                            Icon::new(IconName::Download)
-                                .size(IconSize::Small)
-                                .color(Color::Muted),
+                            div()
+                                .flex_none()
+                                .size(rems_from_px(16_f32))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    Icon::new(IconName::Download)
+                                        .size(IconSize::Small)
+                                        .color(Color::Muted),
+                                ),
                         )
                         .child(
                             Label::new(tr("Install Agents…", "安装 agent…")).size(LabelSize::Small),

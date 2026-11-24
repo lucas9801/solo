@@ -277,9 +277,12 @@ pub struct TerminalView {
     input: Option<Entity<TerminalInput>>,
     /// SOLO: a workflow's command to put in the input once it shows.
     pending_workflow: Option<String>,
-    /// SOLO: a line above the input, such as "Press Enter to run" on an
-    /// install command, until a command starts.
+    /// SOLO: a line below the input, "Press Enter to run", while an install
+    /// command waits in it, until a command starts.
     install_hint: Option<SharedString>,
+    /// SOLO: the hint to show once `pending_workflow`, an install command,
+    /// is in the input.
+    pending_install_hint: Option<SharedString>,
     /// SOLO: saves the contents to show them again after a restart.
     save_contents: Task<()>,
     save_contents_scheduled: bool,
@@ -508,6 +511,7 @@ impl TerminalView {
             input: None,
             pending_workflow: None,
             install_hint: None,
+            pending_install_hint: None,
             save_contents: Task::ready(()),
             save_contents_scheduled: false,
             rendered_since_output: true,
@@ -1596,7 +1600,8 @@ impl TerminalView {
     /// SOLO: whether the terminal uses the terminal host `pipe`: its own, or
     /// the one of the saved terminal it was restored from.
     pub(crate) fn uses_host(&self, pipe: &str, cx: &App) -> bool {
-        self.saved_host.as_deref() == Some(pipe) || self.terminal.read(cx).host_pipe() == Some(pipe)
+        self.saved_host.as_deref() == Some(pipe)
+            || self.terminal.read(cx).host_pipe() == Some(pipe)
     }
 
     /// SOLO: the terminal moves to `workspace`, another tab of the window.
@@ -2126,8 +2131,8 @@ impl Render for TerminalView {
                             )
                             // SOLO: the agent's usage, when it's running.
                             .children(self.render_agent_usage_bar(cx))
-                            .children(self.render_install_hint(cx))
-                            .children(input),
+                            .children(input)
+                            .children(self.render_install_hint(cx)),
                     )
                     .when(content_mode.is_scrollable(), |div| {
                         let colors = cx.theme().colors();
@@ -2159,9 +2164,23 @@ impl Render for TerminalView {
 }
 
 impl TerminalView {
-    pub(crate) fn show_install_hint(&mut self, hint: SharedString, cx: &mut Context<Self>) {
-        self.install_hint = Some(hint);
-        cx.notify();
+    /// Puts an install `command` in the input once it shows, with `hint`
+    /// below it.
+    pub(crate) fn queue_install_command(
+        &mut self,
+        command: String,
+        hint: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_install_hint = Some(hint);
+        self.fill_input_when_ready(command, cx);
+    }
+
+    /// The install command still waiting for the input, taken (with its
+    /// hint) to be typed into the shell instead.
+    pub(crate) fn take_pending_install(&mut self) -> Option<String> {
+        self.pending_install_hint.take()?;
+        self.pending_workflow.take()
     }
 
     pub(crate) fn clear_install_hint(&mut self, cx: &mut Context<Self>) {
@@ -2835,9 +2854,7 @@ impl SerializableItem for TerminalView {
                     workspace_grouping::take_open_terminal(pipe, &workspace, window, cx)
                 })?
             {
-                log::info!(
-                    "the saved terminal {pipe} is open in another tab, moving it to its own"
-                );
+                log::info!("the saved terminal {pipe} is open in another tab, moving it to its own");
                 return Ok(open);
             }
 
