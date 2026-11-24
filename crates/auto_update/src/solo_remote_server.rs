@@ -83,9 +83,11 @@ async fn download_with(
     }
     // Offline mode and "never download" keep SSH working with a remote server
     // already downloaded, but download none; "ask" asks once.
-    let installed = has_downloaded_server(platform_dir).await;
+    // Never as an update of an installed component: the remote server has to
+    // match this version of Solo, so `downloads.check_updates` can't hold it
+    // back.
     guard
-        .request(net_guard::Component::remote_server(), installed, true)
+        .request(net_guard::Component::remote_server(), false, true)
         .await?;
 
     let url = match &version {
@@ -138,22 +140,6 @@ async fn download_with(
         .await
         .with_context(|| format!("couldn't move the remote server to {}", path.display()))?;
     Ok(path)
-}
-
-/// Whether `platform_dir` holds a remote server of some version.
-async fn has_downloaded_server(platform_dir: &Path) -> bool {
-    let platform_dir = platform_dir.to_path_buf();
-    smol::unblock(move || {
-        std::fs::read_dir(platform_dir).is_ok_and(|entries| {
-            entries.flatten().any(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|n| n.ends_with(".gz"))
-            })
-        })
-    })
-    .await
 }
 
 /// SOLO: a download left this long is one that never finished, say because
@@ -470,27 +456,35 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let platform_dir = dir.path().join("linux-x86_64");
         let requests = Arc::new(AtomicUsize::new(0));
-        for blocked in [
-            guard(|policy| policy.offline = true),
-            guard(|policy| policy.mode = net_guard::DownloadMode::Never),
-            guard(|policy| {
-                policy.allowed.insert("remote-server".to_string(), false);
-            }),
+        for (blocked, reason) in [
+            (
+                guard(|policy| policy.offline = true),
+                net_guard::Blocked::Offline,
+            ),
+            (
+                guard(|policy| policy.mode = net_guard::DownloadMode::Never),
+                net_guard::Blocked::Never,
+            ),
+            (
+                guard(|policy| {
+                    policy.allowed.insert("remote-server".to_string(), false);
+                }),
+                net_guard::Blocked::Denied,
+            ),
         ] {
-            let error = download_under(&blocked, &requests, &platform_dir)
-                .await
-                .unwrap_err();
-            assert!(
-                error.downcast_ref::<net_guard::DownloadBlocked>().is_some(),
-                "{error:#}"
-            );
-            std::fs::create_dir_all(&platform_dir).unwrap();
-            std::fs::write(platform_dir.join("2.2.0.gz"), SERVER).unwrap();
-            assert!(
-                download_under(&blocked, &requests, &platform_dir)
+            for older_version_on_disk in [false, true] {
+                if older_version_on_disk {
+                    std::fs::create_dir_all(&platform_dir).unwrap();
+                    std::fs::write(platform_dir.join("2.2.0.gz"), SERVER).unwrap();
+                }
+                let error = download_under(&blocked, &requests, &platform_dir)
                     .await
-                    .is_err()
-            );
+                    .unwrap_err();
+                let blocked_error = error
+                    .downcast_ref::<net_guard::DownloadBlocked>()
+                    .unwrap_or_else(|| panic!("{error:#}"));
+                assert_eq!(blocked_error.reason, reason);
+            }
             std::fs::remove_dir_all(&platform_dir).unwrap();
         }
         assert_eq!(requests.load(Ordering::SeqCst), 0);
@@ -541,5 +535,27 @@ mod tests {
             .unwrap();
         assert_eq!(path, platform_dir.join("2.3.0.gz"));
         assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    /// The remote server must match this Solo, so turning off update checks
+    /// doesn't stop it, and what's allowed in the settings isn't asked again.
+    #[gpui::test]
+    async fn update_checks_dont_hold_it_back_and_allowed_isnt_asked(cx: &mut TestAppContext) {
+        cx.background_executor.allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let platform_dir = dir.path().join("linux-x86_64");
+        std::fs::create_dir_all(&platform_dir).unwrap();
+        std::fs::write(platform_dir.join("2.2.0.gz"), SERVER).unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let guard = guard(|policy| {
+            policy.check_updates = false;
+            policy.allowed.insert("remote-server".to_string(), true);
+        });
+        guard.set_asks_user(true);
+        let path = download_under(&guard, &requests, &platform_dir)
+            .await
+            .unwrap();
+        assert_eq!(path, platform_dir.join("2.3.0.gz"));
+        assert!(guard.pending().is_empty());
     }
 }

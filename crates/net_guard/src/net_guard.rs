@@ -446,6 +446,12 @@ impl Guard {
         .right_future()
     }
 
+    /// Forgets that the user chose "Not now" for `id`, so the next download
+    /// asks again (a retry after a failed connection).
+    pub fn forget_declined(&self, id: &str) {
+        self.state.lock().declined.remove(id);
+    }
+
     /// The components waiting for an answer.
     pub fn pending(&self) -> Vec<Component> {
         self.state
@@ -552,6 +558,11 @@ pub fn request_for_project(
     trusted: bool,
 ) -> impl Future<Output = Result<(), DownloadBlocked>> {
     GUARD.request(component, installed, trusted)
+}
+
+/// See [`Guard::forget_declined`].
+pub fn forget_declined(id: &str) {
+    GUARD.forget_declined(id)
 }
 
 pub fn pending() -> Vec<Component> {

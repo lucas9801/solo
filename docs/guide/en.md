@@ -832,7 +832,7 @@ Remote macOS and Windows hosts aren't supported. Solo's own features are
 written for local projects: in a remote project, expect no command blocks,
 agent status hooks or built-in browser integration in its terminals, terminals
 that don't outlive the window, and agent tasks that say they only work in local
-projects. This hasn't been tested on real hosts yet.
+projects. Opening a localhost link from a remote project says that it opens the port on this computer, not on the remote machine (not for WSL, which forwards its ports to this computer). This hasn't been tested on real hosts yet.
 
 ## 10. Troubleshooting
 

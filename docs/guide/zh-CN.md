@@ -293,7 +293,7 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 
 **离线模式。** 点状态栏右侧的地球图标（或运行 `network: toggle offline mode`，或设置 `"network": { "offline": true }`）。之后 Solo 只连接本机和局域网（`localhost`、私有和链路本地地址、不带点的主机名、`.local`、`.lan`），所以本地模型（Ollama、LM Studio）、局域网里的服务和 SSH 照常可用。离线时什么都不下载，也不查版本：已经下载的语言服务器、Node.js、Prettier、调试适配器照常使用，缺的会提示“离线：未下载 X”。Copilot、云端 AI 服务、ACP agent 注册表、扩展商店和扩展更新、Solo 的自动检查更新和头像都会关闭。远程开发能用已经下载的远程服务端，但不会下载新的。终端里运行的 agent 不受影响。
 
-**远程开发暂时关闭：** SSH、WSL、Docker（开发容器）远程开发要在远端运行一个服务端。Solo 的 release 现在带有自己构建的 Linux 版（x86_64 和 aarch64），但还在测试中，所以这些入口仍然隐藏，触发时会提示暂不可用。在终端里用 `ssh`、`wsl` 照常可以。想试用的话，设置环境变量 `SOLO_REMOTE_DEVELOPMENT=1` 后重新启动 Solo：连接时会从 Solo 的 GitHub release 下载与当前版本对应的远程服务端（`github.com`，按 GitHub 提供的 SHA-256 校验；和其他下载一样遵守离线模式和 `downloads.mode`，默认会先问，除非你在 `downloads.allowed` 里允许了 `remote-server`），上传到远端，从 `~/.solo_server` 运行，数据放在 `~/.local/share/solo`，与 Zed 的分开。不会访问 Zed 的服务器。暂不支持 macOS 和 Windows 远端。Solo 自己的功能是按本地项目写的：在远程项目里，终端预计没有命令块、agent 状态 hooks 和内置浏览器集成，终端不会在关窗口后保留，agent 任务会提示只支持本地项目。这些还没有在真实主机上测过。
+**远程开发暂时关闭：** SSH、WSL、Docker（开发容器）远程开发要在远端运行一个服务端。Solo 的 release 现在带有自己构建的 Linux 版（x86_64 和 aarch64），但还在测试中，所以这些入口仍然隐藏，触发时会提示暂不可用。在终端里用 `ssh`、`wsl` 照常可以。想试用的话，设置环境变量 `SOLO_REMOTE_DEVELOPMENT=1` 后重新启动 Solo：连接时会从 Solo 的 GitHub release 下载与当前版本对应的远程服务端（`github.com`，按 GitHub 提供的 SHA-256 校验；和其他下载一样遵守离线模式和 `downloads.mode`，默认会先问，除非你在 `downloads.allowed` 里允许了 `remote-server`），上传到远端，从 `~/.solo_server` 运行，数据放在 `~/.local/share/solo`，与 Zed 的分开。不会访问 Zed 的服务器。暂不支持 macOS 和 Windows 远端。Solo 自己的功能是按本地项目写的：在远程项目里，终端预计没有命令块、agent 状态 hooks 和内置浏览器集成，终端不会在关窗口后保留，agent 任务会提示只支持本地项目。在远程项目里打开 localhost 链接时会提示打开的是本机的端口、不是远端的（WSL 不提示，因为它的端口会转发到本机）。这些还没有在真实主机上测过。
 
 ## 10. 故障排查
 

@@ -232,6 +232,17 @@ fn asking_allowing_and_remembering() {
         Blocked::NotNow
     );
     assert!(guard.pending().is_empty());
+
+    // A retry asks again.
+    guard.forget_declined("node");
+    assert!(
+        guard
+            .request(Component::node(), false, true)
+            .boxed()
+            .now_or_never()
+            .is_none()
+    );
+    assert_eq!(guard.pending().len(), 1);
 }
 
 #[test]

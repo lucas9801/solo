@@ -110,8 +110,8 @@ pub fn open_url(
     } else {
         LinkTarget::System
     };
-    // SOLO: draft text, awaiting the user's confirmation.
-    if remote_port_notice_needed(&action.url, workspace.project().read(cx).is_remote()) {
+    let project = workspace.project().read(cx);
+    if remote_port_notice_needed(&action.url, project.is_remote(), project.is_via_wsl(cx)) {
         struct RemotePortToast;
         workspace.show_toast(
             Toast::new(
@@ -142,9 +142,11 @@ pub fn open_url(
 }
 
 /// Whether opening `url` from a remote project should say that a localhost
-/// address is this computer's, not the remote machine's.
-fn remote_port_notice_needed(url: &str, project_is_remote: bool) -> bool {
+/// address is this computer's, not the remote machine's. WSL forwards its
+/// ports to this computer, so a WSL project needs no note.
+fn remote_port_notice_needed(url: &str, project_is_remote: bool, via_wsl: bool) -> bool {
     project_is_remote
+        && !via_wsl
         && url::Url::parse(url)
             .ok()
             .is_some_and(|url| matches!(url.scheme(), "http" | "https") && address::is_local(&url))
@@ -193,12 +195,34 @@ mod tests {
 
     #[test]
     fn remote_projects_get_a_note_about_local_ports() {
-        assert!(remote_port_notice_needed("http://localhost:5173/", true));
-        assert!(remote_port_notice_needed("http://127.0.0.1:3000", true));
-        assert!(remote_port_notice_needed("http://[::1]:8080/", true));
-        assert!(!remote_port_notice_needed("http://localhost:5173/", false));
-        assert!(!remote_port_notice_needed("https://example.com/", true));
-        assert!(!remote_port_notice_needed("file:///C:/a.html", true));
-        assert!(!remote_port_notice_needed("not a url", true));
+        assert!(remote_port_notice_needed(
+            "http://localhost:5173/",
+            true,
+            false
+        ));
+        assert!(remote_port_notice_needed(
+            "http://127.0.0.1:3000",
+            true,
+            false
+        ));
+        assert!(remote_port_notice_needed("http://[::1]:8080/", true, false));
+        assert!(!remote_port_notice_needed(
+            "http://localhost:5173/",
+            false,
+            false
+        ));
+        // WSL forwards localhost to this computer.
+        assert!(!remote_port_notice_needed(
+            "http://localhost:5173/",
+            true,
+            true
+        ));
+        assert!(!remote_port_notice_needed(
+            "https://example.com/",
+            true,
+            false
+        ));
+        assert!(!remote_port_notice_needed("file:///C:/a.html", true, false));
+        assert!(!remote_port_notice_needed("not a url", true, false));
     }
 }

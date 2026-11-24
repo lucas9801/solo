@@ -382,6 +382,9 @@ pub async fn open_remote_project(
                     .await;
 
                 if response == Ok(0) {
+                    // SOLO: asks again about the remote server if the user
+                    // chose "Not now", which is why this failed.
+                    net_guard::forget_declined(net_guard::Component::remote_server().id.as_str());
                     continue;
                 }
 
@@ -442,6 +445,9 @@ pub async fn open_remote_project(
                     })?
                     .await;
                 if response == Ok(0) {
+                    // SOLO: asks again about the remote server if the user
+                    // chose "Not now", which is why this failed.
+                    net_guard::forget_declined(net_guard::Component::remote_server().id.as_str());
                     continue;
                 }
 
