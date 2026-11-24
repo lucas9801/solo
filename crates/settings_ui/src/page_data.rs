@@ -506,7 +506,7 @@ fn general_page(cx: &App) -> SettingsPage {
             SettingsPageItem::SectionHeader("Voice Input"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Voice Input",
-                description: "Show a microphone on the input box and turn on the shortcut (ctrl-alt-m). What you say is recognized on this computer and filled in where you were typing; it is never sent for you.",
+                description: "Show a microphone on the input box and turn on the shortcut. What you say is recognized on this computer and filled in where you were typing; it is never sent for you.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("voice_input.enabled"),

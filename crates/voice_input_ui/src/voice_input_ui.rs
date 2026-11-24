@@ -73,10 +73,6 @@ impl Focusable for VoiceCard {
     }
 }
 
-fn megabytes(bytes: u64) -> u64 {
-    bytes / 1_000_000
-}
-
 struct Card {
     icon: IconName,
     icon_color: Color,
@@ -151,7 +147,11 @@ impl Render for VoiceCard {
                     } else {
                         (received as f32 / total as f32).clamp(0.0, 1.0)
                     },
-                    format!("{} / {} MB", megabytes(received), megabytes(total)),
+                    format!(
+                        "{} / {} MB",
+                        voice_input::megabytes(received),
+                        voice_input::megabytes(total)
+                    ),
                 )),
                 buttons: vec![
                     Button::new("voice-cancel-download", tr("Cancel", "取消"))

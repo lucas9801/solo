@@ -961,7 +961,10 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !voice_input::is_enabled(cx) || self.read_only(cx) {
+        // Only code editors; other editors leave the key to what is around
+        // them (the terminal's input box takes it).
+        if !voice_input::is_enabled(cx) || self.read_only(cx) || !self.mode().is_full() {
+            cx.propagate();
             return;
         }
         let origin = cx.entity_id();

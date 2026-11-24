@@ -10432,12 +10432,7 @@ impl Render for Workspace {
                 }
             })
             // SOLO: voice input listens for the shortcut coming up (push to
-            // talk) and for Escape, whatever has the focus.
-            .capture_key_down(|event, window, cx| {
-                if voice_input::handle_key_down(event, window, cx) {
-                    cx.stop_propagation();
-                }
-            })
+            // talk), whatever has the focus.
             .on_key_up(|event, window, cx| voice_input::handle_key_up(event, window, cx))
             .child(
                 div()

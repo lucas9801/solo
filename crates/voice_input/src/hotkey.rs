@@ -61,7 +61,9 @@ impl Hotkey {
                 self.state = State::Held(now);
                 Effect::Start
             }
-            (State::Toggled, Event::Press) => {
+            // A second press ends listening, whether the first one was let go
+            // (the shortcut) or there was no key at all (the button).
+            (State::Toggled | State::Held(_), Event::Press) => {
                 self.state = State::Idle;
                 Effect::Stop
             }
@@ -154,14 +156,16 @@ mod tests {
     }
 
     #[test]
-    fn test_a_repeat_press_while_held_does_not_restart() {
+    fn test_a_press_while_held_stops_it() {
+        // Key repeats are filtered out before the state machine; a press that
+        // gets here is a click on the button while the recording is going.
         let start = Instant::now();
         let mut hotkey = Hotkey::default();
         hotkey.handle(Event::Press, start);
         assert_eq!(
             hotkey.handle(Event::Press, start + Duration::from_millis(50)),
-            Effect::None
+            Effect::Stop
         );
-        assert!(hotkey.is_held());
+        assert!(hotkey.is_idle());
     }
 }

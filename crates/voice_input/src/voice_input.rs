@@ -21,11 +21,10 @@ use std::{
 use anyhow::Result;
 use futures::{StreamExt as _, channel::mpsc};
 use gpui::{
-    App, AppContext as _, Context, Entity, EntityId, Global, KeyDownEvent, KeyUpEvent, Task,
-    Window, actions,
+    App, AppContext as _, Context, Entity, EntityId, Global, KeyUpEvent, Task, Window, actions,
 };
 use parking_lot::Mutex;
-use settings::{RegisterSetting, Settings, update_settings_file};
+use settings::{RegisterSetting, Settings, SettingsStore, update_settings_file};
 use util::{ResultExt as _, i18n::tr};
 
 #[cfg(feature = "engine")]
@@ -34,9 +33,12 @@ pub use engine::{LoadRecognizer, Recognizer, missing_loader};
 pub use hotkey::{Effect, Event, HOLD_THRESHOLD, Hotkey};
 pub use models::{
     MODELS, ModelInfo, SENSE_VOICE_SMALL, WHISPER_LARGE_V3_TURBO, WHISPER_TINY, delete_model,
-    download_model, model_by_id, models_directory,
+    download_model, megabytes, model_by_id, models_directory,
 };
-pub use recorder::{Downsampler, InputDevice, RecordError, Recorder, SAMPLE_RATE, input_devices};
+pub use recorder::{
+    Downsampler, InputDevice, MAX_RECORDING, RecordError, Recorder, SAMPLE_RATE,
+    cached_input_devices, input_devices,
+};
 
 actions!(
     voice_input,
@@ -186,6 +188,22 @@ pub fn remember_in_settings() -> RememberDownload {
     })
 }
 
+/// Takes a model's component id out of `downloads.allowed` again, so that
+/// downloading it again is asked about.
+pub fn forget_in_settings() -> RememberDownload {
+    Arc::new(|component_id, cx| {
+        update_settings_file(<dyn fs::Fs>::global(cx), cx, move |content, _| {
+            if let Some(allowed) = content
+                .downloads
+                .as_mut()
+                .and_then(|downloads| downloads.allowed.as_mut())
+            {
+                allowed.remove(&component_id);
+            }
+        });
+    })
+}
+
 pub fn download_rules() -> DownloadRules {
     Arc::new(|model| net_guard::global().decision(&model.component(), false, true))
 }
@@ -215,8 +233,10 @@ pub struct VoiceInput {
     open_capture: OpenCapture,
     download_rules: DownloadRules,
     remember_download: RememberDownload,
+    forget_download: RememberDownload,
     models_directory: PathBuf,
     idle_unload: Duration,
+    max_recording: Duration,
     model_override: Option<&'static ModelInfo>,
     download_task: Option<Task<()>>,
     open_task: Option<Task<()>>,
@@ -236,6 +256,7 @@ pub struct Parts {
     pub open_capture: OpenCapture,
     pub download_rules: DownloadRules,
     pub remember_download: RememberDownload,
+    pub forget_download: RememberDownload,
     pub models_directory: PathBuf,
 }
 
@@ -250,6 +271,7 @@ impl Parts {
             open_capture: open_microphone(),
             download_rules: download_rules(),
             remember_download: remember_in_settings(),
+            forget_download: forget_in_settings(),
             models_directory: models_directory(),
         }
     }
@@ -262,6 +284,25 @@ pub fn init(cx: &mut App) {
 pub fn install(parts: Parts, cx: &mut App) -> Entity<VoiceInput> {
     let voice_input = cx.new(|_| VoiceInput::new(parts));
     cx.set_global(GlobalVoiceInput(voice_input.clone()));
+    // Esc has to win over the key bindings of the focused view (a terminal
+    // sends it to its program), so it is caught before they run.
+    cx.intercept_keystrokes(|event, _, cx| {
+        let keystroke = &event.keystroke;
+        if keystroke.key == "escape" && !keystroke.modifiers.modified() && escape(cx) {
+            cx.stop_propagation();
+        }
+    })
+    .detach();
+    // Turning voice input off ends what it is doing.
+    cx.observe_global::<SettingsStore>({
+        let voice_input = voice_input.clone();
+        move |cx| {
+            if !VoiceInputSettings::get_global(cx).enabled {
+                voice_input.update(cx, |voice_input, cx| voice_input.cancel_if_busy(cx));
+            }
+        }
+    })
+    .detach();
     voice_input
 }
 
@@ -314,17 +355,7 @@ pub fn handle_key_up(event: &KeyUpEvent, _: &mut Window, cx: &mut App) {
     });
 }
 
-/// Escape cancels listening, recognizing and the download. Returns whether it
-/// was used, so the caller can keep it from reaching the focused view.
-pub fn handle_key_down(event: &KeyDownEvent, _: &mut Window, cx: &mut App) -> bool {
-    let keystroke = &event.keystroke;
-    if keystroke.key != "escape" || keystroke.modifiers.modified() {
-        return false;
-    }
-    escape(cx)
-}
-
-/// Esc: cancels what voice input is doing. Returns false, and leaves Esc to
+/// Esc: cancels listening, recognizing and the download. Returns false, and leaves Esc to
 /// whatever has the focus, when it isn't doing anything.
 pub fn escape(cx: &mut App) -> bool {
     let Some(voice_input) = global(cx) else {
@@ -355,8 +386,10 @@ impl VoiceInput {
             open_capture: parts.open_capture,
             download_rules: parts.download_rules,
             remember_download: parts.remember_download,
+            forget_download: parts.forget_download,
             models_directory: parts.models_directory,
             idle_unload: IDLE_UNLOAD,
+            max_recording: MAX_RECORDING,
             model_override: None,
             download_task: None,
             open_task: None,
@@ -490,6 +523,17 @@ impl VoiceInput {
         self.capture.take();
         self.destination = None;
         self.set_phase(Phase::Idle, cx);
+    }
+
+    /// Cancels whatever is going on, if anything is.
+    pub fn cancel_if_busy(&mut self, cx: &mut Context<Self>) {
+        if self.phase != Phase::Idle {
+            self.cancel(cx);
+        }
+    }
+
+    pub fn set_max_recording(&mut self, duration: Duration) {
+        self.max_recording = duration;
     }
 
     /// Closes a message (or the mic permission card).
@@ -670,6 +714,13 @@ impl VoiceInput {
                         if let Some(capture) = &this.capture {
                             this.level = capture.level();
                         }
+                        if let Phase::Listening { since } = this.phase
+                            && since.elapsed() >= this.max_recording
+                        {
+                            // The recording is as long as it gets: recognize it.
+                            this.stop(cx);
+                            return false;
+                        }
                         cx.notify();
                         true
                     })
@@ -724,11 +775,12 @@ impl VoiceInput {
         let task = cx.spawn(async move |this, cx| {
             let result = recognition.await;
             this.update(cx, |this, cx| {
+                // Even a recognition that was cancelled loaded the model.
+                this.last_used = Instant::now();
+                this.schedule_unload(cx);
                 if this.generation != generation {
                     return;
                 }
-                this.last_used = Instant::now();
-                this.schedule_unload(cx);
                 this.hotkey.reset();
                 match result {
                     Ok(text) if !text.trim().is_empty() => {
@@ -798,11 +850,23 @@ impl VoiceInput {
         self.unload_task = Some(task);
     }
 
-    /// Deletes the downloaded model, unloading it first.
+    /// Deletes the downloaded model: whatever is going on is cancelled, the
+    /// model is unloaded, and downloading it again is asked about again. The
+    /// files go in the background.
     pub fn delete_downloaded(&mut self, model: &'static ModelInfo, cx: &mut Context<Self>) {
-        self.engine.lock().take();
-        delete_model(model, &self.models_directory).log_err();
-        cx.notify();
+        self.cancel_if_busy(cx);
+        (self.forget_download.clone())(model.component_id(), cx);
+        let engine = self.engine.clone();
+        let directory = self.models_directory.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_spawn(async move {
+                engine.lock().take();
+                delete_model(model, &directory).log_err();
+            })
+            .await;
+            this.update(cx, |_, cx| cx.notify()).log_err();
+        })
+        .detach();
     }
 }
 
@@ -858,6 +922,7 @@ pub mod test_support {
                 open_capture: Arc::new(|_| Ok(Box::new(Silence))),
                 download_rules: Arc::new(|_| net_guard::Decision::Allow),
                 remember_download: Arc::new(|_, _| {}),
+                forget_download: Arc::new(|_, _| {}),
                 models_directory: directory,
             },
             cx,

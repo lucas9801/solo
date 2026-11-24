@@ -11,7 +11,7 @@ use anyhow::{Context as _, Result, bail};
 use futures::AsyncReadExt as _;
 use http_client::{AsyncBody, HttpClient};
 use sha2::{Digest as _, Sha256};
-use util::i18n::tr;
+use util::{ResultExt as _, i18n::tr};
 
 /// A model Solo can download. The files are the Q8_0 GGUF conversions that
 /// handy-computer publishes for transcribe-cpp 0.4.x, pinned by revision.
@@ -85,9 +85,7 @@ impl ModelInfo {
     }
 
     pub fn size_megabytes(&self) -> u64 {
-        // The sizes in the model lists are in MB of 10^6 bytes, as the
-        // download sources show them.
-        (self.size_bytes + 500_000) / 1_000_000
+        megabytes(self.size_bytes)
     }
 
     pub fn size_text(&self) -> String {
@@ -123,6 +121,12 @@ impl ModelInfo {
     }
 }
 
+/// Bytes as MB of 10^6 bytes, rounded, as the download sources show them.
+/// Every place that shows a size uses this, so they agree.
+pub fn megabytes(bytes: u64) -> u64 {
+    (bytes + 500_000) / 1_000_000
+}
+
 pub fn model_by_id(id: &str) -> Option<&'static ModelInfo> {
     MODELS.iter().copied().find(|model| model.id == id)
 }
@@ -139,6 +143,20 @@ pub fn delete_model(model: &ModelInfo, directory: &Path) -> Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("deleting {}", folder.display())),
+    }
+}
+
+/// Removes a half-written download when it is dropped: after a failure, and
+/// when the download is cancelled by dropping the task.
+struct PartialFile(Option<PathBuf>);
+
+impl Drop for PartialFile {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take()
+            && path.exists()
+        {
+            std::fs::remove_file(&path).log_err();
+        }
     }
 }
 
@@ -168,6 +186,7 @@ pub async fn download_model(
         bail!("downloading {}: HTTP {}", model.label, response.status());
     }
 
+    let mut guard = PartialFile(Some(partial.clone()));
     let mut file = std::fs::File::create(&partial)?;
     let mut hasher = Sha256::new();
     let mut received = 0u64;
@@ -179,9 +198,12 @@ pub async fn download_model(
                 break;
             }
             let chunk = buffer.get(..count).context("short read")?;
+            received += count as u64;
+            if received > model.size_bytes {
+                bail!("{} is bigger than it should be", model.label);
+            }
             hasher.update(chunk);
             file.write_all(chunk)?;
-            received += count as u64;
             progress(received);
         }
         file.flush()?;
@@ -190,19 +212,18 @@ pub async fn download_model(
     .await;
     drop(file);
     if let Err(error) = result {
-        std::fs::remove_file(&partial).ok();
         return Err(error.context(format!("downloading {}", model.label)));
     }
 
     let digest = format!("{:x}", hasher.finalize());
     if received != model.size_bytes || digest != model.sha256 {
-        std::fs::remove_file(&partial).ok();
         bail!(
             "{} did not match its checksum ({received} bytes received)",
             model.label
         );
     }
     std::fs::rename(&partial, &target)?;
+    guard.0 = None;
     Ok(target)
 }
 
@@ -288,6 +309,62 @@ mod tests {
         assert!(!model.is_downloaded(&directory));
         assert!(!model.path(&directory).exists());
         assert!(!model.path(&directory).with_extension("gguf.part").exists());
+    }
+
+    #[test]
+    fn test_a_file_bigger_than_it_should_be_is_refused_at_once() {
+        let directory = tempfile_directory("download-big");
+        let model = test_model(b"short");
+        let result = futures::executor::block_on(download_model(
+            serving(b"much longer than the model"),
+            model,
+            &directory,
+            "https://example.test/model",
+            |_| {},
+        ));
+        assert!(result.is_err());
+        assert!(!model.path(&directory).with_extension("gguf.part").exists());
+    }
+
+    struct Stalls(bool);
+
+    impl futures::AsyncRead for Stalls {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buffer: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if self.0 {
+                return std::task::Poll::Pending;
+            }
+            self.0 = true;
+            buffer[..3].copy_from_slice(b"abc");
+            std::task::Poll::Ready(Ok(3))
+        }
+    }
+
+    #[test]
+    fn test_cancelling_a_download_removes_the_partial_file() {
+        use futures::FutureExt as _;
+
+        let directory = tempfile_directory("download-cancel");
+        let model = test_model(b"the whole model, which never arrives");
+        let client: Arc<dyn HttpClient> = FakeHttpClient::create(|_| async {
+            Ok(http_client::Response::builder()
+                .status(200)
+                .body(AsyncBody::from_reader(Stalls(false)))?)
+        });
+        let download = download_model(
+            client,
+            model,
+            &directory,
+            "https://example.test/model",
+            |_| {},
+        );
+        // Polled until it waits for more bytes, then dropped, as cancelling does.
+        assert!(download.now_or_never().is_none());
+        assert!(!model.path(&directory).with_extension("gguf.part").exists());
+        assert!(!model.is_downloaded(&directory));
     }
 
     #[test]

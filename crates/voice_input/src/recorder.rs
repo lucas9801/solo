@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 pub const SAMPLE_RATE: u32 = 16_000;
 /// The longest recording, so a forgotten shortcut doesn't fill the memory.
 const MAX_SECONDS: usize = 300;
+pub const MAX_RECORDING: Duration = Duration::from_secs(MAX_SECONDS as u64);
 /// The samples between two level readings.
 const LEVEL_WINDOW: usize = 800;
 
@@ -35,6 +36,11 @@ pub struct Downsampler {
     phase: f64,
     bucket_sum: f32,
     bucket_count: u32,
+    /// For input slower than 16 kHz: the last frame, and where the next
+    /// output sample lies after it, in frames.
+    previous: f32,
+    has_previous: bool,
+    position: f64,
 }
 
 impl Downsampler {
@@ -47,6 +53,9 @@ impl Downsampler {
             phase: 0.0,
             bucket_sum: 0.0,
             bucket_count: 0,
+            previous: 0.0,
+            has_previous: false,
+            position: 0.0,
         }
     }
 
@@ -59,6 +68,22 @@ impl Downsampler {
         let mono = self.frame_sum / self.channels as f32;
         self.channel = 0;
         self.frame_sum = 0.0;
+
+        if self.step < 1.0 {
+            // Slower than 16 kHz: interpolate between neighbouring frames.
+            if !self.has_previous {
+                self.previous = mono;
+                self.has_previous = true;
+                return;
+            }
+            while self.position < 1.0 {
+                output.push(self.previous + (mono - self.previous) * self.position as f32);
+                self.position += self.step;
+            }
+            self.position -= 1.0;
+            self.previous = mono;
+            return;
+        }
 
         self.bucket_sum += mono;
         self.bucket_count += 1;
@@ -96,6 +121,25 @@ pub fn input_devices() -> Vec<InputDevice> {
             })
         })
         .collect()
+}
+
+/// How long a list of devices is reused: listing them is slow, and the
+/// settings page draws often.
+const DEVICE_LIST_LIFETIME: Duration = Duration::from_secs(10);
+
+/// `input_devices`, listed again only when the last listing is old.
+pub fn cached_input_devices() -> Vec<InputDevice> {
+    static CACHE: Mutex<Option<(Instant, Vec<InputDevice>)>> = Mutex::new(None);
+
+    let mut cache = CACHE.lock();
+    if let Some((listed, devices)) = cache.as_ref()
+        && listed.elapsed() < DEVICE_LIST_LIFETIME
+    {
+        return devices.clone();
+    }
+    let devices = input_devices();
+    *cache = Some((Instant::now(), devices.clone()));
+    devices
 }
 
 /// A running recording.
@@ -223,6 +267,23 @@ mod tests {
         let output = run(48_000, 2, &input);
         assert_eq!(output.len(), 1600);
         assert!(output.iter().all(|value| (value - 0.3).abs() < 1e-5));
+    }
+
+    #[test]
+    fn test_8k_is_stretched_to_16k() {
+        let output = run(8_000, 1, &vec![0.2; 8_000]);
+        assert!(
+            (output.len() as i64 - 16_000).abs() <= 2,
+            "{}",
+            output.len()
+        );
+        assert!(output.iter().all(|value| (value - 0.2).abs() < 1e-5));
+    }
+
+    #[test]
+    fn test_upsampling_interpolates_between_frames() {
+        let output = run(8_000, 1, &[0.0, 1.0, 0.0]);
+        assert_eq!(output, vec![0.0, 0.5, 1.0, 0.5]);
     }
 
     #[test]

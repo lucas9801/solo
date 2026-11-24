@@ -47,6 +47,7 @@ struct Fixture {
     microphones_opened: Arc<AtomicUsize>,
     models_loaded: Arc<AtomicUsize>,
     requests: Arc<AtomicUsize>,
+    forgotten: Rc<RefCell<Vec<String>>>,
     directory: PathBuf,
     model: &'static ModelInfo,
 }
@@ -107,6 +108,7 @@ fn fixture(options: Options, cx: &mut TestAppContext) -> Fixture {
     let engine_fails = options.engine_fails;
     let microphone_works = options.microphone_works;
     let rules = options.rules;
+    let forgotten: Rc<RefCell<Vec<String>>> = Rc::default();
 
     let parts = Parts {
         load_recognizer: Arc::new({
@@ -132,6 +134,10 @@ fn fixture(options: Options, cx: &mut TestAppContext) -> Fixture {
         }),
         download_rules: Arc::new(move |_| rules),
         remember_download: Arc::new(|_, _| {}),
+        forget_download: Arc::new({
+            let forgotten = forgotten.clone();
+            move |id, _| forgotten.borrow_mut().push(id)
+        }),
         models_directory: directory.clone(),
     };
 
@@ -163,6 +169,7 @@ fn fixture(options: Options, cx: &mut TestAppContext) -> Fixture {
         microphones_opened,
         models_loaded,
         requests,
+        forgotten,
         directory,
         model,
     }
@@ -638,4 +645,111 @@ fn test_the_mic_is_only_open_while_listening(cx: &mut TestAppContext) {
             .read_with(cx, |v, _| v.capture.is_none())
     );
     assert_eq!(fixture.microphones_opened.load(Ordering::Relaxed), 1);
+}
+
+#[gpui::test]
+fn test_clicking_the_button_twice_starts_and_stops(cx: &mut TestAppContext) {
+    // The button has no key: the second click is a press while "held".
+    let fixture = fixture(Options::default(), cx);
+    let start = Instant::now();
+    let destination = fixture.destination();
+    fixture.voice_input.update(cx, |voice_input, cx| {
+        voice_input.press(start, None, || destination, cx)
+    });
+    cx.run_until_parked();
+    assert!(matches!(fixture.phase(cx), Phase::Listening { .. }));
+
+    fixture.voice_input.update(cx, |voice_input, cx| {
+        voice_input.press(start + Duration::from_secs(3), None, || None, cx)
+    });
+    cx.run_until_parked();
+
+    assert_eq!(fixture.phase(cx), Phase::Idle);
+    assert_eq!(fixture.delivered(), vec![SPOKEN.to_string()]);
+}
+
+#[gpui::test]
+fn test_a_cancelled_recognition_still_unloads_the_model(cx: &mut TestAppContext) {
+    let fixture = fixture(Options::default(), cx);
+    let start = Instant::now();
+    fixture.press(start, cx);
+    // Stopped and cancelled before the engine answers: it was loaded anyway.
+    fixture.voice_input.update(cx, |voice_input, cx| {
+        voice_input.key_up(start + Duration::from_secs(2), "m", cx);
+        voice_input.cancel(cx);
+    });
+    cx.run_until_parked();
+    assert!(fixture.delivered().is_empty());
+    assert!(
+        fixture
+            .voice_input
+            .read_with(cx, |v, _| v.is_model_loaded())
+    );
+
+    cx.executor()
+        .advance_clock(IDLE_UNLOAD + Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(
+        !fixture
+            .voice_input
+            .read_with(cx, |v, _| v.is_model_loaded())
+    );
+}
+
+#[gpui::test]
+fn test_deleting_a_model_cancels_forgets_the_answer_and_removes_the_files(cx: &mut TestAppContext) {
+    let fixture = fixture(Options::default(), cx);
+    let start = Instant::now();
+    fixture.press(start, cx);
+    assert!(matches!(fixture.phase(cx), Phase::Listening { .. }));
+
+    let model = fixture.model;
+    fixture.voice_input.update(cx, |voice_input, cx| {
+        voice_input.delete_downloaded(model, cx)
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        fixture.phase(cx),
+        Phase::Idle,
+        "what was going on is cancelled"
+    );
+    assert!(!model.is_downloaded(&fixture.directory));
+    assert!(!model.path(&fixture.directory).exists());
+    assert_eq!(*fixture.forgotten.borrow(), vec![model.component_id()]);
+    assert!(fixture.delivered().is_empty());
+}
+
+#[gpui::test]
+fn test_a_recording_stops_by_itself_when_it_is_as_long_as_allowed(cx: &mut TestAppContext) {
+    let fixture = fixture(Options::default(), cx);
+    fixture.voice_input.update(cx, |voice_input, _| {
+        voice_input.set_max_recording(Duration::ZERO)
+    });
+    let start = Instant::now();
+    fixture.press(start, cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+
+    assert_eq!(fixture.phase(cx), Phase::Idle);
+    assert_eq!(fixture.delivered(), vec![SPOKEN.to_string()]);
+}
+
+#[gpui::test]
+fn test_turning_voice_input_off_ends_the_recording(cx: &mut TestAppContext) {
+    let fixture = fixture(Options::default(), cx);
+    fixture.press(Instant::now(), cx);
+    assert!(matches!(fixture.phase(cx), Phase::Listening { .. }));
+
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |content| {
+                content.voice_input.get_or_insert_default().enabled = Some(false);
+            });
+        });
+    });
+    cx.run_until_parked();
+
+    assert_eq!(fixture.phase(cx), Phase::Idle);
+    assert!(fixture.delivered().is_empty());
 }

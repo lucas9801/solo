@@ -1107,7 +1107,24 @@ impl TerminalInput {
 impl TerminalInput {
     /// SOLO: voice input from the microphone button. The text goes into the
     /// input box, or, while a program runs, into the program.
-    fn toggle_voice_input(&mut self, running: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn voice_shortcut(
+        &mut self,
+        _: &voice_input::ToggleVoiceInput,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if voice_input::is_enabled(cx) {
+            self.toggle_voice_input(false, true, window, cx);
+        }
+    }
+
+    fn toggle_voice_input(
+        &mut self,
+        running: bool,
+        from_shortcut: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let destination = if running {
             crate::terminal_voice_destination(self.terminal.clone())
         } else {
@@ -1126,7 +1143,7 @@ impl TerminalInput {
                 }),
             }
         };
-        voice_input::toggle(None, || Some(destination), cx);
+        voice_input::toggle(from_shortcut.then_some(&*window), || Some(destination), cx);
     }
 
     /// SOLO: what voice input shows at the right of the input row: the
@@ -1153,7 +1170,7 @@ impl TerminalInput {
                     &voice_input::ToggleVoiceInput,
                 ))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.toggle_voice_input(running, window, cx)
+                    this.toggle_voice_input(running, false, window, cx)
                 }))
                 .into_any_element()
         };
@@ -1180,7 +1197,7 @@ impl TerminalInput {
                         "结束并填入你说的话",
                     )))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.toggle_voice_input(running, window, cx)
+                        this.toggle_voice_input(running, false, window, cx)
                     }))
                     .child(div().size(px(7.)).rounded_full().bg(error))
                     .child(
@@ -1211,8 +1228,8 @@ impl TerminalInput {
             .into_any_element(),
             voice_input::Phase::Downloading { received, total } if mine => Label::new(format!(
                 "{} / {} MB",
-                received / 1_000_000,
-                total / 1_000_000
+                voice_input::megabytes(received),
+                voice_input::megabytes(total)
             ))
             .size(LabelSize::XSmall)
             .color(Color::Muted)
@@ -1280,6 +1297,7 @@ impl Render for TerminalInput {
                 "TerminalInput"
             })
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::voice_shortcut))
             .on_action(cx.listener(Self::cancel_generation))
             .on_action(cx.listener(Self::history_previous))
             .on_action(cx.listener(Self::history_next))
@@ -2516,6 +2534,63 @@ mod tests {
             take_input_log(&terminal, cx).concat(),
             format!("\x1b[200~{SPOKEN}\x1b[201~")
         );
+    }
+
+    #[gpui::test]
+    async fn test_escape_cancels_voice_input_before_it_reaches_the_program(
+        cx: &mut TestAppContext,
+    ) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        cx.update(|_, cx| {
+            voice_input::test_support::install_saying(SPOKEN, cx);
+        });
+        write(&terminal, SHELL_PROMPT, cx);
+        write(
+            &terminal,
+            b"claude\r\n\x1b]633;E;claude;test-nonce\x07\x1b]133;C\x07> ",
+            cx,
+        );
+        assert!(!input_focused(&view, cx));
+
+        press_voice_shortcut(cx);
+        assert!(matches!(
+            voice_phase(cx),
+            voice_input::Phase::Listening { .. }
+        ));
+        take_input_log(&terminal, cx);
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+
+        // The recording is cancelled, and the program never saw the Esc.
+        assert_eq!(voice_phase(cx), voice_input::Phase::Idle);
+        assert!(take_input_log(&terminal, cx).is_empty());
+
+        // With nothing to cancel, Esc is the program's again.
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(take_input_log(&terminal, cx).concat(), "\x1b");
+    }
+
+    #[gpui::test]
+    async fn test_the_microphone_button_stops_on_the_second_click(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        cx.update(|_, cx| {
+            voice_input::test_support::install_saying(SPOKEN, cx);
+        });
+        write(&terminal, SHELL_PROMPT, cx);
+        draw(cx);
+        assert!(input_focused(&view, cx));
+
+        let input = input(&view, cx);
+        for _ in 0..2 {
+            input.update_in(cx, |input, window, cx| {
+                input.toggle_voice_input(false, false, window, cx)
+            });
+            cx.run_until_parked();
+        }
+
+        assert_eq!(voice_phase(cx), voice_input::Phase::Idle);
+        assert_eq!(input_text(&view, cx), SPOKEN);
     }
 
     #[gpui::test]

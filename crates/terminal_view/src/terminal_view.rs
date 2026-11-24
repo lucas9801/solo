@@ -3113,11 +3113,27 @@ fn first_project_directory(workspace: &Workspace, cx: &App) -> Option<PathBuf> {
 /// SOLO: voice input into the program running in `terminal`: pasted, as one
 /// line, so that what was said is never run.
 pub(crate) fn terminal_voice_destination(terminal: Entity<Terminal>) -> voice_input::Destination {
+    let origin = terminal.entity_id();
+    let terminal = terminal.downgrade();
     voice_input::Destination {
-        origin: terminal.entity_id(),
+        origin,
         deliver: Box::new(move |text, cx| {
-            let text = text.replace(['\r', '\n'], " ");
-            terminal.update(cx, |terminal, _| terminal.paste(&text));
+            // Line breaks become spaces and no control character gets
+            // through, whatever the engine returned: they would run it.
+            let text = text
+                .chars()
+                .map(|character| {
+                    if character == '\r' || character == '\n' {
+                        ' '
+                    } else {
+                        character
+                    }
+                })
+                .filter(|character| !character.is_control())
+                .collect::<String>();
+            terminal
+                .update(cx, |terminal, _| terminal.paste(&text))
+                .log_err();
         }),
     }
 }
