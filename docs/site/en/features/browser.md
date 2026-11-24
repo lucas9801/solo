@@ -9,6 +9,7 @@ When you build a web page, you check the agent's work in a browser and come back
 ## Opening pages
 
 - `ctrl`-click a web link in a terminal, the Markdown preview or the timeline. Local addresses (localhost, 127.0.0.1 and so on) open in Solo by default and the rest in the system browser; `ctrl-shift`-click opens a link the other way. Settings > Browser > **Open Links In** can send all links to one or the other.
+- **New Web Page** in the **+** menu of the editor's tab bar opens an empty tab in that pane, with the cursor in the address bar.
 - Pages open in a tab of the editor area, next to the terminal, shown by the Microsoft Edge WebView2 runtime that comes with Windows 11.
 - A page that is already open is switched to rather than opened again, and open pages come back after a restart.
 

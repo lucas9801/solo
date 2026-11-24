@@ -172,6 +172,7 @@ A newer version shows an update button at the right of the title bar, with no no
 **Built-in browser**
 
 - Web links in the terminal, Markdown previews and the timeline: local addresses open in Solo by default and the rest in the system browser (`browser.open_links` changes it); `Ctrl+Shift`+click opens a link the other way.
+- **New Web Page** in the editor's **+** menu opens an empty tab with the cursor in the address bar.
 - Toolbar: back and forward, the address bar, desktop/tablet/phone viewports, developer tools, find in page.
 - **Pick**: click page elements to comment on them, numbered on the page; "Send to Agent" pastes them into the agent's prompt (without sending it).
 - **Letting agents use the browser** (`browser.allow_agent_control`, off by default): Claude Code and Codex get Playwright MCP (Node.js needed) to open pages, read them, click and take screenshots in Solo's browser.

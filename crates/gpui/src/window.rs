@@ -1253,6 +1253,8 @@ pub struct Window {
     next_hitbox_id: HitboxId,
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
+    drag_preview_bounds: Option<Bounds<Pixels>>,
+    tooltip_card_bounds: Option<Bounds<Pixels>>,
     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SingleSubscriberSet<AnyWindowFocusListener>,
@@ -2234,6 +2236,8 @@ impl Window {
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
+            drag_preview_bounds: None,
+            tooltip_card_bounds: None,
             dirty_views: FxHashSet::default(),
             focus_listeners: SingleSubscriberSet::new(),
             focus_lost_listeners: SingleSubscriberSet::new(),
@@ -3739,6 +3743,8 @@ impl Window {
     fn draw_roots(&mut self, cx: &mut App) {
         self.invalidator.set_phase(DrawPhase::Prepaint);
         self.tooltip_bounds.take();
+        self.drag_preview_bounds.take();
+        self.tooltip_card_bounds.take();
 
         self.a11y.sync_active_flag();
         if self.a11y.is_active() {
@@ -3800,7 +3806,9 @@ impl Window {
         } else if let Some(active_drag) = cx.active_drag.take() {
             let mut element = active_drag.view.clone().into_any_element();
             let offset = self.mouse_position() - active_drag.cursor_offset;
-            element.prepaint_as_root(offset, AvailableSpace::min_size(), self, cx);
+            let size = element.layout_as_root(AvailableSpace::min_size(), self, cx);
+            self.with_absolute_element_offset(offset, |window| element.prepaint(window, cx));
+            self.drag_preview_bounds = Some(Bounds::new(offset, size));
             active_drag_element = Some(element);
             cx.active_drag = Some(active_drag);
         } else {
@@ -5597,12 +5605,20 @@ impl Window {
         subscription
     }
 
+    /// Called while a tooltip is prepainted by the part of it that is visible, when the
+    /// tooltip's own bounds have transparent padding around it (so it doesn't sit under the
+    /// cursor): [`Window::hitbox_occlusion`] then reports this instead of the whole tooltip.
+    pub fn set_tooltip_card_bounds(&mut self, bounds: Bounds<Pixels>) {
+        self.tooltip_card_bounds = Some(bounds);
+    }
+
     /// Looks up a hitbox in the last rendered frame. Returns `None` when the frame did not
     /// contain it (its element was not drawn). Otherwise returns the hitbox's visible bounds
     /// and the visible bounds of every mouse-blocking hitbox inserted after it that overlaps
     /// them, i.e. what is drawn on top of it such as popovers, menus, modals and
     /// notifications. Hitboxes that let the mouse through (like drop targets laid over a
-    /// whole pane) don't count.
+    /// whole pane) don't count. The tooltip and the preview that follows a dragged item are
+    /// drawn above everything without a hitbox, so their bounds in the last frame count too.
     pub fn hitbox_occlusion(&self, id: HitboxId) -> Option<(Bounds<Pixels>, Vec<Bounds<Pixels>>)> {
         let hitboxes = &self.rendered_frame.hitboxes;
         let index = hitboxes.iter().position(|hitbox| hitbox.id == id)?;
@@ -5613,6 +5629,11 @@ impl Window {
             .iter()
             .filter(|hitbox| hitbox.behavior != HitboxBehavior::Normal)
             .map(|hitbox| hitbox.bounds.intersect(&hitbox.content_mask.bounds))
+            .chain(
+                self.tooltip_card_bounds
+                    .or_else(|| self.tooltip_bounds.as_ref().map(|tooltip| tooltip.bounds)),
+            )
+            .chain(self.drag_preview_bounds)
             .filter(|bounds| bounds.size.width > px(0.) && bounds.size.height > px(0.))
             .filter(|bounds| bounds.intersects(&own))
             .collect();
@@ -8018,7 +8039,7 @@ mod tests {
     use crate::{
         AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, Bounds, ContentMask,
         Context, DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload, ExternalPaths,
-        FileDragPaths, FileDropEvent, FocusHandle, InputEvent as _, InteractiveElement as _,
+        FileDragPaths, FileDropEvent, FocusHandle, HitboxBehavior, InputEvent as _, InteractiveElement as _,
         IntoElement, KeyDownEvent, Keystroke, LongPressEvent, MouseButton, MouseDownEvent,
         MouseMoveEvent, ParentElement, Pixels, PlatformInput, Point, Render, RequestFrameOptions,
         ScaledPixels, StatefulInteractiveElement as _, Styled, TestAppContext, ThermalState,
@@ -8604,6 +8625,220 @@ mod tests {
                 Some(inactive_interval),
             );
         }
+    }
+
+    struct OcclusionProbe {
+        surface: Rc<Cell<Option<crate::HitboxId>>>,
+        padded_tooltip: bool,
+    }
+
+    /// Like the interface's tooltips: a see-through margin around the card.
+    struct PaddedProbeTooltip;
+
+    impl Render for PaddedProbeTooltip {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().pl(px(8.)).pt(px(10.)).child(
+                div().w(px(30.)).h(px(12.)).child(
+                    canvas(
+                        |bounds, window, _| window.set_tooltip_card_bounds(bounds),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0(),
+                ),
+            )
+        }
+    }
+
+    struct ProbePreview;
+
+    impl Render for ProbePreview {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(30.)).h(px(12.)).child("preview")
+        }
+    }
+
+    impl Render for OcclusionProbe {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let surface = self.surface.clone();
+            div()
+                .size_full()
+                .child(
+                    canvas(
+                        move |bounds, window, _| {
+                            surface.set(Some(
+                                window.insert_hitbox(bounds, HitboxBehavior::Normal).id,
+                            ));
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+                .child(
+                    div()
+                        .id("target")
+                        .w(px(50.))
+                        .h(px(50.))
+                        .tooltip({
+                            let padded = self.padded_tooltip;
+                            move |_, cx| {
+                                if padded {
+                                    cx.new(|_| PaddedProbeTooltip).into()
+                                } else {
+                                    cx.new(|_| ProbePreview).into()
+                                }
+                            }
+                        })
+                        .on_drag(0usize, |_, _, _, cx| cx.new(|_| ProbePreview)),
+                )
+        }
+    }
+
+    fn occlusion_holes(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        surface: &Rc<Cell<Option<crate::HitboxId>>>,
+    ) -> Vec<Bounds<Pixels>> {
+        cx.update_window(window, |_, window, cx| {
+            window.draw(cx).clear(cx);
+            let id = surface.get().expect("the surface was drawn");
+            window
+                .hitbox_occlusion(id)
+                .expect("the surface is in the last frame")
+                .1
+        })
+        .unwrap()
+    }
+
+    fn move_mouse(cx: &mut TestAppContext, window: AnyWindowHandle, x: f32, y: f32, pressed: bool) {
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: point(px(x), px(y)),
+                    modifiers: Default::default(),
+                    pressed_button: pressed.then_some(MouseButton::Left),
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+    }
+
+    /// A tooltip is drawn above everything without blocking the mouse, so a
+    /// native child window (the web view) has to be told about it separately.
+    #[test]
+    fn test_hitbox_occlusion_includes_tooltip_while_shown() {
+        let mut cx = TestAppContext::single();
+        let surface = Rc::new(Cell::new(None));
+        let window = cx.add_window({
+            let surface = surface.clone();
+            move |_, _| OcclusionProbe {
+                surface,
+                padded_tooltip: false,
+            }
+        });
+        let handle: AnyWindowHandle = window.into();
+
+        assert!(occlusion_holes(&mut cx, handle, &surface).is_empty());
+
+        move_mouse(&mut cx, handle, 10., 10., false);
+        assert!(occlusion_holes(&mut cx, handle, &surface).is_empty());
+
+        cx.dispatcher.advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        let holes = occlusion_holes(&mut cx, handle, &surface);
+        assert_eq!(
+            holes,
+            [Bounds::new(point(px(11.), px(11.)), size(px(30.), px(12.)))],
+            "the tooltip is a hole in the surface"
+        );
+
+        move_mouse(&mut cx, handle, 300., 300., false);
+        cx.run_until_parked();
+        assert!(
+            occlusion_holes(&mut cx, handle, &surface).is_empty(),
+            "the hole goes away with the tooltip"
+        );
+    }
+
+    #[test]
+    fn test_hitbox_occlusion_reports_the_tooltip_card_not_its_margin() {
+        let mut cx = TestAppContext::single();
+        let surface = Rc::new(Cell::new(None));
+        let window = cx.add_window({
+            let surface = surface.clone();
+            move |_, _| OcclusionProbe {
+                surface,
+                padded_tooltip: true,
+            }
+        });
+        let handle: AnyWindowHandle = window.into();
+        occlusion_holes(&mut cx, handle, &surface);
+
+        move_mouse(&mut cx, handle, 10., 10., false);
+        cx.dispatcher.advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert_eq!(
+            occlusion_holes(&mut cx, handle, &surface),
+            [Bounds::new(point(px(19.), px(21.)), size(px(30.), px(12.)))],
+            "the hole is the card, without the 8px and 10px of margin"
+        );
+    }
+
+    #[test]
+    fn test_hitbox_occlusion_includes_drag_preview_while_dragging() {
+        let mut cx = TestAppContext::single();
+        let surface = Rc::new(Cell::new(None));
+        let window = cx.add_window({
+            let surface = surface.clone();
+            move |_, _| OcclusionProbe {
+                surface,
+                padded_tooltip: false,
+            }
+        });
+        let handle: AnyWindowHandle = window.into();
+        occlusion_holes(&mut cx, handle, &surface);
+
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: point(px(10.), px(10.)),
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+        move_mouse(&mut cx, handle, 100., 100., true);
+        cx.run_until_parked();
+        let holes = occlusion_holes(&mut cx, handle, &surface);
+        assert_eq!(holes.len(), 1, "the drag preview is a hole: {holes:?}");
+        assert_eq!(holes[0].size, size(px(30.), px(12.)));
+
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                crate::MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: point(px(100.), px(100.)),
+                    modifiers: Default::default(),
+                    click_count: 1,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(occlusion_holes(&mut cx, handle, &surface).is_empty());
     }
 
     struct EmptyView;

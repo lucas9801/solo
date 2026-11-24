@@ -51,6 +51,13 @@ windows-core.workspace = true
 windows-registry.workspace = true
 
 [dev-dependencies]
+db = { workspace = true, features = ["test-support"] }
+editor = { workspace = true, features = ["test-support"] }
+fs = { workspace = true, features = ["test-support"] }
+project = { workspace = true, features = ["test-support"] }
+theme.workspace = true
+ui_prompt.workspace = true
+theme_settings.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 settings = { workspace = true, features = ["test-support"] }
 workspace = { workspace = true, features = ["test-support"] }
