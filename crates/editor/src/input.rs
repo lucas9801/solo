@@ -953,6 +953,39 @@ impl Editor {
         self.replace_selections(text, autoindent, window, cx, false);
     }
 
+    /// SOLO: voice input. What is said goes in at the cursor, where it is
+    /// when the recording starts, even if the focus moves meanwhile.
+    pub fn toggle_voice_input(
+        &mut self,
+        _: &voice_input::ToggleVoiceInput,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !voice_input::is_enabled(cx) || self.read_only(cx) {
+            return;
+        }
+        let origin = cx.entity_id();
+        let editor = cx.entity().downgrade();
+        let window_handle = window.window_handle();
+        voice_input::toggle(
+            Some(window),
+            move || {
+                Some(voice_input::Destination {
+                    origin,
+                    deliver: Box::new(move |text, cx| {
+                        window_handle
+                            .update(cx, |_, window, cx| {
+                                editor.update(cx, |editor, cx| editor.insert(text, window, cx))
+                            })
+                            .and_then(|result| result)
+                            .log_err();
+                    }),
+                })
+            },
+            cx,
+        );
+    }
+
     /// Collects linked edits for the current selections, pairing each linked
     /// range with `text`.
     pub fn linked_edits_for_selections(&self, text: Arc<str>, cx: &App) -> LinkedEdits {

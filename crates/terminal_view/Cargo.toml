@@ -60,6 +60,7 @@ time.workspace = true
 time_format.workspace = true
 ui.workspace = true
 util.workspace = true
+voice_input.workspace = true
 warp-command-signatures.workspace = true
 which.workspace = true
 workspace.workspace = true
@@ -70,6 +71,7 @@ windows.workspace = true
 
 [dev-dependencies]
 editor = { workspace = true, features = ["test-support"] }
+voice_input = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
 language = { workspace = true, features = ["test-support"] }
 lsp = { workspace = true, features = ["test-support"] }

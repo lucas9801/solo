@@ -71,6 +71,7 @@ ui.workspace = true
 ui_input.workspace = true
 url.workspace = true
 util.workspace = true
+voice_input.workspace = true
 uuid.workspace = true
 solo_actions.workspace = true
 

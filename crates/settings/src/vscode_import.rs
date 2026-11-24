@@ -212,6 +212,7 @@ impl VsCodeSettings {
             // SOLO: offline mode and asking before downloads aren't imported.
             network: None,
             downloads: None,
+            voice_input: None,
             image_viewer: None,
             browser: None,
             markdown_preview: None,

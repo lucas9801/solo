@@ -1,0 +1,45 @@
+[package]
+name = "voice_input"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/voice_input.rs"
+doctest = false
+
+[features]
+# SOLO: the local recognition engine (transcribe-cpp, built with cmake). The
+# binary turns it on; crates that only show the UI don't build the C++ code.
+engine = ["dep:transcribe-cpp"]
+# Fakes for the tests of the views that use voice input.
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+audio.workspace = true
+collections.workspace = true
+cpal.workspace = true
+fs.workspace = true
+futures.workspace = true
+gpui.workspace = true
+http_client.workspace = true
+log.workspace = true
+net_guard.workspace = true
+parking_lot.workspace = true
+paths.workspace = true
+rodio.workspace = true
+settings.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+util.workspace = true
+transcribe-cpp = { version = "=0.4.2", default-features = false, optional = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+http_client = { workspace = true, features = ["test-support"] }
+settings = { workspace = true, features = ["test-support"] }

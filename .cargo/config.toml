@@ -18,5 +18,12 @@ rustflags = [
 
 [env]
 MACOSX_DEPLOYMENT_TARGET = "12.0"
+# SOLO: transcribe.cpp (voice input) has UTF-8 sources with no BOM; MSVC reads them
+# as the system code page (GBK on a Chinese Windows) and fails to compile.
+CFLAGS = { value = "-utf-8", force = false }
+CXXFLAGS = { value = "-utf-8", force = false }
+# Solo links the C runtime statically (crt-static, below); transcribe.cpp picks the
+# DLL runtime through CMAKE_MSVC_RUNTIME_LIBRARY unless told otherwise, which fails to link.
+TRANSCRIBE_CMAKE_ARGS = { value = "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded", force = false }
 # SOLO: tests assert Solo's English UI text, whatever the system language.
 SOLO_LANGUAGE = { value = "en", force = false }

@@ -1766,6 +1766,19 @@
     // Whether allowed components check for and download their updates.
     "check_updates": true,
   },
+  // Voice input: a microphone button on the input box and a shortcut
+  // (ctrl-alt-m) fill what you say into the input box, the program running
+  // in the terminal, or the editor. Recognition runs on this computer; the
+  // model is downloaded the first time it is used.
+  "voice_input": {
+    "enabled": true,
+    // "sense_voice_small": 253 MB, Chinese, English, Japanese, Korean, Cantonese
+    // "whisper_large_v3_turbo": 886 MB, 99 languages, more accurate, slower
+    // "whisper_tiny": 46 MB, 99 languages, the smallest, least accurate
+    "model": "sense_voice_small",
+    // The id of the microphone, or null for the system default.
+    "microphone": null,
+  },
   // How to render LSP `textDocument/documentColor` colors in the editor.
   //
   // Possible values:

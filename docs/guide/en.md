@@ -499,6 +499,42 @@ typed in an editor at the bottom of the terminal.
   run agents, and sending a command to an AI by mistake costs more than
   typing `#`.
 
+### Voice input
+Press `ctrl-alt-m` (or click the microphone at the right of the input box) and
+say what you want; Solo recognizes it on this computer and fills the text in
+where you were typing. It never presses Enter for you.
+
+- **Tap or hold.** Tap once to start and once to stop, or hold the keys for
+  more than half a second and let go to stop. **Esc** cancels and fills in
+  nothing. While listening, the input shows a red dot, the volume, the time
+  and "Esc to cancel".
+- **Where the text goes.** The bottom input box: at the cursor. A program
+  running in the terminal (an agent): pasted into it, like a paste, so it
+  lands in its input and isn't sent. An editor: at the cursor. If you move
+  the focus meanwhile, the text still goes where you started.
+- **The model** runs on this computer (transcribe.cpp, MIT) and is downloaded
+  the first time, after asking: SenseVoice Small (253 MB, Chinese, English,
+  Japanese, Korean, Cantonese; the default), Whisper large-v3-turbo (886 MB)
+  or Whisper tiny (46 MB), from `huggingface.co`, checked against a pinned
+  SHA-256. It is kept in Solo's data folder (`voice_models`), and Settings >
+  Voice Input can delete it. Offline mode, or downloads set to "never",
+  stop the download. The model leaves memory five minutes after its last use.
+- **Credits.** SenseVoice Small is a model of Alibaba's FunASR project (FunASR
+  Model Open Source License 1.1); Whisper models are OpenAI's (MIT, Apache-2.0);
+  the GGUF files are handy-computer's conversions; the engine is transcribe.cpp
+  (MIT). Solo downloads them from their publisher when you ask and doesn't
+  redistribute them.
+- **Microphone.** The system default, or the one chosen in Settings >
+  Voice Input (`voice_input.microphone`). Without a microphone, or when Windows hasn't let
+  desktop apps use it, Solo says so and opens Windows' microphone settings on
+  request. The sound is only held in memory while you speak; it isn't saved or
+  uploaded, and what was recognized isn't logged.
+- Turn it off with `"voice_input": {"enabled": false}`; choose the model with
+  `voice_input.model` (`sense_voice_small`, `whisper_large_v3_turbo`,
+  `whisper_tiny`). To change the shortcut, click it in Settings > Voice Input and press
+  the new keys (it is written to your keymap), or bind
+  `voice_input::ToggleVoiceInput` there; holding to talk works with any key.
+
 ### Also
 - Closing a terminal or a window while an agent runs asks first
   (`terminal.confirm_close`, `"agents"` by default).
@@ -758,6 +794,7 @@ collaboration and Zed's own auto-update are off or hidden.
   releases, the npm registry, `proxy.golang.org`, PyPI), `nodejs.org` if no
   suitable Node.js is installed, Prettier on a file's first format, debug
   adapters on the first debug session, GitHub Copilot's server;
+- the recognition model of voice input, after asking: `huggingface.co` and its download servers (no sound or text is sent);
 - AI providers you set up yourself (Anthropic, OpenAI, Ollama, ...);
 - avatars in git blame and commit details: `avatars.githubusercontent.com` and
   the GitHub API;

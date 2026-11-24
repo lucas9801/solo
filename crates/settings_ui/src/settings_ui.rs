@@ -567,6 +567,9 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::UiLanguage>(render_dropdown)
         // SOLO: `downloads.mode`.
         .add_basic_renderer::<settings::DownloadMode>(render_dropdown)
+        // SOLO: `voice_input.model`.
+        .add_basic_renderer::<settings::VoiceModel>(render_dropdown)
+        .add_basic_renderer::<settings::MicrophoneId>(render_microphone)
         .add_basic_renderer::<settings::ReduceMotionMode>(render_dropdown)
         .add_basic_renderer::<settings::CurrentLineHighlight>(render_dropdown)
         .add_basic_renderer::<settings::ShowWhitespaceSetting>(render_dropdown)
@@ -1374,7 +1377,10 @@ impl SettingsPageItem {
                         .child(
                             Button::new(
                                 ("action-link".into(), action_link.title.clone()),
-                                action_link.button_text.clone(),
+                                action_link
+                                    .button_text_fn
+                                    .as_ref()
+                                    .map_or_else(|| action_link.button_text.clone(), |text| text(cx)),
                             )
                             .tab_index(0_isize)
                             .end_icon(
@@ -1644,6 +1650,8 @@ struct ActionLink {
     title: SharedString,
     description: Option<SharedString>,
     button_text: SharedString,
+    /// A button text that is worked out each time it is drawn.
+    button_text_fn: Option<Arc<dyn Fn(&App) -> SharedString + Send + Sync>>,
     on_click: Arc<dyn Fn(&mut SettingsWindow, &mut Window, &mut App) + Send + Sync>,
     files: FileMask,
 }
@@ -5246,6 +5254,159 @@ where
     .into_any_element()
 }
 
+/// SOLO: the microphone voice input records from: the system default, or one
+/// of the input devices Windows lists.
+fn render_microphone(
+    field: SettingField<settings::MicrophoneId>,
+    file: SettingsUiFile,
+    _metadata: Option<&SettingsFieldMetadata>,
+    _title: &'static str,
+    _description: &'static str,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    use ui::{ContextMenu, DropdownMenu, DropdownStyle, IconPosition};
+
+    let (_, current) =
+        SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
+    let current = current
+        .map(|microphone| microphone.0.clone())
+        .filter(|id| !id.is_empty());
+    let devices = voice_input::input_devices();
+    let default_label = util::i18n::tr("System default", "系统默认");
+    let label = match &current {
+        None => default_label.to_string(),
+        Some(id) => devices
+            .iter()
+            .find(|device| &device.id == id)
+            .map_or_else(|| id.clone(), |device| device.name.clone()),
+    };
+    let choose = move |id: Option<String>| {
+        let file = file.clone();
+        move |window: &mut Window, cx: &mut App| {
+            let id = id.clone();
+            update_settings_file(
+                file.clone(),
+                field.json_path,
+                window,
+                cx,
+                move |settings, app| {
+                    (field.write)(settings, id.map(settings::MicrophoneId), app);
+                },
+            )
+            .log_err();
+        }
+    };
+    DropdownMenu::new(
+        "voice-microphone",
+        label,
+        ContextMenu::build(window, cx, move |mut menu, _, _| {
+            menu = menu.toggleable_entry(
+                default_label,
+                current.is_none(),
+                IconPosition::End,
+                None,
+                choose(None),
+            );
+            for device in devices {
+                menu = menu.toggleable_entry(
+                    device.name.clone(),
+                    current.as_ref() == Some(&device.id),
+                    IconPosition::End,
+                    None,
+                    choose(Some(device.id)),
+                );
+            }
+            menu
+        }),
+    )
+    .style(DropdownStyle::Outlined)
+    .tab_index(0)
+    .into_any_element()
+}
+
+/// Set while the shortcut of voice input waits for its new keys.
+static RECORDING_VOICE_SHORTCUT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// SOLO: the shortcut of voice input, as its button shows it.
+fn voice_shortcut_text(cx: &App) -> SharedString {
+    if RECORDING_VOICE_SHORTCUT.load(std::sync::atomic::Ordering::Relaxed) {
+        return util::i18n::tr("Press the new keys…", "请按新的快捷键…").into();
+    }
+    let os = cx.platform_info().os;
+    let keymap = cx.key_bindings();
+    let keymap = keymap.borrow();
+    let binding = keymap
+        .bindings_for_action(&voice_input::ToggleVoiceInput)
+        .last();
+    match binding {
+        Some(binding) => binding
+            .keystrokes()
+            .iter()
+            .map(|keystroke| {
+                keystroke
+                    .inner()
+                    .unparse(os)
+                    .split('-')
+                    .map(|part| {
+                        let mut characters = part.chars();
+                        characters
+                            .next()
+                            .map(|first| first.to_uppercase().chain(characters).collect::<String>())
+                            .unwrap_or_default()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("+")
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .into(),
+        None => util::i18n::tr("Not set", "未设置").into(),
+    }
+}
+
+/// SOLO: waits for the next keys and binds them to voice input in the user's
+/// keymap. Esc cancels.
+fn record_voice_shortcut(window: &mut Window, cx: &mut App) {
+    use std::{cell::RefCell, rc::Rc, sync::atomic::Ordering};
+
+    if RECORDING_VOICE_SHORTCUT.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    window.refresh();
+    let window_handle = window.window_handle();
+    let subscription: Rc<RefCell<Option<gpui::Subscription>>> = Rc::default();
+    let interceptor = cx.intercept_keystrokes({
+        let subscription = subscription.clone();
+        move |event, window, cx| {
+            let keystroke = &event.keystroke;
+            let only_modifiers = matches!(
+                keystroke.key.as_str(),
+                "control" | "alt" | "shift" | "platform" | "function"
+            );
+            if only_modifiers {
+                return;
+            }
+            subscription.borrow_mut().take();
+            RECORDING_VOICE_SHORTCUT.store(false, Ordering::Relaxed);
+            if keystroke.key != "escape" || keystroke.modifiers.modified() {
+                keymap_editor::set_keybinding(
+                    &voice_input::ToggleVoiceInput,
+                    keystroke.clone(),
+                    cx,
+                )
+                .detach_and_log_err(cx);
+            }
+            window.refresh();
+            window_handle
+                .update(cx, |_, window, _| window.refresh())
+                .log_err();
+        }
+    });
+    *subscription.borrow_mut() = Some(interceptor);
+}
+
 /// SOLO: the default analysis level as three buttons.
 fn render_analysis_mode(
     field: SettingField<settings::LanguageServerAnalysisMode>,
@@ -7690,6 +7851,7 @@ pub mod test {
             title: SharedString::from(title),
             description: description.map(SharedString::from),
             button_text: SharedString::from("Change"),
+            button_text_fn: None,
             on_click: Arc::new(|_, _, _| {}),
             files: USER,
         })

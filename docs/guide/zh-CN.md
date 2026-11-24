@@ -188,6 +188,16 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 - **会发送什么**：请求本身、shell、系统和当前目录，再加上最近一条失败的命令和它输出的最后一部分（最多 4000 字符；`terminal.ai_command_include_last_failure`），所以 `# 修好刚才的错误` 能用。选中一个命令块按 `ctrl-i`（或右键菜单“带上这个命令块让 AI 生成命令”）也可以把它带上。要发送的命令块以小标签显示在输入框上方，点 × 可以去掉。这些内容会以你的账号发给你自己的 Claude Code 或 Codex，和你直接在里面输入一样。
 - Solo 不自动判断输入的是命令还是自然语言（Warp 的 Agent Mode 会这样做），请求要以 `#` 开头：Solo 的终端主要用来跑 agent，把命令误当成自然语言发给 AI 的代价比多打一个 `#` 大。
 
+### 语音输入
+按 `ctrl-alt-m`（或点输入框右边的麦克风）说话，Solo 在本机识别，把文字填在你正在输入的地方。它不会替你按回车。
+
+- **按一下，或按住说**：按一下开始、再按一下结束；也可以按住超过半秒，松开就结束。**Esc** 取消，什么都不填。听的时候输入框显示红点、音量、时间和“Esc 取消”。
+- **文字去哪**：底部输入框有焦点，插在光标处；终端里在跑程序（比如 agent），像粘贴一样发给它，落在它的输入框里，不会被发送；编辑器里插在光标处。识别时你换了焦点，文字仍然去开始说话时的位置。
+- **模型**在本机运行（transcribe.cpp，MIT），第一次用时先问再下载：SenseVoice Small（253 MB，中、英、日、韩、粤语，默认）、Whisper large-v3-turbo（886 MB）、Whisper tiny（46 MB），来自 `huggingface.co`，下载后按固定的 SHA-256 校验。存在 Solo 的数据目录（`voice_models`），设置 > 语音输入里能删除。离线模式或下载设成“从不”时不会下载。最后一次使用 5 分钟后模型从内存卸载。
+- **来源**：SenseVoice Small 来自阿里巴巴的 FunASR 项目（FunASR 模型开源协议 1.1），Whisper 模型来自 OpenAI（MIT、Apache-2.0），GGUF 文件是 handy-computer 转换的，引擎是 transcribe.cpp（MIT）。Solo 只在你同意后从发布方下载，不转发这些文件。
+- **麦克风**：系统默认，或设置 > 语音输入里选的（`voice_input.microphone`）。没有麦克风、或 Windows 没允许桌面应用使用时，Solo 会说明，并可以打开 Windows 的麦克风设置。声音只在你说话时放在内存里，不存盘、不上传，识别出的文字不写进日志。
+- 用 `"voice_input": {"enabled": false}` 关掉；`voice_input.model` 选模型（`sense_voice_small`、`whisper_large_v3_turbo`、`whisper_tiny`）。要改快捷键，在设置 > 语音输入里点快捷键、按新的键（会写进你的键位文件），或在键位里绑定 `voice_input::ToggleVoiceInput`；按住说话对任何键都适用。
+
 ### 其他
 - 关闭正在运行 agent 的终端或窗口前会先确认（`terminal.confirm_close`，默认 `"agents"`）。
 - 重启后，跑着 agent、但没能保留下来的终端会提示是否继续上次的会话（例如 `claude --continue`）。
@@ -267,6 +277,7 @@ shell 在提示符处等待输入时（需要 shell 集成），命令在终端�
 **只在你用到某个功能时才访问：**
 
 - 下载更新：Microsoft Store（Solo Code），或 GitHub（`github.com` 和它的下载服务器，GitHub 安装版）；
+- 语音输入的识别模型（先问过你）：`huggingface.co` 及其下载服务器，不发送任何声音或文字；
 - Solo 自己下载的组件，先问过你（见下面的“下载前先询问”）：受信任项目的语言服务器（GitHub Releases、npm 源、`proxy.golang.org`、PyPI），系统里没有合适的 Node.js 时访问 `nodejs.org`，文件第一次格式化时装 Prettier，第一次调试时下载调试适配器，GitHub Copilot 的服务端；
 - 你自己配置的 AI 服务（Anthropic、OpenAI、Ollama 等）；
 - git blame 和提交详情里的头像：`avatars.githubusercontent.com`、GitHub API；
