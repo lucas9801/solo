@@ -138,7 +138,10 @@ impl Render for ZedPromptRenderer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = ThemeSettings::get_global(cx);
 
+        // SOLO: the backdrop spans the window, which the web view's cut-outs
+        // leave out; the dialog itself has to block the mouse to be cut out.
         let dialog = v_flex()
+            .occlude()
             .key_context("Prompt")
             .cursor_default()
             .track_focus(&self.focus)

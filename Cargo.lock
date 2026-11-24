@@ -2214,6 +2214,7 @@ dependencies = [
  "theme",
  "theme_settings",
  "ui",
+ "ui_prompt",
  "url",
  "util",
  "webview2-com",

@@ -184,10 +184,7 @@ mod tests {
 
     /// Opens the "+" menu of `pane` the way a click does: the pane focused,
     /// the button's menu shown.
-    fn show_new_menu(
-        pane: &Entity<Pane>,
-        cx: &mut VisualTestContext,
-    ) -> Entity<ui::ContextMenu> {
+    fn show_new_menu(pane: &Entity<Pane>, cx: &mut VisualTestContext) -> Entity<ui::ContextMenu> {
         pane.update_in(cx, |pane, window, cx| {
             window.focus(&pane.focus_handle(cx), cx)
         });
@@ -281,6 +278,73 @@ mod tests {
         assert_eq!(
             util::i18n::chinese("browser: open browser"),
             Some("浏览器: 新建网页")
+        );
+    }
+
+    struct Surface {
+        id: std::rc::Rc<std::cell::Cell<Option<gpui::HitboxId>>>,
+    }
+
+    impl gpui::Render for Surface {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui::{ParentElement as _, Styled as _};
+            let id = self.id.clone();
+            gpui::div().size_full().child(
+                gpui::canvas(
+                    move |bounds, window, _| {
+                        id.set(Some(
+                            window
+                                .insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+                                .id,
+                        ));
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+        }
+    }
+
+    /// The close prompt's backdrop spans the window, which the page's
+    /// cut-outs leave out, so the dialog itself has to be cut out of the page.
+    #[gpui::test]
+    async fn test_prompt_dialog_is_cut_out_of_the_page(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| ui_prompt::init(cx));
+        let id = std::rc::Rc::new(std::cell::Cell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let id = id.clone();
+            move |_, _| Surface { id }
+        });
+        let _answer = cx.update(|window, cx| {
+            window.prompt(
+                gpui::PromptLevel::Warning,
+                "Closing will end 4 programs.",
+                Some("claude (idle), in alpha"),
+                &[
+                    gpui::PromptButton::ok("Close"),
+                    gpui::PromptButton::cancel("Cancel"),
+                ],
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let (viewport, holes) = cx.update(|window, _| {
+            let (_, holes) = window
+                .hitbox_occlusion(id.get().expect("the surface was drawn"))
+                .expect("the surface is in the last frame");
+            (window.viewport_size(), holes)
+        });
+        assert!(
+            holes
+                .iter()
+                .any(|hole| hole.size.width < viewport.width && hole.size.height < viewport.height),
+            "the dialog is a hole smaller than the window: {holes:?}"
         );
     }
 }
