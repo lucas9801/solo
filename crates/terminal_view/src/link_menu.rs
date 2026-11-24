@@ -622,7 +622,18 @@ mod view {
             #[cfg(test)]
             self.performed_link_items.push(item.clone());
             match item {
-                LinkMenuItem::OpenInBrowser(url) => cx.open_url(&url),
+                LinkMenuItem::OpenInBrowser(url) => {
+                    // SOLO: through the same action as a click, so a remote
+                    // project's localhost links get their note too.
+                    window.dispatch_action(
+                        Box::new(solo_actions::browser::OpenUrl {
+                            url,
+                            in_solo: Some(false),
+                            ..Default::default()
+                        }),
+                        cx,
+                    );
+                }
                 LinkMenuItem::OpenInSolo(url) => {
                     window.dispatch_action(
                         Box::new(solo_actions::browser::OpenUrl {

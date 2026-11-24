@@ -29,7 +29,7 @@ pub struct DownloadsSettingsContent {
     pub mode: Option<DownloadMode>,
     /// Components that may (true) or may not (false) be downloaded, by id:
     /// a language server's name ("rust-analyzer", "vtsls"), "node",
-    /// "prettier", "copilot", "extension-updates", or a debug adapter
+    /// "prettier", "copilot", "extension-updates", "remote-server", or a debug adapter
     /// ("codelldb", "js-debug", "delve", "debugpy"). Solo adds the ones you
     /// allow.
     ///

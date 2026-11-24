@@ -44,6 +44,30 @@ pub async fn download(
     arch: &str,
     platform_dir: &Path,
 ) -> Result<PathBuf> {
+    download_with(
+        net_guard::global(),
+        http,
+        current,
+        version,
+        os,
+        arch,
+        platform_dir,
+    )
+    .await
+}
+
+/// [`download`] under the rules of `guard`: nothing is downloaded in offline
+/// mode or with downloads off, and the user is asked first when the settings
+/// say so (a remote server that's already on disk is used without asking).
+async fn download_with(
+    guard: &net_guard::Guard,
+    http: Arc<dyn HttpClient>,
+    current: &Version,
+    version: Option<&Version>,
+    os: &str,
+    arch: &str,
+    platform_dir: &Path,
+) -> Result<PathBuf> {
     let name = asset_name(os, arch)?;
     let version = version.map(|version| {
         let mut version = version.clone();
@@ -57,9 +81,14 @@ pub async fn download(
             return Ok(path);
         }
     }
-    // Offline mode: SSH works with a remote server already downloaded, but
-    // none is downloaded.
-    net_guard::ensure_online(util::i18n::tr("the remote server", "远程服务器"))?;
+    // Offline mode and "never download" keep SSH working with a remote server
+    // already downloaded, but download none; "ask" asks once.
+    // Never as an update of an installed component: the remote server has to
+    // match this version of Solo, so `downloads.check_updates` can't hold it
+    // back.
+    guard
+        .request(net_guard::Component::remote_server(), false, true)
+        .await?;
 
     let url = match &version {
         Some(version) => release_api_url(version),
@@ -392,5 +421,141 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("macOS"), "{error:#}");
+    }
+
+    fn guard(configure: impl FnOnce(&mut net_guard::Policy)) -> net_guard::Guard {
+        let guard = net_guard::Guard::new();
+        let mut policy = net_guard::Policy::default();
+        configure(&mut policy);
+        guard.set_policy(policy);
+        guard
+    }
+
+    async fn download_under(
+        guard: &net_guard::Guard,
+        requests: &Arc<AtomicUsize>,
+        platform_dir: &Path,
+    ) -> Result<PathBuf> {
+        download_with(
+            guard,
+            fake_github(sha256_hex(SERVER), requests.clone()),
+            &version("2.3.0"),
+            Some(&version("2.3.0")),
+            "linux",
+            "x86_64",
+            platform_dir,
+        )
+        .await
+    }
+
+    /// Offline mode and "never download" don't touch the network, even for a
+    /// remote server of an older version that's on disk.
+    #[gpui::test]
+    async fn offline_and_never_dont_download(cx: &mut TestAppContext) {
+        cx.background_executor.allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let platform_dir = dir.path().join("linux-x86_64");
+        let requests = Arc::new(AtomicUsize::new(0));
+        for (blocked, reason) in [
+            (
+                guard(|policy| policy.offline = true),
+                net_guard::Blocked::Offline,
+            ),
+            (
+                guard(|policy| policy.mode = net_guard::DownloadMode::Never),
+                net_guard::Blocked::Never,
+            ),
+            (
+                guard(|policy| {
+                    policy.allowed.insert("remote-server".to_string(), false);
+                }),
+                net_guard::Blocked::Denied,
+            ),
+        ] {
+            for older_version_on_disk in [false, true] {
+                if older_version_on_disk {
+                    std::fs::create_dir_all(&platform_dir).unwrap();
+                    std::fs::write(platform_dir.join("2.2.0.gz"), SERVER).unwrap();
+                }
+                let error = download_under(&blocked, &requests, &platform_dir)
+                    .await
+                    .unwrap_err();
+                let blocked_error = error
+                    .downcast_ref::<net_guard::DownloadBlocked>()
+                    .unwrap_or_else(|| panic!("{error:#}"));
+                assert_eq!(blocked_error.reason, reason);
+            }
+            std::fs::remove_dir_all(&platform_dir).unwrap();
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+
+        // The version that's there is used, offline too.
+        let offline = guard(|policy| policy.offline = true);
+        std::fs::create_dir_all(&platform_dir).unwrap();
+        std::fs::write(platform_dir.join("2.3.0.gz"), SERVER).unwrap();
+        let path = download_under(&offline, &requests, &platform_dir)
+            .await
+            .unwrap();
+        assert_eq!(path, platform_dir.join("2.3.0.gz"));
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+    }
+
+    /// With the default settings ("ask"), the user is asked first, and
+    /// nothing is downloaded until they allow it.
+    #[gpui::test]
+    async fn asks_before_downloading(cx: &mut TestAppContext) {
+        cx.background_executor.allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let platform_dir = dir.path().join("linux-x86_64");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let guard = Arc::new(guard(|_| {}));
+        guard.set_asks_user(true);
+
+        let asked = cx.background_executor.spawn({
+            let guard = guard.clone();
+            let requests = requests.clone();
+            let platform_dir = platform_dir.clone();
+            async move { download_under(&guard, &requests, &platform_dir).await }
+        });
+        while guard.pending().is_empty() {
+            cx.background_executor
+                .timer(std::time::Duration::from_millis(10))
+                .await;
+        }
+        assert_eq!(guard.pending()[0].id, "remote-server");
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        guard.answer(&["remote-server".to_string()], net_guard::Answer::NotNow);
+        assert!(asked.await.is_err());
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+
+        // Allowed: downloaded.
+        guard.answer(&["remote-server".to_string()], net_guard::Answer::Allow);
+        let path = download_under(&guard, &requests, &platform_dir)
+            .await
+            .unwrap();
+        assert_eq!(path, platform_dir.join("2.3.0.gz"));
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    /// The remote server must match this Solo, so turning off update checks
+    /// doesn't stop it, and what's allowed in the settings isn't asked again.
+    #[gpui::test]
+    async fn update_checks_dont_hold_it_back_and_allowed_isnt_asked(cx: &mut TestAppContext) {
+        cx.background_executor.allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let platform_dir = dir.path().join("linux-x86_64");
+        std::fs::create_dir_all(&platform_dir).unwrap();
+        std::fs::write(platform_dir.join("2.2.0.gz"), SERVER).unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let guard = guard(|policy| {
+            policy.check_updates = false;
+            policy.allowed.insert("remote-server".to_string(), true);
+        });
+        guard.set_asks_user(true);
+        let path = download_under(&guard, &requests, &platform_dir)
+            .await
+            .unwrap();
+        assert_eq!(path, platform_dir.join("2.3.0.gz"));
+        assert!(guard.pending().is_empty());
     }
 }
