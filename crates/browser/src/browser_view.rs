@@ -433,6 +433,11 @@ impl BrowserView {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn address_has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.address_editor.focus_handle(cx).is_focused(window)
+    }
+
     pub fn focus_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_address_bar(&FocusAddressBar, window, cx);
     }
@@ -1364,7 +1369,7 @@ impl SerializableItem for BrowserView {
     ) -> Task<anyhow::Result<Entity<Self>>> {
         let db = BrowserDb::global(cx);
         window.spawn(cx, async move |cx| {
-            let url = db.get_url(item_id, workspace_id)?;
+            let url = restored_address(db.get_url(item_id, workspace_id)?);
             cx.update(|window, cx| cx.new(|cx| BrowserView::new(url, workspace, window, cx)))
         })
     }
@@ -1384,5 +1389,26 @@ impl SerializableItem for BrowserView {
 
     fn should_serialize(&self, event: &Self::Event) -> bool {
         matches!(event, BrowserEvent::TitleChanged)
+    }
+}
+
+/// An empty tab is saved with an empty address, and navigating to that fails:
+/// it comes back as an empty tab again.
+fn restored_address(saved: Option<String>) -> Option<String> {
+    saved.filter(|url| !url.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restored_address;
+
+    #[test]
+    fn empty_tabs_are_restored_without_an_address() {
+        assert_eq!(restored_address(Some(String::new())), None);
+        assert_eq!(restored_address(None), None);
+        assert_eq!(
+            restored_address(Some("http://localhost:5173/".into())),
+            Some("http://localhost:5173/".into())
+        );
     }
 }

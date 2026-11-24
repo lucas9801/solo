@@ -269,6 +269,32 @@ mod tests {
                 .expect("the new page is the active tab");
             assert_eq!(view.read(cx).url(), "", "the address bar starts empty");
         });
+        let view = right.read_with(cx, |pane, cx| {
+            pane.active_item()
+                .and_then(|item| item.act_as::<BrowserView>(cx))
+                .expect("the new page is the active tab")
+        });
+        assert!(
+            cx.update(|window, cx| view.read(cx).address_has_focus(window, cx)),
+            "the address bar has the focus"
+        );
+
+        // The menu draws each entry through a label that translates its text;
+        // run with SOLO_LANGUAGE=zh to check what Chinese users see.
+        if util::i18n::is_chinese() {
+            let menu = show_new_menu(&right, cx);
+            let shown: Vec<_> = menu.read_with(cx, |menu, _| {
+                menu.entry_labels()
+                    .into_iter()
+                    .map(|label| {
+                        util::i18n::translate(&label)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| label.to_string())
+                    })
+                    .collect()
+            });
+            assert_eq!(shown, ["新建文件", "新建网页", "打开文件", "搜索项目", "搜索符号"]);
+        }
     }
 
     /// The menu and the command palette name the action alike, in Chinese.
@@ -345,6 +371,79 @@ mod tests {
                 .iter()
                 .any(|hole| hole.size.width < viewport.width && hole.size.height < viewport.height),
             "the dialog is a hole smaller than the window: {holes:?}"
+        );
+    }
+
+    struct TooltipSurface {
+        id: std::rc::Rc<std::cell::Cell<Option<gpui::HitboxId>>>,
+    }
+
+    impl gpui::Render for TooltipSurface {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui::{
+                InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+                Styled as _,
+            };
+            let id = self.id.clone();
+            gpui::div()
+                .size_full()
+                .child(
+                    gpui::canvas(
+                        move |bounds, window, _| {
+                            id.set(Some(
+                                window
+                                    .insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+                                    .id,
+                            ));
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+                .child(
+                    gpui::div()
+                        .id("target")
+                        .w(gpui::px(50.))
+                        .h(gpui::px(50.))
+                        .tooltip(ui::Tooltip::text("Online. Click to go offline.")),
+                )
+        }
+    }
+
+    /// The interface's tooltips have a see-through margin; the page may only
+    /// be cut open where the card is drawn.
+    #[gpui::test]
+    async fn test_tooltip_hole_is_the_card_without_its_margin(cx: &mut TestAppContext) {
+        init_test(cx);
+        let id = std::rc::Rc::new(std::cell::Cell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let id = id.clone();
+            move |_, _| TooltipSurface { id }
+        });
+        cx.run_until_parked();
+        cx.simulate_mouse_move(
+            gpui::point(gpui::px(10.), gpui::px(10.)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        cx.executor().advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        let holes = cx.update(|window, _| {
+            window
+                .hitbox_occlusion(id.get().expect("the surface was drawn"))
+                .expect("the surface is in the last frame")
+                .1
+        });
+        assert_eq!(holes.len(), 1, "the tooltip is shown: {holes:?}");
+        // The tooltip starts 1px from the cursor, with 8px and 10px of margin.
+        assert!(
+            holes[0].origin.x >= gpui::px(19.) && holes[0].origin.y >= gpui::px(21.),
+            "the hole starts at the card: {holes:?}"
         );
     }
 }
