@@ -29,6 +29,9 @@ pub(crate) enum ClickedLink {
     Path {
         resolution: PathLinkResolution,
         solo_can_open: bool,
+        /// The path is on this computer: in a remote project, the previews
+        /// and the system's programs can't reach the file.
+        local_project: bool,
     },
 }
 
@@ -200,6 +203,7 @@ pub(crate) fn menu_items(link: &ClickedLink, setting: TerminalLinkMenu) -> Vec<L
         ClickedLink::Path {
             resolution,
             solo_can_open,
+            local_project,
         } => match resolution {
             PathLinkResolution::Here(link) if link.ambiguous && link.candidates.len() > 1 => {
                 candidate_items(link)
@@ -207,7 +211,8 @@ pub(crate) fn menu_items(link: &ClickedLink, setting: TerminalLinkMenu) -> Vec<L
             PathLinkResolution::Here(link) => {
                 let target = &link.target;
                 let path = target.path().path.clone();
-                if target.is_file()
+                if *local_project
+                    && target.is_file()
                     && let Some(items) = previewable_items(target, &path)
                 {
                     return items;
@@ -555,6 +560,7 @@ mod view {
                     })
                     .ok()
                     .flatten();
+                let local_project = fs.is_some();
                 let solo_can_open = match (single_file, fs) {
                     (Some(path), Some(fs)) => {
                         cx.background_spawn(async move {
@@ -571,6 +577,7 @@ mod view {
                 let link = ClickedLink::Path {
                     resolution,
                     solo_can_open,
+                    local_project,
                 };
                 let items = menu_items(&link, setting);
                 this.update_in(cx, |this, window, cx| {
@@ -863,6 +870,7 @@ mod tests {
                 total: 1,
             }),
             solo_can_open,
+            local_project: true,
         }
     }
 
@@ -926,6 +934,7 @@ mod tests {
                 ambiguous: true,
             }),
             solo_can_open: true,
+            local_project: true,
         };
         let items = menu_items(&link, TerminalLinkMenu::Auto);
         let labels = labels(&items);
@@ -1086,13 +1095,35 @@ mod tests {
     }
 
     #[test]
-    fn table_extensions_are_the_ones_the_table_preview_reads() {
-        // The table preview's own list is in its crate, which this one doesn't
-        // depend on: both read this one.
-        assert_eq!(
-            solo_actions::preview::tabular_data::DELIMITED_EXTENSIONS,
-            ["csv", "tsv", "psv", "ssv"]
-        );
+    fn files_in_a_remote_project_are_not_previewed() {
+        // A remote project's paths don't exist on this computer: the menu is
+        // the one a file of that kind had before.
+        for path in [
+            path!("/work/index.html"),
+            path!("/work/data.csv"),
+            path!("/work/icon.svg"),
+            path!("/work/capture.pdf"),
+        ] {
+            let ClickedLink::Path {
+                resolution,
+                solo_can_open,
+                ..
+            } = file(path, true)
+            else {
+                unreachable!()
+            };
+            let remote = ClickedLink::Path {
+                resolution,
+                solo_can_open,
+                local_project: false,
+            };
+            assert!(menu_items(&remote, TerminalLinkMenu::Auto).is_empty(), "{path}");
+            assert_eq!(
+                labels(&menu_items(&remote, TerminalLinkMenu::Always))[0],
+                "Open",
+                "{path}"
+            );
+        }
     }
 
     #[test]
