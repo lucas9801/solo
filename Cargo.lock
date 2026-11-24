@@ -4704,6 +4704,7 @@ dependencies = [
  "util",
  "uuid",
  "vim_mode_setting",
+ "voice_input",
  "workspace",
  "zlog",
  "ztracing",
@@ -14412,6 +14413,7 @@ dependencies = [
  "http_client",
  "http_proxy",
  "itertools 0.14.0",
+ "keymap_editor",
  "language",
  "language_model",
  "language_models",
@@ -14441,6 +14443,7 @@ dependencies = [
  "ui_input",
  "url",
  "util",
+ "voice_input",
  "workspace",
 ]
 
@@ -14964,6 +14967,8 @@ dependencies = [
  "uuid",
  "vim",
  "vim_mode_setting",
+ "voice_input",
+ "voice_input_ui",
  "watch",
  "web_search",
  "which_key",
@@ -15918,6 +15923,7 @@ dependencies = [
  "ui",
  "url",
  "util",
+ "voice_input",
  "warp-command-signatures",
  "which",
  "windows 0.62.2",
@@ -16613,6 +16619,27 @@ checksum = "2fb391ac70462b3097a755618fbf9c8f95ecc1eb379a414f7b46f202ed10db1f"
 dependencies = [
  "cc",
  "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "transcribe-cpp"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cf6687b4c73890aea4515632afb1586d48998f22f38e02e3cfbcd7d1543cd4a"
+dependencies = [
+ "log",
+ "thiserror 2.0.17",
+ "transcribe-cpp-sys",
+]
+
+[[package]]
+name = "transcribe-cpp-sys"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32f94fb1e9a3033101bbd500d02993cfc95e315f24417038fd42f1fd80e1059a"
+dependencies = [
+ "cmake",
+ "serde_json",
 ]
 
 [[package]]
@@ -17399,6 +17426,42 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "settings",
+]
+
+[[package]]
+name = "voice_input"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "audio",
+ "collections",
+ "cpal",
+ "fs",
+ "futures 0.3.34",
+ "gpui",
+ "http_client",
+ "log",
+ "net_guard",
+ "parking_lot",
+ "paths",
+ "rodio",
+ "settings",
+ "sha2",
+ "thiserror 2.0.17",
+ "transcribe-cpp",
+ "util",
+]
+
+[[package]]
+name = "voice_input_ui"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "theme",
+ "ui",
+ "util",
+ "voice_input",
+ "workspace",
 ]
 
 [[package]]
@@ -19415,6 +19478,7 @@ dependencies = [
  "url",
  "util",
  "uuid",
+ "voice_input",
  "zlog",
 ]
 

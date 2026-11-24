@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use util::ResultExt as _;
 use editor::{
     CompletionProvider, ContextMenuOptions, ContextMenuPlacement, Editor, EditorElement,
     EditorEvent, EditorStyle, HighlightKey, Inlay, MultiBufferOffset,
@@ -1103,6 +1104,142 @@ impl TerminalInput {
     }
 }
 
+impl TerminalInput {
+    /// SOLO: voice input from the microphone button. The text goes into the
+    /// input box, or, while a program runs, into the program.
+    fn voice_shortcut(
+        &mut self,
+        _: &voice_input::ToggleVoiceInput,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if voice_input::is_enabled(cx) {
+            self.toggle_voice_input(false, true, window, cx);
+        }
+    }
+
+    fn toggle_voice_input(
+        &mut self,
+        running: bool,
+        from_shortcut: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let destination = if running {
+            crate::terminal_voice_destination(self.terminal.clone())
+        } else {
+            let origin = self.editor.entity_id();
+            let editor = self.editor.downgrade();
+            let window_handle = window.window_handle();
+            voice_input::Destination {
+                origin,
+                deliver: Box::new(move |text, cx| {
+                    window_handle
+                        .update(cx, |_, window, cx| {
+                            editor.update(cx, |editor, cx| editor.insert(text, window, cx))
+                        })
+                        .and_then(|result| result)
+                        .log_err();
+                }),
+            }
+        };
+        voice_input::toggle(from_shortcut.then_some(&*window), || Some(destination), cx);
+    }
+
+    /// SOLO: what voice input shows at the right of the input row: the
+    /// microphone, or what it is doing when it was started from this input.
+    fn render_voice_input(&self, running: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !voice_input::is_enabled(cx) {
+            return None;
+        }
+        let voice = voice_input::global(cx)?;
+        let (phase, origin, level) = {
+            let voice = voice.read(cx);
+            (voice.phase().clone(), voice.origin(), voice.level())
+        };
+        let mine = origin.is_some_and(|origin| {
+            origin == self.editor.entity_id() || origin == self.terminal.entity_id()
+        });
+        let error = cx.theme().status().error;
+        let microphone = |cx: &mut Context<Self>| {
+            IconButton::new("voice-input", IconName::Mic)
+                .icon_size(IconSize::XSmall)
+                .icon_color(Color::Muted)
+                .tooltip(Tooltip::for_action_title(
+                    util::i18n::tr("Voice input", "语音输入"),
+                    &voice_input::ToggleVoiceInput,
+                ))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.toggle_voice_input(running, false, window, cx)
+                }))
+                .into_any_element()
+        };
+        let element = match phase {
+            voice_input::Phase::Listening { since } if mine => {
+                let seconds = since.elapsed().as_secs();
+                let bars = (0..5).map(|ix| {
+                    // The volume, spread over the bars so they move apart.
+                    let weight = [0.45, 0.8, 1.0, 0.8, 0.45][ix];
+                    let height = 3.0 + (level * 6.0).min(1.0) * 11.0 * weight;
+                    div()
+                        .w(px(2.))
+                        .h(px(height))
+                        .rounded_full()
+                        .bg(error)
+                });
+                h_flex()
+                    .id("voice-listening")
+                    .gap_1p5()
+                    .items_center()
+                    .cursor_pointer()
+                    .tooltip(Tooltip::text(util::i18n::tr(
+                        "Stop and fill in what you said",
+                        "结束并填入你说的话",
+                    )))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_voice_input(running, false, window, cx)
+                    }))
+                    .child(div().size(px(7.)).rounded_full().bg(error))
+                    .child(
+                        h_flex()
+                            .gap(px(2.))
+                            .h(px(14.))
+                            .items_center()
+                            .children(bars),
+                    )
+                    .child(
+                        Label::new(format!("{}:{:02}", seconds / 60, seconds % 60))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Label::new(util::i18n::tr("Esc to cancel", "Esc 取消"))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    )
+                    .into_any_element()
+            }
+            voice_input::Phase::Recognizing if mine => Label::new(util::i18n::tr(
+                "Recognizing…",
+                "正在识别…",
+            ))
+            .size(LabelSize::XSmall)
+            .color(Color::Muted)
+            .into_any_element(),
+            voice_input::Phase::Downloading { received, total } if mine => Label::new(format!(
+                "{} / {} MB",
+                voice_input::megabytes(received),
+                voice_input::megabytes(total)
+            ))
+            .size(LabelSize::XSmall)
+            .color(Color::Muted)
+            .into_any_element(),
+            _ => microphone(cx),
+        };
+        Some(element)
+    }
+}
+
 impl Focusable for TerminalInput {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.editor.focus_handle(cx)
@@ -1138,6 +1275,7 @@ impl Render for TerminalInput {
             .as_ref()
             .and_then(|(_, branch)| branch.clone());
 
+        let voice_element = self.render_voice_input(running, cx);
         let colors = cx.theme().colors();
         let settings = ThemeSettings::get_global(cx);
         let line_height = settings.buffer_font_size(cx) * settings.buffer_line_height.value();
@@ -1159,6 +1297,7 @@ impl Render for TerminalInput {
                 "TerminalInput"
             })
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::voice_shortcut))
             .on_action(cx.listener(Self::cancel_generation))
             .on_action(cx.listener(Self::history_previous))
             .on_action(cx.listener(Self::history_next))
@@ -1405,7 +1544,8 @@ impl Render for TerminalInput {
                         } else {
                             this.child(EditorElement::new(&self.editor, self.editor_style(cx)))
                         }
-                    })),
+                    }))
+                    .children(voice_element),
             )
     }
 }
@@ -2308,6 +2448,162 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(input_text(&view, cx), "ls");
         assert!(take_input_log(&terminal, cx).is_empty());
+    }
+
+    const SPOKEN: &str = "让 reparent() 拒绝把节点挂到它自己的子孙下面";
+
+    /// The shortcut as the keyboard sends it: down, then up before the next press.
+    fn press_voice_shortcut(cx: &mut VisualTestContext) {
+        cx.simulate_keystrokes("ctrl-alt-m");
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            if let Some(voice_input) = voice_input::global(cx) {
+                voice_input.update(cx, |voice_input, cx| {
+                    voice_input.key_up(Instant::now(), "m", cx)
+                });
+            }
+        });
+        cx.run_until_parked();
+    }
+
+    fn voice_phase(cx: &mut VisualTestContext) -> voice_input::Phase {
+        cx.update(|_, cx| {
+            voice_input::global(cx)
+                .map(|voice_input| voice_input.read(cx).phase().clone())
+                .unwrap_or(voice_input::Phase::Idle)
+        })
+    }
+
+    #[gpui::test]
+    async fn test_voice_input_fills_the_input_at_the_cursor(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        cx.update(|_, cx| {
+            voice_input::test_support::install_saying(SPOKEN, cx);
+        });
+        write(&terminal, SHELL_PROMPT, cx);
+        assert!(input_focused(&view, cx));
+        cx.simulate_input("echo ");
+        draw(cx);
+        take_input_log(&terminal, cx);
+
+        press_voice_shortcut(cx);
+        assert!(
+            matches!(voice_phase(cx), voice_input::Phase::Listening { .. }),
+            "{:?}",
+            voice_phase(cx)
+        );
+        // The focus moves to the terminal meanwhile; the text still goes to
+        // the input, where the recording started.
+        cx.update(|window, cx| {
+            let focus_handle = view.read(cx).focus_handle.clone();
+            window.focus(&focus_handle, cx);
+        });
+        press_voice_shortcut(cx);
+
+        assert_eq!(voice_phase(cx), voice_input::Phase::Idle);
+        assert_eq!(input_text(&view, cx), format!("echo {SPOKEN}"));
+        // Nothing was sent: no Enter, no bytes to the shell.
+        assert!(take_input_log(&terminal, cx).is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_voice_input_pastes_into_a_running_program(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        cx.update(|_, cx| {
+            voice_input::test_support::install_saying(SPOKEN, cx);
+        });
+        write(&terminal, SHELL_PROMPT, cx);
+        write(
+            &terminal,
+            b"claude\r\n\x1b]633;E;claude;test-nonce\x07\x1b]133;C\x07\x1b[?2004h> ",
+            cx,
+        );
+        assert!(!input_focused(&view, cx));
+        take_input_log(&terminal, cx);
+
+        press_voice_shortcut(cx);
+        assert!(
+            matches!(voice_phase(cx), voice_input::Phase::Listening { .. }),
+            "{:?}",
+            voice_phase(cx)
+        );
+        press_voice_shortcut(cx);
+
+        assert_eq!(voice_phase(cx), voice_input::Phase::Idle);
+        // A bracketed paste, and no Enter after it.
+        assert_eq!(
+            take_input_log(&terminal, cx).concat(),
+            format!("\x1b[200~{SPOKEN}\x1b[201~")
+        );
+    }
+
+    #[gpui::test]
+    async fn test_escape_cancels_voice_input_before_it_reaches_the_program(
+        cx: &mut TestAppContext,
+    ) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        cx.update(|_, cx| {
+            voice_input::test_support::install_saying(SPOKEN, cx);
+        });
+        write(&terminal, SHELL_PROMPT, cx);
+        write(
+            &terminal,
+            b"claude\r\n\x1b]633;E;claude;test-nonce\x07\x1b]133;C\x07> ",
+            cx,
+        );
+        assert!(!input_focused(&view, cx));
+
+        press_voice_shortcut(cx);
+        assert!(matches!(
+            voice_phase(cx),
+            voice_input::Phase::Listening { .. }
+        ));
+        take_input_log(&terminal, cx);
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+
+        // The recording is cancelled, and the program never saw the Esc.
+        assert_eq!(voice_phase(cx), voice_input::Phase::Idle);
+        assert!(take_input_log(&terminal, cx).is_empty());
+
+        // With nothing to cancel, Esc is the program's again.
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(take_input_log(&terminal, cx).concat(), "\x1b");
+    }
+
+    #[gpui::test]
+    async fn test_the_microphone_button_stops_on_the_second_click(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        cx.update(|_, cx| {
+            voice_input::test_support::install_saying(SPOKEN, cx);
+        });
+        write(&terminal, SHELL_PROMPT, cx);
+        draw(cx);
+        assert!(input_focused(&view, cx));
+
+        let input = input(&view, cx);
+        for _ in 0..2 {
+            input.update_in(cx, |input, window, cx| {
+                input.toggle_voice_input(false, false, window, cx)
+            });
+            cx.run_until_parked();
+        }
+
+        assert_eq!(voice_phase(cx), voice_input::Phase::Idle);
+        assert_eq!(input_text(&view, cx), SPOKEN);
+    }
+
+    #[gpui::test]
+    async fn test_the_microphone_button_shows_by_default(cx: &mut TestAppContext) {
+        let (terminal, view, cx) = terminal_with_view(cx).await;
+        cx.update(|_, cx| {
+            voice_input::test_support::install_saying(SPOKEN, cx);
+        });
+        write(&terminal, SHELL_PROMPT, cx);
+        draw(cx);
+        assert!(cx.update(|_, cx| voice_input::is_enabled(cx)));
+        assert!(input_focused(&view, cx));
     }
 
     #[gpui::test]

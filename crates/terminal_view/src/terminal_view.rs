@@ -1418,6 +1418,27 @@ impl TerminalView {
         self.paste(&Paste, window, cx);
     }
 
+    /// SOLO: voice input with the terminal focused (a program is running):
+    /// the text is pasted into the program, as if it were pasted, and never
+    /// followed by Enter.
+    fn toggle_voice_input(
+        &mut self,
+        _: &voice_input::ToggleVoiceInput,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.read_only || !voice_input::is_enabled(cx) {
+            return;
+        }
+        let destination = self.voice_destination();
+        voice_input::toggle(Some(window), || Some(destination), cx);
+    }
+
+    /// Where voice input goes while a program runs in this terminal.
+    pub(crate) fn voice_destination(&self) -> voice_input::Destination {
+        terminal_voice_destination(self.terminal.clone())
+    }
+
     ///Attempt to paste the clipboard text into the terminal
     fn paste_text(&mut self, _: &PasteText, _: &mut Window, cx: &mut Context<Self>) {
         if self.read_only {
@@ -2030,6 +2051,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::paste))
             .on_action(cx.listener(TerminalView::editor_paste))
             .on_action(cx.listener(TerminalView::paste_text))
+            .on_action(cx.listener(TerminalView::toggle_voice_input))
             .on_action(cx.listener(TerminalView::clear))
             .on_action(cx.listener(TerminalView::explain_agent_status))
             .on_action(cx.listener(TerminalView::scroll_line_up))
@@ -3138,6 +3160,34 @@ fn first_project_directory(workspace: &Workspace, cx: &App) -> Option<PathBuf> {
     } else {
         // If worktree is a file, return its parent directory
         worktree_path.parent().map(|p| p.to_path_buf())
+    }
+}
+
+/// SOLO: voice input into the program running in `terminal`: pasted, as one
+/// line, so that what was said is never run.
+pub(crate) fn terminal_voice_destination(terminal: Entity<Terminal>) -> voice_input::Destination {
+    let origin = terminal.entity_id();
+    let terminal = terminal.downgrade();
+    voice_input::Destination {
+        origin,
+        deliver: Box::new(move |text, cx| {
+            // Line breaks become spaces and no control character gets
+            // through, whatever the engine returned: they would run it.
+            let text = text
+                .chars()
+                .map(|character| {
+                    if character == '\r' || character == '\n' {
+                        ' '
+                    } else {
+                        character
+                    }
+                })
+                .filter(|character| !character.is_control())
+                .collect::<String>();
+            terminal
+                .update(cx, |terminal, _| terminal.paste(&text))
+                .log_err();
+        }),
     }
 }
 

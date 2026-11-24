@@ -234,6 +234,8 @@ members = [
     "crates/util_macros",
     "crates/vim",
     "crates/vim_mode_setting",
+    "crates/voice_input",
+    "crates/voice_input_ui",
     "crates/watch",
     "crates/web_search",
     "crates/which_key",
@@ -498,6 +500,8 @@ ui_prompt = { path = "crates/ui_prompt" }
 util = { path = "crates/util" }
 util_macros = { path = "crates/util_macros" }
 vim = { path = "crates/vim" }
+voice_input = { path = "crates/voice_input" }
+voice_input_ui = { path = "crates/voice_input_ui" }
 vim_mode_setting = { path = "crates/vim_mode_setting" }
 watch = { path = "crates/watch" }
 web_search = { path = "crates/web_search" }

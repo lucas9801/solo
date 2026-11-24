@@ -222,6 +222,8 @@ util.workspace = true
 uuid.workspace = true
 vim.workspace = true
 vim_mode_setting.workspace = true
+voice_input = { workspace = true, features = ["engine"] }
+voice_input_ui.workspace = true
 watch.workspace = true
 web_search.workspace = true
 which_key.workspace = true

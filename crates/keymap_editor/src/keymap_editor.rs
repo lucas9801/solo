@@ -85,6 +85,71 @@ actions!(
     ]
 );
 
+/// SOLO: binds `action` to `keystroke` in the user's keymap, replacing the
+/// binding it has now (a default one is switched off). For settings pages
+/// that let you record a shortcut.
+pub fn set_keybinding(
+    action: &dyn Action,
+    keystroke: gpui::Keystroke,
+    cx: &mut App,
+) -> Task<anyhow::Result<()>> {
+    let fs = <dyn Fs>::global(cx);
+    let keyboard_mapper = cx.keyboard_mapper().clone();
+    let deprecated_aliases = cx.deprecated_actions_to_preferred_actions().clone();
+    let os = cx.platform_info().os;
+    let action_name = action.name();
+    let existing = cx
+        .key_bindings()
+        .borrow()
+        .bindings_for_action(action)
+        .last()
+        .map(|binding| {
+            let source = binding
+                .meta()
+                .map_or(KeybindSource::Unknown, KeybindSource::from_meta);
+            (binding.keystrokes().to_vec(), source)
+        });
+    cx.spawn(async move |_cx| {
+        let keymap_contents = KeymapFile::load_keymap_file(&fs)
+            .await
+            .context("Failed to load keymap file")?;
+        let tab_size = infer_json_indent_size(&keymap_contents);
+        let new_keystrokes = [KeybindingKeystroke::from_keystroke(keystroke)];
+        let source = settings::KeybindUpdateTarget {
+            context: None,
+            keystrokes: &new_keystrokes,
+            action_name,
+            action_arguments: None,
+        };
+        let operation = match &existing {
+            Some((old_keystrokes, old_source)) => settings::KeybindUpdateOperation::Replace {
+                target: settings::KeybindUpdateTarget {
+                    context: None,
+                    keystrokes: old_keystrokes,
+                    action_name,
+                    action_arguments: None,
+                },
+                target_keybind_source: *old_source,
+                source,
+            },
+            None => settings::KeybindUpdateOperation::Add { source, from: None },
+        };
+        let updated = KeymapFile::update_keybinding(
+            operation,
+            keymap_contents,
+            tab_size,
+            keyboard_mapper.as_ref(),
+            &deprecated_aliases,
+            os,
+        )
+        .context("Could not save the keybinding")?;
+        fs.write(paths::keymap_file().as_path(), updated.as_bytes())
+            .await
+            .context("Failed to write keymap file")?;
+        Ok(())
+    })
+}
+
 pub fn init(cx: &mut App) {
     let keymap_event_channel = KeymapEventChannel::new();
     cx.set_global(keymap_event_channel);

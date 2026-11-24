@@ -551,6 +551,8 @@ fn main() {
         // mode the HTTP client only reaches this computer and the local
         // network.
         net_guard_ui::init(cx);
+        voice_input::init(cx);
+        voice_input_ui::init(cx);
         cx.set_http_client(Arc::new(net_guard::OfflineHttpClient::new(Arc::new(http))));
 
         <dyn Fs>::set_global(fs.clone(), cx);

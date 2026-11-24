@@ -93,10 +93,10 @@ jobs:
         run: cargo check --locked -p solo --bin solo
 
       - name: Build the tests
-        run: cargo test --locked --no-run -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_terminal_host -p solo_update_helper -p agent_sessions -p agent_detection -p client -p context_server -p title_bar -p onboarding -p markdown_preview -p workspace -p agent_ui -p solo -p debugger_ui
+        run: cargo test --locked --no-run -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_terminal_host -p solo_update_helper -p agent_sessions -p agent_detection -p client -p context_server -p title_bar -p onboarding -p markdown_preview -p workspace -p agent_ui -p solo -p debugger_ui -p voice_input -p voice_input_ui -p settings_ui
 
       - name: Run the tests
-        run: cargo test --locked --no-fail-fast -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_terminal_host -p solo_update_helper -p agent_sessions -p agent_detection -p client -p context_server -p title_bar -p onboarding -p markdown_preview -p workspace -p agent_ui -p solo -p debugger_ui
+        run: cargo test --locked --no-fail-fast -p terminal -p terminal_view -p auto_update -p solo_agent_hook -p solo_terminal_host -p solo_update_helper -p agent_sessions -p agent_detection -p client -p context_server -p title_bar -p onboarding -p markdown_preview -p workspace -p agent_ui -p solo -p debugger_ui -p voice_input -p voice_input_ui -p settings_ui
 
       - name: Show free disk space
         if: always()

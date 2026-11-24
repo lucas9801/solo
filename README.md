@@ -102,6 +102,10 @@ Before a language server, Node.js and the like is first downloaded, Solo asks on
 
 ![Offline mode: "Offline" at the right of the status bar, its tooltip saying Solo only connects to this computer and the local network](docs/media/en/offline.png)
 
+### Voice input
+
+Press `Ctrl+Alt+M` and say it: the text is recognized on your computer and filled in where you were typing, in the input box, in the agent running in the terminal, or in an editor, and never sent for you. The model (SenseVoice Small, 253 MB) is downloaded the first time, after asking. The sound isn't saved or uploaded.
+
 ### Updates inside Solo
 
 A newer version shows an update button at the right of the title bar, with no notification; its menu sums up the release and offers "Update and Restart", "Install When Solo Quits", the release notes or skipping the version.
@@ -197,6 +201,7 @@ A newer version shows an update button at the right of the title bar, with no no
 - The settings page covers the terminal, notifications, language servers and more; settings and data live in Solo's own folders, apart from Zed's.
 - No account, no telemetry; by default Solo only checks for updates.
 - **Asking before downloading**: before a language server, Node.js, Prettier, a debug adapter and the like is first downloaded, Solo asks once, naming where it comes from; you can allow and remember it, skip it for now or point to a local copy (`downloads.mode`).
+- **Voice input**: `Ctrl+Alt+M` or the microphone on the input box; recognized on this computer (`voice_input`), filled in at the cursor or pasted into the program, never sent for you.
 - **Offline mode**: the button at the right of the status bar, or `network.offline`; Solo then only connects to this computer and the local network and installs nothing, while what's already installed keeps working.
 
 **In development**

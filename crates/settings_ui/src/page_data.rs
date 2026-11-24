@@ -11,6 +11,7 @@ use ui::IntoElement;
 use crate::{
     ActionLink, DynamicItem, PROJECT, SettingField, SettingItem, SettingsFieldMetadata,
     SettingsPage, SettingsPageItem, SubPageLink, USER, active_language, all_language_names,
+    record_voice_shortcut, voice_shortcut_text,
     pages::{
         render_edit_prediction_setup_page, render_external_agents_page, render_llm_providers_page,
         render_mcp_servers_page, render_sandbox_settings_page, render_skills_setup_page,
@@ -499,6 +500,84 @@ fn general_page(cx: &App) -> SettingsPage {
         ]
     }
 
+    /// SOLO: voice input.
+    fn voice_input_section() -> [SettingsPageItem; 6] {
+        [
+            SettingsPageItem::SectionHeader("Voice Input"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Voice Input",
+                description: "Show a microphone on the input box and turn on the shortcut. What you say is recognized on this computer and filled in where you were typing; it is never sent for you.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("voice_input.enabled"),
+                    pick: |settings_content| settings_content.voice_input.as_ref()?.enabled.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.voice_input.get_or_insert_default().enabled = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::ActionLink(ActionLink {
+                title: "Shortcut".into(),
+                description: Some("Click, then press the keys to use. Esc cancels. Tap to start and stop, or hold to talk.".into()),
+                button_text: "Ctrl+Alt+M".into(),
+                button_text_fn: Some(Arc::new(voice_shortcut_text)),
+                on_click: Arc::new(|_, window, cx| record_voice_shortcut(window, cx)),
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Recognition Model",
+                description: "Runs on this computer only. Downloaded the first time voice input is used, after asking.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("voice_input.model"),
+                    pick: |settings_content| settings_content.voice_input.as_ref()?.model.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.voice_input.get_or_insert_default().model = value;
+                    },
+                }),
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    should_do_titlecase: Some(false),
+                    ..Default::default()
+                })),
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Microphone",
+                description: "The microphone voice input records from.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("voice_input.microphone"),
+                    pick: |settings_content| {
+                        settings_content.voice_input.as_ref()?.microphone.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.voice_input.get_or_insert_default().microphone = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::ActionLink(ActionLink {
+                title: "Downloaded Voice Models".into(),
+                description: Some("Delete the recognition models downloaded for voice input. They are downloaded again, after asking, when needed.".into()),
+                button_text: "Delete".into(),
+                button_text_fn: None,
+                on_click: Arc::new(|_, _, cx| {
+                    if let Some(voice_input) = voice_input::global(cx) {
+                        voice_input.update(cx, |voice_input, cx| {
+                            for model in voice_input::MODELS {
+                                voice_input.delete_downloaded(model, cx);
+                            }
+                        });
+                    }
+                }),
+                files: USER,
+            }),
+        ]
+    }
+
     fn extensions_section() -> [SettingsPageItem; 2] {
         [
             SettingsPageItem::SectionHeader("Extensions"),
@@ -531,6 +610,7 @@ fn general_page(cx: &App) -> SettingsPage {
             // SOLO: telemetry would go to Zed; Solo sends none.
             auto_update_section(),
             network_section(),
+            voice_input_section(),
             extensions_section(),
         )
         .into(),
@@ -1684,6 +1764,7 @@ fn keymap_page() -> SettingsPage {
                 title: "Edit Keybindings".into(),
                 description: Some("Customize keybindings in the keymap editor.".into()),
                 button_text: "Open Keymap".into(),
+                button_text_fn: None,
                 on_click: Arc::new(|settings_window, window, cx| {
                     let Some(original_window) = settings_window.original_window else {
                         return;

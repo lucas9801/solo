@@ -102,6 +102,7 @@ ui_input.workspace = true
 url.workspace = true
 urlencoding.workspace = true
 util.workspace = true
+voice_input.workspace = true
 uuid.workspace = true
 vim_mode_setting.workspace = true
 workspace.workspace = true

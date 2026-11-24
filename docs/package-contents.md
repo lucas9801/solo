@@ -42,6 +42,7 @@ Solo Code 的 Microsoft Store 安装包和 GitHub 安装程序 `Solo-Setup-<版�
 | Solo and Zed crates | This repository | GPL-3.0-or-later; some Zed crates Apache-2.0 (`LICENSE-APACHE`) |
 | Third-party Rust crates (about 1,400 license entries) | crates.io / git, pinned in `Cargo.lock` | Apache-2.0 (988), MIT (357), Unicode-3.0 (23), BSD-3-Clause (20), MPL-2.0 (16), ISC (11), Zlib (6), CC0-1.0 (4), CDLA-Permissive-2.0 (3), BSD-2-Clause (2), BSL-1.0, MIT-0, bzip2-1.0.6 (1 each), counted in `licenses.md`; cargo-about refuses any license not in `script/licenses/zed-licenses.toml` |
 | Vendored `alacritty_terminal`, `vte` | `vendor/` (patched, see `vendor/README.md`) | Apache-2.0 / MIT |
+| transcribe.cpp speech engine (voice input), with its vendored ggml, miniz and Silero VAD code | `transcribe-cpp-sys` crate (built from C++ by `cmake`), pinned in `Cargo.lock` | MIT (all four; texts in `licenses.md`). The recognition models are not in the package: they are downloaded after asking, see the user guide |
 | Warp command signatures | `vendor/warp_command_signatures` | MIT |
 | Herdr agent detection rules | `vendor/herdr_agent_detection` | Apache-2.0 |
 | Fonts: IBM Plex Sans, Lilex | `assets/fonts` | SIL OFL 1.1 |

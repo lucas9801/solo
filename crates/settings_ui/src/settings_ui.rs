@@ -567,6 +567,9 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::UiLanguage>(render_dropdown)
         // SOLO: `downloads.mode`.
         .add_basic_renderer::<settings::DownloadMode>(render_dropdown)
+        // SOLO: `voice_input.model`.
+        .add_basic_renderer::<settings::VoiceModel>(render_dropdown)
+        .add_basic_renderer::<settings::MicrophoneId>(render_microphone)
         .add_basic_renderer::<settings::ReduceMotionMode>(render_dropdown)
         .add_basic_renderer::<settings::CurrentLineHighlight>(render_dropdown)
         .add_basic_renderer::<settings::ShowWhitespaceSetting>(render_dropdown)
@@ -1374,7 +1377,10 @@ impl SettingsPageItem {
                         .child(
                             Button::new(
                                 ("action-link".into(), action_link.title.clone()),
-                                action_link.button_text.clone(),
+                                action_link
+                                    .button_text_fn
+                                    .as_ref()
+                                    .map_or_else(|| action_link.button_text.clone(), |text| text(cx)),
                             )
                             .tab_index(0_isize)
                             .end_icon(
@@ -1644,6 +1650,8 @@ struct ActionLink {
     title: SharedString,
     description: Option<SharedString>,
     button_text: SharedString,
+    /// A button text that is worked out each time it is drawn.
+    button_text_fn: Option<Arc<dyn Fn(&App) -> SharedString + Send + Sync>>,
     on_click: Arc<dyn Fn(&mut SettingsWindow, &mut Window, &mut App) + Send + Sync>,
     files: FileMask,
 }
@@ -5246,6 +5254,236 @@ where
     .into_any_element()
 }
 
+/// SOLO: the microphone voice input records from: the system default, or one
+/// of the input devices Windows lists.
+fn render_microphone(
+    field: SettingField<settings::MicrophoneId>,
+    file: SettingsUiFile,
+    _metadata: Option<&SettingsFieldMetadata>,
+    _title: &'static str,
+    _description: &'static str,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    use ui::{ContextMenu, DropdownMenu, DropdownStyle, IconPosition};
+
+    let (_, current) =
+        SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
+    let current = current
+        .map(|microphone| microphone.0.clone())
+        .filter(|id| !id.is_empty());
+    let devices = voice_input::cached_input_devices();
+    let default_label = util::i18n::tr("System default", "系统默认");
+    let label = match &current {
+        None => default_label.to_string(),
+        Some(id) => devices
+            .iter()
+            .find(|device| &device.id == id)
+            .map_or_else(|| id.clone(), |device| device.name.clone()),
+    };
+    let choose = move |id: Option<String>| {
+        let file = file.clone();
+        move |window: &mut Window, cx: &mut App| {
+            let id = id.clone();
+            update_settings_file(
+                file.clone(),
+                field.json_path,
+                window,
+                cx,
+                move |settings, app| {
+                    (field.write)(settings, id.map(settings::MicrophoneId), app);
+                },
+            )
+            .log_err();
+        }
+    };
+    DropdownMenu::new(
+        "voice-microphone",
+        label,
+        ContextMenu::build(window, cx, move |mut menu, _, _| {
+            menu = menu.toggleable_entry(
+                default_label,
+                current.is_none(),
+                IconPosition::End,
+                None,
+                choose(None),
+            );
+            for device in devices {
+                menu = menu.toggleable_entry(
+                    device.name.clone(),
+                    current.as_ref() == Some(&device.id),
+                    IconPosition::End,
+                    None,
+                    choose(Some(device.id)),
+                );
+            }
+            menu
+        }),
+    )
+    .style(DropdownStyle::Outlined)
+    .tab_index(0)
+    .into_any_element()
+}
+
+/// The state of recording a new shortcut for voice input: the interceptor that
+/// catches the keys and the task that cancels it when the settings window
+/// goes away or loses the focus. Dropping them ends the recording.
+#[derive(Default)]
+struct ShortcutRecording {
+    active: bool,
+    _interceptor: Option<gpui::Subscription>,
+    _watcher: Option<gpui::Task<()>>,
+}
+
+impl gpui::Global for ShortcutRecording {}
+
+/// What recording does with a key.
+#[derive(Debug, PartialEq, Eq)]
+enum ShortcutKey {
+    /// A modifier on its own: wait for the key that goes with it.
+    Ignore,
+    /// Esc: give up.
+    Cancel,
+    /// A key that would be typed text: not a shortcut.
+    Reject,
+    Accept,
+}
+
+fn classify_shortcut_key(keystroke: &gpui::Keystroke) -> ShortcutKey {
+    let key = keystroke.key.as_str();
+    if matches!(key, "control" | "alt" | "shift" | "platform" | "function") {
+        return ShortcutKey::Ignore;
+    }
+    let modifiers = keystroke.modifiers;
+    if key == "escape" && !modifiers.modified() {
+        return ShortcutKey::Cancel;
+    }
+    let function_key = key
+        .strip_prefix('f')
+        .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()));
+    // Shift alone only makes capital letters.
+    if function_key || modifiers.control || modifiers.alt || modifiers.platform {
+        ShortcutKey::Accept
+    } else {
+        ShortcutKey::Reject
+    }
+}
+
+fn stop_recording_voice_shortcut(cx: &mut App) {
+    let state = std::mem::take(cx.default_global::<ShortcutRecording>());
+    drop(state);
+}
+
+/// SOLO: the shortcut of voice input, as its button shows it.
+fn voice_shortcut_text(cx: &App) -> SharedString {
+    if cx
+        .try_global::<ShortcutRecording>()
+        .is_some_and(|recording| recording.active)
+    {
+        return util::i18n::tr("Press the new keys…", "请按新的快捷键…").into();
+    }
+    let os = cx.platform_info().os;
+    let keymap = cx.key_bindings();
+    let keymap = keymap.borrow();
+    let binding = keymap
+        .bindings_for_action(&voice_input::ToggleVoiceInput)
+        .last();
+    match binding {
+        Some(binding) => binding
+            .keystrokes()
+            .iter()
+            .map(|keystroke| {
+                keystroke
+                    .inner()
+                    .unparse(os)
+                    .split('-')
+                    .map(|part| {
+                        let mut characters = part.chars();
+                        characters
+                            .next()
+                            .map(|first| first.to_uppercase().chain(characters).collect::<String>())
+                            .unwrap_or_default()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("+")
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .into(),
+        None => util::i18n::tr("Not set", "未设置").into(),
+    }
+}
+
+/// SOLO: waits for the next keys in this window and binds them to voice input
+/// in the user's keymap. Esc, or the window losing the focus or closing,
+/// cancels. Keys that would only type text don't count; a shortcut needs a
+/// modifier (an F key doesn't).
+fn record_voice_shortcut(window: &mut Window, cx: &mut App) {
+    if cx.default_global::<ShortcutRecording>().active {
+        return;
+    }
+    let settings_window = window.window_handle();
+    window.refresh();
+
+    let interceptor = cx.intercept_keystrokes(move |event, window, cx| {
+        if window.window_handle() != settings_window {
+            if !cx.windows().contains(&settings_window) {
+                stop_recording_voice_shortcut(cx);
+            }
+            return;
+        }
+        match classify_shortcut_key(&event.keystroke) {
+            ShortcutKey::Ignore => {}
+            ShortcutKey::Reject => cx.stop_propagation(),
+            ShortcutKey::Cancel => {
+                stop_recording_voice_shortcut(cx);
+                cx.stop_propagation();
+                window.refresh();
+            }
+            ShortcutKey::Accept => {
+                stop_recording_voice_shortcut(cx);
+                cx.stop_propagation();
+                window.refresh();
+                let saving = keymap_editor::set_keybinding(
+                    &voice_input::ToggleVoiceInput,
+                    event.keystroke.clone(),
+                    cx,
+                );
+                cx.spawn(async move |cx| {
+                    saving.await.log_err();
+                    // The keymap is read again a moment after it was written.
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(600))
+                        .await;
+                    settings_window
+                        .update(cx, |_, window, _| window.refresh())
+                        .log_err();
+                })
+                .detach();
+            }
+        }
+    });
+    let watcher = cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(300))
+                .await;
+            let still_active = settings_window
+                .update(cx, |_, window, _| window.is_window_active())
+                .unwrap_or(false);
+            if !still_active {
+                cx.update(stop_recording_voice_shortcut);
+                break;
+            }
+        }
+    });
+    *cx.default_global::<ShortcutRecording>() = ShortcutRecording {
+        active: true,
+        _interceptor: Some(interceptor),
+        _watcher: Some(watcher),
+    };
+}
+
 /// SOLO: the default analysis level as three buttons.
 fn render_analysis_mode(
     field: SettingField<settings::LanguageServerAnalysisMode>,
@@ -5633,6 +5871,111 @@ pub mod test {
     use credentials_provider::test_support::FakeCredentialsProvider;
     use language_model::{ApiKeyState, EnvVar, LanguageModelProviderState, LanguageModelRegistry};
     use language_models::provider::open_ai_compatible::OpenAiCompatibleLanguageModelProvider;
+
+    // SOLO: recording a shortcut for voice input.
+    #[test]
+    fn test_what_counts_as_a_shortcut() {
+        let classify = |source: &str| {
+            classify_shortcut_key(&gpui::Keystroke::parse_with_os(source, gpui::OperatingSystem::Windows).unwrap())
+        };
+        assert_eq!(classify("ctrl-alt-m"), ShortcutKey::Accept);
+        assert_eq!(classify("f9"), ShortcutKey::Accept);
+        assert_eq!(classify("a"), ShortcutKey::Reject);
+        assert_eq!(classify("shift-a"), ShortcutKey::Reject);
+        assert_eq!(classify("space"), ShortcutKey::Reject);
+        assert_eq!(classify("escape"), ShortcutKey::Cancel);
+        assert_eq!(classify("ctrl-escape"), ShortcutKey::Accept);
+        assert_eq!(classify("ctrl"), ShortcutKey::Ignore);
+    }
+
+    gpui::actions!(voice_shortcut_test, [Closed, Typed]);
+
+    struct Probe {
+        focus_handle: gpui::FocusHandle,
+        closed: std::rc::Rc<std::cell::Cell<usize>>,
+        typed: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl gpui::Render for Probe {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+            use gpui::{InteractiveElement as _, ParentElement as _};
+            gpui::div()
+                .key_context("Probe")
+                .track_focus(&self.focus_handle)
+                .on_action(cx.listener(|this, _: &Closed, _, _| this.closed.set(this.closed.get() + 1)))
+                .on_action(cx.listener(|this, _: &Typed, _, _| this.typed.set(this.typed.get() + 1)))
+                .child("probe")
+        }
+    }
+
+    #[gpui::test]
+    fn test_esc_cancels_the_recording_and_the_window_stays_open(cx: &mut gpui::TestAppContext) {
+        let closed = std::rc::Rc::new(std::cell::Cell::new(0));
+        let typed = std::rc::Rc::new(std::cell::Cell::new(0));
+        cx.update(|cx| {
+            cx.bind_keys([
+                gpui::KeyBinding::new("escape", Closed, Some("Probe")),
+                gpui::KeyBinding::new("a", Typed, Some("Probe")),
+            ]);
+        });
+        let window = cx.add_window({
+            let closed = closed.clone();
+            let typed = typed.clone();
+            move |window, cx| {
+                let focus_handle = cx.focus_handle();
+                window.focus(&focus_handle, cx);
+                Probe { focus_handle, closed, typed }
+            }
+        });
+        let recording = |cx: &mut gpui::TestAppContext| {
+            cx.update(|cx| cx.try_global::<ShortcutRecording>().is_some_and(|state| state.active))
+        };
+        window
+            .update(cx, |_, window, cx| record_voice_shortcut(window, cx))
+            .unwrap();
+        assert!(recording(cx));
+
+        // A plain letter is not a shortcut: still waiting, and the letter
+        // reaches nothing.
+        cx.simulate_keystrokes(window.into(), "a");
+        assert!(recording(cx));
+        assert_eq!(typed.get(), 0);
+
+        // Esc gives up; it doesn't reach the window, which would close.
+        cx.simulate_keystrokes(window.into(), "escape");
+        assert!(!recording(cx));
+        assert_eq!(closed.get(), 0);
+
+        // Back to normal: Esc and the letter reach the window again.
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.simulate_keystrokes(window.into(), "a");
+        assert_eq!(closed.get(), 1);
+        assert_eq!(typed.get(), 1);
+    }
+
+    #[gpui::test]
+    fn test_recording_stops_when_the_window_loses_the_focus(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_window(|window, cx| {
+            let focus_handle = cx.focus_handle();
+            window.focus(&focus_handle, cx);
+            Probe {
+                focus_handle,
+                closed: Default::default(),
+                typed: Default::default(),
+            }
+        });
+        window
+            .update(cx, |_, window, cx| record_voice_shortcut(window, cx))
+            .unwrap();
+        cx.update(|cx| {
+            assert!(cx.global::<ShortcutRecording>().active);
+        });
+        cx.update_window(window.into(), |_, window, _| window.remove_window())
+            .unwrap();
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(!cx.global::<ShortcutRecording>().active));
+    }
 
     // SOLO: the language services page renders each of its settings, and the
     // language servers menu finds it by its title.
@@ -7690,6 +8033,7 @@ pub mod test {
             title: SharedString::from(title),
             description: description.map(SharedString::from),
             button_text: SharedString::from("Change"),
+            button_text_fn: None,
             on_click: Arc::new(|_, _, _| {}),
             files: USER,
         })

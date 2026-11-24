@@ -10431,6 +10431,9 @@ impl Render for Workspace {
                     cx.notify(id);
                 }
             })
+            // SOLO: voice input listens for the shortcut coming up (push to
+            // talk), whatever has the focus.
+            .on_key_up(|event, window, cx| voice_input::handle_key_up(event, window, cx))
             .child(
                 div()
                     .size_full()

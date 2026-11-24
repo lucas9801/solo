@@ -766,6 +766,7 @@ impl EditorElement {
             register_action(editor, window, Editor::kill_ring_cut);
             register_action(editor, window, Editor::kill_ring_yank);
             register_action(editor, window, Editor::paste);
+            register_action(editor, window, Editor::toggle_voice_input);
             register_action(editor, window, Editor::undo);
             register_action(editor, window, Editor::redo);
             register_action(editor, window, Editor::toggle_comments);
