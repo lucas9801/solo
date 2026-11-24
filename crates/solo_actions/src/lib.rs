@@ -909,7 +909,7 @@ pub mod preview {
     }
 
     pub mod svg {
-        use gpui::actions;
+        use gpui::{Action, actions};
 
         actions!(
             svg,
@@ -920,6 +920,30 @@ pub mod preview {
                 OpenPreviewToTheSide,
             ]
         );
+
+        /// Opens an SVG preview of the file at a path, in the active pane:
+        /// the terminal's link menu sends it.
+        #[derive(PartialEq, Clone, Debug, Action)]
+        #[action(namespace = svg, no_json, no_register)]
+        pub struct OpenPreviewForPath {
+            pub path: std::path::PathBuf,
+        }
+    }
+
+    pub mod tabular_data {
+        use gpui::Action;
+
+        /// The extensions of the delimited files the table preview shows
+        /// (the terminal's link menu offers a preview for these).
+        pub const DELIMITED_EXTENSIONS: &[&str] = &["csv", "tsv", "psv", "ssv"];
+
+        /// Opens a table preview of the file at a path, in the active pane:
+        /// the terminal's link menu sends it.
+        #[derive(PartialEq, Clone, Debug, Action)]
+        #[action(namespace = tabular_data, no_json, no_register)]
+        pub struct OpenPreviewForPath {
+            pub path: std::path::PathBuf,
+        }
     }
 }
 

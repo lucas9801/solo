@@ -3,7 +3,9 @@ use gpui::{Action, AppContext, Entity, EventEmitter, FocusHandle, Focusable, Tas
 
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::path::PathBuf;
 use ui::{SharedString, prelude::*};
+use workspace::notifications::NotifyResultExt;
 use workspace::{Item, Pane, Workspace};
 
 use crate::parser::EditorState;
@@ -51,6 +53,8 @@ pub struct TabularDataPreviewPane {
     _table_subscription: gpui::Subscription,
 }
 
+pub use solo_actions::preview::tabular_data::OpenPreviewForPath;
+
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         TabularDataPreviewPane::register(workspace);
@@ -60,6 +64,9 @@ pub fn init(cx: &mut App) {
 
 impl TabularDataPreviewPane {
     pub fn register(workspace: &mut Workspace) {
+        workspace.register_action(|workspace, action: &OpenPreviewForPath, window, cx| {
+            Self::open_for_path(action.path.clone(), workspace, window, cx);
+        });
         workspace.register_action_renderer(|div, _, _, cx| {
             div.on_action(cx.listener(|workspace, _: &OpenPreview, window, cx| {
                 if let Some(editor) =
@@ -80,6 +87,41 @@ impl TabularDataPreviewPane {
                 },
             ))
         });
+    }
+
+    /// Opens the table preview of the file at `path`, which may be outside
+    /// the project's folders, in the active pane (or shows the one already
+    /// open there).
+    pub fn open_for_path(
+        path: PathBuf,
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let project = workspace.project().clone();
+        let open_buffer = project.update(cx, |project, cx| {
+            match project.find_project_path(&path, cx) {
+                Some(project_path) => project.open_buffer(project_path, cx),
+                None => project.open_local_buffer(&path, cx),
+            }
+        });
+        cx.spawn_in(window, async move |workspace, cx| {
+            let Some(buffer) = open_buffer
+                .await
+                .notify_workspace_async_err(workspace.clone(), cx)
+            else {
+                return;
+            };
+            workspace
+                .update_in(cx, |workspace, window, cx| {
+                    let editor =
+                        cx.new(|cx| Editor::for_buffer(buffer, Some(project), window, cx));
+                    let pane = workspace.active_pane().clone();
+                    Self::open_preview_in_pane(editor, pane, window, cx);
+                })
+                .ok();
+        })
+        .detach();
     }
 
     pub fn open_preview_in_pane(
@@ -129,8 +171,25 @@ impl TabularDataPreviewPane {
         editor: &Entity<Editor>,
         cx: &App,
     ) -> Option<usize> {
+        let buffer_id = editor
+            .read(cx)
+            .buffer()
+            .read(cx)
+            .as_singleton()
+            .map(|buffer| buffer.entity_id());
         pane.items_of_type::<TabularDataPreviewPane>()
-            .find(|view| &view.read(cx).active_editor_state.editor == editor)
+            .find(|view| {
+                let shown = &view.read(cx).active_editor_state.editor;
+                shown == editor
+                    || buffer_id.is_some()
+                        && shown
+                            .read(cx)
+                            .buffer()
+                            .read(cx)
+                            .as_singleton()
+                            .map(|buffer| buffer.entity_id())
+                            == buffer_id
+            })
             .and_then(|view| pane.index_for_item(&view))
     }
 
@@ -529,6 +588,88 @@ mod tests {
         }
         .await;
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn delimited_extensions_match_the_formats() {
+        for extension in solo_actions::preview::tabular_data::DELIMITED_EXTENSIONS {
+            let format = parser::TabularFormat::from_extension(extension)
+                .unwrap_or_else(|| panic!("{extension} is not read as a table"));
+            assert_ne!(format, parser::TabularFormat::JsonLines, "{extension}");
+            assert!(
+                parser::TabularFormat::from_extension(&extension.to_ascii_uppercase()).is_some(),
+                "{extension}"
+            );
+        }
+        // The delimited formats the preview reads are all in the list.
+        for (extension, format) in parser::TABULAR_FORMATS {
+            if *format != parser::TabularFormat::JsonLines {
+                assert!(
+                    solo_actions::preview::tabular_data::DELIMITED_EXTENSIONS.contains(extension),
+                    "{extension}"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    async fn test_open_preview_for_a_path_inside_and_outside_the_project(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), json!({ "inside.csv": "a,b\n1,2\n" }))
+            .await;
+        fs.insert_tree(path!("/elsewhere"), json!({ "outside.tsv": "a\tb\n1\t2\n" }))
+            .await;
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+        let previews = |workspace: &gpui::Entity<Workspace>, cx: &mut gpui::VisualTestContext| {
+            workspace.read_with(cx, |workspace, cx| {
+                workspace
+                    .active_pane()
+                    .read(cx)
+                    .items_of_type::<TabularDataPreviewPane>()
+                    .map(|preview| preview.read(cx).tab_content_text(0, cx).to_string())
+                    .collect::<Vec<_>>()
+            })
+        };
+        // The action itself reaches the workspace through its rendered
+        // element tree, which a test workspace doesn't draw: checked in the app.
+        // As the terminal's link menu does it: the action, from the focus
+        // the workspace has.
+        for (path, name) in [
+            (path!("/project/inside.csv"), "Preview inside.csv"),
+            (path!("/elsewhere/outside.tsv"), "Preview outside.tsv"),
+        ] {
+            let before = previews(&workspace, cx).len();
+            workspace.update_in(cx, |workspace, window, cx| {
+                TabularDataPreviewPane::open_for_path(path.into(), workspace, window, cx)
+            });
+            cx.run_until_parked();
+            let after = previews(&workspace, cx);
+            assert_eq!(after.len(), before + 1, "{path}: {after:?}");
+            assert!(after.iter().any(|title| title == name), "{path}: {after:?}");
+            // Again: switches to the tab that is open.
+            workspace.update_in(cx, |workspace, window, cx| {
+                TabularDataPreviewPane::open_for_path(path.into(), workspace, window, cx)
+            });
+            cx.run_until_parked();
+            assert_eq!(previews(&workspace, cx).len(), before + 1, "{path}");
+        }
+        // The table is read from the file.
+        let rows = workspace.read_with(cx, |workspace, cx| {
+            let preview = workspace
+                .active_pane()
+                .read(cx)
+                .active_item()
+                .and_then(|item| item.downcast::<TabularDataPreviewPane>())
+                .expect("the preview is the active tab");
+            preview.read(cx).table.read(cx).engine.contents.rows.len()
+        });
+        assert_eq!(rows, 1);
     }
 
     fn init_test(cx: &mut TestAppContext) {

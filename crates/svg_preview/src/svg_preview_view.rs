@@ -1,5 +1,5 @@
 use std::mem;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use file_icons::FileIcons;
@@ -15,7 +15,7 @@ use workspace::item::Item;
 use workspace::notifications::NotifyResultExt;
 use workspace::{Pane, Workspace};
 
-use crate::{OpenFollowingPreview, OpenPreview, OpenPreviewToTheSide};
+use crate::{OpenFollowingPreview, OpenPreview, OpenPreviewForPath, OpenPreviewToTheSide};
 
 pub struct SvgPreviewView {
     focus_handle: FocusHandle,
@@ -136,7 +136,31 @@ impl SvgPreviewView {
         let open_buffer = workspace
             .project()
             .update(cx, |project, cx| project.open_buffer(project_path, cx));
+        Self::open_preview_when_loaded(open_buffer, window, cx);
+    }
 
+    /// Opens the preview of the SVG file at `path`, which may be outside the
+    /// project's folders.
+    pub fn open_for_path(
+        path: PathBuf,
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let open_buffer = workspace.project().update(cx, |project, cx| {
+            match project.find_project_path(&path, cx) {
+                Some(project_path) => project.open_buffer(project_path, cx),
+                None => project.open_local_buffer(&path, cx),
+            }
+        });
+        Self::open_preview_when_loaded(open_buffer, window, cx);
+    }
+
+    fn open_preview_when_loaded(
+        open_buffer: Task<anyhow::Result<Entity<Buffer>>>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
         cx.spawn_in(window, async move |workspace, cx| {
             let Some(buffer) = open_buffer
                 .await
@@ -290,6 +314,10 @@ impl SvgPreviewView {
             }
         });
 
+        workspace.register_action(move |workspace, action: &OpenPreviewForPath, window, cx| {
+            Self::open_for_path(action.path.clone(), workspace, window, cx);
+        });
+
         workspace.register_action(move |workspace, _: &OpenPreviewToTheSide, window, cx| {
             if let Some(buffer) = Self::resolve_active_item_as_svg_buffer(workspace, cx) {
                 let pane = workspace.active_pane().clone();
@@ -373,4 +401,65 @@ impl Item for SvgPreviewView {
     }
 
     fn to_item_events(_event: &Self::Event, _f: &mut dyn FnMut(workspace::item::ItemEvent)) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+    use project::Project;
+    use serde_json::json;
+    use util::path;
+    use workspace::AppState;
+
+    const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>"#;
+
+    fn previews(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_pane()
+                .read(cx)
+                .items_of_type::<SvgPreviewView>()
+                .map(|preview| preview.read(cx).tab_content_text(0, cx).to_string())
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    async fn preview_for_a_path_inside_and_outside_the_project(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            AppState::test(cx);
+            crate::init(cx);
+        });
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), json!({ "inside.svg": SVG, "notes.txt": "x" }))
+            .await;
+        fs.insert_tree(path!("/elsewhere"), json!({ "outside.SVG": SVG }))
+            .await;
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+        // The action itself reaches the workspace through its rendered
+        // element tree, which a test workspace doesn't draw: checked in the app.
+        for (path, name) in [
+            (path!("/project/inside.svg"), "Preview inside.svg"),
+            (path!("/elsewhere/outside.SVG"), "Preview outside.SVG"),
+        ] {
+            let before = previews(&workspace, cx).len();
+            workspace.update_in(cx, |workspace, window, cx| {
+                SvgPreviewView::open_for_path(path.into(), workspace, window, cx)
+            });
+            cx.run_until_parked();
+            let after = previews(&workspace, cx);
+            assert_eq!(after.len(), before + 1, "{path}: {after:?}");
+            assert!(after.iter().any(|title| title == name), "{path}: {after:?}");
+            // Again: switches to the tab that is open.
+            workspace.update_in(cx, |workspace, window, cx| {
+                SvgPreviewView::open_for_path(path.into(), workspace, window, cx)
+            });
+            cx.run_until_parked();
+            assert_eq!(previews(&workspace, cx).len(), before + 1, "{path}");
+        }
+    }
 }

@@ -2,7 +2,8 @@
 //! just open it: an external web address, a file Solo can't open, a file
 //! name several files have and which one is a guess, a file only another
 //! project tab has (`terminal.link_menu`, "auto"). Ctrl+click does the
-//! menu's first item instead.
+//! menu's first item instead. A file Solo can preview (a web page, a
+//! table, an SVG image, a PDF) asks too, with the preview first.
 
 use crate::terminal_path_like_target::PathLinkResolution;
 use settings::TerminalLinkMenu;
@@ -28,7 +29,30 @@ pub(crate) enum ClickedLink {
     Path {
         resolution: PathLinkResolution,
         solo_can_open: bool,
+        /// The path is on this computer: in a remote project, the previews
+        /// and the system's programs can't reach the file.
+        local_project: bool,
     },
+}
+
+/// What Solo shows of a file in a preview tab it opens itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreviewKind {
+    Svg,
+    Table,
+}
+
+/// A kind of file the link menu offers to look at rather than open as text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewableFile {
+    /// `.html`, `.htm`: Solo's browser.
+    Html,
+    /// `.csv`, `.tsv`, `.psv`, `.ssv`: the table preview.
+    Table,
+    /// `.svg`: the SVG preview.
+    Svg,
+    /// `.pdf`: Solo's browser.
+    Pdf,
 }
 
 /// One row of the link menu.
@@ -39,6 +63,11 @@ pub(crate) enum LinkMenuItem {
     CopyLink(String),
     /// Opens the file (or folder) in Solo.
     Open(OpenTarget),
+    /// Opens the file as text in the editor, in a menu that starts with its
+    /// preview.
+    OpenSource(OpenTarget),
+    /// Opens the file's preview in the current pane.
+    Preview { kind: PreviewKind, path: PathBuf },
     OpenWithDefaultProgram(PathBuf),
     /// Opening a program or a file that starts one (`.exe`, `.bat`, `.lnk`,
     /// ...) runs it: never the first row, so Ctrl+click never runs it.
@@ -67,6 +96,8 @@ impl LinkMenuItem {
             Self::OpenInSolo(_) => tr("Open in Solo", "在 Solo 中打开").into(),
             Self::CopyLink(_) => tr("Copy Link", "复制链接").into(),
             Self::Open(_) => tr("Open", "打开").into(),
+            Self::OpenSource(_) => tr("Open Source File", "打开源文件").into(),
+            Self::Preview { .. } => tr("Preview", "预览").into(),
             Self::OpenWithDefaultProgram(_) => {
                 tr("Open with Default Program", "用默认程序打开").into()
             }
@@ -120,15 +151,25 @@ pub(crate) fn middle_ellipsis(text: &str, max: usize) -> String {
 }
 
 /// What Ctrl+click does with a menu of `items`: its first row, except that a
-/// file Solo can't open is only shown in File Explorer, never given to a
-/// program (which may run it), whatever its extension.
+/// file whose first row would give it to another program (a file Solo can't
+/// open, a program) is only shown in File Explorer, never given to a program
+/// (which may run it), whatever its extension.
 pub(crate) fn ctrl_click_item(items: Vec<LinkMenuItem>) -> Option<LinkMenuItem> {
-    let gives_to_a_program = items.iter().any(|item| {
-        matches!(
-            item,
-            LinkMenuItem::OpenWithDefaultProgram(_) | LinkMenuItem::RunWithDefaultProgram(_)
-        )
-    });
+    let first_gives_to_a_program = items
+        .iter()
+        .find(|item| !matches!(item, LinkMenuItem::Separator))
+        .is_some_and(|first| {
+            matches!(
+                first,
+                LinkMenuItem::OpenWithDefaultProgram(_) | LinkMenuItem::RunWithDefaultProgram(_)
+            )
+        });
+    // Running is never the first row, but a menu that lists it never has
+    // Ctrl+click give the file to a program.
+    let runs_a_program = items
+        .iter()
+        .any(|item| matches!(item, LinkMenuItem::RunWithDefaultProgram(_)));
+    let gives_to_a_program = first_gives_to_a_program || runs_a_program;
     if gives_to_a_program {
         return items
             .into_iter()
@@ -162,6 +203,7 @@ pub(crate) fn menu_items(link: &ClickedLink, setting: TerminalLinkMenu) -> Vec<L
         ClickedLink::Path {
             resolution,
             solo_can_open,
+            local_project,
         } => match resolution {
             PathLinkResolution::Here(link) if link.ambiguous && link.candidates.len() > 1 => {
                 candidate_items(link)
@@ -169,6 +211,12 @@ pub(crate) fn menu_items(link: &ClickedLink, setting: TerminalLinkMenu) -> Vec<L
             PathLinkResolution::Here(link) => {
                 let target = &link.target;
                 let path = target.path().path.clone();
+                if *local_project
+                    && target.is_file()
+                    && let Some(items) = previewable_items(target, &path)
+                {
+                    return items;
+                }
                 // Solo opens text files itself, scripts included (`.js`,
                 // `.bat`, `.ps1`): only files it can't open are given to
                 // another program.
@@ -205,6 +253,70 @@ pub(crate) fn menu_items(link: &ClickedLink, setting: TerminalLinkMenu) -> Vec<L
                 .collect(),
         },
     }
+}
+
+/// The kind of file Solo previews that `path` is, by its extension.
+fn previewable_file(path: &Path) -> Option<PreviewableFile> {
+    let extension = effective_extension(path)?;
+    // The browser and the previews go by the file's own extension: a name
+    // with a stream or trailing dots (which Windows ignores) would be given
+    // to the system or read as plain text.
+    if !path
+        .extension()
+        .is_some_and(|own| own.eq_ignore_ascii_case(extension.as_str()))
+    {
+        return None;
+    }
+    match extension.as_str() {
+        "html" | "htm" => Some(PreviewableFile::Html),
+        "pdf" => Some(PreviewableFile::Pdf),
+        "svg" => Some(PreviewableFile::Svg),
+        extension
+            if solo_actions::preview::tabular_data::DELIMITED_EXTENSIONS.contains(&extension) =>
+        {
+            Some(PreviewableFile::Table)
+        }
+        _ => None,
+    }
+}
+
+/// The rows for a file Solo can preview, the preview first; `None` for any
+/// other file (and for one with no local path a web address can be made of).
+fn previewable_items(target: &OpenTarget, path: &Path) -> Option<Vec<LinkMenuItem>> {
+    use LinkMenuItem::*;
+    let path = path.to_path_buf();
+    let open_in_solo = || {
+        url::Url::from_file_path(&path)
+            .ok()
+            .map(|url| OpenInSolo(url.to_string()))
+    };
+    let preview = |kind| Preview {
+        kind,
+        path: path.clone(),
+    };
+    let head = match previewable_file(&path)? {
+        PreviewableFile::Html => vec![
+            open_in_solo()?,
+            OpenSource(target.clone()),
+            OpenWithDefaultProgram(path.clone()),
+        ],
+        PreviewableFile::Table => vec![
+            preview(PreviewKind::Table),
+            OpenSource(target.clone()),
+            OpenWithDefaultProgram(path.clone()),
+        ],
+        PreviewableFile::Svg => vec![preview(PreviewKind::Svg), OpenSource(target.clone())],
+        PreviewableFile::Pdf => vec![open_in_solo()?, OpenWithDefaultProgram(path.clone())],
+    };
+    Some(
+        head.into_iter()
+            .chain([
+                RevealInFileManager(path.clone()),
+                Separator,
+                CopyPath(path.clone()),
+            ])
+            .collect(),
+    )
 }
 
 /// The rows for several files of a link's name, best first.
@@ -337,9 +449,11 @@ fn icon_for(item: &LinkMenuItem) -> ui::IconName {
         LinkMenuItem::OpenInSolo(_) => IconName::Public,
         LinkMenuItem::CopyLink(_) | LinkMenuItem::CopyPath(_) => IconName::Copy,
         LinkMenuItem::RevealInFileManager(_) => IconName::Folder,
-        LinkMenuItem::Open(_) | LinkMenuItem::Candidate { .. } | LinkMenuItem::InOtherTab(_) => {
-            IconName::FileCode
-        }
+        LinkMenuItem::Open(_)
+        | LinkMenuItem::OpenSource(_)
+        | LinkMenuItem::Candidate { .. }
+        | LinkMenuItem::InOtherTab(_) => IconName::FileCode,
+        LinkMenuItem::Preview { .. } => IconName::Eye,
         LinkMenuItem::ShowAll { .. } => IconName::MagnifyingGlass,
         LinkMenuItem::Separator => IconName::Dash,
     }
@@ -446,6 +560,7 @@ mod view {
                     })
                     .ok()
                     .flatten();
+                let local_project = fs.is_some();
                 let solo_can_open = match (single_file, fs) {
                     (Some(path), Some(fs)) => {
                         cx.background_spawn(async move {
@@ -462,6 +577,7 @@ mod view {
                 let link = ClickedLink::Path {
                     resolution,
                     solo_can_open,
+                    local_project,
                 };
                 let items = menu_items(&link, setting);
                 this.update_in(cx, |this, window, cx| {
@@ -528,8 +644,21 @@ mod view {
                 LinkMenuItem::OpenWithDefaultProgram(path)
                 | LinkMenuItem::RunWithDefaultProgram(path) => cx.open_with_system(&path),
                 LinkMenuItem::RevealInFileManager(path) => cx.reveal_path(&path),
-                LinkMenuItem::Open(target) | LinkMenuItem::Candidate { target, .. } => {
+                LinkMenuItem::Open(target)
+                | LinkMenuItem::OpenSource(target)
+                | LinkMenuItem::Candidate { target, .. } => {
                     open_target_in(workspace, target, window, cx);
+                }
+                LinkMenuItem::Preview { kind, path } => {
+                    let action: Box<dyn gpui::Action> = match kind {
+                        PreviewKind::Svg => {
+                            Box::new(solo_actions::preview::svg::OpenPreviewForPath { path })
+                        }
+                        PreviewKind::Table => Box::new(
+                            solo_actions::preview::tabular_data::OpenPreviewForPath { path },
+                        ),
+                    };
+                    window.dispatch_action(action, cx);
                 }
                 LinkMenuItem::InOtherTab(found) => {
                     let Some(other) = found.workspace.upgrade() else {
@@ -714,7 +843,7 @@ mod view {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use util::paths::PathWithPosition;
+    use util::{path, paths::PathWithPosition};
     use workspace::path_link::{CandidateRank, LinkCandidate};
 
     fn path_target(path: &str) -> OpenTarget {
@@ -741,6 +870,7 @@ mod tests {
                 total: 1,
             }),
             solo_can_open,
+            local_project: true,
         }
     }
 
@@ -804,6 +934,7 @@ mod tests {
                 ambiguous: true,
             }),
             solo_can_open: true,
+            local_project: true,
         };
         let items = menu_items(&link, TerminalLinkMenu::Auto);
         let labels = labels(&items);
@@ -858,6 +989,169 @@ mod tests {
         // An image opens in the image viewer, whatever its bytes.
         assert!(solo_can_open(write("shot.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00")));
     }
+
+    fn first_ctrl_click(link: &ClickedLink, setting: TerminalLinkMenu) -> Option<String> {
+        ctrl_click_item(menu_items(link, setting)).map(|item| item.label())
+    }
+
+    #[test]
+    fn files_solo_previews_ask_with_the_preview_first() {
+        use TerminalLinkMenu::*;
+        let reveal_and_copy = ["Reveal in File Explorer", "", "Copy Path"];
+        let expected: [(&str, Vec<&str>, &str); 6] = [
+            (
+                path!("/work/report/index.html"),
+                [
+                    &["Open in Solo", "Open Source File", "Open with Default Program"][..],
+                    &reveal_and_copy[..],
+                ]
+                .concat(),
+                "Open in Solo",
+            ),
+            (
+                path!("/work/report/old.htm"),
+                [
+                    &["Open in Solo", "Open Source File", "Open with Default Program"][..],
+                    &reveal_and_copy[..],
+                ]
+                .concat(),
+                "Open in Solo",
+            ),
+            (
+                path!("/work/skill_effects.csv"),
+                [
+                    &["Preview", "Open Source File", "Open with Default Program"][..],
+                    &reveal_and_copy[..],
+                ]
+                .concat(),
+                "Preview",
+            ),
+            (
+                path!("/work/icons/DynamicBone3D.svg"),
+                [&["Preview", "Open Source File"][..], &reveal_and_copy[..]].concat(),
+                "Preview",
+            ),
+            (
+                path!("/work/profiling/capture.pdf"),
+                [&["Open in Solo", "Open with Default Program"][..], &reveal_and_copy[..]].concat(),
+                "Open in Solo",
+            ),
+            (
+                path!("/work/data.TSV"),
+                [
+                    &["Preview", "Open Source File", "Open with Default Program"][..],
+                    &reveal_and_copy[..],
+                ]
+                .concat(),
+                "Preview",
+            ),
+        ];
+        for (path, labels_expected, first) in expected {
+            // A PDF is binary and an SVG may be: Solo can't open it as
+            // text, and still previews it.
+            for solo_can_open in [true, false] {
+                let link = file(path, solo_can_open);
+                for setting in [Auto, Always] {
+                    assert_eq!(labels(&menu_items(&link, setting)), labels_expected, "{path}");
+                    assert_eq!(first_ctrl_click(&link, setting).as_deref(), Some(first), "{path}");
+                }
+                assert!(menu_items(&link, Never).is_empty(), "{path}");
+            }
+        }
+    }
+
+    #[test]
+    fn previewable_files_by_extension() {
+        for (name, kind) in [
+            ("index.html", Some(PreviewableFile::Html)),
+            ("INDEX.HTML", Some(PreviewableFile::Html)),
+            ("page.Htm", Some(PreviewableFile::Html)),
+            ("a.csv", Some(PreviewableFile::Table)),
+            ("A.CSV", Some(PreviewableFile::Table)),
+            ("a.tsv", Some(PreviewableFile::Table)),
+            ("a.psv", Some(PreviewableFile::Table)),
+            ("a.ssv", Some(PreviewableFile::Table)),
+            ("a.SVG", Some(PreviewableFile::Svg)),
+            ("a.pdf", Some(PreviewableFile::Pdf)),
+            ("A.Pdf", Some(PreviewableFile::Pdf)),
+            // Markdown opens its preview straight away; the rest isn't previewed.
+            ("a.md", None),
+            ("a.jsonl", None),
+            ("a.json", None),
+            ("a.txt", None),
+            ("a.exe", None),
+            ("csv", None),
+            (".csv", None),
+            ("a.html.exe", None),
+            // Windows ignores trailing dots and spaces, so does the menu: but
+            // the browser would hand these to the system.
+            ("a.html.", None),
+            ("a.pdf ", None),
+            ("a.csv.", None),
+            ("a.svg:stream", None),
+        ] {
+            assert_eq!(previewable_file(Path::new(name)), kind, "{name}");
+        }
+    }
+
+    #[test]
+    fn files_in_a_remote_project_are_not_previewed() {
+        // A remote project's paths don't exist on this computer: the menu is
+        // the one a file of that kind had before.
+        for path in [
+            path!("/work/index.html"),
+            path!("/work/data.csv"),
+            path!("/work/icon.svg"),
+            path!("/work/capture.pdf"),
+        ] {
+            let ClickedLink::Path {
+                resolution,
+                solo_can_open,
+                ..
+            } = file(path, true)
+            else {
+                unreachable!()
+            };
+            let remote = ClickedLink::Path {
+                resolution,
+                solo_can_open,
+                local_project: false,
+            };
+            assert!(menu_items(&remote, TerminalLinkMenu::Auto).is_empty(), "{path}");
+            assert_eq!(
+                labels(&menu_items(&remote, TerminalLinkMenu::Always))[0],
+                "Open",
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_click_only_hands_over_what_a_program_would_get_first() {
+        // Menus that start with giving the file to a program: shown only.
+        let apk = file(path!("/work/PerfCmp.apk"), false);
+        assert_eq!(
+            first_ctrl_click(&apk, TerminalLinkMenu::Auto).as_deref(),
+            Some("Reveal in File Explorer")
+        );
+        let exe = file(path!("/work/setup.exe"), false);
+        assert_eq!(
+            first_ctrl_click(&exe, TerminalLinkMenu::Auto).as_deref(),
+            Some("Reveal in File Explorer")
+        );
+        // The first row opens the file in Solo, and a program row later in
+        // the menu changes nothing.
+        let items = vec![
+            LinkMenuItem::Open(path_target(path!("/work/a.cpp"))),
+            LinkMenuItem::OpenWithDefaultProgram(PathBuf::from(path!("/work/a.cpp"))),
+            LinkMenuItem::RevealInFileManager(PathBuf::from(path!("/work/a.cpp"))),
+        ];
+        assert!(matches!(
+            ctrl_click_item(items),
+            Some(LinkMenuItem::Open(_))
+        ));
+        assert!(ctrl_click_item(Vec::new()).is_none());
+    }
 }
 
 #[cfg(test)]
@@ -886,6 +1180,11 @@ mod view_tests {
             editor::init(cx);
         });
         fs.insert_tree(path!("/Engine"), tree).await;
+        fs.insert_tree(
+            path!("/Elsewhere"),
+            json!({ "outside.csv": "a,b\n1,2\n", "shape.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\"/>" }),
+        )
+        .await;
         let project = Project::test(fs, [Path::new(path!("/Engine"))], cx).await;
         let (multi_workspace, cx) =
             cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
@@ -1036,6 +1335,198 @@ mod view_tests {
             click_path(&view, cx, link);
             assert_eq!(shown(&view, cx), None, "{link}");
         }
+    }
+
+    fn previewable_files() -> serde_json::Value {
+        let mut tree = engine();
+        tree["web"] = json!({
+            "index.html": "<h1>hi</h1>\n",
+            "REPORT.HTML": "<p>report</p>\n",
+        });
+        tree["data"] = json!({ "skills.csv": "a,b\n1,2\n", "table.TSV": "a\tb\n" });
+        tree["img"] = json!({ "icon.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\"/>" });
+        tree["docs"] = json!({ "capture.pdf": "%PDF-1.4\n%\u{e2}\u{e3}\u{0}\u{0}\u{1}\n" });
+        tree["notes"] = json!({ "README.md": "# Notes\n" });
+        tree
+    }
+
+    fn performed_previews(
+        view: &Entity<TerminalView>,
+        cx: &mut VisualTestContext,
+    ) -> Vec<(PreviewKind, String)> {
+        view.read_with(cx, |view, _| {
+            view.performed_link_items
+                .iter()
+                .filter_map(|item| match item {
+                    LinkMenuItem::Preview { kind, path } => {
+                        Some((*kind, path.to_string_lossy().replace('\\', "/")))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    async fn files_solo_previews_ask_first_and_ctrl_click_previews(cx: &mut TestAppContext) {
+        let (view, mut cx) = view_in(cx, previewable_files()).await;
+        let cx = &mut cx;
+        let reveal_and_copy = ["Reveal in File Explorer", "", "Copy Path"];
+
+        // The default settings: "auto".
+        click_path(&view, cx, "web/index.html");
+        assert_eq!(
+            shown(&view, cx).unwrap(),
+            [
+                &["Open in Solo", "Open Source File", "Open with Default Program"][..],
+                &reveal_and_copy[..],
+            ]
+            .concat()
+        );
+        assert!(performed(&view, cx).is_empty());
+        click_path(&view, cx, "web/REPORT.HTML");
+        assert_eq!(shown(&view, cx).unwrap()[0], "Open in Solo");
+        click_path(&view, cx, "data/skills.csv");
+        assert_eq!(
+            shown(&view, cx).unwrap(),
+            [
+                &["Preview", "Open Source File", "Open with Default Program"][..],
+                &reveal_and_copy[..],
+            ]
+            .concat()
+        );
+        click_path(&view, cx, "data/table.TSV");
+        assert_eq!(shown(&view, cx).unwrap()[0], "Preview");
+        click_path(&view, cx, "img/icon.svg");
+        assert_eq!(
+            shown(&view, cx).unwrap(),
+            [&["Preview", "Open Source File"][..], &reveal_and_copy[..]].concat()
+        );
+        click_path(&view, cx, "docs/capture.pdf");
+        assert_eq!(
+            shown(&view, cx).unwrap(),
+            [
+                &["Open in Solo", "Open with Default Program"][..],
+                &reveal_and_copy[..],
+            ]
+            .concat()
+        );
+        // Markdown opens its preview straight away, as before.
+        click_path(&view, cx, "notes/README.md");
+        assert_eq!(shown(&view, cx), None);
+        assert_eq!(performed(&view, cx).len(), 1);
+
+        // Ctrl+click: the first row, without the menu.
+        cx.simulate_modifiers_change(Modifiers::control());
+        for (link, first) in [
+            ("web/index.html", "Open in Solo"),
+            ("web/REPORT.HTML", "Open in Solo"),
+            ("data/skills.csv", "Preview"),
+            ("data/table.TSV", "Preview"),
+            ("img/icon.svg", "Preview"),
+            ("docs/capture.pdf", "Open in Solo"),
+        ] {
+            click_path(&view, cx, link);
+            assert_eq!(shown(&view, cx), None, "{link}");
+            assert_eq!(performed(&view, cx), [first], "{link}");
+        }
+        click_path(&view, cx, "img/icon.svg");
+        assert_eq!(
+            performed_previews(&view, cx),
+            [(PreviewKind::Svg, path!("/Engine/img/icon.svg").replace('\\', "/"))]
+        );
+        click_path(&view, cx, "data/skills.csv");
+        assert_eq!(performed_previews(&view, cx)[0].0, PreviewKind::Table);
+        cx.simulate_modifiers_change(Modifiers::none());
+    }
+
+    #[gpui::test]
+    async fn files_solo_previews_follow_the_setting(cx: &mut TestAppContext) {
+        let (view, mut cx) = view_in(cx, previewable_files()).await;
+        let cx = &mut cx;
+        let links = [
+            "web/index.html",
+            "data/skills.csv",
+            "img/icon.svg",
+            "docs/capture.pdf",
+        ];
+
+        // "never": no menu and no preview, the file opens as before (in the editor).
+        set_link_menu(cx, TerminalLinkMenu::Never);
+        for link in links {
+            click_path(&view, cx, link);
+            assert_eq!(shown(&view, cx), None, "{link}");
+            assert!(performed_previews(&view, cx).is_empty(), "{link}");
+        }
+        cx.simulate_modifiers_change(Modifiers::control());
+        for link in links {
+            click_path(&view, cx, link);
+            assert_eq!(shown(&view, cx), None, "{link}");
+            assert!(performed_previews(&view, cx).is_empty(), "{link}");
+        }
+        cx.simulate_modifiers_change(Modifiers::none());
+
+        // "always": the same menu as "auto".
+        set_link_menu(cx, TerminalLinkMenu::Always);
+        for (link, first) in [
+            ("web/index.html", "Open in Solo"),
+            ("data/skills.csv", "Preview"),
+            ("img/icon.svg", "Preview"),
+            ("docs/capture.pdf", "Open in Solo"),
+        ] {
+            click_path(&view, cx, link);
+            assert_eq!(shown(&view, cx).unwrap()[0], first, "{link}");
+        }
+    }
+
+    #[gpui::test]
+    async fn files_outside_the_project_preview_too(cx: &mut TestAppContext) {
+        let (view, mut cx) = view_in(cx, previewable_files()).await;
+        let cx = &mut cx;
+        let outside_csv = path!("/Elsewhere/outside.csv");
+        let outside_svg = path!("/Elsewhere/shape.svg");
+        click_path(&view, cx, outside_csv);
+        assert_eq!(
+            shown(&view, cx).unwrap()[..3],
+            ["Preview", "Open Source File", "Open with Default Program"]
+        );
+        cx.simulate_modifiers_change(Modifiers::control());
+        click_path(&view, cx, outside_csv);
+        assert_eq!(
+            performed_previews(&view, cx),
+            [(PreviewKind::Table, outside_csv.replace('\\', "/"))]
+        );
+        click_path(&view, cx, outside_svg);
+        assert_eq!(
+            performed_previews(&view, cx),
+            [(PreviewKind::Svg, outside_svg.replace('\\', "/"))]
+        );
+        cx.simulate_modifiers_change(Modifiers::none());
+    }
+
+    #[gpui::test]
+    async fn choosing_a_row_of_the_preview_menu(cx: &mut TestAppContext) {
+        let (view, mut cx) = view_in(cx, previewable_files()).await;
+        let cx = &mut cx;
+        // Down, Down, Enter: the second row, the source file.
+        click_path(&view, cx, "data/skills.csv");
+        let menu = view.read_with(cx, |view, _| view.context_menu.as_ref().unwrap().0.clone());
+        menu.update_in(cx, |menu, window, cx| {
+            menu.select_next(&menu::SelectNext, window, cx);
+            menu.select_next(&menu::SelectNext, window, cx);
+            menu.confirm(&menu::Confirm, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(performed(&view, cx), ["Open Source File"]);
+        // Down, Enter: the preview.
+        click_path(&view, cx, "data/skills.csv");
+        let menu = view.read_with(cx, |view, _| view.context_menu.as_ref().unwrap().0.clone());
+        menu.update_in(cx, |menu, window, cx| {
+            menu.select_next(&menu::SelectNext, window, cx);
+            menu.confirm(&menu::Confirm, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(performed_previews(&view, cx).len(), 1);
     }
 
     #[gpui::test]

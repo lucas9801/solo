@@ -387,7 +387,7 @@ without it, the tab says so and offers the download).
   palette's **browser: open browser** opens an empty tab.
 - **Toolbar**: back, forward, reload (right-click: reload without the cache),
   the address (`5173` and `localhost:5173` both mean
-  `http://localhost:5173/`; only http, https and local HTML files open), the
+  `http://localhost:5173/`; only http, https and local HTML and PDF files open), the
   viewport (desktop, tablet 768 x 1024, phone 390 x 844), **Pick**, and the
   `...` menu: developer tools (`f12`), find in page (`ctrl-f`), open in the
   system browser, copy address.

@@ -15406,13 +15406,16 @@ checksum = "0193cc4331cfd2f3d2011ef287590868599a2f33c3e69bc22c1a3d3acf9e02fb"
 name = "svg_preview"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "file_icons",
  "gpui",
  "language",
  "multi_buffer",
  "project",
+ "serde_json",
  "solo_actions",
  "ui",
+ "util",
  "workspace",
 ]
 
@@ -15680,6 +15683,7 @@ dependencies = [
  "schemars 1.0.4",
  "serde",
  "serde_json",
+ "solo_actions",
  "text",
  "ui",
  "util",
