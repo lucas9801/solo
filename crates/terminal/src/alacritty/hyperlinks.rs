@@ -1328,6 +1328,37 @@ mod tests {
     }
 
     #[test]
+    fn test_broken_position_from_program_output() -> anyhow::Result<()> {
+        // SOLO: the same, as the bytes of a program writing into a terminal,
+        // with the line ended by a line break or just by running into the edge.
+        let content = settings::parse_json_with_comments(&settings::default_settings())?;
+        let settings = TerminalSettings::from_settings(&content);
+        let mut searches = RegexSearches::new(
+            &settings.path_hyperlink_regexes,
+            Duration::from_millis(settings.path_hyperlink_timeout_ms),
+        );
+        let columns = 121;
+        let path = "（src/core/object_globals.cpp:496";
+        let padding = " ".repeat(columns - path.chars().count() - 1);
+        for line_break in ["\r\n", ""] {
+            let mut term = Term::new(Config::default(), &TermSize::new(columns, 40), VoidListener);
+            let mut processor = alacritty_terminal::vte::ansi::Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::default();
+            let output = format!("prompt > command\r\n{padding}{path}{line_break}9）。\r\n\r\nnext\r\n");
+            processor.advance(&mut term, output.as_bytes());
+            for (line, column) in [(1, columns - 10), (1, columns - 1), (2, 0)] {
+                let point = AlacPoint::new(Line(line), Column(column));
+                let found = find_from_grid_point(&term, point, &mut searches, PathStyle::local());
+                assert_eq!(
+                    found.map(|found| found.text),
+                    Some("src/core/object_globals.cpp:4969".to_string()),
+                    "hovering ({line}, {column}) after {line_break:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_paths_on_very_long_lines() {
         // SOLO: a path in the middle of a line of tens of thousands of
         // characters is found, by looking only near the mouse.
