@@ -1059,6 +1059,18 @@ mod tests {
         assert_eq!(results, expected);
     }
 
+    /// The default settings' regexes with no real time limit: a test of what
+    /// is found must not depend on how busy the machine running it is (the
+    /// default 5 ms limit skips the search for a path broken across lines).
+    fn searches_without_time_limit() -> anyhow::Result<RegexSearches> {
+        let content = settings::parse_json_with_comments(&settings::default_settings())?;
+        let settings = TerminalSettings::from_settings(&content);
+        Ok(RegexSearches::new(
+            &settings.path_hyperlink_regexes,
+            Duration::from_secs(60),
+        ))
+    }
+
     #[test]
     fn test_default_path_hyperlink_regexes() -> anyhow::Result<()> {
         let content = settings::parse_json_with_comments(&settings::default_settings())?;
@@ -1093,12 +1105,7 @@ mod tests {
     fn test_paths_broken_across_lines() -> anyhow::Result<()> {
         // SOLO: Claude Code breaks a path longer than the room left on a line
         // itself, and indents the rest as the list item it's in.
-        let content = settings::parse_json_with_comments(&settings::default_settings())?;
-        let settings = TerminalSettings::from_settings(&content);
-        let mut searches = RegexSearches::new(
-            &settings.path_hyperlink_regexes,
-            Duration::from_millis(settings.path_hyperlink_timeout_ms),
-        );
+        let mut searches = searches_without_time_limit()?;
         let mut check = |lines: &[&str], columns: usize, hovered: (i32, usize)| {
             let mut term = Term::new(
                 Config::default(),
@@ -1158,12 +1165,7 @@ mod tests {
     fn test_positions_broken_across_lines() -> anyhow::Result<()> {
         // SOLO: a program that breaks lines itself may break one inside a
         // position, as `:496` and `9）` of `:4969）`.
-        let content = settings::parse_json_with_comments(&settings::default_settings())?;
-        let settings = TerminalSettings::from_settings(&content);
-        let mut searches = RegexSearches::new(
-            &settings.path_hyperlink_regexes,
-            Duration::from_millis(settings.path_hyperlink_timeout_ms),
-        );
+        let mut searches = searches_without_time_limit()?;
         let width = |text: &str| {
             text.chars()
                 .map(|c| if c.is_ascii() { 1 } else { 2 })
@@ -1271,12 +1273,7 @@ mod tests {
     fn test_positions_after_full_width_punctuation() -> anyhow::Result<()> {
         // SOLO: an agent lists the lines of a file after the file with `、`
         // or `，`: each `:476` is in the file named before it.
-        let content = settings::parse_json_with_comments(&settings::default_settings())?;
-        let settings = TerminalSettings::from_settings(&content);
-        let mut searches = RegexSearches::new(
-            &settings.path_hyperlink_regexes,
-            Duration::from_millis(settings.path_hyperlink_timeout_ms),
-        );
+        let mut searches = searches_without_time_limit()?;
         let width = |text: &str| {
             text.chars()
                 .map(|c| if c.is_ascii() { 1 } else { 2 })
@@ -1363,12 +1360,7 @@ mod tests {
     fn test_broken_position_from_program_output() -> anyhow::Result<()> {
         // SOLO: the same, as the bytes of a program writing into a terminal,
         // with the line ended by a line break or just by running into the edge.
-        let content = settings::parse_json_with_comments(&settings::default_settings())?;
-        let settings = TerminalSettings::from_settings(&content);
-        let mut searches = RegexSearches::new(
-            &settings.path_hyperlink_regexes,
-            Duration::from_millis(settings.path_hyperlink_timeout_ms),
-        );
+        let mut searches = searches_without_time_limit()?;
         let columns = 121;
         let path = "（src/core/object_globals.cpp:496";
         let padding = " ".repeat(columns - path.chars().count() - 1);
@@ -1419,12 +1411,7 @@ mod tests {
         // SOLO: an agent writes a position without its file when the file was
         // named just before, and file names that tell which of several files
         // of the same name it means.
-        let content = settings::parse_json_with_comments(&settings::default_settings())?;
-        let settings = TerminalSettings::from_settings(&content);
-        let mut searches = RegexSearches::new(
-            &settings.path_hyperlink_regexes,
-            Duration::from_millis(settings.path_hyperlink_timeout_ms),
-        );
+        let mut searches = searches_without_time_limit()?;
         let mut check = |lines: &[&str], hovered: (i32, usize)| {
             let mut term = Term::new(
                 Config::default(),
@@ -3168,9 +3155,11 @@ pub mod link_probe {
             let content = settings::parse_json_with_comments(&settings::default_settings())
                 .expect("the default settings parse");
             let settings = TerminalSettings::from_settings(&content);
+            // No real time limit, so what is found doesn't depend on how busy
+            // the machine is; the time taken is what the timing test reports.
             let searches = RegexSearches::new(
                 &settings.path_hyperlink_regexes,
-                Duration::from_millis(settings.path_hyperlink_timeout_ms),
+                Duration::from_secs(60),
             );
             let rows = lines
                 .iter()
