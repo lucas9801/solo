@@ -12987,6 +12987,7 @@ dependencies = [
  "language",
  "log",
  "menu",
+ "net_guard",
  "node_runtime",
  "open_path_prompt",
  "ordered-float",
