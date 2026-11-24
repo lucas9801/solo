@@ -2,6 +2,7 @@ pub mod agent_board;
 pub mod agent_cli;
 mod agent_context;
 mod agent_detection;
+mod agent_install;
 mod agent_resume;
 mod agent_session;
 mod agent_status;
@@ -161,6 +162,7 @@ pub fn init(cx: &mut App) {
     command_notifications::init(cx);
     follow_working_directory::init(cx);
     agent_tasks::init(cx);
+    agent_install::init(cx);
     run_workflow::init(cx);
     agent_turns::init(cx);
     agent_context::init(cx);
@@ -275,6 +277,12 @@ pub struct TerminalView {
     input: Option<Entity<TerminalInput>>,
     /// SOLO: a workflow's command to put in the input once it shows.
     pending_workflow: Option<String>,
+    /// SOLO: a line below the input, "Press Enter to run", while an install
+    /// command waits in it, until a command starts.
+    install_hint: Option<SharedString>,
+    /// SOLO: the hint to show once `pending_workflow`, an install command,
+    /// is in the input.
+    pending_install_hint: Option<SharedString>,
     /// SOLO: saves the contents to show them again after a restart.
     save_contents: Task<()>,
     save_contents_scheduled: bool,
@@ -502,6 +510,8 @@ impl TerminalView {
             running_command_ticker: None,
             input: None,
             pending_workflow: None,
+            install_hint: None,
+            pending_install_hint: None,
             save_contents: Task::ready(()),
             save_contents_scheduled: false,
             rendered_since_output: true,
@@ -2121,7 +2131,8 @@ impl Render for TerminalView {
                             )
                             // SOLO: the agent's usage, when it's running.
                             .children(self.render_agent_usage_bar(cx))
-                            .children(input),
+                            .children(input)
+                            .children(self.render_install_hint(cx)),
                     )
                     .when(content_mode.is_scrollable(), |div| {
                         let colors = cx.theme().colors();
@@ -2149,6 +2160,48 @@ impl Render for TerminalView {
                 )
                 .with_priority(1)
             }))
+    }
+}
+
+impl TerminalView {
+    /// Puts an install `command` in the input once it shows, with `hint`
+    /// below it.
+    pub(crate) fn queue_install_command(
+        &mut self,
+        command: String,
+        hint: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_install_hint = Some(hint);
+        self.fill_input_when_ready(command, cx);
+    }
+
+    /// The install command still waiting for the input, taken (with its
+    /// hint) to be typed into the shell instead.
+    pub(crate) fn take_pending_install(&mut self) -> Option<String> {
+        self.pending_install_hint.take()?;
+        self.pending_workflow.take()
+    }
+
+    pub(crate) fn clear_install_hint(&mut self, cx: &mut Context<Self>) {
+        if self.install_hint.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn render_install_hint(&self, cx: &App) -> Option<AnyElement> {
+        let hint = self.install_hint.clone()?;
+        Some(
+            h_flex()
+                .id("install-hint")
+                .w_full()
+                .flex_none()
+                .px_2()
+                .py_1()
+                .bg(cx.theme().colors().terminal_background)
+                .child(Label::new(hint).size(LabelSize::Small).color(Color::Muted))
+                .into_any_element(),
+        )
     }
 }
 

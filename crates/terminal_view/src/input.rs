@@ -1471,6 +1471,7 @@ impl TerminalView {
             window.defer(cx, move |window, cx| window.focus(&focus_handle, cx));
         }
         if !running && let Some(command) = self.pending_workflow.take() {
+            self.install_hint = self.pending_install_hint.take();
             let input = input.clone();
             window.defer(cx, move |window, cx| {
                 input.update(cx, |input, cx| input.fill_workflow(&command, window, cx))

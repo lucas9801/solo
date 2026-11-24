@@ -5482,6 +5482,7 @@
   "tabular data: open preview to the side": "表格数据: 在侧边打开预览",
   "task: rerun": "任务: 重新运行",
   "task: spawn": "任务: 启动",
+  "terminal panel: install agents": "终端面板: 安装 agent",
   "terminal panel: toggle": "终端面板: 切换",
   "terminal panel: toggle focus": "终端面板: 切换焦点",
   "terminal: accept input suggestion": "终端: 接受输入建议",

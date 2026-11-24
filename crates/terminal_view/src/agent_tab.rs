@@ -202,6 +202,13 @@ fn agent_logo_color(logo: AgentLogo, background: Hsla, cx: &App) -> Hsla {
     legible_on(color, background)
 }
 
+/// The logo `name` has and the color it's drawn in on `background`, for a
+/// menu entry's icon.
+pub(crate) fn agent_logo_icon(name: &str, background: Hsla, cx: &App) -> Option<(IconName, Hsla)> {
+    let logo = agent_logo(name)?;
+    Some((logo.icon, agent_logo_color(logo, background, cx)))
+}
+
 /// The agent's logo in its own color on `background` (what it's drawn on),
 /// or its initial in a small square when it has none.
 pub(crate) fn render_agent_mark(name: &str, background: Hsla, cx: &App) -> AnyElement {
