@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod git;
+pub mod pr_tracker;
 pub mod pull_request;
 
 use std::{
@@ -265,7 +266,7 @@ pub(crate) fn display_name(task: &AgentTask) -> String {
 
 /// Tells tasks apart: the parts of a task spanning repositories share their
 /// branch.
-fn task_key(task: &AgentTask) -> String {
+pub(crate) fn task_key(task: &AgentTask) -> String {
     format!("{}\n{}", task.repository_root.display(), task.branch)
 }
 
@@ -561,7 +562,7 @@ fn type_when_ready(terminal: Entity<Terminal>, command: String, cx: &mut App) {
     .detach();
 }
 
-fn show_toast(workspace: &Entity<Workspace>, message: String, cx: &mut App) {
+pub(crate) fn show_toast(workspace: &Entity<Workspace>, message: String, cx: &mut App) {
     struct AgentTaskToast;
     workspace.update(cx, |workspace, cx| {
         workspace.show_toast(
@@ -1275,6 +1276,7 @@ pub struct AgentTasksModal {
     active_directory: Option<PathBuf>,
     page: Page,
     _task: Task<()>,
+    _pull_request_tracker: gpui::Subscription,
 }
 
 impl AgentTasksModal {
@@ -1293,6 +1295,10 @@ impl AgentTasksModal {
                 active_directory,
                 page: Page::List,
                 _task: Task::ready(()),
+                _pull_request_tracker: {
+                    let tracker = pr_tracker::PrTracker::global(cx);
+                    cx.observe(&tracker, |_, _, cx| cx.notify())
+                },
             };
             // Loading reads the workspace's terminals, and the workspace is
             // being updated while the modal is made: load once it isn't.
@@ -1308,9 +1314,15 @@ impl AgentTasksModal {
             return;
         };
         let load = agent_tasks(&workspace, cx);
+        let workspace_id: gpui::AnyWeakEntity = workspace.downgrade().into();
         self._task = cx.spawn_in(window, async move |this, cx| {
             let entries = load.await;
             this.update(cx, |this, cx| {
+                if let Ok(entries) = &entries {
+                    pr_tracker::PrTracker::global(cx).update(cx, |tracker, cx| {
+                        tracker.set_tasks(workspace_id.clone(), entries, cx)
+                    });
+                }
                 let entries = entries.map_err(|error| SharedString::from(format!("{error:#}")));
                 if let (Ok(entries), Some(directory)) = (&entries, &this.active_directory)
                     && let Some(index) = entries.iter().position(|entry| {
@@ -1370,6 +1382,7 @@ impl AgentTasksModal {
             Page::Working(tr("Pushing and opening a pull request…", "正在推送并开 PR…").into());
         cx.notify();
         let task = entry.task;
+        let key = task_key(&task);
         self._task = cx.spawn_in(window, async move |this, cx| {
             let uncommitted = cx
                 .background_spawn({
@@ -1425,6 +1438,10 @@ impl AgentTasksModal {
                 Err(error) => (format!("{error:#}"), true),
             };
             this.update_in(cx, |this, window, cx| {
+                if !is_error {
+                    pr_tracker::PrTracker::global(cx)
+                        .update(cx, |tracker, _| tracker.check_soon(&key));
+                }
                 this.page = Page::Outcome {
                     message: message.into(),
                     is_error,
@@ -1437,7 +1454,7 @@ impl AgentTasksModal {
         });
     }
 
-    /// Pastes what the pull request's checks and reviewers said into the
+    /// Pastes what's new on the task's pull request, read just now, into the
     /// task's agent; without one, copies it.
     fn send_pull_request_feedback(
         &mut self,
@@ -1448,10 +1465,11 @@ impl AgentTasksModal {
         let Some(entry) = self.entry(index).cloned() else {
             return;
         };
-        let Some(pull_request) = self.pull_requests.get(&task_key(&entry.task)).cloned() else {
+        let key = task_key(&entry.task);
+        let Some(pull_request) = self.pull_requests.get(&key).cloned() else {
             return;
         };
-        let Some(worktree) = entry.task.worktree_path.clone() else {
+        let Some(worktree) = entry.task.worktree_path else {
             return;
         };
         let Some(workspace) = self.workspace.upgrade() else {
@@ -1466,59 +1484,23 @@ impl AgentTasksModal {
         );
         cx.notify();
         self._task = cx.spawn_in(window, async move |this, cx| {
-            let number = pull_request.number;
-            let feedback = cx
-                .background_spawn(async move {
-                    pull_request::pull_request_feedback(&worktree, number)
-                })
+            let number = pull_request.number.to_string();
+            let snapshot = cx
+                .background_spawn(async move { pull_request::fetch_snapshot(&worktree, &number) })
                 .await;
-            let outcome = this.update_in(cx, |_, window, cx| match feedback {
+            let outcome = this.update_in(cx, |_, window, cx| match snapshot {
                 Err(error) => (format!("{error:#}"), true),
-                Ok(feedback) if feedback.is_empty() => (
-                    tr(
-                        "No failed checks or comments on the pull request.",
-                        "PR 上没有失败的检查，也没有评论。",
-                    )
-                    .to_string(),
-                    false,
+                Ok(None) => (
+                    tr("The pull request isn't found.", "找不到这个 PR。").to_string(),
+                    true,
                 ),
-                Ok(feedback) => {
-                    let message = pull_request::feedback_message(&pull_request, &feedback);
-                    let agent = entry
-                        .terminals
-                        .iter()
-                        .find(|view| crate::agent_context::can_paste_to_agent(view.read(cx), &message, cx))
-                        .cloned();
-                    match agent {
-                        Some(agent) => {
-                            agent.update(cx, |agent, cx| {
-                                agent.terminal.update(cx, |terminal, _| terminal.paste(&message))
-                            });
-                            let workspace = workspace.clone();
-                            window.defer(cx, move |window, cx| {
-                                activate_terminal_view(&workspace, &agent, window, cx)
-                            });
-                            (
-                                tr(
-                                    "Sent the failed checks and comments to the task's agent.",
-                                    "已把失败的检查和评论发给任务的 agent。",
-                                )
-                                .to_string(),
-                                false,
-                            )
-                        }
-                        None => {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
-                            (
-                                tr(
-                                    "No agent is running in the task's terminals; copied the feedback to the clipboard.",
-                                    "任务的终端里没有 agent，已把反馈复制到剪贴板。",
-                                )
-                                .to_string(),
-                                false,
-                            )
-                        }
-                    }
+                Ok(Some(snapshot)) => {
+                    pr_tracker::PrTracker::global(cx)
+                        .update(cx, |tracker, cx| tracker.set_snapshot(&key, snapshot, cx));
+                    (
+                        pr_tracker::send_new_feedback(&workspace, &key, window, cx),
+                        false,
+                    )
                 }
             });
             if let Ok((message, is_error)) = outcome {
@@ -1527,7 +1509,7 @@ impl AgentTasksModal {
                         message: message.into(),
                         is_error,
                         offer_delete: None,
-                    offer_commit: None,
+                        offer_commit: None,
                     };
                     cx.notify();
                 })
@@ -2018,6 +2000,8 @@ impl AgentTasksModal {
                     None => tr("worktree is gone", "工作树已不存在").to_string(),
                 };
                 let selected = index == self.selected;
+                let pull_request_state = pr_tracker::PrTracker::try_global(cx)
+                    .and_then(|tracker| tracker.read(cx).summary(&task_key(task)));
                 v_flex()
                     .id(("agent-task", index))
                     .p_1()
@@ -2051,6 +2035,20 @@ impl AgentTasksModal {
                             .color(Color::Muted)
                             .truncate(),
                     )
+                    .when_some(pull_request_state, |this, summary| {
+                        let color = summary.color();
+                        this.child(
+                            h_flex()
+                                .h_5()
+                                .gap_1p5()
+                                .child(Icon::new(summary.icon()).size(IconSize::XSmall).color(color))
+                                .child(
+                                    Label::new(summary.line(is_chinese()))
+                                        .size(LabelSize::Small)
+                                        .color(color),
+                                ),
+                        )
+                    })
                     .child(
                         h_flex()
                             .gap_1()

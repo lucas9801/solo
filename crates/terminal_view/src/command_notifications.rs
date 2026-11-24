@@ -1,23 +1,30 @@
 //! SOLO: desktop notifications from the terminal while Solo is in the
 //! background: when a long command finishes (a build, a test run), when a
 //! program asks for one with OSC 9 / OSC 777, when an agent needs you, and
-//! (if turned on) when an agent stops working. Each kind has its own setting.
+//! (if turned on) when an agent stops working, and when the pull request of
+//! an agent task has news. Each kind has its own setting.
 //! Clicking a notification brings back the terminal it came from.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use gpui::{
-    AnyWindowHandle, App, Context, Global, SharedString, SystemNotification, WeakEntity, Window,
+    AnyWindowHandle, App, Context, Entity, Focusable as _, Global, SharedString,
+    SystemNotification, WeakEntity, Window,
 };
 use settings::Settings;
 use terminal::terminal_settings::TerminalSettings;
+use workspace::MultiWorkspace;
+
+use util::ResultExt as _;
 
 use crate::TerminalView;
 
 /// Which terminal each shown notification came from, by tag.
 #[derive(Default)]
-struct NotificationTargets(HashMap<SharedString, (AnyWindowHandle, WeakEntity<TerminalView>)>);
+struct NotificationTargets(
+    HashMap<SharedString, (AnyWindowHandle, Option<WeakEntity<TerminalView>>)>,
+);
 
 impl Global for NotificationTargets {}
 
@@ -33,7 +40,7 @@ pub(crate) fn init(cx: &mut App) {
         window
             .update(cx, |_, window, cx| {
                 window.activate_window();
-                if let Some(view) = view.upgrade() {
+                if let Some(view) = view.and_then(|view| view.upgrade()) {
                     crate::workspace_terminals::show_terminal(&view, window, cx);
                 }
             })
@@ -174,7 +181,7 @@ impl TerminalView {
     ) {
         // One notification per terminal; a newer one replaces the last.
         let tag: SharedString = format!("solo-terminal-{}", cx.entity_id()).into();
-        let target = (window.window_handle(), cx.entity().downgrade());
+        let target = (window.window_handle(), Some(cx.entity().downgrade()));
         cx.default_global::<NotificationTargets>()
             .0
             .insert(tag.clone(), target);
@@ -185,6 +192,69 @@ impl TerminalView {
             actions: Vec::new(),
         });
     }
+}
+
+/// The pull request of an agent task has news. Not shown while the user
+/// looks at one of the task's terminals; clicking it shows one.
+pub(crate) fn show_pull_request_notification(
+    notification: &crate::agent_tasks::pr_tracker::PrNotification,
+    cx: &mut App,
+) {
+    let views: Vec<Entity<TerminalView>> = notification
+        .terminals
+        .iter()
+        .filter_map(WeakEntity::upgrade)
+        .collect();
+    let mut target: Option<(AnyWindowHandle, Option<WeakEntity<TerminalView>>)> = None;
+    for handle in cx.windows() {
+        let found = handle
+            .update(cx, |_, window, cx| {
+                let view =
+                    window
+                        .root::<MultiWorkspace>()
+                        .flatten()
+                        .and_then(|multi_workspace| {
+                            multi_workspace.read(cx).workspaces().find_map(|workspace| {
+                                crate::command_blocks::terminal_views(workspace, cx)
+                                    .into_iter()
+                                    .find(|view| views.contains(view))
+                            })
+                        })?;
+                let watching =
+                    window.is_window_active() && view.focus_handle(cx).contains_focused(window, cx);
+                Some((view, watching))
+            })
+            .log_err()
+            .flatten();
+        match found {
+            Some((_, true)) => return,
+            Some((view, false)) => {
+                target = Some((handle, Some(view.downgrade())));
+                break;
+            }
+            None => {
+                target.get_or_insert((handle, None));
+            }
+        }
+    }
+    // A short tag: Windows limits their length.
+    let tag: SharedString = {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        notification.key.hash(&mut hasher);
+        format!("solo-pr-{:x}", hasher.finish()).into()
+    };
+    if let Some(target) = target {
+        cx.default_global::<NotificationTargets>()
+            .0
+            .insert(tag.clone(), target);
+    }
+    cx.show_system_notification(SystemNotification {
+        tag,
+        title: notification.title.clone().into(),
+        body: notification.body.clone().into(),
+        actions: Vec::new(),
+    });
 }
 
 fn finished_notification_text(
@@ -370,5 +440,46 @@ mod tests {
                 "Build"
             ]
         );
+    }
+
+    #[gpui::test]
+    async fn test_pull_request_notification_waits_until_the_terminal_is_not_watched(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (project, _workspace, window) = crate::tests::init_test_with_window(cx).await;
+        let (_pane, _terminal, view) =
+            crate::tests::add_display_only_terminal(&project, window, true, false, cx);
+        let notification = crate::agent_tasks::pr_tracker::PrNotification {
+            key: "/repo
+agent/fix"
+                .into(),
+            title: "PR #42 checks failed".into(),
+            body: "fix: build failed".into(),
+            terminals: vec![view.downgrade()],
+        };
+        let app = cx.clone();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            cx.set_app_identity("Solo-Terminal-Test", "Solo");
+            window.activate_window();
+        });
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| window.is_window_active()));
+        view.update_in(cx, |view, window, cx| {
+            window.focus(&view.focus_handle(cx), cx)
+        });
+        cx.run_until_parked();
+
+        // The window is active and the task's terminal has the focus: the user
+        // sees it already.
+        // Called as the tracker does, outside the window's update.
+        app.update(|cx| show_pull_request_notification(&notification, cx));
+        assert!(shown_titles(cx).is_empty());
+
+        cx.deactivate_window();
+        cx.run_until_parked();
+        // Called as the tracker does, outside the window's update.
+        app.update(|cx| show_pull_request_notification(&notification, cx));
+        assert_eq!(shown_titles(cx), ["PR #42 checks failed"]);
     }
 }

@@ -8060,6 +8060,45 @@ fn terminal_page() -> SettingsPage {
         ]
     }
 
+    // SOLO: following the pull requests of agent tasks.
+    fn pull_requests_section() -> [SettingsPageItem; 3] {
+        [
+            SettingsPageItem::SectionHeader("Pull Requests"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Check Pull Requests",
+                description: "Check the pull requests of agent tasks with gh every few minutes while Solo runs: their checks, reviews and comments show on the agent board, and a notification says when something needs you.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("terminal.check_pull_requests"),
+                    pick: |settings_content| {
+                        settings_content.terminal.as_ref()?.check_pull_requests.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.terminal.get_or_insert_default().check_pull_requests = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Send PR Feedback To Agent Automatically",
+                description: "Paste new failed checks and comments of a task's pull request into its agent when the agent is idle. Doesn't press Enter.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("terminal.auto_send_pr_feedback"),
+                    pick: |settings_content| {
+                        settings_content.terminal.as_ref()?.auto_send_pr_feedback.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.terminal.get_or_insert_default().auto_send_pr_feedback = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
     fn layout_settings_section() -> [SettingsPageItem; 3] {
         [
             SettingsPageItem::SectionHeader("Layout Settings"),
@@ -8232,6 +8271,7 @@ fn terminal_page() -> SettingsPage {
             display_settings_section(),
             behavior_settings_section(),
             notifications_section(),
+            pull_requests_section(),
             layout_settings_section(),
             advanced_settings_section(),
             toolbar_section(),

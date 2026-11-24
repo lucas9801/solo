@@ -124,6 +124,12 @@ guide explains each feature in more detail.
   an agent needs your input or rings the bell, when a program asks for one
   (OSC 9 / OSC 777), and (off by default) when an agent stops after working a
   while. Each has its own setting.
+- Pull requests of agent tasks are checked with `gh` while Solo runs (every
+  minute while checks run, every five minutes otherwise): the agent board shows
+  the checks, new comments and whether one can be merged, and a notification
+  says when something needs you. `check_pull_requests` turns it off;
+  `auto_send_pr_feedback` pastes new failed checks and comments into an idle
+  agent.
 
 To get Claude Code's turn notifications, run
 `claude config set --global preferredNotifChannel iterm2` (OSC 9) or keep its
@@ -155,7 +161,8 @@ terminal settings, under `"terminal"`: `shell_integration`, `input_editor`,
 `compact_prompt`, `completions_as_you_type`, `open_links_on_click`,
 `notify_long_commands_after_seconds`,
 `program_notifications`, `agent_input_notifications`,
-`agent_stopped_notifications`, `restore_contents`, `agent_commands`,
+`agent_stopped_notifications`, `check_pull_requests`,
+`auto_send_pr_feedback`, `restore_contents`, `agent_commands`,
 `claude_code_hooks`, `codex_hooks`, `codex_edit_hooks`, `copilot_hooks`, `opencode_hooks`, `keep_running_on_quit`,
 `follow_working_directory`, `confirm_close`, `agent_task_command`,
 `agent_control`, `ai_command_agent`, `ai_command_include_last_failure`.

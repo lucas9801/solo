@@ -2327,6 +2327,13 @@
     // Show a desktop notification when an AI agent in the terminal stops
     // working while Solo is in the background.
     "agent_stopped_notifications": false,
+    // Check the pull requests of agent tasks with gh (GitHub's CLI) every few
+    // minutes while Solo runs: their checks, reviews and comments show on the
+    // agent board, and a desktop notification says when something needs you.
+    "check_pull_requests": true,
+    // Paste new failed checks and comments of a task's pull request into its
+    // agent when the agent is idle (without pressing Enter).
+    "auto_send_pr_feedback": false,
     // Show terminals' previous contents and command blocks again when Solo
     // restarts. The contents are saved in Solo's data directory. Off by
     // default: terminals are still reopened in their directories with their

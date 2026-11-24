@@ -27,7 +27,7 @@ A `.solo/worktrees.json` in the repository sets where worktrees go, which ignore
 
 - **Terminal tabs** show an agent's status: working, needs your input, idle, done, failed. With Solo in the background, you get a desktop notification when an agent waits for you or finishes a long stretch of work.
 - **Workspace tabs in the title bar:** one per project; switching swaps the terminals, editors and file tree together. Each tab counts the agents working, waiting for you or failed in that project, so one waiting in the background is seen. A tab's menu lists the project's terminals and tasks to jump to.
-- **Agent board:** the left sidebar lists every agent and task, those waiting for you first.
+- **Agent board:** the left sidebar lists every agent and task, those waiting for you first. A task's pull request is checked with `gh` every few minutes: its checks, new comments and whether it can be merged show on the board, a notification tells you when something needs you, and what's new can be sent to the agent.
 
 ## Agents directing agents
 
