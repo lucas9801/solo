@@ -959,6 +959,19 @@ fn path_match<T>(
                 }
             }
 
+            // SOLO: a position after full-width punctuation (`、:476` of
+            // `class.h:180、:476`, `创建，:4795`) matches with the prose in
+            // front of it: it's the position alone, in the file named before.
+            let path_text = &line[path_range.clone()];
+            if let Some(colon) = path_text.find(':')
+                && path_text[..colon].ends_with(PROSE_PUNCTUATION)
+                && path_text[..colon].chars().all(|c| !c.is_ascii())
+                && bare_position(&path_text[colon..]) == Some(&path_text[colon..])
+            {
+                path_range.start += colon;
+                link_range.start = link_range.start.max(path_range.start);
+            }
+
             // SOLO: a match written into Chinese prose can hold several paths, as in
             // `extension_api.json（main.cpp:4291`: cut out each one where the prose
             // around it starts and ends.
@@ -1228,6 +1241,89 @@ mod tests {
             check(&short, (0, 18)).map(|found| found.0),
             Some("a.cpp:12".to_string())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_positions_after_full_width_punctuation() -> anyhow::Result<()> {
+        // SOLO: an agent lists the lines of a file after the file with `、`
+        // or `，`: each `:476` is in the file named before it.
+        let content = settings::parse_json_with_comments(&settings::default_settings())?;
+        let settings = TerminalSettings::from_settings(&content);
+        let mut searches = RegexSearches::new(
+            &settings.path_hyperlink_regexes,
+            Duration::from_millis(settings.path_hyperlink_timeout_ms),
+        );
+        let width = |text: &str| {
+            text.chars()
+                .map(|c| if c.is_ascii() { 1 } else { 2 })
+                .sum::<usize>()
+        };
+        let mut check = |line: &str, before_hovered: &str| {
+            let mut term = Term::new(Config::default(), &TermSize::new(100, 2), VoidListener);
+            for c in line.chars() {
+                term.input(c);
+            }
+            let point = AlacPoint::new(Line(0), Column(width(before_hovered)));
+            find_from_grid_point(&term, point, &mut searches, PathStyle::local())
+                .map(|found| (found.text, found.range.start.column, found.range.end.column))
+        };
+        let found = |text: &str, before: &str, length: usize| {
+            Some((
+                text.to_string(),
+                width(before),
+                width(before) + length - 1,
+            ))
+        };
+
+        let line = "继承关系（src/core/class.h:180、:476、:1719）：";
+        let before = "继承关系（src/core/class.h:180、";
+        assert_eq!(check(line, &format!("{before}:")), found("src/core/class.h:476", before, 4));
+        assert_eq!(check(line, &format!("{before}:476、:1")), found("src/core/class.h:1719", "继承关系（src/core/class.h:180、:476、", 5));
+        assert_eq!(
+            check(line, "继承关系（src/core/class.h").map(|found| found.0),
+            Some("src/core/class.h:180".to_string())
+        );
+        // The punctuation itself is not a link.
+        assert_eq!(check(line, "继承关系（src/core/class.h:180"), None);
+
+        let line = "（`delegates.h:931`、:454、:458）";
+        assert_eq!(
+            check(line, "（`delegates.h:931`、:4").map(|found| found.0),
+            Some("delegates.h:454".to_string())
+        );
+        assert_eq!(
+            check(line, "（`delegates.h:931`、:454、:4").map(|found| found.0),
+            Some("delegates.h:458".to_string())
+        );
+
+        let line = "loop.cpp:4714 创建，:4795 才加载";
+        assert_eq!(
+            check(line, "loop.cpp:4714 创建，:4").map(|found| found.0),
+            Some("loop.cpp:4795".to_string())
+        );
+        assert_eq!(
+            check(line, "loop.cpp:47").map(|found| found.0),
+            Some("loop.cpp:4714".to_string())
+        );
+
+        // As before: a position after an opening parenthesis, a position and
+        // a range, a name with `、` in it, and what is not a position.
+        assert_eq!(
+            check("fixed a.rs:3 (:403-405) now", "fixed a.rs:3 (:4").map(|found| found.0),
+            Some("a.rs:403".to_string())
+        );
+        assert_eq!(
+            check("改动 a.rs:3（:333、:340", "改动 a.rs:3（:3").map(|found| found.0),
+            Some("a.rs:333".to_string())
+        );
+        assert_eq!(
+            check("见 test、2.txt 文件", "见 test、2").map(|found| found.0),
+            Some("test、2.txt".to_string())
+        );
+        for line in ["see a.rs:3 、:abc here", "see a.rs:3 、 here", "see a.rs:3，:  here"] {
+            assert_eq!(check(line, "see a.rs:3 、"), None, "{line}");
+        }
         Ok(())
     }
 
@@ -3104,7 +3200,12 @@ mod path_link_timing {
             );
             10
         ];
+        let broken_position = vec![
+            "这个函数在对象初始化之前就会被调用，所以那里的全局表还没有建好，调用方需要自己等待（src/core/object_globals.cpp:496".to_string(),
+            "9）。".to_string(),
+        ];
         vec![
+            ("position broken at the edge, 112 columns", broken_position, 112),
             ("long Chinese paragraph, 120 columns", vec![chinese.clone()], 120),
             ("long Chinese paragraph, 80 columns", vec![chinese], 80),
             ("table, 120 columns", table, 120),
