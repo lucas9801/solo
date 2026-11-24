@@ -312,7 +312,8 @@ A task with a pull request has one more row: its number and state, which is
 one of *Checking 3/7*, *1 check failed*, *2 new comments* (both are written
 together when both apply), *Ready to merge*, *Merged* or *Closed*. Solo asks
 GitHub for it with `gh` (GitHub's CLI, which has to be installed and logged
-in; without it nothing is checked and nothing is shown) while it runs: every
+in; without it nothing is checked and nothing is shown; nor is a branch that was
+never pushed) while it runs: every
 minute while checks run, every five minutes otherwise, and not any more once
 the pull request is merged or closed. *Ready to merge* means the checks passed
 (or there are none), no changes are requested and GitHub says it can be
@@ -946,12 +947,18 @@ Solo's own settings, under `"terminal"`:
 | `notify_long_commands_after_seconds` | `10` | notify when a long command finishes; 0 turns it off |
 | `agent_input_notifications` | `true` | notify when an agent needs your input or rings the bell |
 | `agent_stopped_notifications` | `false` | notify when an agent stops after working a while |
-| `check_pull_requests` | `true` | check agent tasks' pull requests with `gh` and show them on the agent board; notify about failed checks, new comments and when one can be merged |
-| `auto_send_pr_feedback` | `false` | paste new failed checks and comments of a task's pull request into its agent when the agent is idle |
 | `program_notifications` | `true` | let programs show desktop notifications (OSC 9/777) |
 
 These notifications only show while Solo is in the background. All four are
 also in Settings > Terminal > Notifications.
+
+The pull requests of agent tasks (see the agent board above), in Settings >
+Terminal > Pull Requests:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `check_pull_requests` | `true` | check agent tasks' pull requests with `gh` and show them on the agent board; notify about failed checks, new comments and when one can be merged (not while you're looking at the task's terminal, in the background or not) |
+| `auto_send_pr_feedback` | `false` | paste new failed checks and comments of a task's pull request into its agent when the agent is idle |
 
 Outside `"terminal"`: `"ui_language"` (`"system"`, `"en"` or `"zh"`; the
 environment variable `SOLO_LANGUAGE` overrides it), `"auto_update"`,

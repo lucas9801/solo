@@ -16,24 +16,26 @@ use std::{
 
 use anyhow::Result;
 use gpui::{
-    App, AppContext as _, Context, Entity, EntityId, EventEmitter, Global, Task, WeakEntity,
+    AnyWeakEntity, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, Global,
+    Task, WeakEntity, Window,
 };
 use serde::{Deserialize, Serialize};
 use settings::Settings as _;
 use terminal::terminal_settings::TerminalSettings;
 use ui::{Color, IconName};
-use util::ResultExt as _;
-use workspace::agent_activity::AgentState;
+use util::{ResultExt as _, i18n::tr};
+use workspace::{Workspace, agent_activity::AgentState};
 
 use super::{
     AgentTaskEntry,
     git::AgentTask,
     pull_request::{
-        self, FailedCheck, GhUnavailable, PrComment, PrFeedback, PrSnapshot, PullRequest,
+        self, FailedCheck, GhUnavailable, NoGithubRemote, PrComment, PrFeedback, PrSnapshot,
+        PullRequest,
     },
     task_key,
 };
-use crate::TerminalView;
+use crate::{TerminalView, command_blocks::activate_terminal_view};
 
 /// How often the tracker looks whether a pull request is due.
 const TICK: Duration = Duration::from_secs(15);
@@ -130,18 +132,26 @@ impl TaskRecord {
     }
 }
 
-/// Whether GitHub and the reviewers have nothing against merging: the checks
-/// passed (or there are none), no changes are requested, and it merges
-/// cleanly.
+/// Whether GitHub and the reviewers have nothing against merging: it isn't a
+/// draft, every check passed (or there are none; a cancelled one hasn't),
+/// no changes are requested or review still required, and GitHub says it
+/// merges cleanly.
 pub(crate) fn is_ready(snapshot: &PrSnapshot) -> bool {
+    let mergeable = match snapshot.merge_state.as_deref() {
+        Some(state) => matches!(state, "CLEAN" | "UNSTABLE" | "HAS_HOOKS"),
+        None => snapshot.mergeable.as_deref() == Some("MERGEABLE"),
+    };
     snapshot.pull_request.is_open()
-        && !snapshot.has_pending_checks()
-        && !snapshot
+        && !snapshot.is_draft
+        && snapshot
             .checks
             .iter()
-            .any(pull_request::CheckRun::is_failed)
-        && snapshot.review_decision.as_deref() != Some("CHANGES_REQUESTED")
-        && snapshot.mergeable.as_deref() == Some("MERGEABLE")
+            .all(|check| matches!(check.bucket.as_str(), "pass" | "skipping"))
+        && !matches!(
+            snapshot.review_decision.as_deref(),
+            Some("CHANGES_REQUESTED" | "REVIEW_REQUIRED")
+        )
+        && mergeable
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -456,6 +466,10 @@ struct GhSource;
 
 impl PrSource for GhSource {
     fn fetch(&self, worktree: &Path, branch: &str) -> Result<Option<PrSnapshot>> {
+        // A branch that was never pushed has no pull request; don't ask.
+        if !pull_request::branch_is_pushed(worktree, branch)? {
+            return Ok(None);
+        }
         pull_request::fetch_snapshot(worktree, branch)
     }
 }
@@ -483,19 +497,58 @@ pub(crate) enum SendOutcome {
     NothingNew,
 }
 
+/// Pastes what's new on the task's pull request into its agent, shows that
+/// terminal, and says what came of it. Without an agent that takes it, the
+/// message is copied.
+pub(crate) fn send_new_feedback(
+    workspace: &Entity<Workspace>,
+    key: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> String {
+    let outcome =
+        PrTracker::global(cx).update(cx, |tracker, cx| tracker.send_unsent(key, false, cx));
+    let message = match outcome {
+        SendOutcome::Sent(agent) => {
+            activate_terminal_view(workspace, &agent, window, cx);
+            tr(
+                "Sent the failed checks and comments to the task's agent.",
+                "已把失败的检查和评论发给任务的 agent。",
+            )
+        }
+        SendOutcome::NoAgent(message) => {
+            cx.write_to_clipboard(ClipboardItem::new_string(message));
+            tr(
+                "No agent is running in the task's terminals; copied the feedback to the clipboard.",
+                "任务的终端里没有 agent，已把反馈复制到剪贴板。",
+            )
+        }
+        SendOutcome::NothingNew => tr(
+            "No new failed checks or comments on the pull request.",
+            "PR 上没有新的失败检查或评论。",
+        ),
+    };
+    message.to_string()
+}
+
 struct Tracked {
     task: AgentTask,
-    /// The workspace that listed the task.
-    owner: EntityId,
+    /// The workspace that listed the task; once it's gone, so is the task.
+    owner: AnyWeakEntity,
     terminals: Vec<WeakEntity<TerminalView>>,
     snapshot: Option<PrSnapshot>,
     checked_at: Option<Instant>,
     fetching: bool,
+    /// What the last read failed with, to tell of it once.
+    last_error: Option<String>,
+    /// Not read any more, as there's no GitHub remote to ask, until
+    /// [`PrTracker::check_soon`] or a restart.
+    suspended: bool,
 }
 
 impl Tracked {
     fn is_due(&self, now: Instant) -> bool {
-        if self.fetching || self.task.worktree_path.is_none() {
+        if self.fetching || self.suspended || self.task.worktree_path.is_none() {
             return false;
         }
         let Some(interval) = poll_interval(self.snapshot.as_ref()) else {
@@ -513,7 +566,11 @@ pub(crate) struct PrTracker {
     /// Where the records are kept; none in tests.
     store: Option<PathBuf>,
     fetches: usize,
-    last_error: Option<String>,
+    /// Set when `gh` isn't installed or logged in: nothing is read until
+    /// [`PrTracker::check_soon`] or a restart.
+    gh_unavailable: bool,
+    /// How many failures were written to the log.
+    failure_logs: usize,
     saving: Task<()>,
     _ticks: Task<()>,
 }
@@ -601,29 +658,31 @@ impl PrTracker {
             source,
             store,
             fetches: 0,
-            last_error: None,
+            gh_unavailable: false,
+            failure_logs: 0,
             saving: Task::ready(()),
             _ticks: ticks,
         }
     }
 
     /// Replaces the tasks `owner` (a workspace) lists. What's known of a task
-    /// that stays is kept.
+    /// that stays is kept; the tasks go when the owner does.
     pub(crate) fn set_tasks(
         &mut self,
-        owner: EntityId,
+        owner: AnyWeakEntity,
         entries: &[AgentTaskEntry],
         cx: &mut Context<Self>,
     ) {
+        let owner_id = owner.entity_id();
         let keys: HashSet<String> = entries.iter().map(|entry| task_key(&entry.task)).collect();
         self.tasks
-            .retain(|key, tracked| tracked.owner != owner || keys.contains(key));
+            .retain(|key, tracked| tracked.owner.entity_id() != owner_id || keys.contains(key));
         for entry in entries {
             let terminals = entry.terminals.iter().map(Entity::downgrade).collect();
             match self.tasks.get_mut(&task_key(&entry.task)) {
                 Some(tracked) => {
                     tracked.task = entry.task.clone();
-                    tracked.owner = owner;
+                    tracked.owner = owner.clone();
                     tracked.terminals = terminals;
                 }
                 None => {
@@ -631,11 +690,13 @@ impl PrTracker {
                         task_key(&entry.task),
                         Tracked {
                             task: entry.task.clone(),
-                            owner,
+                            owner: owner.clone(),
                             terminals,
                             snapshot: None,
                             checked_at: None,
                             fetching: false,
+                            last_error: None,
+                            suspended: false,
                         },
                     );
                 }
@@ -644,10 +705,27 @@ impl PrTracker {
         cx.notify();
     }
 
-    /// Reads the task's pull request at the next tick, e.g. after opening it.
+    /// Reads the task's pull request at the next tick, e.g. after opening it,
+    /// forgetting what's known of the one it had: a merged or closed pull
+    /// request isn't read again, but the branch may have a new one.
     pub(crate) fn check_soon(&mut self, key: &str) {
+        self.gh_unavailable = false;
         if let Some(tracked) = self.tasks.get_mut(key) {
             tracked.checked_at = None;
+            tracked.snapshot = None;
+            tracked.suspended = false;
+            tracked.last_error = None;
+        }
+    }
+
+    /// Takes in what a read of the pull request, made on the user's demand,
+    /// found.
+    pub(crate) fn set_snapshot(&mut self, key: &str, snapshot: PrSnapshot, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        if let Some(tracked) = self.tasks.get_mut(key) {
+            tracked.snapshot = Some(snapshot);
+            tracked.checked_at = Some(now);
+            cx.notify();
         }
     }
 
@@ -726,7 +804,14 @@ impl PrTracker {
     }
 
     fn tick(&mut self, now: Instant, cx: &mut Context<Self>) {
-        if !checking_enabled(cx) {
+        // The tasks of a closed window or project tab are no concern any more.
+        let before = self.tasks.len();
+        self.tasks
+            .retain(|_, tracked| tracked.owner.is_upgradable());
+        if self.tasks.len() != before {
+            cx.notify();
+        }
+        if !checking_enabled(cx) || self.gh_unavailable {
             return;
         }
         let mut due: Vec<(Option<Instant>, String)> = self
@@ -780,19 +865,28 @@ impl PrTracker {
         tracked.checked_at = Some(now);
         let snapshot = match result {
             Ok(snapshot) => {
-                self.last_error = None;
+                tracked.last_error = None;
                 snapshot
             }
             Err(error) => {
-                // Once, not at every read.
                 let message = format!("{error:#}");
-                if self.last_error.as_deref() != Some(message.as_str()) {
-                    if error.downcast_ref::<GhUnavailable>().is_some() {
+                if error.downcast_ref::<GhUnavailable>().is_some() {
+                    // Every task would fail alike: once, and no more reads.
+                    if !self.gh_unavailable {
+                        self.failure_logs += 1;
                         log::warn!("not checking pull requests: {message}");
-                    } else {
-                        log::warn!("failed to check the pull request of {key:?}: {message}");
                     }
-                    self.last_error = Some(message);
+                    self.gh_unavailable = true;
+                    return;
+                }
+                if error.downcast_ref::<NoGithubRemote>().is_some() {
+                    tracked.suspended = true;
+                }
+                // Once for this task, not at every read.
+                if tracked.last_error.as_deref() != Some(message.as_str()) {
+                    self.failure_logs += 1;
+                    log::warn!("failed to check the pull request of {key:?}: {message}");
+                    tracked.last_error = Some(message);
                 }
                 return;
             }
@@ -874,6 +968,8 @@ mod tests {
                 .collect(),
             review_decision: None,
             mergeable: Some("MERGEABLE".into()),
+            is_draft: false,
+            merge_state: None,
             comments: comments
                 .iter()
                 .map(|id| PrComment {
@@ -1139,11 +1235,20 @@ mod tests {
 
     use gpui::TestAppContext;
 
+    enum Failure {
+        Plain(String),
+        NoRemote(String),
+        Unavailable(String),
+    }
+
     #[derive(Default)]
     struct FakeSource {
         response: Mutex<Option<PrSnapshot>>,
         error: Mutex<Option<String>>,
+        /// Branches whose reads fail, whatever the response is.
+        failing: Mutex<std::collections::HashMap<String, Failure>>,
         calls: AtomicUsize,
+        calls_by_branch: Mutex<std::collections::HashMap<String, usize>>,
     }
 
     impl FakeSource {
@@ -1156,14 +1261,46 @@ mod tests {
             *self.error.lock().unwrap() = Some(message.to_string());
         }
 
+        fn fail_branch(&self, name: &str, failure: Failure) {
+            self.failing
+                .lock()
+                .unwrap()
+                .insert(format!("agent/{name}"), failure);
+        }
+
         fn calls(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
+        }
+
+        fn calls_for(&self, name: &str) -> usize {
+            self.calls_by_branch
+                .lock()
+                .unwrap()
+                .get(&format!("agent/{name}"))
+                .copied()
+                .unwrap_or(0)
         }
     }
 
     impl PrSource for FakeSource {
-        fn fetch(&self, _: &Path, _: &str) -> Result<Option<PrSnapshot>> {
+        fn fetch(&self, _: &Path, branch: &str) -> Result<Option<PrSnapshot>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            *self
+                .calls_by_branch
+                .lock()
+                .unwrap()
+                .entry(branch.to_string())
+                .or_default() += 1;
+            match self.failing.lock().unwrap().get(branch) {
+                Some(Failure::Plain(message)) => anyhow::bail!(message.clone()),
+                Some(Failure::NoRemote(message)) => {
+                    return Err(anyhow::Error::new(NoGithubRemote(message.clone())));
+                }
+                Some(Failure::Unavailable(message)) => {
+                    return Err(anyhow::Error::new(GhUnavailable(message.clone())));
+                }
+                None => {}
+            }
             if let Some(message) = self.error.lock().unwrap().clone() {
                 anyhow::bail!(message);
             }
@@ -1241,10 +1378,23 @@ mod tests {
             .collect()
     }
 
+    /// A workspace stand-in that lives as long as the test.
+    fn owner(cx: &mut TestAppContext) -> AnyWeakEntity {
+        let owner = cx.new(|_| ());
+        let weak = owner.downgrade().into();
+        std::mem::forget(owner);
+        weak
+    }
+
     fn set_tasks(tracker: &Entity<PrTracker>, entries: &[AgentTaskEntry], cx: &mut TestAppContext) {
-        tracker.update(cx, |tracker, cx| {
-            tracker.set_tasks(EntityId::from(1), entries, cx)
-        });
+        let owner = owner(cx);
+        tracker.update(cx, |tracker, cx| tracker.set_tasks(owner, entries, cx));
+    }
+
+    fn last_error(tracker: &Entity<PrTracker>, name: &str, cx: &TestAppContext) -> Option<String> {
+        tracker.read_with(cx, |tracker, _| {
+            tracker.tasks.get(&key(name))?.last_error.clone()
+        })
     }
 
     fn summary_line(
@@ -1383,17 +1533,14 @@ mod tests {
         advance(cx, QUIET_INTERVAL * 3);
         assert_eq!(source.calls(), 3, "tried every five minutes, not more");
         assert_eq!(
-            tracker.read_with(cx, |tracker, _| tracker.last_error.clone()),
+            last_error(&tracker, "a", cx),
             Some("gh isn't installed".to_string())
         );
         assert_eq!(summary_line(&tracker, "a", false, cx), None);
 
         source.respond(snapshot("OPEN", &[("build", "pass")], &[]));
         advance(cx, QUIET_INTERVAL);
-        assert_eq!(
-            tracker.read_with(cx, |tracker, _| tracker.last_error.clone()),
-            None
-        );
+        assert_eq!(last_error(&tracker, "a", cx), None);
         assert!(summary_line(&tracker, "a", false, cx).is_some());
     }
 
@@ -1629,5 +1776,233 @@ mod tests {
             }
             _ => panic!("expected the message back"),
         }
+    }
+
+    #[gpui::test]
+    async fn test_a_task_that_fails_beside_one_that_succeeds_is_logged_once(
+        cx: &mut TestAppContext,
+    ) {
+        crate::tests::init_test(cx).await;
+        let source = Arc::new(FakeSource::default());
+        source.respond(snapshot("OPEN", &[("build", "pass")], &[]));
+        source.fail_branch("b", Failure::Plain("HTTP 502".into()));
+        let tracker = cx.new(|cx| PrTracker::new(source.clone(), None, cx));
+        set_tasks(
+            &tracker,
+            &[entry("a", Vec::new()), entry("b", Vec::new())],
+            cx,
+        );
+        advance(cx, QUIET_INTERVAL * 6);
+        assert!(source.calls_for("a") >= 6 && source.calls_for("b") >= 6);
+        // a's successes don't make b's failure new each time.
+        assert_eq!(tracker.read_with(cx, |tracker, _| tracker.failure_logs), 1);
+        assert_eq!(last_error(&tracker, "a", cx), None);
+        assert_eq!(last_error(&tracker, "b", cx), Some("HTTP 502".to_string()));
+
+        // A different failure is told too.
+        source.fail_branch("b", Failure::Plain("HTTP 401".into()));
+        advance(cx, QUIET_INTERVAL * 2);
+        assert_eq!(tracker.read_with(cx, |tracker, _| tracker.failure_logs), 2);
+    }
+
+    #[gpui::test]
+    async fn test_a_repository_without_a_github_remote_is_not_read_again(cx: &mut TestAppContext) {
+        crate::tests::init_test(cx).await;
+        let source = Arc::new(FakeSource::default());
+        source.respond(snapshot("OPEN", &[("build", "pass")], &[]));
+        source.fail_branch("b", Failure::NoRemote("no git remotes found".into()));
+        let tracker = cx.new(|cx| PrTracker::new(source.clone(), None, cx));
+        set_tasks(
+            &tracker,
+            &[entry("a", Vec::new()), entry("b", Vec::new())],
+            cx,
+        );
+        advance(cx, QUIET_INTERVAL * 4);
+        assert_eq!(source.calls_for("b"), 1);
+        assert!(source.calls_for("a") >= 4, "the other task goes on");
+        assert_eq!(tracker.read_with(cx, |tracker, _| tracker.failure_logs), 1);
+
+        // Looked at again when asked to, such as after opening a pull
+        // request.
+        tracker.update(cx, |tracker, _| tracker.check_soon(&key("b")));
+        advance(cx, TICK);
+        assert_eq!(source.calls_for("b"), 2);
+        assert_eq!(
+            tracker.read_with(cx, |tracker, _| tracker.failure_logs),
+            1,
+            "the same failure isn't told twice"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_without_gh_nothing_is_read_and_it_is_told_once(cx: &mut TestAppContext) {
+        crate::tests::init_test(cx).await;
+        let source = Arc::new(FakeSource::default());
+        source.fail_branch("a", Failure::Unavailable("gh isn't installed".into()));
+        source.fail_branch("b", Failure::Unavailable("gh isn't installed".into()));
+        let tracker = cx.new(|cx| PrTracker::new(source.clone(), None, cx));
+        set_tasks(
+            &tracker,
+            &[entry("a", Vec::new()), entry("b", Vec::new())],
+            cx,
+        );
+        advance(cx, QUIET_INTERVAL * 4);
+        assert_eq!(source.calls(), 2, "each task tried once");
+        assert_eq!(tracker.read_with(cx, |tracker, _| tracker.failure_logs), 1);
+        assert_eq!(summary_line(&tracker, "a", false, cx), None);
+    }
+
+    #[gpui::test]
+    async fn test_tasks_of_a_closed_workspace_are_not_read_any_more(cx: &mut TestAppContext) {
+        crate::tests::init_test(cx).await;
+        let source = Arc::new(FakeSource::default());
+        source.respond(snapshot("OPEN", &[("build", "pending")], &[]));
+        let tracker = cx.new(|cx| PrTracker::new(source.clone(), None, cx));
+        let kept = cx.new(|_| ());
+        let closed = cx.new(|_| ());
+        tracker.update(cx, |tracker, cx| {
+            tracker.set_tasks(kept.downgrade().into(), &[entry("a", Vec::new())], cx);
+            tracker.set_tasks(closed.downgrade().into(), &[entry("b", Vec::new())], cx);
+        });
+        advance(cx, CHECKING_INTERVAL * 2);
+        assert!(source.calls_for("a") >= 2 && source.calls_for("b") >= 2);
+
+        drop(closed);
+        cx.run_until_parked();
+        let calls_for_b = source.calls_for("b");
+        let notifications = collect_notifications(&tracker, cx);
+        source.respond(snapshot("OPEN", &[("build", "fail")], &["1"]));
+        advance(cx, CHECKING_INTERVAL * 3);
+        assert_eq!(source.calls_for("b"), calls_for_b);
+        assert!(source.calls_for("a") > 2);
+        // Only the task that is left tells of the failure.
+        assert_eq!(titles(&notifications).len(), 1);
+        assert!(
+            notifications.borrow()[0].1.starts_with("Task a")
+                || notifications.borrow()[0].1.starts_with("a:")
+        );
+        drop(kept);
+    }
+
+    #[gpui::test]
+    async fn test_a_new_pull_request_on_the_branch_of_a_merged_one_is_found(
+        cx: &mut TestAppContext,
+    ) {
+        crate::tests::init_test(cx).await;
+        let source = Arc::new(FakeSource::default());
+        source.respond(snapshot("MERGED", &[], &[]));
+        let tracker = cx.new(|cx| PrTracker::new(source.clone(), None, cx));
+        set_tasks(&tracker, &[entry("a", Vec::new())], cx);
+        advance(cx, QUIET_INTERVAL * 2);
+        assert_eq!(source.calls(), 1, "merged: not read again");
+        assert_eq!(
+            summary_line(&tracker, "a", false, cx).as_deref(),
+            Some("#42 · Merged")
+        );
+
+        let mut reopened = snapshot("OPEN", &[("build", "pending")], &[]);
+        reopened.pull_request.number = 43;
+        source.respond(reopened);
+        tracker.update(cx, |tracker, _| tracker.check_soon(&key("a")));
+        advance(cx, TICK);
+        assert_eq!(
+            summary_line(&tracker, "a", false, cx).as_deref(),
+            Some("#43 · Checking 0/1")
+        );
+    }
+
+    #[test]
+    fn test_ready_to_merge_needs_more_than_a_clean_merge() {
+        let none = TaskRecord::default();
+        let ready = snapshot("OPEN", &[("build", "pass")], &[]);
+        assert!(is_ready(&ready));
+
+        let mut draft = ready.clone();
+        draft.is_draft = true;
+        assert!(!is_ready(&draft));
+        assert_eq!(summarize(&draft, &none).line(false), "#42");
+
+        let mut review_required = ready.clone();
+        review_required.review_decision = Some("REVIEW_REQUIRED".into());
+        assert!(!is_ready(&review_required));
+
+        let cancelled = snapshot("OPEN", &[("build", "pass"), ("deploy", "cancel")], &[]);
+        assert!(!is_ready(&cancelled));
+
+        let mut blocked = ready.clone();
+        blocked.merge_state = Some("BLOCKED".into());
+        assert!(!is_ready(&blocked));
+        blocked.merge_state = Some("BEHIND".into());
+        assert!(!is_ready(&blocked));
+
+        // GitHub's merge state decides when it has one.
+        let mut clean = ready.clone();
+        clean.mergeable = None;
+        clean.merge_state = Some("CLEAN".into());
+        assert!(is_ready(&clean));
+        clean.merge_state = Some("UNSTABLE".into());
+        assert!(is_ready(&clean));
+        clean.merge_state = Some("HAS_HOOKS".into());
+        assert!(is_ready(&clean));
+    }
+
+    #[gpui::test]
+    async fn test_the_list_button_sends_only_what_is_new(cx: &mut TestAppContext) {
+        use crate::agent_status::AgentStatus;
+        let (project, workspace, window) = crate::tests::init_test_with_window(cx).await;
+        let (_pane, terminal, view) =
+            crate::tests::add_display_only_terminal(&project, window, false, false, cx);
+        view.update(cx, |view, _| {
+            view.set_agent_status_for_test("claude", AgentStatus::Idle)
+        });
+        terminal.update(cx, |terminal, cx| {
+            terminal.write_raw_output(b"\x1b[?2004h", cx)
+        });
+        pasted(&terminal, cx);
+
+        let source = Arc::new(FakeSource::default());
+        let tracker = cx.new(|cx| PrTracker::new(source.clone(), None, cx));
+        set_tasks(&tracker, &[entry("a", vec![view.clone()])], cx);
+        cx.update(|cx| cx.set_global(GlobalPrTracker(tracker.clone())));
+        let send = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |_, window, cx| {
+                    send_new_feedback(&workspace, &key("a"), window, cx)
+                })
+                .unwrap()
+        };
+
+        // What the list's button reads just now.
+        let first = snapshot("OPEN", &[("build", "fail")], &["1"]);
+        tracker.update(cx, |tracker, cx| tracker.set_snapshot(&key("a"), first, cx));
+        assert_eq!(
+            send(cx),
+            "Sent the failed checks and comments to the task's agent."
+        );
+        let input = pasted(&terminal, cx);
+        assert!(
+            input.contains("- build") && input.contains("comment 1"),
+            "{input:?}"
+        );
+
+        // Pressed again, with one more comment: that one only.
+        let second = snapshot("OPEN", &[("build", "fail")], &["1", "2"]);
+        tracker.update(cx, |tracker, cx| {
+            tracker.set_snapshot(&key("a"), second, cx)
+        });
+        send(cx);
+        let input = pasted(&terminal, cx);
+        assert!(input.contains("comment 2"), "{input:?}");
+        assert!(
+            !input.contains("comment 1") && !input.contains("- build"),
+            "{input:?}"
+        );
+
+        // And with nothing new, nothing is pasted.
+        assert_eq!(
+            send(cx),
+            "No new failed checks or comments on the pull request."
+        );
+        assert_eq!(pasted(&terminal, cx), "");
     }
 }

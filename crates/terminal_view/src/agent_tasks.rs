@@ -1314,13 +1314,13 @@ impl AgentTasksModal {
             return;
         };
         let load = agent_tasks(&workspace, cx);
-        let workspace_id = workspace.entity_id();
+        let workspace_id: gpui::AnyWeakEntity = workspace.downgrade().into();
         self._task = cx.spawn_in(window, async move |this, cx| {
             let entries = load.await;
             this.update(cx, |this, cx| {
                 if let Ok(entries) = &entries {
                     pr_tracker::PrTracker::global(cx).update(cx, |tracker, cx| {
-                        tracker.set_tasks(workspace_id, entries, cx)
+                        tracker.set_tasks(workspace_id.clone(), entries, cx)
                     });
                 }
                 let entries = entries.map_err(|error| SharedString::from(format!("{error:#}")));
@@ -1454,7 +1454,7 @@ impl AgentTasksModal {
         });
     }
 
-    /// Pastes what the pull request's checks and reviewers said into the
+    /// Pastes what's new on the task's pull request, read just now, into the
     /// task's agent; without one, copies it.
     fn send_pull_request_feedback(
         &mut self,
@@ -1484,62 +1484,23 @@ impl AgentTasksModal {
         );
         cx.notify();
         self._task = cx.spawn_in(window, async move |this, cx| {
-            let number = pull_request.number;
-            let feedback = cx
-                .background_spawn(async move {
-                    pull_request::pull_request_feedback(&worktree, number)
-                })
+            let number = pull_request.number.to_string();
+            let snapshot = cx
+                .background_spawn(async move { pull_request::fetch_snapshot(&worktree, &number) })
                 .await;
-            let outcome = this.update_in(cx, |_, window, cx| match feedback {
+            let outcome = this.update_in(cx, |_, window, cx| match snapshot {
                 Err(error) => (format!("{error:#}"), true),
-                Ok(feedback) if feedback.is_empty() => (
-                    tr(
-                        "No failed checks or comments on the pull request.",
-                        "PR 上没有失败的检查，也没有评论。",
-                    )
-                    .to_string(),
-                    false,
+                Ok(None) => (
+                    tr("The pull request isn't found.", "找不到这个 PR。").to_string(),
+                    true,
                 ),
-                Ok(feedback) => {
-                    let message = pull_request::feedback_message(&pull_request, &feedback);
-                    let agent = entry
-                        .terminals
-                        .iter()
-                        .find(|view| crate::agent_context::can_paste_to_agent(view.read(cx), &message, cx))
-                        .cloned();
-                    match agent {
-                        Some(agent) => {
-                            agent.update(cx, |agent, cx| {
-                                agent.terminal.update(cx, |terminal, _| terminal.paste(&message))
-                            });
-                            pr_tracker::PrTracker::global(cx).update(cx, |tracker, cx| {
-                                tracker.mark_sent(&key, &feedback, cx)
-                            });
-                            let workspace = workspace.clone();
-                            window.defer(cx, move |window, cx| {
-                                activate_terminal_view(&workspace, &agent, window, cx)
-                            });
-                            (
-                                tr(
-                                    "Sent the failed checks and comments to the task's agent.",
-                                    "已把失败的检查和评论发给任务的 agent。",
-                                )
-                                .to_string(),
-                                false,
-                            )
-                        }
-                        None => {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
-                            (
-                                tr(
-                                    "No agent is running in the task's terminals; copied the feedback to the clipboard.",
-                                    "任务的终端里没有 agent，已把反馈复制到剪贴板。",
-                                )
-                                .to_string(),
-                                false,
-                            )
-                        }
-                    }
+                Ok(Some(snapshot)) => {
+                    pr_tracker::PrTracker::global(cx)
+                        .update(cx, |tracker, cx| tracker.set_snapshot(&key, snapshot, cx));
+                    (
+                        pr_tracker::send_new_feedback(&workspace, &key, window, cx),
+                        false,
+                    )
                 }
             });
             if let Ok((message, is_error)) = outcome {
@@ -1548,7 +1509,7 @@ impl AgentTasksModal {
                         message: message.into(),
                         is_error,
                         offer_delete: None,
-                    offer_commit: None,
+                        offer_commit: None,
                     };
                     cx.notify();
                 })
@@ -2082,7 +2043,7 @@ impl AgentTasksModal {
                                 .gap_1p5()
                                 .child(Icon::new(summary.icon()).size(IconSize::XSmall).color(color))
                                 .child(
-                                    Label::new(format!("PR {}", summary.line(is_chinese())))
+                                    Label::new(summary.line(is_chinese()))
                                         .size(LabelSize::Small)
                                         .color(color),
                                 ),

@@ -24,6 +24,9 @@ const MAX_GH_PROCESSES: usize = 2;
 /// How long a `gh` run for the periodic check may take before it's killed, so
 /// that a hung one doesn't hold one of the two places forever.
 const POLL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long any other `gh` run (opening a pull request, looking one up) may
+/// take; a hung one would hold one of the two places.
+const MANUAL_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct PullRequest {
@@ -89,6 +92,26 @@ impl std::fmt::Display for GhUnavailable {
 }
 
 impl std::error::Error for GhUnavailable {}
+
+/// The repository has no remote on a GitHub host, so there's nothing to
+/// ask.
+#[derive(Debug)]
+pub struct NoGithubRemote(pub String);
+
+impl std::fmt::Display for NoGithubRemote {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NoGithubRemote {}
+
+fn is_no_github_remote(error: &str) -> bool {
+    let error = error.to_lowercase();
+    error.contains("no git remotes found")
+        || error.contains("known github host")
+        || error.contains("not a github host")
+}
 
 fn gh_missing() -> GhUnavailable {
     GhUnavailable(
@@ -212,7 +235,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    run_gh(directory, arguments, None)
+    run_gh(directory, arguments, Some(MANUAL_TIMEOUT))
 }
 
 fn gh_polled<I, S>(directory: &Path, arguments: I) -> Result<Output>
@@ -245,7 +268,36 @@ fn gh_failure(what: &str, output: &Output) -> anyhow::Error {
     if is_not_logged_in(&error) {
         return anyhow::Error::new(GhUnavailable(format!("{what}: {error}")));
     }
+    if is_no_github_remote(&error) {
+        return anyhow::Error::new(NoGithubRemote(format!("{what}: {error}")));
+    }
     anyhow::anyhow!("{what}: {error}")
+}
+
+/// Whether the task's branch was pushed: it has an upstream, or a remote
+/// branch of its name exists. Otherwise there can't be a pull request.
+pub fn branch_is_pushed(worktree: &Path, branch: &str) -> Result<bool> {
+    let upstream = util::command::new_std_command("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["config", "--get", &format!("branch.{branch}.remote")])
+        .output()
+        .context("failed to run git")?;
+    if upstream.status.success() && !stdout(&upstream).trim().is_empty() {
+        return Ok(true);
+    }
+    let remote_branches = util::command::new_std_command("git")
+        .arg("-C")
+        .arg(worktree)
+        .args([
+            "for-each-ref",
+            "--count=1",
+            "--format=%(refname)",
+            &format!("refs/remotes/*/{branch}"),
+        ])
+        .output()
+        .context("failed to run git")?;
+    Ok(remote_branches.status.success() && !stdout(&remote_branches).trim().is_empty())
 }
 
 /// The pull request of `branch`, if it has one.
@@ -494,6 +546,12 @@ struct PrView {
     /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN`.
     #[serde(default)]
     mergeable: Option<String>,
+    #[serde(default)]
+    is_draft: bool,
+    /// `CLEAN`, `UNSTABLE`, `HAS_HOOKS`, `BLOCKED`, `BEHIND`, `DIRTY`,
+    /// `DRAFT` or `UNKNOWN`.
+    #[serde(default)]
+    merge_state_status: Option<String>,
     #[serde(flatten)]
     conversation: Conversation,
 }
@@ -506,12 +564,14 @@ pub struct PrSnapshot {
     pub checks: Vec<CheckRun>,
     pub review_decision: Option<String>,
     pub mergeable: Option<String>,
+    pub is_draft: bool,
+    pub merge_state: Option<String>,
     pub comments: Vec<PrComment>,
 }
 
 impl PrSnapshot {
     /// From the output of `gh pr view --json
-    /// number,url,state,headRefOid,reviewDecision,mergeable,comments,reviews`,
+    /// number,url,state,headRefOid,reviewDecision,mergeable,isDraft,mergeStateStatus,comments,reviews`,
     /// `gh pr checks --json name,bucket,link` and `gh api
     /// .../pulls/N/comments`. The last two are left out for a pull request
     /// that isn't open.
@@ -532,6 +592,10 @@ impl PrSnapshot {
             checks: checks.map(check_runs).transpose()?.unwrap_or_default(),
             review_decision: view.review_decision.filter(|decision| !decision.is_empty()),
             mergeable: view.mergeable,
+            is_draft: view.is_draft,
+            merge_state: view
+                .merge_state_status
+                .filter(|state| !state.is_empty() && state != "UNKNOWN"),
             comments: comments_of(view.conversation, line_comments.unwrap_or("[]"))?,
         })
     }
@@ -553,7 +617,7 @@ impl PrSnapshot {
     }
 }
 
-const VIEW_FIELDS: &str = "number,url,state,headRefOid,reviewDecision,mergeable,comments,reviews";
+const VIEW_FIELDS: &str = "number,url,state,headRefOid,reviewDecision,mergeable,isDraft,mergeStateStatus,comments,reviews";
 
 /// Reads a pull request (found by its branch or number) with its checks and
 /// comments, with at most one `gh` process at a time. `None` if there's none.
@@ -608,13 +672,6 @@ pub fn fetch_snapshot(worktree: &Path, selector: &str) -> Result<Option<PrSnapsh
         Some(&stdout(&line_comments)),
     )
     .map(Some)
-}
-
-/// What the pull request's checks and reviewers said.
-pub fn pull_request_feedback(worktree: &Path, number: u64) -> Result<PrFeedback> {
-    let snapshot =
-        fetch_snapshot(worktree, &number.to_string())?.context("the pull request isn't found")?;
-    Ok(snapshot.feedback())
 }
 
 /// The message telling the agent what the pull request's checks and
@@ -762,5 +819,72 @@ mod tests {
                 "\nPlease address these, then commit and push.\n",
             )
         );
+    }
+
+    fn git(directory: &Path, arguments: &[&str]) {
+        let output = util::command::new_std_command("git")
+            .arg("-C")
+            .arg(directory)
+            .args(["-c", "user.name=test", "-c", "user.email=test@example.com"])
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {arguments:?}: {}",
+            stderr(&output)
+        );
+    }
+
+    #[test]
+    fn test_a_branch_never_pushed_has_no_pull_request_to_look_for() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(path, &["branch", "agent/fix"]);
+        git(path, &["branch", "agent/docs"]);
+        git(path, &["branch", "agent/lint"]);
+        assert!(!branch_is_pushed(path, "agent/fix").unwrap());
+
+        // A remote branch of its name, as `git push origin HEAD` leaves.
+        git(
+            path,
+            &["update-ref", "refs/remotes/origin/agent/fix", "HEAD"],
+        );
+        assert!(branch_is_pushed(path, "agent/fix").unwrap());
+        assert!(!branch_is_pushed(path, "agent/docs").unwrap());
+
+        // An upstream, as `git push --set-upstream` leaves.
+        git(path, &["config", "branch.agent/docs.remote", "origin"]);
+        assert!(branch_is_pushed(path, "agent/docs").unwrap());
+        assert!(!branch_is_pushed(path, "agent/lint").unwrap());
+    }
+
+    #[test]
+    fn test_errors_about_the_remote_are_told_apart() {
+        assert!(is_no_github_remote("no git remotes found"));
+        assert!(is_no_github_remote(
+            "none of the git remotes configured for this repository point to a known GitHub host."
+        ));
+        assert!(!is_no_github_remote("HTTP 502"));
+        assert!(is_not_logged_in(
+            "To get started with GitHub CLI, please run:  gh auth login"
+        ));
+    }
+
+    #[test]
+    fn test_snapshot_reads_the_draft_and_merge_state() {
+        let view = r#"{"number": 1, "url": "u", "state": "OPEN", "headRefOid": "a",
+            "reviewDecision": "REVIEW_REQUIRED", "mergeable": "MERGEABLE",
+            "isDraft": true, "mergeStateStatus": "BLOCKED", "comments": [], "reviews": []}"#;
+        let snapshot = PrSnapshot::from_json(view, Some("[]"), Some("[]")).unwrap();
+        assert!(snapshot.is_draft);
+        assert_eq!(snapshot.merge_state.as_deref(), Some("BLOCKED"));
+        assert_eq!(snapshot.review_decision.as_deref(), Some("REVIEW_REQUIRED"));
+        let view = r#"{"number": 1, "url": "u", "state": "OPEN"}"#;
+        let snapshot = PrSnapshot::from_json(view, None, None).unwrap();
+        assert!(!snapshot.is_draft);
+        assert_eq!(snapshot.merge_state, None);
     }
 }

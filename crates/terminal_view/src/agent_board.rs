@@ -34,7 +34,7 @@ use crate::{
     agent_status::AgentStatus,
     agent_tasks::{
         agent_tasks,
-        pr_tracker::{PrSummary, PrTracker, SendOutcome},
+        pr_tracker::{PrSummary, PrTracker, send_new_feedback},
         show_toast, task_key,
     },
     agent_turns::AgentTurns,
@@ -348,7 +348,7 @@ impl AgentBoard {
             return;
         };
         let list = agent_tasks(&workspace, cx);
-        let workspace_id = workspace.entity_id();
+        let workspace_id: gpui::AnyWeakEntity = workspace.downgrade().into();
         self.list_tasks = cx.spawn(async move |this, cx| {
             let tasks = match list.await {
                 Ok(tasks) => tasks,
@@ -359,7 +359,7 @@ impl AgentBoard {
             };
             this.update(cx, |_, cx| {
                 PrTracker::global(cx).update(cx, |tracker, cx| {
-                    tracker.set_tasks(workspace_id, &tasks, cx)
+                    tracker.set_tasks(workspace_id.clone(), &tasks, cx)
                 })
             })
             .ok();
@@ -501,29 +501,8 @@ impl AgentBoard {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
-        let outcome =
-            PrTracker::global(cx).update(cx, |tracker, cx| tracker.send_unsent(&key, false, cx));
-        let message = match outcome {
-            SendOutcome::Sent(agent) => {
-                activate_terminal_view(&workspace, &agent, window, cx);
-                tr(
-                    "Sent the failed checks and comments to the task's agent.",
-                    "已把失败的检查和评论发给任务的 agent。",
-                )
-            }
-            SendOutcome::NoAgent(message) => {
-                cx.write_to_clipboard(ClipboardItem::new_string(message));
-                tr(
-                    "No agent is running in the task's terminals; copied the feedback to the clipboard.",
-                    "任务的终端里没有 agent，已把反馈复制到剪贴板。",
-                )
-            }
-            SendOutcome::NothingNew => tr(
-                "No new failed checks or comments on the pull request.",
-                "PR 上没有新的失败检查或评论。",
-            ),
-        };
-        show_toast(&workspace, message.to_string(), cx);
+        let message = send_new_feedback(&workspace, &key, window, cx);
+        show_toast(&workspace, message, cx);
     }
 
     /// The row of a task's pull request: its state, which opens a menu, and
@@ -976,6 +955,8 @@ solo/{name}"
                 checks: Vec::new(),
                 review_decision: None,
                 mergeable: None,
+                is_draft: false,
+                merge_state: None,
                 comments: Vec::new(),
             },
             &TaskRecord::default(),
