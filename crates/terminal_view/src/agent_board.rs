@@ -548,6 +548,7 @@ impl AgentBoard {
                                 .child(
                                     h_flex()
                                         .h_5()
+                                        .w_full()
                                         .min_w_0()
                                         .gap_1p5()
                                         .child(
