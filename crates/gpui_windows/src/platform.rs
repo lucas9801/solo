@@ -75,7 +75,7 @@ pub struct WindowsPlatform {
     disable_direct_composition: bool,
     has_package_identity: bool,
     app_identity: RefCell<Option<(String, String)>>,
-    system_notifications: RefCell<SystemNotificationState>,
+    system_notifications: Rc<RefCell<SystemNotificationState>>,
 }
 
 struct WindowsPlatformInner {
@@ -296,7 +296,7 @@ impl WindowsPlatform {
             drop_target_helper,
             invalidate_devices: Arc::new(AtomicBool::new(false)),
             app_identity: RefCell::new(None),
-            system_notifications: RefCell::new(SystemNotificationState::new()),
+            system_notifications: Rc::new(RefCell::new(SystemNotificationState::new())),
         })
     }
 
@@ -937,16 +937,27 @@ impl Platform for WindowsPlatform {
 
     fn show_system_notification(&self, notification: gpui::SystemNotification) {
         let app_identity = self.app_identity.borrow().clone();
-        self.system_notifications
-            .borrow_mut()
-            .show(
-                self.has_package_identity,
-                app_identity
-                    .as_ref()
-                    .map(|(identifier, name)| (identifier.as_str(), name.as_str())),
-                notification,
-            )
-            .log_err();
+        let has_package_identity = self.has_package_identity;
+        let system_notifications = self.system_notifications.clone();
+        // Showing the toast is a COM call that lets Windows deliver messages
+        // meanwhile, such as a request for a frame, which finds the app
+        // borrowed when this is called from an update ("RefCell already
+        // borrowed" in the log). So it's done from the executor, after the
+        // update.
+        self.foreground_executor
+            .spawn(async move {
+                system_notifications
+                    .borrow_mut()
+                    .show(
+                        has_package_identity,
+                        app_identity
+                            .as_ref()
+                            .map(|(identifier, name)| (identifier.as_str(), name.as_str())),
+                        notification,
+                    )
+                    .log_err();
+            })
+            .detach();
     }
 
     fn dismiss_system_notification(&self, tag: &str) {

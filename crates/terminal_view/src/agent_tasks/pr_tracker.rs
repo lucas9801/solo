@@ -494,6 +494,9 @@ pub(crate) enum SendOutcome {
     Sent(Entity<TerminalView>),
     /// No terminal of the task runs an agent that can take it.
     NoAgent(String),
+    /// An agent runs in one of them, but it can't take a message of several
+    /// lines (its terminal doesn't have bracketed paste on).
+    AgentWithoutMultilinePaste(String),
     NothingNew,
 }
 
@@ -525,6 +528,13 @@ pub(crate) fn send_new_feedback(
             tr(
                 "No agent is running in the task's terminals; copied the feedback to the clipboard.",
                 "任务的终端里没有 agent，已把反馈复制到剪贴板。",
+            )
+        }
+        SendOutcome::AgentWithoutMultilinePaste(message) => {
+            cx.write_to_clipboard(ClipboardItem::new_string(message));
+            tr(
+                "The agent in the task's terminals can't take a pasted message of several lines; copied the feedback to the clipboard, paste it there yourself.",
+                "任务终端里的 agent 不能接收多行粘贴，已把反馈复制到剪贴板，请自己粘贴给它。",
             )
         }
         SendOutcome::NothingNew => tr(
@@ -778,12 +788,15 @@ impl PrTracker {
             return SendOutcome::NothingNew;
         };
         let message = pull_request::feedback_message(&pull_request, &feedback);
-        let agent = self
+        let terminals: Vec<Entity<TerminalView>> = self
             .tasks
             .get(key)
             .into_iter()
             .flat_map(|tracked| tracked.terminals.iter())
             .filter_map(WeakEntity::upgrade)
+            .collect();
+        let agent = terminals
+            .iter()
             .find(|view| {
                 let view = view.read(cx);
                 crate::agent_context::can_paste_to_agent(view, &message, cx)
@@ -791,7 +804,8 @@ impl PrTracker {
                         || view.agent_status().is_some_and(|(_, status)| {
                             matches!(status, AgentState::Idle | AgentState::Finished)
                         }))
-            });
+            })
+            .cloned();
         match agent {
             Some(agent) => {
                 agent.update(cx, |agent, cx| {
@@ -801,6 +815,9 @@ impl PrTracker {
                 });
                 self.mark_sent(key, &feedback, cx);
                 SendOutcome::Sent(agent)
+            }
+            None if terminals.iter().any(|view| view.read(cx).runs_agent(cx)) => {
+                SendOutcome::AgentWithoutMultilinePaste(message)
             }
             None => SendOutcome::NoAgent(message),
         }
@@ -2010,5 +2027,62 @@ mod tests {
             "No new failed checks or comments on the pull request."
         );
         assert_eq!(pasted(&terminal, cx), "");
+    }
+
+    #[gpui::test]
+    async fn test_an_agent_that_cannot_take_a_multiline_paste_is_told_apart_from_none(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::agent_status::AgentStatus;
+        let (project, workspace, window) = crate::tests::init_test_with_window(cx).await;
+        // The agent runs in the shell directly: no bracketed paste.
+        let (_pane, terminal, view) =
+            crate::tests::add_display_only_terminal(&project, window, false, false, cx);
+        view.update(cx, |view, _| {
+            view.set_agent_status_for_test("claude", AgentStatus::Idle)
+        });
+        pasted(&terminal, cx);
+
+        let source = Arc::new(FakeSource::default());
+        let tracker = cx.new(|cx| PrTracker::new(source.clone(), None, cx));
+        set_tasks(&tracker, &[entry("a", vec![view.clone()])], cx);
+        cx.update(|cx| cx.set_global(GlobalPrTracker(tracker.clone())));
+        let send = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |_, window, cx| {
+                    send_new_feedback(&workspace, &key("a"), window, cx)
+                })
+                .unwrap()
+        };
+        let feedback = snapshot("OPEN", &[("build", "fail")], &["1"]);
+        tracker.update(cx, |tracker, cx| {
+            tracker.set_snapshot(&key("a"), feedback, cx)
+        });
+
+        let outcome = tracker.update(cx, |tracker, cx| tracker.send_unsent(&key("a"), false, cx));
+        assert!(
+            matches!(outcome, SendOutcome::AgentWithoutMultilinePaste(_)),
+            "an agent runs, it just can't take the message"
+        );
+        assert_eq!(
+            send(cx),
+            "The agent in the task's terminals can't take a pasted message of several lines; copied the feedback to the clipboard, paste it there yourself."
+        );
+        // Nothing was typed into it, and what wasn't sent is still new.
+        assert_eq!(pasted(&terminal, cx), "");
+        assert!(
+            tracker
+                .read_with(cx, |tracker, _| tracker.unsent_feedback(&key("a")))
+                .is_some()
+        );
+
+        // With no agent running the other message is the one.
+        view.update(cx, |view, _| {
+            view.set_agent_status_for_test("claude", AgentStatus::Done)
+        });
+        assert_eq!(
+            send(cx),
+            "No agent is running in the task's terminals; copied the feedback to the clipboard."
+        );
     }
 }
