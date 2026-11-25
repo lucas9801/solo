@@ -222,6 +222,9 @@ impl Render for VoiceCard {
 
         v_flex()
             .id("voice-input-card")
+            // SOLO: like the other notification cards, it blocks the mouse, which also
+            // cuts it out of the web view's native window.
+            .occlude()
             .track_focus(&self.focus_handle)
             .w(px(380.))
             .p_3()
@@ -276,5 +279,76 @@ impl Render for VoiceCard {
                     )
             }))
             .child(h_flex().justify_end().gap_2().children(card.buttons))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{HitboxBehavior, HitboxId, TestAppContext, canvas, div};
+    use settings::SettingsStore;
+    use std::{cell::Cell, rc::Rc};
+
+    struct Host {
+        surface: Rc<Cell<Option<HitboxId>>>,
+        card: Entity<VoiceCard>,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let surface = self.surface.clone();
+            div()
+                .size_full()
+                .child(
+                    canvas(
+                        move |bounds, window, _| {
+                            surface.set(Some(
+                                window.insert_hitbox(bounds, HitboxBehavior::Normal).id,
+                            ));
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .right_3()
+                        .bottom_3()
+                        .child(self.card.clone()),
+                )
+        }
+    }
+
+    /// A native child window (the web view) is only cut open where something
+    /// blocks the mouse: the card has to.
+    #[gpui::test]
+    async fn test_voice_card_is_cut_out_of_the_page(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let voice_input = cx.update(|cx| voice_input::test_support::install_saying("hi", cx));
+        let surface = Rc::new(Cell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let surface = surface.clone();
+            move |_window, cx| Host {
+                surface,
+                card: cx.new(|cx| VoiceCard::new(voice_input.clone(), cx)),
+            }
+        });
+        cx.run_until_parked();
+        let holes = cx.update(|window, _| {
+            window
+                .hitbox_occlusion(surface.get().expect("the surface was drawn"))
+                .expect("the surface is in the last frame")
+                .1
+        });
+        assert!(
+            holes.iter().any(|hole| hole.size.width == gpui::px(380.)),
+            "the card is a hole in the page: {holes:?}"
+        );
     }
 }
