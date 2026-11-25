@@ -19,6 +19,39 @@ use windows::core::{IInspectable, Interface as _, h};
 
 type ResponseCallback = Rc<RefCell<Option<Box<dyn FnMut(SystemNotificationResponse)>>>>;
 
+/// What's asked of the toasts, done one after the other: showing one is a COM
+/// call during which Windows delivers messages, so asking again meanwhile
+/// must wait its turn rather than run inside it.
+pub(crate) struct OrderedQueue<T> {
+    items: RefCell<std::collections::VecDeque<T>>,
+    running: std::cell::Cell<bool>,
+}
+
+impl<T> OrderedQueue<T> {
+    pub(crate) fn new() -> Self {
+        Self {
+            items: RefCell::new(Default::default()),
+            running: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Adds `item`; true when nobody is working through the queue, so the
+    /// caller starts to.
+    pub(crate) fn push(&self, item: T) -> bool {
+        self.items.borrow_mut().push_back(item);
+        !self.running.replace(true)
+    }
+
+    /// The next item; none ends the work.
+    pub(crate) fn pop(&self) -> Option<T> {
+        let item = self.items.borrow_mut().pop_front();
+        if item.is_none() {
+            self.running.set(false);
+        }
+        item
+    }
+}
+
 pub(crate) struct SystemNotificationState {
     notifier: Option<ToastNotifier>,
     active_toasts: HashMap<SharedString, ToastNotification>,
@@ -194,5 +227,30 @@ fn register_app_user_model_id(app_identifier: &str, app_name: &str) {
         .and_then(|key| key.set_string("DisplayName", app_name));
     if let Err(error) = result {
         log::warn!("failed to register AppUserModelID; notifications may not display: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OrderedQueue;
+
+    #[test]
+    fn test_requests_run_in_order_and_asking_meanwhile_waits_its_turn() {
+        let queue = OrderedQueue::new();
+        // The first request starts the work; a dismissal asked for in the
+        // same update comes after the showing it follows, not before.
+        assert!(queue.push("show"));
+        assert!(!queue.push("dismiss"));
+        assert_eq!(queue.pop(), Some("show"));
+        // Asked for while the first one runs, as Windows' messages can do:
+        // it waits, and nobody starts a second run.
+        assert!(!queue.push("show again"));
+        assert_eq!(queue.pop(), Some("dismiss"));
+        assert_eq!(queue.pop(), Some("show again"));
+        assert_eq!(queue.pop(), None);
+        // The work is over: the next request starts it again.
+        assert!(queue.push("show"));
+        assert_eq!(queue.pop(), Some("show"));
+        assert_eq!(queue.pop(), None);
     }
 }

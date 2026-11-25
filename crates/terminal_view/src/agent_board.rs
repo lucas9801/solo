@@ -20,7 +20,10 @@ use gpui::{
     FocusHandle, Focusable, Pixels, Render, Subscription, Task, WeakEntity, Window, actions, px,
 };
 use solo_actions::agent_task::ManageAgentTasks;
-use ui::{ButtonLike, ContextMenu, ContextMenuEntry, PopoverMenu, Tab, Tooltip, prelude::*};
+use ui::{
+    ButtonLike, ContextMenu, ContextMenuEntry, FixedWidth as _, PopoverMenu, Tab, Tooltip,
+    prelude::*,
+};
 use util::i18n::{is_chinese, tr};
 use workspace::{
     Workspace,
@@ -534,37 +537,43 @@ impl AgentBoard {
             .gap_1()
             .justify_between()
             .child(
-                PopoverMenu::new(("agent-board-pull-request", index))
-                    .trigger_with_tooltip(
-                        ButtonLike::new(("agent-board-pull-request-state", index))
-                            .style(ButtonStyle::Subtle)
-                            .size(ButtonSize::None)
-                            .child(
-                                h_flex()
-                                    .h_5()
-                                    .gap_1p5()
-                                    .child(
-                                        Icon::new(summary.icon())
-                                            .size(IconSize::XSmall)
-                                            .color(color),
-                                    )
-                                    .child(
-                                        Label::new(summary.line(is_chinese()))
-                                            .size(LabelSize::Small)
-                                            .color(color),
-                                    ),
-                            ),
-                        Tooltip::text(url),
-                    )
-                    .menu(move |window, cx| {
-                        Some(pull_request_menu(
-                            board.clone(),
-                            menu_key.clone(),
-                            menu_url.clone(),
-                            window,
-                            cx,
-                        ))
-                    }),
+                // Long text gives way to the button, not the other way round.
+                div().flex_1().min_w_0().child(
+                    PopoverMenu::new(("agent-board-pull-request", index))
+                        .trigger_with_tooltip(
+                            ButtonLike::new(("agent-board-pull-request-state", index))
+                                .style(ButtonStyle::Subtle)
+                                .size(ButtonSize::None)
+                                .width(relative(1.))
+                                .child(
+                                    h_flex()
+                                        .h_5()
+                                        .min_w_0()
+                                        .gap_1p5()
+                                        .child(
+                                            Icon::new(summary.icon())
+                                                .size(IconSize::XSmall)
+                                                .color(color),
+                                        )
+                                        .child(
+                                            Label::new(summary.line(is_chinese()))
+                                                .size(LabelSize::Small)
+                                                .color(color)
+                                                .truncate(),
+                                        ),
+                                ),
+                            Tooltip::text(url),
+                        )
+                        .menu(move |window, cx| {
+                            Some(pull_request_menu(
+                                board.clone(),
+                                menu_key.clone(),
+                                menu_url.clone(),
+                                window,
+                                cx,
+                            ))
+                        }),
+                ),
             )
             .when(summary.has_unsent(), |this| {
                 this.child(

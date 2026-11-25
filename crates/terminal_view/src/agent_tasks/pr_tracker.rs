@@ -816,7 +816,13 @@ impl PrTracker {
                 self.mark_sent(key, &feedback, cx);
                 SendOutcome::Sent(agent)
             }
-            None if terminals.iter().any(|view| view.read(cx).runs_agent(cx)) => {
+            // Only for an agent that couldn't take it, not one that's busy.
+            None if crate::agent_context::needs_bracketed_paste(&message)
+                && terminals.iter().any(|view| {
+                    let view = view.read(cx);
+                    view.runs_agent(cx) && !view.terminal.read(cx).bracketed_paste_enabled()
+                }) =>
+            {
                 SendOutcome::AgentWithoutMultilinePaste(message)
             }
             None => SendOutcome::NoAgent(message),
@@ -2084,5 +2090,39 @@ mod tests {
             send(cx),
             "No agent is running in the task's terminals; copied the feedback to the clipboard."
         );
+    }
+
+    #[gpui::test]
+    async fn test_a_busy_agent_is_not_said_to_be_unable_to_take_a_paste(cx: &mut TestAppContext) {
+        use crate::agent_status::AgentStatus;
+        // Bracketed paste is on: the agent could take it, it's working.
+        let (terminal, view) = agent_terminal(cx, AgentStatus::Working).await;
+        pasted(&terminal, cx);
+        let source = Arc::new(FakeSource::default());
+        let tracker = cx.new(|cx| PrTracker::new(source.clone(), None, cx));
+        set_tasks(&tracker, &[entry("a", vec![view.clone()])], cx);
+        let feedback = snapshot("OPEN", &[("build", "fail")], &["1"]);
+        tracker.update(cx, |tracker, cx| {
+            tracker.set_snapshot(&key("a"), feedback, cx)
+        });
+        let outcome = tracker.update(cx, |tracker, cx| tracker.send_unsent(&key("a"), true, cx));
+        assert!(
+            matches!(outcome, SendOutcome::NoAgent(_)),
+            "nothing is sent now, and it isn't for want of multi-line pastes"
+        );
+        assert_eq!(pasted(&terminal, cx), "");
+        assert!(
+            tracker
+                .read_with(cx, |tracker, _| tracker.unsent_feedback(&key("a")))
+                .is_some(),
+            "still waiting to be sent"
+        );
+
+        // Once it's idle, it gets it.
+        view.update(cx, |view, _| {
+            view.set_agent_status_for_test("claude", AgentStatus::Idle)
+        });
+        let outcome = tracker.update(cx, |tracker, cx| tracker.send_unsent(&key("a"), true, cx));
+        assert!(matches!(outcome, SendOutcome::Sent(_)));
     }
 }
