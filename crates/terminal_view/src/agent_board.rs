@@ -20,7 +20,10 @@ use gpui::{
     FocusHandle, Focusable, Pixels, Render, Subscription, Task, WeakEntity, Window, actions, px,
 };
 use solo_actions::agent_task::ManageAgentTasks;
-use ui::{ButtonLike, ContextMenu, ContextMenuEntry, PopoverMenu, Tab, Tooltip, prelude::*};
+use ui::{
+    ButtonLike, ContextMenu, ContextMenuEntry, FixedWidth as _, PopoverMenu, Tab, Tooltip,
+    prelude::*,
+};
 use util::i18n::{is_chinese, tr};
 use workspace::{
     Workspace,
@@ -274,6 +277,10 @@ pub struct AgentBoard {
     tasks: Vec<TaskSnapshot>,
     watched: HashMap<EntityId, WatchedTerminal>,
     list_tasks: Task<()>,
+    /// The terminals that ran an agent when the tasks were listed last: a
+    /// task's terminals are found by their directory then, so an agent
+    /// starting in one makes it list them again.
+    agent_terminals: std::collections::HashSet<EntityId>,
     tick: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -332,6 +339,7 @@ impl AgentBoard {
             tasks: Vec::new(),
             watched: HashMap::new(),
             list_tasks: Task::ready(()),
+            agent_terminals: Default::default(),
             tick: None,
             _subscriptions: subscriptions,
         }
@@ -416,10 +424,15 @@ impl AgentBoard {
 
         let now = Instant::now();
         let turns = AgentTurns::try_global(cx).map(|turns| turns.read(cx));
-        let terminals = views
+        let terminals: Vec<TerminalSnapshot> = views
             .iter()
             .filter_map(|view| terminal_snapshot(view, turns, now, cx))
             .collect();
+        let agent_terminals = terminals.iter().map(|terminal| terminal.terminal).collect();
+        if agent_terminals != self.agent_terminals {
+            self.agent_terminals = agent_terminals;
+            self.refresh_tasks(cx);
+        }
         let pull_requests = PrTracker::try_global(cx)
             .map(|tracker| {
                 let tracker = tracker.read(cx);
@@ -524,37 +537,44 @@ impl AgentBoard {
             .gap_1()
             .justify_between()
             .child(
-                PopoverMenu::new(("agent-board-pull-request", index))
-                    .trigger_with_tooltip(
-                        ButtonLike::new(("agent-board-pull-request-state", index))
-                            .style(ButtonStyle::Subtle)
-                            .size(ButtonSize::None)
-                            .child(
-                                h_flex()
-                                    .h_5()
-                                    .gap_1p5()
-                                    .child(
-                                        Icon::new(summary.icon())
-                                            .size(IconSize::XSmall)
-                                            .color(color),
-                                    )
-                                    .child(
-                                        Label::new(summary.line(is_chinese()))
-                                            .size(LabelSize::Small)
-                                            .color(color),
-                                    ),
-                            ),
-                        Tooltip::text(url),
-                    )
-                    .menu(move |window, cx| {
-                        Some(pull_request_menu(
-                            board.clone(),
-                            menu_key.clone(),
-                            menu_url.clone(),
-                            window,
-                            cx,
-                        ))
-                    }),
+                // Long text gives way to the button, not the other way round.
+                div().flex_1().min_w_0().child(
+                    PopoverMenu::new(("agent-board-pull-request", index))
+                        .trigger_with_tooltip(
+                            ButtonLike::new(("agent-board-pull-request-state", index))
+                                .style(ButtonStyle::Subtle)
+                                .size(ButtonSize::None)
+                                .width(relative(1.))
+                                .child(
+                                    h_flex()
+                                        .h_5()
+                                        .w_full()
+                                        .min_w_0()
+                                        .gap_1p5()
+                                        .child(
+                                            Icon::new(summary.icon())
+                                                .size(IconSize::XSmall)
+                                                .color(color),
+                                        )
+                                        .child(
+                                            Label::new(summary.line(is_chinese()))
+                                                .size(LabelSize::Small)
+                                                .color(color)
+                                                .truncate(),
+                                        ),
+                                ),
+                            Tooltip::text(url),
+                        )
+                        .menu(move |window, cx| {
+                            Some(pull_request_menu(
+                                board.clone(),
+                                menu_key.clone(),
+                                menu_url.clone(),
+                                window,
+                                cx,
+                            ))
+                        }),
+                ),
             )
             .when(summary.has_unsent(), |this| {
                 this.child(
@@ -617,14 +637,17 @@ impl AgentBoard {
                     .border_color(warning_border)
             })
             .hover(move |style| style.bg(hover_background))
-            .when_some(tooltip, |this, tooltip| {
-                this.tooltip(Tooltip::text(tooltip))
-            })
             .on_click(cx.listener(move |this, _, window, cx| this.open_row(index, window, cx)))
             .child(
+                // The path shows over this line only: over the whole row it
+                // would cover the menu of the pull request's row.
                 h_flex()
+                    .id(("agent-board-row-title", index))
                     .w_full()
                     .gap_1p5()
+                    .when_some(tooltip, |this, tooltip| {
+                        this.tooltip(Tooltip::text(tooltip))
+                    })
                     .child(match row.status {
                         Some(status) => AgentStateIcon::new(status)
                             .size(IconSize::Small)

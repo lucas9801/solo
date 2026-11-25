@@ -75,7 +75,18 @@ pub struct WindowsPlatform {
     disable_direct_composition: bool,
     has_package_identity: bool,
     app_identity: RefCell<Option<(String, String)>>,
-    system_notifications: RefCell<SystemNotificationState>,
+    system_notifications: Rc<RefCell<SystemNotificationState>>,
+    notification_requests: Rc<OrderedQueue<NotificationRequest>>,
+}
+
+/// What was asked of the toasts; see [`OrderedQueue`].
+enum NotificationRequest {
+    Show {
+        has_package_identity: bool,
+        app_identity: Option<(String, String)>,
+        notification: gpui::SystemNotification,
+    },
+    Dismiss(String),
 }
 
 struct WindowsPlatformInner {
@@ -182,6 +193,46 @@ impl Drop for PowerRequest {
 }
 
 impl WindowsPlatform {
+    /// Showing and dismissing toasts happens from the executor, one request
+    /// after the other, not inside the update that asks for it: showing one is
+    /// a COM call during which Windows delivers messages, such as a request
+    /// for a frame, which finds the app borrowed ("RefCell already borrowed"
+    /// in the log) when it comes from an update.
+    fn queue_notification_request(&self, request: NotificationRequest) {
+        let requests = self.notification_requests.clone();
+        if !requests.push(request) {
+            return;
+        }
+        let system_notifications = self.system_notifications.clone();
+        self.foreground_executor
+            .spawn(async move {
+                while let Some(request) = requests.pop() {
+                    match request {
+                        NotificationRequest::Show {
+                            has_package_identity,
+                            app_identity,
+                            notification,
+                        } => {
+                            system_notifications
+                                .borrow_mut()
+                                .show(
+                                    has_package_identity,
+                                    app_identity.as_ref().map(|(identifier, name)| {
+                                        (identifier.as_str(), name.as_str())
+                                    }),
+                                    notification,
+                                )
+                                .log_err();
+                        }
+                        NotificationRequest::Dismiss(tag) => {
+                            system_notifications.borrow_mut().dismiss(&tag);
+                        }
+                    }
+                }
+            })
+            .detach();
+    }
+
     pub fn new(headless: bool) -> Result<Self> {
         unsafe {
             OleInitialize(None).context("unable to initialize Windows OLE")?;
@@ -296,7 +347,8 @@ impl WindowsPlatform {
             drop_target_helper,
             invalidate_devices: Arc::new(AtomicBool::new(false)),
             app_identity: RefCell::new(None),
-            system_notifications: RefCell::new(SystemNotificationState::new()),
+            system_notifications: Rc::new(RefCell::new(SystemNotificationState::new())),
+            notification_requests: Rc::new(OrderedQueue::new()),
         })
     }
 
@@ -936,21 +988,15 @@ impl Platform for WindowsPlatform {
     }
 
     fn show_system_notification(&self, notification: gpui::SystemNotification) {
-        let app_identity = self.app_identity.borrow().clone();
-        self.system_notifications
-            .borrow_mut()
-            .show(
-                self.has_package_identity,
-                app_identity
-                    .as_ref()
-                    .map(|(identifier, name)| (identifier.as_str(), name.as_str())),
-                notification,
-            )
-            .log_err();
+        self.queue_notification_request(NotificationRequest::Show {
+            has_package_identity: self.has_package_identity,
+            app_identity: self.app_identity.borrow().clone(),
+            notification,
+        });
     }
 
     fn dismiss_system_notification(&self, tag: &str) {
-        self.system_notifications.borrow_mut().dismiss(tag);
+        self.queue_notification_request(NotificationRequest::Dismiss(tag.to_string()));
     }
 
     fn on_system_notification_response(
