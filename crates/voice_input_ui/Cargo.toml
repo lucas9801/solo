@@ -25,3 +25,4 @@ gpui = { workspace = true, features = ["test-support"] }
 settings = { workspace = true, features = ["test-support"] }
 theme_settings.workspace = true
 voice_input = { workspace = true, features = ["test-support"] }
+workspace = { workspace = true, features = ["test-support"] }
